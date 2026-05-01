@@ -1,4 +1,78 @@
-/.DS_Store
-/AGENTS.md
-/docs
-/test_set
+# macOS / filesystem
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Virtual environments and local Python tooling
+.venv/
+venv/
+env/
+ENV/
+__pypackages__/
+pip-wheel-metadata/
+
+# Packaging and build output
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+wheelhouse/
+
+# PyInstaller output
+*.manifest
+*.pyz
+
+# IDE/editor local state
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and runtime files
+*.log
+logs/
+Logs/
+runtime/
+Data/
+Cache/
+Config/
+Backups/
+Plugins/
+Thumbnails/
+Database/
+Books/
+
+# Local databases and generated indexes
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# Local sample books and large manual test data
+test_set/
+
+# Generated reports
+reports/
+artifacts/
