@@ -74,8 +74,29 @@ class Theme:
     # Reusable fixed control sizes
     toolbar_button_size = 36
     card_button_size = 28
+
+    # Sidebar frame from Figma node 165:2982
+    # The root uses px=4/py=10, then each section/item stretches to the
+    # available inner width. Keep these in Python because they define layout
+    # geometry rather than visual paint.
+    sidebar_margin_horizontal = 4
+    sidebar_margin_vertical = 10
+    sidebar_gap = 4
     sidebar_item_height = 28
     sidebar_section_height = 34
+    sidebar_section_padding_left = 15
+    sidebar_section_padding_right = 10
+    sidebar_section_padding_top = 10
+    sidebar_section_padding_bottom = 5
+    sidebar_section_arrow_size = 20
+    sidebar_item_padding_left = 15
+    sidebar_item_padding_right = 10
+    sidebar_item_padding_vertical = 2
+    sidebar_item_icon_text_gap = 5
+    sidebar_item_radius = 6
+    sidebar_item_font_size = 14
+    sidebar_section_font_size = 16
+    sidebar_lower_padding_bottom = 5
     toolbar_spacer_width = 2
     resize_grip_size = 16
     tester_reset_width = 96
@@ -119,6 +140,7 @@ class Theme:
     color_scrollbar_handle_rgba = (138, 138, 138, 160)
     color_scrollbar_handle_hover_rgba = (138, 138, 138, 220)
     color_sidebar_section = "#6d6d6d"
+    color_sidebar_item_hover = "#eeeeee"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
     missing_book_opacity = 0.6
@@ -142,6 +164,11 @@ class Theme:
             "__CONTENT_COLOR__": cls.color_content,
             "__SELECTED_COLOR__": cls.color_selected,
             "__CONTENT_RADIUS__": f"{cls.content_radius}px",
+            "__SIDEBAR_SECTION_COLOR__": cls.color_sidebar_section,
+            "__SIDEBAR_ITEM_RADIUS__": f"{cls.sidebar_item_radius}px",
+            "__SIDEBAR_ITEM_HOVER__": cls.color_sidebar_item_hover,
+            "__SIDEBAR_ITEM_FONT_SIZE__": f"{cls.sidebar_item_font_size}px",
+            "__SIDEBAR_SECTION_FONT_SIZE__": f"{cls.sidebar_section_font_size}px",
             "__CONTROL_RADIUS__": f"{cls.control_radius}px",
             "__SEARCH_INNER_RADIUS__": f"{cls.search_inner_button_radius}px",
             "__BODY_FONT_SIZE__": f"{cls.body_font_size}px",
