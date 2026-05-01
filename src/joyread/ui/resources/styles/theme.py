@@ -23,6 +23,16 @@ class Theme:
     search_panel_width = 242
     file_filter_width = 90
     sort_dropdown_width = 146
+    control_radius = 10
+    control_border_width = 1
+    control_visual_padding = 4
+    control_layout_margin = control_visual_padding - control_border_width
+    control_gap = 6
+    control_text_height = 16
+    body_font_size = 16
+    dropdown_inner_size = 28
+    search_inner_button_size = 28
+    search_inner_button_radius = 6
 
     # Frameless window chrome and toolbar controls
     traffic_light_size = 14
@@ -99,6 +109,12 @@ class Theme:
 
         return {
             "__BUTTON_INNER_EDGE__": cls.color_button_inner_edge,
+            "__BUTTON_EDGE__": cls.color_button_edge,
+            "__WINDOW_COLOR__": cls.color_window,
+            "__SELECTED_COLOR__": cls.color_selected,
+            "__CONTROL_RADIUS__": f"{cls.control_radius}px",
+            "__SEARCH_INNER_RADIUS__": f"{cls.search_inner_button_radius}px",
+            "__BODY_FONT_SIZE__": f"{cls.body_font_size}px",
             "__MENU_BACKGROUND__": cls._rgba_qss(cls.color_menu_background_rgba),
             "__MENU_BORDER_WIDTH__": f"{cls.menu_border_width}px",
             "__MENU_RADIUS__": f"{cls.menu_radius}px",

@@ -5,7 +5,6 @@ from __future__ import annotations
 from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import SortField, ViewMode
+from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.mode_switches import ListModeSwitchWidget, SortModeSwitchWidget
 
@@ -67,12 +67,15 @@ class WindowChromeWidget(QWidget):
 
         layout.addWidget(_spacer())
 
-        self._sort_combo = QComboBox()
-        self._sort_combo.setProperty("class", "ChromeCombo")
-        self._sort_combo.addItems([field.value for field in SortField])
-        self._sort_combo.setFixedSize(Theme.sort_dropdown_width, Theme.toolbar_control_height)
-        self._sort_combo.currentTextChanged.connect(self._emit_sort)
-        layout.addWidget(self._sort_combo)
+        self._sort_dropdown = FigmaDropdownButton(
+            resources,
+            [field.value for field in SortField],
+            width=Theme.sort_dropdown_width,
+            initial_value=SortField.ADD_TIME.value,
+            tooltip="Sort by",
+        )
+        self._sort_dropdown.value_changed.connect(self._emit_sort)
+        layout.addWidget(self._sort_dropdown)
 
         self._sort_mode_switch = SortModeSwitchWidget(resources)
         self._sort_mode_switch.value_changed.connect(self._handle_sort_mode_changed)
@@ -116,7 +119,7 @@ class WindowChromeWidget(QWidget):
 
     def _handle_sort_mode_changed(self, value: str) -> None:
         self._sort_ascending = value == SortModeSwitchWidget.ASCENDING
-        self._emit_sort(self._sort_combo.currentText())
+        self._emit_sort(self._sort_dropdown.value)
 
     def _emit_sort(self, field: str) -> None:
         self.sort_changed.emit(field, self._sort_ascending)

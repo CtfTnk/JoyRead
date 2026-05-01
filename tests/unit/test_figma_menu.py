@@ -5,7 +5,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QWidget
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.widgets.menus import build_action_menu, build_book_context_menu
+from joyread.ui.widgets.menus import FigmaMenu, build_action_menu, build_book_context_menu
 
 
 def make_book() -> Book:
@@ -37,7 +37,7 @@ def menu_rows(menu: QWidget) -> list[QFrame]:
     return [widget for widget in menu.findChildren(QFrame) if widget.objectName() == "FigmaMenuItem"]
 
 
-def assert_figma_menu_layout(menu: QWidget, labels: list[str]) -> None:
+def assert_figma_menu_layout(menu: QWidget, labels: list[str], expected_width: int = Theme.menu_width) -> None:
     menu.show()
     QApplication.processEvents()
 
@@ -46,8 +46,8 @@ def assert_figma_menu_layout(menu: QWidget, labels: list[str]) -> None:
     rows = menu_rows(menu)
 
     assert [row.findChild(QLabel).text() for row in rows] == labels
-    assert menu.width() == Theme.menu_width
-    assert panel.width() == Theme.menu_width
+    assert menu.width() == expected_width
+    assert panel.width() == expected_width
 
     panel_margins = panel.layout().contentsMargins()
     assert (
@@ -94,6 +94,18 @@ def test_action_menu_uses_figma_panel_and_option_list(qtbot) -> None:
     assert_figma_menu_layout(menu, ["Open Book", "Open & Import", "Import"])
 
 
+def test_figma_menu_can_match_trigger_width(qtbot) -> None:
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    menu = FigmaMenu(parent, width=Theme.file_filter_width)
+    menu.add_item("ALL", lambda: None)
+    qtbot.addWidget(menu)
+
+    assert_figma_menu_layout(menu, ["ALL"], expected_width=Theme.file_filter_width)
+
+
 def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
     apply_theme()
     parent = QWidget()
@@ -114,3 +126,23 @@ def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
     delete_row = menu_rows(menu)[-1]
     assert delete_row.property("destructive") == "true"
     assert delete_row.property("menuEnabled") == "false"
+
+
+def test_book_context_menu_can_hide_remove_action(qtbot) -> None:
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    menu = build_book_context_menu(
+        parent,
+        make_book(),
+        on_read=lambda _uuid: None,
+        on_favourite=lambda _uuid: None,
+        on_detail=lambda _uuid: None,
+        on_add_to_collection=lambda _uuid: None,
+        on_remove=lambda _uuid: None,
+        show_remove=False,
+    )
+    qtbot.addWidget(menu)
+
+    assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Delete"])

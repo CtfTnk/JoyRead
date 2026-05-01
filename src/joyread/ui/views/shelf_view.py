@@ -8,13 +8,12 @@ from PySide6.QtWidgets import QMessageBox, QStackedWidget, QVBoxLayout, QWidget
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.shelf_viewmodel import ViewMode
+from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, ViewMode
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListWidget
 from joyread.ui.widgets.menus import FigmaMenu, build_action_menu, build_book_context_menu
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
-from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
 
 
 class ShelfView(QWidget):
@@ -40,7 +39,6 @@ class ShelfView(QWidget):
         self.toolbar = TopToolbarWidget(resources)
         self.toolbar.search_changed.connect(self._viewmodel.set_search_query)
         self.toolbar.filter_changed.connect(self._viewmodel.set_filter)
-        self.toolbar.collapse_requested.connect(lambda: self._show_placeholder("Collapse Search"))
         layout.addWidget(self.toolbar)
 
         self.stack = QStackedWidget()
@@ -109,6 +107,7 @@ class ShelfView(QWidget):
             on_detail=self._show_detail_placeholder,
             on_add_to_collection=lambda uuid: self._show_placeholder("Add to Collection"),
             on_remove=lambda uuid: self._show_placeholder("Remove from Library"),
+            show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,
         )
         menu.exec(global_pos)
 

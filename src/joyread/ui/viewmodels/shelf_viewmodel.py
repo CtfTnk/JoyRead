@@ -23,9 +23,12 @@ class SortField(StrEnum):
 
 
 class FileFilter(StrEnum):
-    ALL = "All"
-    COMIC = "Comic"
-    NOVEL = "Novel"
+    ALL = "ALL"
+    CBZ = "CBZ"
+    CBR = "CBR"
+    ZIP = "ZIP"
+    RAR = "RAR"
+    SEVEN_Z = "7Z"
     PDF = "PDF"
     EPUB = "EPUB"
 
@@ -184,10 +187,6 @@ class ShelfViewModel:
     def _book_matches_filter(self, book: Book) -> bool:
         if self.file_filter == FileFilter.ALL:
             return True
-        if self.file_filter == FileFilter.COMIC:
-            return book.book_type.lower() == "comic"
-        if self.file_filter == FileFilter.NOVEL:
-            return book.book_type.lower() == "novel"
         return book.file_format.upper() == self.file_filter.value.upper()
 
     def _sort_key(self, book: Book) -> tuple[object, str]:

@@ -61,8 +61,9 @@ class MenuItem(QFrame):
 class FigmaMenu(QWidget):
     """Popup root containing a styled panel and a zero-margin option list."""
 
-    def __init__(self, parent: QWidget) -> None:
+    def __init__(self, parent: QWidget, width: int = Theme.menu_width) -> None:
         super().__init__(parent)
+        self._menu_width = width
         self.setObjectName("FigmaMenuPopup")
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -76,7 +77,7 @@ class FigmaMenu(QWidget):
         self._panel = QFrame()
         self._panel.setObjectName("FigmaMenuPanel")
         self._panel.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._panel.setFixedWidth(Theme.menu_width)
+        self._panel.setFixedWidth(self._menu_width)
         root_layout.addWidget(self._panel)
 
         panel_layout = QVBoxLayout(self._panel)
@@ -134,8 +135,8 @@ class FigmaMenu(QWidget):
         self._panel.adjustSize()
         self.adjustSize()
         panel_height = self._panel.sizeHint().height()
-        self._panel.setFixedSize(Theme.menu_width, panel_height)
-        self.setFixedSize(Theme.menu_width, panel_height)
+        self._panel.setFixedSize(self._menu_width, panel_height)
+        self.setFixedSize(self._menu_width, panel_height)
         self.updateGeometry()
 
     def _trigger(self, callback: Callable[[], None]) -> None:
@@ -148,8 +149,8 @@ class FigmaMenu(QWidget):
         super().hideEvent(event)
 
 
-def _figma_menu(parent: QWidget) -> FigmaMenu:
-    return FigmaMenu(parent)
+def _figma_menu(parent: QWidget, width: int = Theme.menu_width) -> FigmaMenu:
+    return FigmaMenu(parent, width=width)
 
 
 def build_book_context_menu(
@@ -160,6 +161,8 @@ def build_book_context_menu(
     on_detail: Callable[[str], None],
     on_add_to_collection: Callable[[str], None],
     on_remove: Callable[[str], None],
+    *,
+    show_remove: bool = True,
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
@@ -167,7 +170,8 @@ def build_book_context_menu(
     menu.add_item("Unfavourite" if book.is_favourite else "Favourite", lambda: on_favourite(book.uuid))
     menu.add_item("Detail", lambda: on_detail(book.uuid))
     menu.add_item("Add to...", lambda: on_add_to_collection(book.uuid))
-    menu.add_item("Remove", lambda: on_remove(book.uuid))
+    if show_remove:
+        menu.add_item("Remove", lambda: on_remove(book.uuid))
     menu.add_item("Delete", None, destructive=True, enabled=False)
 
     return menu
