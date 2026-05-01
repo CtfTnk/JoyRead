@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -199,13 +200,24 @@ class ActionMenuButton(QFrame):
 
     def setMenu(self, menu: FigmaMenu) -> None:
         self._menu = menu
+        self._menu.closed.connect(self._finish_menu_interaction)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._menu is not None:
+            self._finish_menu_interaction()
             self._menu.exec(self.mapToGlobal(QPoint(0, self.height())))
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def _finish_menu_interaction(self) -> None:
+        # Qt popup windows can consume the leave event that would normally
+        # reset QSS :hover on the trigger frame.
+        self.clearFocus()
+        app = QApplication.instance()
+        if app is not None:
+            app.sendEvent(self, QEvent(QEvent.Type.Leave))
+        self.update()
 
 
 def _traffic_button(object_name: str, tooltip: str) -> QToolButton:

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QEventLoop, QPoint, Qt, Signal as QtSignal
-from PySide6.QtGui import QHideEvent, QMouseEvent
+from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt, Signal as QtSignal
+from PySide6.QtGui import QCursor, QHideEvent, QMouseEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QSizePolicy, QVBoxLayout, QWidget
 
 from joyread.core.models.book import Book
@@ -61,6 +61,8 @@ class MenuItem(QFrame):
 class FigmaMenu(QWidget):
     """Popup root containing a styled panel and a zero-margin option list."""
 
+    closed = QtSignal()
+
     def __init__(self, parent: QWidget, width: int = Theme.menu_width) -> None:
         super().__init__(parent)
         self._menu_width = width
@@ -111,6 +113,7 @@ class FigmaMenu(QWidget):
         self._loop = QEventLoop(self)
         self._loop.exec()
         self._loop = None
+        _refresh_cursor_shape()
 
     def add_item(
         self,
@@ -146,11 +149,19 @@ class FigmaMenu(QWidget):
     def hideEvent(self, event: QHideEvent) -> None:
         if self._loop is not None and self._loop.isRunning():
             self._loop.quit()
+        self.closed.emit()
+        _refresh_cursor_shape()
         super().hideEvent(event)
 
 
 def _figma_menu(parent: QWidget, width: int = Theme.menu_width) -> FigmaMenu:
     return FigmaMenu(parent, width=width)
+
+
+def _refresh_cursor_shape() -> None:
+    """Nudge Qt to recompute the cursor after popup mouse capture ends."""
+
+    QTimer.singleShot(0, lambda: QCursor.setPos(QCursor.pos()))
 
 
 def build_book_context_menu(

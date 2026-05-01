@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLineEdit,
+    QSizePolicy,
     QToolButton,
     QWidget,
 )
@@ -84,6 +85,7 @@ class SearchPanelWidget(QFrame):
 
     def _build_search_bar(self) -> QFrame:
         frame = QFrame()
+        frame.setObjectName("FigmaSearchBar")
         frame.setProperty("class", "FigmaSearchBar")
         frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         frame.setFixedSize(Theme.search_width, Theme.toolbar_control_height)
@@ -96,21 +98,30 @@ class SearchPanelWidget(QFrame):
             Theme.control_layout_margin,
             Theme.control_layout_margin,
         )
-        layout.setSpacing(0)
+        layout.setSpacing(Theme.search_bar_gap)
+
+        input_frame = QWidget()
+        input_frame.setObjectName("FigmaSearchInputFrame")
+        input_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(0, 0, 0, 0)
+        input_layout.setSpacing(0)
 
         self._input = QLineEdit()
         self._input.setObjectName("FigmaSearchInput")
         self._input.setPlaceholderText("Search anything...")
-        self._input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._input.setFixedSize(141, Theme.icon_size)
+        self._input.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._input.setFixedHeight(Theme.search_input_height)
+        self._input.setMinimumWidth(Theme.search_input_text_width)
+        self._input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._input.returnPressed.connect(self.submit)
 
         palette = self._input.palette()
         palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(Theme.color_text))
         self._input.setPalette(palette)
 
-        layout.addWidget(self._input)
-        layout.addStretch(1)
+        input_layout.addWidget(self._input)
+        layout.addWidget(input_frame)
 
         submit_button = self._icon_button("icon_search.svg", "Search", "SearchSubmitButton", "FigmaSearchInnerButton")
         submit_button.setFixedSize(Theme.search_inner_button_size, Theme.search_inner_button_size)

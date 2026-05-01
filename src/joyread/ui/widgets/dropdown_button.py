@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -75,11 +76,14 @@ class FigmaDropdownButton(QFrame):
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label, stretch=1)
 
-        inner_button = QFrame()
-        inner_button.setProperty("class", "FigmaDropdownInnerButton")
-        inner_button.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        inner_button.setFixedSize(Theme.dropdown_inner_size, Theme.dropdown_inner_size)
-        inner_layout = QVBoxLayout(inner_button)
+        self._inner_button = QFrame()
+        self._inner_button.setObjectName("FigmaDropdownInnerButton")
+        self._inner_button.setProperty("class", "FigmaDropdownInnerButton")
+        self._inner_button.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._inner_button.setFixedSize(Theme.dropdown_inner_size, Theme.dropdown_inner_size)
+        self._set_inner_hovered(False)
+
+        inner_layout = QVBoxLayout(self._inner_button)
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.setSpacing(0)
 
@@ -87,7 +91,7 @@ class FigmaDropdownButton(QFrame):
         icon_label.setFixedSize(Theme.icon_size, Theme.icon_size)
         icon_label.setPixmap(QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(_icon_qsize()))
         inner_layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(inner_button)
+        layout.addWidget(self._inner_button)
 
     @property
     def value(self) -> str:
@@ -109,12 +113,41 @@ class FigmaDropdownButton(QFrame):
             return
         super().mousePressEvent(event)
 
+    def enterEvent(self, event) -> None:  # noqa: ANN001 - PySide event type differs by Qt minor version.
+        self._set_inner_hovered(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: ANN001 - PySide event type differs by Qt minor version.
+        self._set_inner_hovered(False)
+        super().leaveEvent(event)
+
     def _open_menu(self) -> None:
         menu = FigmaMenu(self, width=self.width())
+        menu.closed.connect(self._finish_menu_interaction)
         for option in self._options:
             menu.add_item(option, lambda value=option: self.set_value(value, emit=True))
+        self._finish_menu_interaction()
         menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+
+    def _finish_menu_interaction(self) -> None:
+        # Popup mouse capture can swallow leave events. Clear the visual hover
+        # state explicitly so the control cannot stay tinted after dismissal.
+        self._set_inner_hovered(False)
+        self.clearFocus()
+        _send_leave_event(self)
+
+    def _set_inner_hovered(self, hovered: bool) -> None:
+        self._inner_button.setProperty("hovered", "true" if hovered else "false")
+        self._inner_button.style().unpolish(self._inner_button)
+        self._inner_button.style().polish(self._inner_button)
+        self._inner_button.update()
 
 
 def _icon_qsize() -> QSize:
     return QSize(Theme.icon_size, Theme.icon_size)
+
+
+def _send_leave_event(widget: QWidget) -> None:
+    app = QApplication.instance()
+    if app is not None:
+        app.sendEvent(widget, QEvent(QEvent.Type.Leave))

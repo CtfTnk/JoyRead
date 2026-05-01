@@ -31,6 +31,9 @@ class Theme:
     control_text_height = 16
     body_font_size = 16
     dropdown_inner_size = 28
+    search_bar_gap = 4
+    search_input_text_width = 141
+    search_input_height = 24
     search_inner_button_size = 28
     search_inner_button_radius = 6
 

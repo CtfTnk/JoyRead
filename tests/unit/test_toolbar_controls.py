@@ -1,5 +1,5 @@
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLineEdit, QToolButton
+from PySide6.QtCore import QEvent, Qt
+from PySide6.QtWidgets import QApplication, QFrame, QLineEdit, QToolButton
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -31,6 +31,15 @@ def test_figma_dropdown_button_has_fixed_figma_size_and_value_signal(qtbot) -> N
     assert button.width() == Theme.sort_dropdown_width
     assert button.height() == Theme.toolbar_control_height
 
+    inner_button = button.findChild(QFrame, "FigmaDropdownInnerButton")
+    assert inner_button is not None
+    assert inner_button.property("hovered") == "false"
+
+    QApplication.sendEvent(button, QEvent(QEvent.Type.Enter))
+    assert inner_button.property("hovered") == "true"
+    QApplication.sendEvent(button, QEvent(QEvent.Type.Leave))
+    assert inner_button.property("hovered") == "false"
+
     button.set_value(SortField.TITLE.value, emit=True)
     button.set_value(SortField.TITLE.value, emit=True)
 
@@ -58,6 +67,12 @@ def test_search_panel_collapses_expands_and_submits_only_on_action(qtbot) -> Non
     assert expand_button is not None
     assert submit_button is not None
     assert panel.width() == Theme.search_panel_width
+
+    search_bar = panel.findChild(QFrame, "FigmaSearchBar")
+    assert search_bar is not None
+    assert search_bar.layout().spacing() == Theme.search_bar_gap
+    assert search_input.minimumWidth() == Theme.search_input_text_width
+    assert search_input.alignment() & Qt.AlignmentFlag.AlignLeft
 
     search_input.setText("spy")
     QApplication.processEvents()

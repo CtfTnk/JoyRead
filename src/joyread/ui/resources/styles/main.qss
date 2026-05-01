@@ -172,7 +172,6 @@ QToolButton[class="FigmaSearchOuterButton"] {
     border-radius: __CONTROL_RADIUS__;
 }
 
-QFrame[class="FigmaDropdownButton"]:hover,
 QToolButton[class="FigmaSearchOuterButton"]:hover {
     background: __SELECTED_COLOR__;
 }
@@ -187,6 +186,10 @@ QFrame[class="FigmaDropdownInnerButton"] {
     background: __WINDOW_COLOR__;
     border: 1px solid __BUTTON_INNER_EDGE__;
     border-radius: __CONTROL_RADIUS__;
+}
+
+QFrame[class="FigmaDropdownInnerButton"][hovered="true"] {
+    background: __SELECTED_COLOR__;
 }
 
 QLineEdit#FigmaSearchInput {
