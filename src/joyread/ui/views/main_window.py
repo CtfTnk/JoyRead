@@ -22,7 +22,7 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.resize(Theme.window_width, Theme.window_height)
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
 
         root = QWidget()
         root.setObjectName("RootPanel")

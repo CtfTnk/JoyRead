@@ -6,6 +6,7 @@ from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QContextMenuEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -33,6 +34,8 @@ class BookListWidget(QScrollArea):
         self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.viewport().setObjectName("ShelfScrollViewport")
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         self._content = QWidget()
         self._content.setObjectName("BookListContent")
@@ -80,6 +83,10 @@ class BookListRowWidget(QFrame):
         self.setProperty("selected", "false")
         self.setFixedHeight(120)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        if book.is_missing:
+            opacity = QGraphicsOpacityEffect(self)
+            opacity.setOpacity(Theme.missing_book_opacity)
+            self.setGraphicsEffect(opacity)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)

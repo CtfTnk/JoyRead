@@ -7,6 +7,9 @@ class Theme:
     # Window and page layout
     window_width = 1200
     window_height = 860
+    window_min_width = 900
+    window_min_height = 600
+    window_corner_radius = 18
     sidebar_width = 260
     toolbar_height = 52
     content_frame_width = 934
@@ -24,6 +27,7 @@ class Theme:
     cover_height = 241
     cover_radius = 6
     grid_gap = 25
+    grid_resize_relayout_buffer = 12
     grid_top_padding = 4
     grid_bottom_padding = 24
     toolbar_control_height = 36
@@ -81,6 +85,7 @@ class Theme:
     shelf_scrollbar_width = 10
     shelf_scrollbar_radius = 5
     shelf_scrollbar_min_height = 40
+    shelf_scrollbar_bottom_margin = 18
     # Qt scrollbars consume viewport width. Reducing the content right margin
     # keeps the visual gap from content to app edge at Figma's 48px.
     content_scrollbar_adjusted_right_padding = content_horizontal_padding - shelf_scrollbar_width
@@ -116,6 +121,7 @@ class Theme:
     color_sidebar_section = "#6d6d6d"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
+    missing_book_opacity = 0.6
 
     # General spacing scale
     spacing_xs = 4
@@ -132,6 +138,7 @@ class Theme:
             "__BUTTON_INNER_EDGE__": cls.color_button_inner_edge,
             "__BUTTON_EDGE__": cls.color_button_edge,
             "__WINDOW_COLOR__": cls.color_window,
+            "__WINDOW_RADIUS__": f"{cls.window_corner_radius}px",
             "__CONTENT_COLOR__": cls.color_content,
             "__SELECTED_COLOR__": cls.color_selected,
             "__CONTENT_RADIUS__": f"{cls.content_radius}px",
@@ -152,6 +159,7 @@ class Theme:
             "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",
+            "__SHELF_SCROLLBAR_BOTTOM_MARGIN__": f"{cls.shelf_scrollbar_bottom_margin}px",
             "__SHELF_SCROLLBAR_HANDLE__": cls._rgba_qss(cls.color_scrollbar_handle_rgba),
             "__SHELF_SCROLLBAR_HANDLE_HOVER__": cls._rgba_qss(cls.color_scrollbar_handle_hover_rgba),
         }

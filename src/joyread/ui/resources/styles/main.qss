@@ -16,20 +16,20 @@ QMainWindow#MainWindow {
 
 QWidget#RootPanel {
     background: #ffffff;
-    border-radius: 18px;
+    border-radius: __WINDOW_RADIUS__;
 }
 
 QWidget#ViewPanel {
     background: #ffffff;
     /* add radius to the bottom corners to match the root panel */
-    border-bottom-left-radius: 18px;
-    border-bottom-right-radius: 18px;
+    border-bottom-left-radius: __WINDOW_RADIUS__;
+    border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
 QWidget#WindowChrome {
     background: #ffffff;
-    border-top-left-radius: 18px;
-    border-top-right-radius: 18px;
+    border-top-left-radius: __WINDOW_RADIUS__;
+    border-top-right-radius: __WINDOW_RADIUS__;
 }
 
 /* Frameless chrome controls */
@@ -153,6 +153,12 @@ QToolButton[class="SidebarItem"]:hover {
 QWidget#ShelfContent {
     background: __CONTENT_COLOR__;
     border-top-left-radius: __CONTENT_RADIUS__;
+    border-bottom-right-radius: __WINDOW_RADIUS__;
+}
+
+QStackedWidget#ShelfStack {
+    background: __CONTENT_COLOR__;
+    border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
 QLabel#PageTitle {
@@ -222,17 +228,19 @@ QScrollArea {
 }
 
 QScrollArea[class="ShelfScrollArea"] {
-    background: transparent;
+    background: __CONTENT_COLOR__;
+    border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
-QScrollArea[class="ShelfScrollArea"] QWidget#qt_scrollarea_viewport {
-    background: transparent;
+QWidget#ShelfScrollViewport {
+    background: __CONTENT_COLOR__;
+    border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
 QScrollArea[class="ShelfScrollArea"] QScrollBar:vertical {
     background: transparent;
     border: none;
-    margin: 0;
+    margin: 0 0 __SHELF_SCROLLBAR_BOTTOM_MARGIN__ 0;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
@@ -266,18 +274,18 @@ QWidget#BookListContent {
 }
 
 QFrame[class="BookCard"] {
-    background: #ffffff;
+    background: __WINDOW_COLOR__;
     border-radius: 10px;
     border: 1px solid transparent;
 }
 
 QFrame[class="BookCard"][selected="true"] {
     border: 2px solid #929292;
-    background: #ffffff;
+    background: __WINDOW_COLOR__;
 }
 
 QFrame[class="BookCard"][missing="true"] {
-    background: #fafafa;
+    background: __WINDOW_COLOR__;
 }
 
 QFrame#BookCover {

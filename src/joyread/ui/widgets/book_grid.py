@@ -23,11 +23,15 @@ class BookGridWidget(QScrollArea):
         self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.viewport().setObjectName("ShelfScrollViewport")
+        self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._books: list[Book] = []
         self._selected_ids: set[str] = set()
         self._cards: dict[str, BookCardWidget] = {}
         self._book_ids: tuple[str, ...] = ()
         self._columns = 0
+        self._last_layout_width = 0
+        self._last_horizontal_spacing = Theme.grid_gap
 
         self._content = QWidget()
         self._content.setObjectName("BookGridContent")
@@ -50,18 +54,28 @@ class BookGridWidget(QScrollArea):
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
-        self._relayout()
+        if self._should_relayout_after_resize():
+            self._relayout()
 
     def _relayout(self, force: bool = False) -> None:
-        columns = self._calculate_columns()
+        available_width = self._available_row_width()
+        columns = self._calculate_columns_for_width(available_width)
+        spacing = self._calculate_horizontal_spacing_for_width(columns, available_width)
         book_ids = tuple(book.uuid for book in self._books)
         if not force and columns == self._columns and self._book_ids == book_ids:
+            if spacing != self._last_horizontal_spacing:
+                self._layout.setHorizontalSpacing(spacing)
+                self._last_horizontal_spacing = spacing
+            self._last_layout_width = available_width
             for card in self._cards.values():
                 card.set_selected(card.book.uuid in self._selected_ids)
             return
 
         self._columns = columns
         self._book_ids = book_ids
+        self._last_layout_width = available_width
+        self._last_horizontal_spacing = spacing
+        self._layout.setHorizontalSpacing(spacing)
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget()
@@ -91,8 +105,29 @@ class BookGridWidget(QScrollArea):
         )
 
     def _calculate_columns(self) -> int:
-        viewport_width = max(Theme.book_card_width, self.viewport().width())
-        viewport_width -= Theme.content_horizontal_padding + Theme.content_scrollbar_adjusted_right_padding
-        viewport_width = max(Theme.book_card_width, viewport_width)
+        return self._calculate_columns_for_width(self._available_row_width())
+
+    def _calculate_columns_for_width(self, viewport_width: int) -> int:
         slot_width = Theme.book_card_width + Theme.grid_gap
         return max(1, (viewport_width + Theme.grid_gap) // slot_width)
+
+    def _calculate_horizontal_spacing(self, columns: int) -> int:
+        return self._calculate_horizontal_spacing_for_width(columns, self._available_row_width())
+
+    def _calculate_horizontal_spacing_for_width(self, columns: int, row_width: int) -> int:
+        if columns <= 1:
+            return Theme.grid_gap
+        justified_gap = (row_width - (columns * Theme.book_card_width)) // (columns - 1)
+        return max(Theme.grid_gap, justified_gap)
+
+    def _available_row_width(self) -> int:
+        viewport_width = max(Theme.book_card_width, self.viewport().width())
+        viewport_width -= Theme.content_horizontal_padding + Theme.content_scrollbar_adjusted_right_padding
+        return max(Theme.book_card_width, viewport_width)
+
+    def _should_relayout_after_resize(self) -> bool:
+        available_width = self._available_row_width()
+        next_columns = self._calculate_columns_for_width(available_width)
+        if next_columns != self._columns:
+            return True
+        return abs(available_width - self._last_layout_width) >= Theme.grid_resize_relayout_buffer

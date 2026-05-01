@@ -9,6 +9,7 @@ from PySide6.QtGui import QColor, QContextMenuEvent, QIcon, QMouseEvent, QPainte
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QProgressBar,
@@ -38,11 +39,16 @@ class BookCardWidget(QFrame):
         self.setFixedSize(Theme.book_card_width, Theme.book_card_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        shadow = QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(8)
-        shadow.setOffset(0, 3)
-        shadow.setColor(QColor(0, 0, 0, 60))
-        self.setGraphicsEffect(shadow)
+        if book.is_missing:
+            opacity = QGraphicsOpacityEffect(self)
+            opacity.setOpacity(Theme.missing_book_opacity)
+            self.setGraphicsEffect(opacity)
+        else:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(8)
+            shadow.setOffset(0, 3)
+            shadow.setColor(QColor(0, 0, 0, 60))
+            self.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)

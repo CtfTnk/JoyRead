@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QMessageBox, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.core.models.book import Book
@@ -25,6 +25,7 @@ class ShelfView(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ShelfContent")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
 
         layout = QVBoxLayout(self)
@@ -42,6 +43,8 @@ class ShelfView(QWidget):
         layout.addWidget(self.toolbar)
 
         self.stack = QStackedWidget()
+        self.stack.setObjectName("ShelfStack")
+        self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.grid = BookGridWidget(resources)
         self.list_view = BookListWidget(resources)
         self.empty_state = StateView("No books yet", "Import actions are placeholders in this phase.")
