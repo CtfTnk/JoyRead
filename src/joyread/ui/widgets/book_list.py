@@ -30,13 +30,19 @@ class BookListWidget(QScrollArea):
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._resources = resources
+        self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         self._content = QWidget()
         self._content.setObjectName("BookListContent")
         self._layout = QVBoxLayout(self._content)
-        self._layout.setContentsMargins(4, 4, 4, 24)
+        self._layout.setContentsMargins(
+            Theme.content_horizontal_padding,
+            Theme.grid_top_padding,
+            Theme.content_scrollbar_adjusted_right_padding,
+            Theme.grid_bottom_padding,
+        )
         self._layout.setSpacing(10)
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.setWidget(self._content)

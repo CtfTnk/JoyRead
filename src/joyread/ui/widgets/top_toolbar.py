@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Signal as QtSignal
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QWidget,
@@ -25,7 +26,12 @@ class TopToolbarWidget(QWidget):
         self.setFixedHeight(Theme.toolbar_height)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setContentsMargins(
+            Theme.content_horizontal_padding + Theme.banner_horizontal_padding,
+            0,
+            Theme.content_horizontal_padding + Theme.banner_horizontal_padding,
+            0,
+        )
         layout.setSpacing(10)
 
         self._title = QLabel("All")
@@ -36,6 +42,8 @@ class TopToolbarWidget(QWidget):
         self._search_panel = SearchPanelWidget(resources)
         self._search_panel.search_submitted.connect(self.search_changed.emit)
         layout.addWidget(self._search_panel)
+
+        layout.addWidget(_spacer())
 
         self._filter_dropdown = FigmaDropdownButton(
             resources,
@@ -49,3 +57,11 @@ class TopToolbarWidget(QWidget):
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
+
+def _spacer() -> QFrame:
+    frame = QFrame()
+    frame.setObjectName("ToolbarSpacer")
+    frame.setFixedSize(Theme.toolbar_spacer_width, Theme.toolbar_control_height)
+    frame.setFrameShape(QFrame.Shape.NoFrame)
+    return frame
+    

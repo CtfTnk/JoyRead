@@ -1,5 +1,6 @@
 from datetime import datetime
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QWidget
 
 from joyread.core.models.book import Book
@@ -104,6 +105,28 @@ def test_figma_menu_can_match_trigger_width(qtbot) -> None:
     qtbot.addWidget(menu)
 
     assert_figma_menu_layout(menu, ["ALL"], expected_width=Theme.file_filter_width)
+
+
+def test_menu_item_triggers_after_mouse_release(qtbot) -> None:
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    triggered: list[str] = []
+    menu = FigmaMenu(parent)
+    menu.add_item("Read", lambda: triggered.append("read"))
+    qtbot.addWidget(menu)
+    menu.show()
+    QApplication.processEvents()
+
+    row = menu_rows(menu)[0]
+    qtbot.mousePress(row, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert triggered == []
+
+    qtbot.mouseRelease(row, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert triggered == ["read"]
 
 
 def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:

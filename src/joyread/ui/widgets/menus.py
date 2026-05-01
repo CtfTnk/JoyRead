@@ -27,6 +27,7 @@ class MenuItem(QFrame):
     ) -> None:
         super().__init__(parent)
         self._enabled = enabled
+        self._pressed_inside = False
 
         self.setObjectName("FigmaMenuItem")
         self.setProperty("destructive", "true" if destructive else "false")
@@ -52,10 +53,24 @@ class MenuItem(QFrame):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if self._enabled and event.button() == Qt.MouseButton.LeftButton:
-            self.clicked.emit()
+            self._pressed_inside = True
             event.accept()
             return
+        self._pressed_inside = False
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if self._enabled and event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            event.accept()
+            if self.rect().contains(event.position().toPoint()):
+                # Closing a Qt.Popup during mousePress can leave Qt's cursor and
+                # hover bookkeeping stale until the next click. Trigger after
+                # release so the normal press/release sequence can complete.
+                QTimer.singleShot(0, self.clicked.emit)
+            return
+        self._pressed_inside = False
+        super().mouseReleaseEvent(event)
 
 
 class FigmaMenu(QWidget):
@@ -147,6 +162,7 @@ class FigmaMenu(QWidget):
         callback()
 
     def hideEvent(self, event: QHideEvent) -> None:
+        _release_popup_grabs(self)
         if self._loop is not None and self._loop.isRunning():
             self._loop.quit()
         self.closed.emit()
@@ -162,6 +178,18 @@ def _refresh_cursor_shape() -> None:
     """Nudge Qt to recompute the cursor after popup mouse capture ends."""
 
     QTimer.singleShot(0, lambda: QCursor.setPos(QCursor.pos()))
+
+
+def _release_popup_grabs(root: QWidget) -> None:
+    """Release grabs owned by this popup before Qt recalculates hover targets."""
+
+    for grabber_getter, release_name in (
+        (QWidget.mouseGrabber, "releaseMouse"),
+        (QWidget.keyboardGrabber, "releaseKeyboard"),
+    ):
+        grabber = grabber_getter()
+        if grabber is not None and (grabber is root or root.isAncestorOf(grabber)):
+            getattr(grabber, release_name)()
 
 
 def build_book_context_menu(

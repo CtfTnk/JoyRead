@@ -151,8 +151,8 @@ QToolButton[class="SidebarItem"]:hover {
 
 /* Shelf toolbar */
 QWidget#ShelfContent {
-    background: #f5f5f5;
-    border-top-left-radius: 10px;
+    background: __CONTENT_COLOR__;
+    border-top-left-radius: __CONTENT_RADIUS__;
 }
 
 QLabel#PageTitle {
@@ -218,6 +218,44 @@ QFrame#ToolbarSpacer {
 
 QScrollArea {
     border: none;
+    background: transparent;
+}
+
+QScrollArea[class="ShelfScrollArea"] {
+    background: transparent;
+}
+
+QScrollArea[class="ShelfScrollArea"] QWidget#qt_scrollarea_viewport {
+    background: transparent;
+}
+
+QScrollArea[class="ShelfScrollArea"] QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    margin: 0;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea[class="ShelfScrollArea"] QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea[class="ShelfScrollArea"] QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea[class="ShelfScrollArea"] QScrollBar::add-line:vertical,
+QScrollArea[class="ShelfScrollArea"] QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea[class="ShelfScrollArea"] QScrollBar::add-page:vertical,
+QScrollArea[class="ShelfScrollArea"] QScrollBar::sub-page:vertical {
     background: transparent;
 }
 

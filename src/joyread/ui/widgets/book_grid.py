@@ -20,6 +20,7 @@ class BookGridWidget(QScrollArea):
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._resources = resources
+        self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._books: list[Book] = []
@@ -31,7 +32,12 @@ class BookGridWidget(QScrollArea):
         self._content = QWidget()
         self._content.setObjectName("BookGridContent")
         self._layout = QGridLayout(self._content)
-        self._layout.setContentsMargins(0, 4, 0, 24)
+        self._layout.setContentsMargins(
+            Theme.content_horizontal_padding,
+            Theme.grid_top_padding,
+            Theme.content_scrollbar_adjusted_right_padding,
+            Theme.grid_bottom_padding,
+        )
         self._layout.setHorizontalSpacing(Theme.grid_gap)
         self._layout.setVerticalSpacing(20)
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -86,5 +92,7 @@ class BookGridWidget(QScrollArea):
 
     def _calculate_columns(self) -> int:
         viewport_width = max(Theme.book_card_width, self.viewport().width())
+        viewport_width -= Theme.content_horizontal_padding + Theme.content_scrollbar_adjusted_right_padding
+        viewport_width = max(Theme.book_card_width, viewport_width)
         slot_width = Theme.book_card_width + Theme.grid_gap
         return max(1, (viewport_width + Theme.grid_gap) // slot_width)

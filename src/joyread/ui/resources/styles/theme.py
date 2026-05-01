@@ -9,8 +9,14 @@ class Theme:
     window_height = 860
     sidebar_width = 260
     toolbar_height = 52
-    content_padding = 36
+    content_frame_width = 934
+    content_frame_height = 808
+    content_min_width = 719
+    content_horizontal_padding = 48
+    content_padding = content_horizontal_padding
     content_top_padding = 15
+    content_radius = 10
+    banner_horizontal_padding = 2
     book_card_width = 190
     book_card_height = 340
     book_card_radius = 10
@@ -18,6 +24,8 @@ class Theme:
     cover_height = 241
     cover_radius = 6
     grid_gap = 25
+    grid_top_padding = 4
+    grid_bottom_padding = 24
     toolbar_control_height = 36
     search_width = 200
     search_panel_width = 242
@@ -69,6 +77,14 @@ class Theme:
     tester_reset_width = 96
     tester_reset_height = 36
 
+    # Floating shelf scrollbars
+    shelf_scrollbar_width = 10
+    shelf_scrollbar_radius = 5
+    shelf_scrollbar_min_height = 40
+    # Qt scrollbars consume viewport width. Reducing the content right margin
+    # keeps the visual gap from content to app edge at Figma's 48px.
+    content_scrollbar_adjusted_right_padding = content_horizontal_padding - shelf_scrollbar_width
+
     # Figma menu popups and native combo popup metrics
     menu_width = 130
     menu_border_width = 2
@@ -95,6 +111,8 @@ class Theme:
     color_switch_background = "#bfbfbf"
     color_progress_background = "#c9c9c9"
     color_progress_fill = "#8a8a8a"
+    color_scrollbar_handle_rgba = (138, 138, 138, 160)
+    color_scrollbar_handle_hover_rgba = (138, 138, 138, 220)
     color_sidebar_section = "#6d6d6d"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
@@ -114,7 +132,9 @@ class Theme:
             "__BUTTON_INNER_EDGE__": cls.color_button_inner_edge,
             "__BUTTON_EDGE__": cls.color_button_edge,
             "__WINDOW_COLOR__": cls.color_window,
+            "__CONTENT_COLOR__": cls.color_content,
             "__SELECTED_COLOR__": cls.color_selected,
+            "__CONTENT_RADIUS__": f"{cls.content_radius}px",
             "__CONTROL_RADIUS__": f"{cls.control_radius}px",
             "__SEARCH_INNER_RADIUS__": f"{cls.search_inner_button_radius}px",
             "__BODY_FONT_SIZE__": f"{cls.body_font_size}px",
@@ -129,6 +149,11 @@ class Theme:
             "__MENU_DESTRUCTIVE__": cls.color_menu_destructive,
             "__MENU_FONT_SIZE__": f"{cls.menu_font_size}px",
             "__TEXT_COLOR__": cls.color_text,
+            "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
+            "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
+            "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",
+            "__SHELF_SCROLLBAR_HANDLE__": cls._rgba_qss(cls.color_scrollbar_handle_rgba),
+            "__SHELF_SCROLLBAR_HANDLE_HOVER__": cls._rgba_qss(cls.color_scrollbar_handle_hover_rgba),
         }
 
     @staticmethod
