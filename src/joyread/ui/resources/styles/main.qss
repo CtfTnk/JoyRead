@@ -1,0 +1,374 @@
+/* Base typography */
+QWidget {
+    font-family: "Inter", "Arial", sans-serif;
+    color: #000000;
+}
+
+/* Figma control dimensions are fixed in Python via Theme constants.
+   Do not add QSS min/max sizes to those controls: Qt treats them as
+   content-box values and then adds border/padding, which changes the
+   external size. */
+
+/* Window shell */
+QMainWindow#MainWindow {
+    background: transparent;
+}
+
+QWidget#RootPanel {
+    background: #ffffff;
+    border-radius: 18px;
+}
+
+QWidget#ViewPanel {
+    background: #ffffff;
+    /* add radius to the bottom corners to match the root panel */
+    border-bottom-left-radius: 18px;
+    border-bottom-right-radius: 18px;
+}
+
+QWidget#WindowChrome {
+    background: #ffffff;
+    border-top-left-radius: 18px;
+    border-top-right-radius: 18px;
+}
+
+/* Frameless chrome controls */
+QToolButton#CloseButton,
+QToolButton#MinimizeButton,
+QToolButton#ZoomButton {
+    border-radius: 7px;
+}
+
+QToolButton#CloseButton {
+    background-color: #ff736a;
+    border: 1px solid #e6685f;
+}
+
+QToolButton#MinimizeButton {
+    background-color: #febc2e;
+    border: 1px solid #e5a929;
+}
+
+QToolButton#ZoomButton {
+    background-color: #19c332;
+    border: 1px solid #16b02d;
+}
+
+QToolButton#CloseButton:hover {
+    border: 1px solid #b3504a;
+}
+
+QToolButton#MinimizeButton:hover {
+    border: 1px solid #b28520;
+}
+
+QToolButton#ZoomButton:hover {
+    border: 1px solid #128924;
+}
+
+QToolButton[class="ChromeButton"] {
+    background: #ffffff;
+    border: 1px solid #929292;
+    border-radius: 10px;
+    padding: 4px;
+}
+
+QToolButton[class="ChromeButton"]:hover {
+    background: #e5e5e5;
+}
+
+QToolButton[class="ChromeButton"]:checked {
+    background: #e5e5e5;
+}
+
+QToolButton[class="ChromeButton"]:disabled {
+    background: #929292;
+    border: 1px solid #e0e0e0;
+}
+
+QToolButton[class="ChromeButton"]::menu-indicator {
+    image: none;
+    width: 0;
+}
+
+QFrame[class="ActionMenuButton"] {
+    background: #ffffff;
+    border: 1px solid #929292;
+    border-radius: 10px;
+}
+
+QFrame[class="ActionMenuButton"]:hover {
+    background: #e5e5e5;
+}
+
+/* Figma switch shell; option cells are custom-painted in Python. */
+QFrame[class="FigmaSwitch"] {
+    background: #bfbfbf;
+    border: 2px solid #929292;
+    border-radius: 10px;
+}
+
+QToolButton[class="FigmaSwitchOption"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+/* Dropdown controls */
+QComboBox[class="ChromeCombo"] {
+    background: #ffffff;
+    border: 1px solid #929292;
+    border-radius: 10px;
+    padding: 0 8px;
+    font-size: 16px;
+}
+
+QComboBox[class="ChromeCombo"]::drop-down,
+QComboBox[class="ToolbarControl"]::drop-down {
+    width: 28px;
+    border: 1px solid #e0e0e0;
+    border-radius: 10px;
+    margin: 4px;
+}
+
+QComboBox[class="ChromeCombo"]::down-arrow,
+QComboBox[class="ToolbarControl"]::down-arrow {
+    image: url("__ICON_DIR__/icon_dropout.svg");
+    width: 24px;
+    height: 24px;
+}
+
+QSizeGrip#ResizeGrip {
+    background: transparent;
+}
+
+/* Sidebar */
+QWidget#Sidebar {
+    background: #ffffff;
+}
+
+QLabel#SidebarSection {
+    color: #6d6d6d;
+    font-size: 16px;
+    font-weight: 700;
+}
+
+QToolButton[class="SidebarItem"] {
+    border: none;
+    border-radius: 6px;
+    padding: 2px 10px 2px 15px;
+    background: transparent;
+    text-align: left;
+    font-size: 14px;
+    font-weight: 500;
+    min-height: 28px;
+    max-height: 28px;
+}
+
+QToolButton[class="SidebarItem"]:checked {
+    background: #e5e5e5;
+}
+
+QToolButton[class="SidebarItem"]:hover {
+    background: #eeeeee;
+}
+
+/* Shelf toolbar */
+QWidget#ShelfContent {
+    background: #f5f5f5;
+    border-top-left-radius: 10px;
+}
+
+QLabel#PageTitle {
+    font-size: 28px;
+    font-weight: 700;
+}
+
+QLineEdit#SearchField,
+QComboBox[class="ToolbarControl"],
+QToolButton[class="ToolbarButton"],
+QPushButton[class="ToolbarButton"] {
+    background: #ffffff;
+    border: 1px solid #929292;
+    border-radius: 10px;
+    padding: 0 8px;
+    font-size: 16px;
+}
+
+QToolButton[class="ToolbarButton"]:checked,
+QPushButton[class="ToolbarButton"]:checked {
+    background: #ffffff;
+    border: 2px solid #929292;
+}
+
+QToolButton[class="ToolbarButton"]:hover,
+QPushButton[class="ToolbarButton"]:hover,
+QComboBox[class="ToolbarControl"]:hover,
+QLineEdit#SearchField:hover {
+    background: #e5e5e5;
+}
+
+QFrame[class="SearchPanel"] {
+    background: transparent;
+}
+
+QFrame#ToolbarSpacer {
+    background: #d9d9d9;
+    border-radius: 1px;
+}
+
+QScrollArea {
+    border: none;
+    background: transparent;
+}
+
+/* Book grid and list content */
+QWidget#BookGridContent,
+QWidget#BookListContent {
+    background: transparent;
+}
+
+QFrame[class="BookCard"] {
+    background: #ffffff;
+    border-radius: 10px;
+    border: 1px solid transparent;
+}
+
+QFrame[class="BookCard"][selected="true"] {
+    border: 2px solid #929292;
+    background: #ffffff;
+}
+
+QFrame[class="BookCard"][missing="true"] {
+    background: #fafafa;
+}
+
+QFrame#BookCover {
+    border-radius: 6px;
+    background: #f1f1f1;
+}
+
+QLabel[class="BookTitle"] {
+    font-size: 12px;
+}
+
+QLabel[class="BookMeta"] {
+    color: #6d6d6d;
+    font-size: 12px;
+}
+
+QProgressBar[class="BookProgress"] {
+    border: none;
+    border-radius: 5px;
+    background: #c9c9c9;
+    max-height: 10px;
+    min-height: 10px;
+    text-align: center;
+}
+
+QProgressBar[class="BookProgress"]::chunk {
+    border-radius: 5px;
+    background: #8a8a8a;
+}
+
+QToolButton[class="CardButton"] {
+    background: #ffffff;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 0;
+}
+
+QToolButton[class="CardButton"]:hover,
+QToolButton[class="CardButton"]:checked {
+    background: #e5e5e5;
+    border: 1px solid #e0e0e0;
+}
+
+QToolButton[class="CardButton"]:disabled {
+    background: #929292;
+    border: 1px solid #e0e0e0;
+}
+
+/* Figma menu popups */
+QWidget#FigmaMenuPopup {
+    background: transparent;
+}
+
+QFrame#FigmaMenuPanel {
+    background: __MENU_BACKGROUND__;
+    border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __MENU_RADIUS__;
+}
+
+QWidget#FigmaMenuOptionList {
+    background: transparent;
+}
+
+QFrame#FigmaMenuItem {
+    background: transparent;
+    border: none;
+    border-radius: __MENU_ITEM_RADIUS__;
+}
+
+QFrame#FigmaMenuItem[menuEnabled="true"]:hover {
+    background: __MENU_ITEM_HOVER__;
+}
+
+QLabel[class="FigmaMenuItemText"] {
+    color: __TEXT_COLOR__;
+    font-size: __MENU_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QLabel[class="FigmaMenuItemText"][destructive="true"] {
+    color: __MENU_DESTRUCTIVE__;
+}
+
+/* Native combo popups can take the menu palette and padding, but Qt's item view
+   does not support a true flex-style gap without a custom delegate. */
+QComboBox QAbstractItemView {
+    background: __MENU_BACKGROUND__;
+    border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __MENU_RADIUS__;
+    padding: __MENU_LAYOUT_MARGIN__;
+    font-size: __MENU_FONT_SIZE__;
+    outline: 0;
+    selection-background-color: __MENU_ITEM_HOVER__;
+    selection-color: __TEXT_COLOR__;
+}
+
+QComboBox QAbstractItemView::item {
+    min-height: __MENU_ITEM_HEIGHT__;
+    padding: 0 __MENU_ITEM_PADDING__;
+    border-radius: __MENU_ITEM_RADIUS__;
+    color: __TEXT_COLOR__;
+}
+
+QComboBox QAbstractItemView::item:selected {
+    background: __MENU_ITEM_HOVER__;
+}
+
+QFrame[class="BookListRow"] {
+    background: #ffffff;
+    border-radius: 10px;
+    border: 1px solid transparent;
+}
+
+QFrame[class="BookListRow"][selected="true"] {
+    border: 2px solid #929292;
+}
+
+/* Empty/loading/error placeholders */
+QWidget[class="StateView"] {
+    background: transparent;
+}
+
+QLabel[class="StateTitle"] {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+QLabel[class="StateBody"] {
+    color: #6d6d6d;
+    font-size: 14px;
+}

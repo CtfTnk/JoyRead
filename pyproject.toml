@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "joyread"
+version = "0.1.0"
+description = "Cross-platform desktop manga and light novel reader."
+readme = "docs/CODEX_MAIN_UI_BRIEF.md"
+requires-python = ">=3.11"
+dependencies = [
+    "PySide6>=6.7",
+    "platformdirs>=4.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.4",
+]
+
+[project.scripts]
+joyread = "joyread.app.main:main"
+joyread-button-tester = "joyread.app.button_tester:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+joyread = ["ui/resources/styles/*.qss", "ui/resources/icons/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
