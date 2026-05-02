@@ -407,6 +407,110 @@ QFrame[class="BookListRow"][selected="true"] {
     border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED__;
 }
 
+/* Floating book detail panel */
+QFrame#BookDetailPanel {
+    background: __DETAIL_PANEL_BACKGROUND__;
+    border: __DETAIL_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __DETAIL_PANEL_RADIUS__;
+}
+
+QScrollArea#BookDetailScrollArea,
+QWidget#BookDetailViewport,
+QWidget#BookDetailContent,
+QWidget#BookDetailDescription,
+QWidget#BookDetailCoverPanel,
+QWidget#BookDetailDescriptionContent,
+QWidget#BookDetailMeta,
+QWidget#BookDetailNameAuthor,
+QWidget#BookDetailAttributes,
+QWidget#BookDetailControlPanel,
+QWidget#BookDetailControlLeftSide,
+QWidget#BookDetailThumbnails {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar::add-line:vertical,
+QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar::add-page:vertical,
+QScrollArea#BookDetailScrollArea QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QLabel[class="BookDetailTitle"] {
+    color: __TEXT_COLOR__;
+    font-size: __DETAIL_TITLE_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QLabel[class="BookDetailAuthor"],
+QLabel[class="BookDetailPillText"] {
+    color: __TEXT_COLOR__;
+    font-size: __DETAIL_META_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QLineEdit[class="BookDetailInlineEdit"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_EDGE__;
+    border-radius: 4px;
+    color: __TEXT_COLOR__;
+    padding: 1px 3px;
+}
+
+QFrame[class="BookDetailPill"] {
+    background: transparent;
+    border: 1px solid __BUTTON_EDGE__;
+    border-radius: __DETAIL_ATTRIBUTE_RADIUS__;
+}
+
+QLabel[class="BookDetailProgressPercent"] {
+    color: __TEXT_COLOR__;
+    font-size: 12px;
+    font-weight: 400;
+}
+
+QToolButton[class="DetailActionButton"],
+QToolButton[class="DetailIconButton"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_EDGE__;
+    border-radius: __DETAIL_BUTTON_RADIUS__;
+    padding: 4px;
+}
+
+QToolButton[class="DetailActionButton"] {
+    color: __TEXT_COLOR__;
+    font-size: __DETAIL_READ_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QToolButton[class="DetailActionButton"]:hover,
+QToolButton[class="DetailIconButton"]:hover {
+    background: __SELECTED_COLOR__;
+}
+
 /* Empty/loading/error placeholders */
 QWidget[class="StateView"] {
     background: transparent;

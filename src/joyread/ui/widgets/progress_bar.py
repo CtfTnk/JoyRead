@@ -12,11 +12,18 @@ from joyread.ui.resources.styles.theme import Theme
 class BookProgressBar(QFrame):
     """Progress bar with a minimum rounded indicator for non-zero progress."""
 
-    def __init__(self, progress_percent: int, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        progress_percent: int,
+        parent: QWidget | None = None,
+        *,
+        width: int = Theme.book_progress_width,
+    ) -> None:
         super().__init__(parent)
         self._progress_percent = 0
+        self._progress_width = width
         self.setObjectName("BookProgress")
-        self.setFixedSize(Theme.book_progress_width, Theme.book_progress_height)
+        self.setFixedSize(self._progress_width, Theme.book_progress_height)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -40,7 +47,7 @@ class BookProgressBar(QFrame):
         self._refresh_indicator_width()
 
     def sizeHint(self) -> QSize:
-        return QSize(Theme.book_progress_width, Theme.book_progress_height)
+        return QSize(self._progress_width, Theme.book_progress_height)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

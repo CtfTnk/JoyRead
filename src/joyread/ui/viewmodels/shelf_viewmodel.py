@@ -56,6 +56,7 @@ class ShelfViewModel:
         self.view_mode = ViewMode.GRID
         self.current_shelf = ShelfKey.ALL.value
         self.selected_book_ids: set[str] = set()
+        self.detail_book_uuid: str | None = None
         self.is_loading = False
         self.is_importing = False
         self.import_progress = 0
@@ -102,6 +103,7 @@ class ShelfViewModel:
             return
         self.current_shelf = shelf
         self.clear_selection(emit_state=False)
+        self.detail_book_uuid = None
         self._emit_state()
 
     def set_search_query(self, query: str) -> None:
@@ -157,6 +159,17 @@ class ShelfViewModel:
         self.selection_changed.emit(set())
         if emit_state:
             self._emit_state()
+
+    def show_detail(self, book_uuid: str) -> None:
+        if any(book.uuid == book_uuid for book in self.books):
+            self.detail_book_uuid = book_uuid
+            self._emit_state()
+
+    def hide_detail(self) -> None:
+        if self.detail_book_uuid is None:
+            return
+        self.detail_book_uuid = None
+        self._emit_state()
 
     def open_book(self, book_uuid: str) -> None:
         if any(book.uuid == book_uuid for book in self.books):
@@ -217,6 +230,8 @@ class ShelfViewModel:
         if removed:
             self.selected_book_ids -= removed
             self.selection_changed.emit(set(self.selected_book_ids))
+        if self.detail_book_uuid is not None and self.detail_book_uuid not in visible_ids:
+            self.detail_book_uuid = None
         self.state_changed.emit()
 
 

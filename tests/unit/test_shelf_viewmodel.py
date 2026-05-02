@@ -89,3 +89,15 @@ def test_set_favourite_applies_same_state_to_multiple_books() -> None:
     updated = {book.uuid: book for book in vm.books}
     assert updated[first.uuid].is_favourite is True
     assert updated[second.uuid].is_favourite is True
+
+
+def test_detail_page_state_tracks_visible_book() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    first = vm.visible_books[0]
+
+    vm.show_detail(first.uuid)
+    assert vm.detail_book_uuid == first.uuid
+
+    vm.set_filter(FileFilter.EPUB.value)
+    assert vm.detail_book_uuid is None

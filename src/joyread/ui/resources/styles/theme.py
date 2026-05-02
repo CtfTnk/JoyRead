@@ -42,6 +42,50 @@ class Theme:
     book_progress_height = 10
     book_progress_radius = 5
     book_progress_percent_gap = 10
+
+    # Floating book detail panel from Figma node 162:1473 / component 162:861.
+    detail_panel_top_margin = 81
+    detail_panel_horizontal_margin = 29
+    detail_panel_border_width = 2
+    detail_panel_radius = 10
+    detail_panel_visual_padding = 8
+    detail_panel_layout_margin = detail_panel_visual_padding - detail_panel_border_width
+    detail_panel_gap = 10
+    detail_description_padding_horizontal = 50
+    detail_description_padding_vertical = 40
+    detail_description_gap = 10
+    detail_cover_width = 200
+    detail_cover_height = 284
+    detail_cover_panel_gap = 10
+    detail_cover_panel_bottom_padding = 10
+    detail_progress_width = 120
+    detail_progress_unit_width = 160
+    detail_content_padding = 4
+    detail_meta_height = 252
+    detail_meta_name_gap = 10
+    detail_attribute_padding_horizontal = 6
+    detail_attribute_gap = 10
+    detail_attribute_border_width = 1
+    detail_attribute_visual_padding = 4
+    detail_attribute_layout_margin = detail_attribute_visual_padding - detail_attribute_border_width
+    detail_attribute_radius = 6
+    detail_control_padding = 6
+    detail_control_gap = 10
+    detail_read_button_width = 100
+    detail_button_size = 36
+    detail_button_radius = 10
+    detail_title_font_size = 20
+    detail_meta_font_size = 14
+    detail_read_font_size = 15
+    detail_thumbnail_width = 100
+    detail_thumbnail_height = 142
+    detail_thumbnail_radius = 6
+    detail_thumbnail_frame_padding = 10
+    detail_thumbnail_row_padding_horizontal = 10
+    detail_thumbnail_row_padding_vertical = 5
+    detail_thumbnail_gap = 20
+    detail_thumbnail_row_gap = 10
+    detail_thumbnail_min_width = 625
     grid_gap = 25
     grid_resize_relayout_buffer = 12
     grid_top_padding = 4
@@ -212,6 +256,14 @@ class Theme:
             "__PROGRESS_BACKGROUND__": cls.color_progress_background,
             "__PROGRESS_FILL__": cls.color_progress_fill,
             "__PROGRESS_RADIUS__": f"{cls.book_progress_radius}px",
+            "__DETAIL_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_menu_background_rgba),
+            "__DETAIL_PANEL_BORDER_WIDTH__": f"{cls.detail_panel_border_width}px",
+            "__DETAIL_PANEL_RADIUS__": f"{cls.detail_panel_radius}px",
+            "__DETAIL_ATTRIBUTE_RADIUS__": f"{cls.detail_attribute_radius}px",
+            "__DETAIL_BUTTON_RADIUS__": f"{cls.detail_button_radius}px",
+            "__DETAIL_TITLE_FONT_SIZE__": f"{cls.detail_title_font_size}px",
+            "__DETAIL_META_FONT_SIZE__": f"{cls.detail_meta_font_size}px",
+            "__DETAIL_READ_FONT_SIZE__": f"{cls.detail_read_font_size}px",
             "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",

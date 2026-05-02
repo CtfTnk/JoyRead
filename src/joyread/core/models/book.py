@@ -23,6 +23,7 @@ class Book:
     is_favourite: bool
     is_missing: bool = False
     collection_ids: tuple[str, ...] = ()
+    page_count: int = 14
 
     def with_favourite(self, value: bool) -> Book:
         return replace(self, is_favourite=value, updated_at=datetime.now())

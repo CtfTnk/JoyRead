@@ -9,6 +9,7 @@ from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.book_card import BookCardWidget
+from joyread.ui.widgets.book_detail import BookDetailPanel, DetailThumbnailGrid, DetailThumbnailWidget
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
 from joyread.ui.widgets.progress_bar import BookProgressBar
@@ -192,6 +193,86 @@ def test_detail_button_emits_only_its_own_book_in_multi_selection_context(qtbot)
     assert emitted == [second.uuid]
 
 
+def test_book_detail_panel_binds_figma_metadata_and_mock_thumbnails(qtbot) -> None:
+    apply_theme()
+    book = MockBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(876, 760)
+    panel.set_book(book)
+    panel.show()
+    QApplication.processEvents()
+
+    title_labels = [label for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailTitle"]
+    author_labels = [label for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailAuthor"]
+    pill_labels = [label.text() for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailPillText"]
+    progress = panel.findChild(BookProgressBar)
+    thumbnails = panel.findChildren(DetailThumbnailWidget)
+
+    assert title_labels[0].text() == book.title
+    assert author_labels[0].text() == f"Author: {book.author}"
+    assert f"Language: {book.language_tag}" in pill_labels
+    assert f"Book Type: {book.file_format}" in pill_labels
+    assert progress is not None
+    assert progress.width() == Theme.detail_progress_width
+    assert len(thumbnails) == book.page_count
+
+
+def test_detail_thumbnail_grid_uses_figma_ideal_seven_column_spacing(qtbot) -> None:
+    grid = DetailThumbnailGrid()
+    qtbot.addWidget(grid)
+    grid.resize(864, 400)
+    grid.set_thumbnail_count(14)
+    grid.show()
+    QApplication.processEvents()
+
+    assert grid._calculate_columns() == 7
+    assert grid._calculate_horizontal_spacing(7) == Theme.detail_thumbnail_gap
+
+
+def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    QApplication.processEvents()
+
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    assert view.detail_panel.isVisible()
+    assert view.detail_panel.geometry().getRect() == (
+        Theme.detail_panel_horizontal_margin,
+        Theme.detail_panel_top_margin,
+        876,
+        760,
+    )
+
+    view.resize(1000, 700)
+    QApplication.processEvents()
+
+    assert view.detail_panel.geometry().getRect() == (
+        Theme.detail_panel_horizontal_margin,
+        Theme.detail_panel_top_margin,
+        1000 - (Theme.detail_panel_horizontal_margin * 2),
+        700 - Theme.detail_panel_top_margin,
+    )
+
+    view.resize(620, 500)
+    QApplication.processEvents()
+
+    assert view.detail_panel.geometry().getRect() == (
+        Theme.detail_panel_horizontal_margin,
+        Theme.detail_panel_top_margin,
+        620 - (Theme.detail_panel_horizontal_margin * 2),
+        500 - Theme.detail_panel_top_margin,
+    )
+
+
 def test_blank_grid_area_emits_clear_selection_signal(qtbot) -> None:
     apply_theme()
     grid = BookGridWidget(ResourceLoader())
@@ -232,6 +313,8 @@ def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:
     assert "__CARD_SELECTED__" not in stylesheet
     assert "__BOOK_SELECTION_BORDER_WIDTH__" not in stylesheet
     assert "__PROGRESS_BACKGROUND__" not in stylesheet
+    assert "__DETAIL_PANEL_BACKGROUND__" not in stylesheet
+    assert "__DETAIL_PANEL_RADIUS__" not in stylesheet
     assert "__SHELF_SCROLLBAR_WIDTH__" not in stylesheet
     assert "__SHELF_SCROLLBAR_BOTTOM_MARGIN__" not in stylesheet
     assert "QScrollArea[class=\"ShelfScrollArea\"] QScrollBar:vertical" in stylesheet

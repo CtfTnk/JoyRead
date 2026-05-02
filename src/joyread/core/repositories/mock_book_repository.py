@@ -31,24 +31,24 @@ class MockBookRepository(BookRepository):
 
     def _build_books(self) -> list[Book]:
         rows = [
-            ("Akane-banashi Story 148", "Yuki Suenaga", "Comic", "CBZ", 0.18, True, False),
-            ("Spy x Family Vol. 1", "Tatsuya Endo", "PDF", "PDF", 0.42, False, False),
-            ("Frieren Beyond Journey", "Kanehito Yamada", "Comic", "CBZ", 0.73, True, False),
-            ("Dungeon Meshi Archive", "Ryoko Kui", "Comic", "ZIP", 0.11, False, False),
-            ("Mother of All Attacks", "Dachima Inaka", "Novel", "EPUB", 0.33, False, False),
-            ("The Apothecary Notes", "Natsu Hyuuga", "Novel", "EPUB", 0.62, True, False),
-            ("Blue Period Sketchbook", "Tsubasa Yamaguchi", "Comic", "CBZ", 0.05, False, True),
-            ("Witch Hat Atelier", "Kamome Shirahama", "Comic", "CBR", 0.95, True, False),
-            ("A Sign of Affection", "Suu Morishita", "Comic", "CBZ", 0.27, False, False),
-            ("Ascendance of a Bookworm", "Miya Kazuki", "Novel", "EPUB", 0.49, False, False),
-            ("Yotsuba Collection", "Kiyohiko Azuma", "Comic", "7Z", 0.84, True, False),
-            ("Local PDF Sample", None, "PDF", "PDF", 0.0, False, True),
-            ("Mushishi Volume Notes", "Yuki Urushibara", "Comic", "RAR", 0.58, False, False),
-            ("Light Novel Draft", "Mock Author", "Novel", "EPUB", 0.21, False, False),
+            ("Akane-banashi Story 148", "Yuki Suenaga", "Comic", "CBZ", 0.18, True, False, 21),
+            ("Spy x Family Vol. 1", "Tatsuya Endo", "PDF", "PDF", 0.42, False, False, 28),
+            ("Frieren Beyond Journey", "Kanehito Yamada", "Comic", "CBZ", 0.73, True, False, 35),
+            ("Dungeon Meshi Archive", "Ryoko Kui", "Comic", "ZIP", 0.11, False, False, 18),
+            ("Mother of All Attacks", "Dachima Inaka", "Novel", "EPUB", 0.33, False, False, 14),
+            ("The Apothecary Notes", "Natsu Hyuuga", "Novel", "EPUB", 0.62, True, False, 24),
+            ("Blue Period Sketchbook", "Tsubasa Yamaguchi", "Comic", "CBZ", 0.05, False, True, 16),
+            ("Witch Hat Atelier", "Kamome Shirahama", "Comic", "CBR", 0.95, True, False, 42),
+            ("A Sign of Affection", "Suu Morishita", "Comic", "CBZ", 0.27, False, False, 20),
+            ("Ascendance of a Bookworm", "Miya Kazuki", "Novel", "EPUB", 0.49, False, False, 14),
+            ("Yotsuba Collection", "Kiyohiko Azuma", "Comic", "7Z", 0.84, True, False, 32),
+            ("Local PDF Sample", None, "PDF", "PDF", 0.0, False, True, 12),
+            ("Mushishi Volume Notes", "Yuki Urushibara", "Comic", "RAR", 0.58, False, False, 26),
+            ("Light Novel Draft", "Mock Author", "Novel", "EPUB", 0.21, False, False, 14),
         ]
 
         books: list[Book] = []
-        for index, (title, author, book_type, file_format, progress, favourite, missing) in enumerate(rows):
+        for index, (title, author, book_type, file_format, progress, favourite, missing, page_count) in enumerate(rows):
             collection_ids = ("collection-a",) if index in {0, 2, 5, 8, 10} else ()
             books.append(
                 Book(
@@ -67,6 +67,7 @@ class MockBookRepository(BookRepository):
                     is_favourite=favourite,
                     is_missing=missing,
                     collection_ids=collection_ids,
+                    page_count=page_count,
                 )
             )
         return books
