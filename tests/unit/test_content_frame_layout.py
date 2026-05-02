@@ -68,19 +68,37 @@ def test_grid_spacing_justifies_cards_across_available_row_width(qtbot) -> None:
         assert grid._calculate_horizontal_spacing(columns) == max(Theme.grid_gap, expected_gap)
 
 
-def test_grid_resize_buffer_skips_small_spacing_only_changes(qtbot) -> None:
+def test_grid_columns_change_only_after_card_width_plus_minimum_gap(qtbot) -> None:
     apply_theme()
     grid = BookGridWidget(ResourceLoader())
     qtbot.addWidget(grid)
-    grid.resize(Theme.content_frame_width, 500)
+
+    two_column_width = (2 * Theme.book_card_width) + Theme.grid_min_gap
+    next_pixel_before = (3 * Theme.book_card_width) + (2 * Theme.grid_min_gap) - 1
+    three_column_width = next_pixel_before + 1
+
+    assert Theme.grid_min_gap == 20
+    assert grid._calculate_columns_for_width(two_column_width) == 2
+    assert grid._calculate_columns_for_width(next_pixel_before) == 2
+    assert grid._calculate_columns_for_width(three_column_width) == 3
+
+
+def test_grid_resize_keeps_card_widgets_stable(qtbot) -> None:
+    apply_theme()
+    grid = BookGridWidget(ResourceLoader())
+    books = MockBookRepository().list_books()
+    qtbot.addWidget(grid)
+    grid.set_books(books, set())
     grid.show()
     QApplication.processEvents()
-    grid._relayout(force=True)
 
-    grid.viewport().resize(grid.viewport().width() + Theme.grid_resize_relayout_buffer - 1, grid.viewport().height())
+    card_ids = {book_uuid: id(card) for book_uuid, card in grid._cards.items()}
+    for width in (900, 760, 680, 720, 860, 640, 934):
+        grid.resize(width, 500)
+        QApplication.processEvents()
 
-    if grid._calculate_columns_for_width(grid._available_row_width()) == grid._columns:
-        assert grid._should_relayout_after_resize() is False
+    assert {book_uuid: id(card) for book_uuid, card in grid._cards.items()} == card_ids
+    assert len(grid._cards) == len(books)
 
 
 def test_missing_book_card_uses_figma_opacity_without_color_tint(qtbot) -> None:

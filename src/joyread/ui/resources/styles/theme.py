@@ -86,8 +86,8 @@ class Theme:
     detail_thumbnail_gap = 20
     detail_thumbnail_row_gap = 10
     detail_thumbnail_min_width = 625
-    grid_gap = 25
-    grid_resize_relayout_buffer = 12
+    grid_min_gap = 20
+    grid_gap = grid_min_gap
     grid_top_padding = 4
     grid_bottom_padding = 24
     toolbar_control_height = 36
