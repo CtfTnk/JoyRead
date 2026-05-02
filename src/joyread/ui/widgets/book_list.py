@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QContextMenuEvent, QIcon, QMouseEvent
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtGui import QColor, QContextMenuEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
-    QProgressBar,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -19,7 +20,8 @@ from PySide6.QtWidgets import (
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.widgets.book_card import _placeholder_cover
+from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
+from joyread.ui.widgets.progress_bar import BookProgressBar
 
 
 class BookListWidget(QScrollArea):
@@ -27,6 +29,7 @@ class BookListWidget(QScrollArea):
     book_opened = QtSignal(str)
     detail_requested = QtSignal(str)
     menu_requested = QtSignal(str, QPoint)
+    blank_clicked = QtSignal()
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -36,9 +39,11 @@ class BookListWidget(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.viewport().setObjectName("ShelfScrollViewport")
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.viewport().installEventFilter(self)
 
         self._content = QWidget()
         self._content.setObjectName("BookListContent")
+        self._content.installEventFilter(self)
         self._layout = QVBoxLayout(self._content)
         self._layout.setContentsMargins(
             Theme.content_horizontal_padding,
@@ -68,6 +73,13 @@ class BookListWidget(QScrollArea):
             self._layout.addWidget(row)
         self._layout.addStretch(1)
 
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:
+            mouse_event = event
+            if isinstance(mouse_event, QMouseEvent) and mouse_event.button() == Qt.MouseButton.LeftButton:
+                self.blank_clicked.emit()
+        return super().eventFilter(watched, event)
+
 
 class BookListRowWidget(QFrame):
     book_selected = QtSignal(str, bool)
@@ -81,48 +93,91 @@ class BookListRowWidget(QFrame):
         self._resources = resources
         self.setProperty("class", "BookListRow")
         self.setProperty("selected", "false")
-        self.setFixedHeight(120)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(Theme.book_list_row_height)
+        self.setMinimumWidth(Theme.book_list_row_width)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         if book.is_missing:
             opacity = QGraphicsOpacityEffect(self)
             opacity.setOpacity(Theme.missing_book_opacity)
             self.setGraphicsEffect(opacity)
+        else:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(4)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 64))
+            self.setGraphicsEffect(shadow)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        layout.setContentsMargins(
+            Theme.book_card_layout_margin,
+            Theme.book_card_layout_margin,
+            Theme.book_card_layout_margin,
+            Theme.book_card_layout_margin,
+        )
+        layout.setSpacing(Theme.spacing_md)
 
-        cover = QLabel()
-        cover.setObjectName("BookCover")
-        cover.setFixedSize(70, 100)
-        cover.setPixmap(_placeholder_cover().scaled(cover.size(), Qt.AspectRatioMode.IgnoreAspectRatio))
+        cover = BookCoverWidget(
+            _placeholder_cover(),
+            QSize(Theme.book_list_cover_width, Theme.book_list_cover_height),
+        )
         layout.addWidget(cover)
 
-        info_layout = QVBoxLayout()
-        info_layout.setSpacing(6)
+        content = QWidget()
+        content.setObjectName("BookListRowContent")
+        content.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        info_layout = QVBoxLayout(content)
+        info_layout.setContentsMargins(
+            Theme.book_list_content_padding_horizontal,
+            0,
+            Theme.book_list_content_padding_horizontal,
+            0,
+        )
+        info_layout.setSpacing(0)
 
         title = QLabel(book.title)
         title.setProperty("class", "BookTitle")
+        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         title.setToolTip(book.title)
         info_layout.addWidget(title)
 
-        author = QLabel(book.author or "Unknown author")
-        author.setProperty("class", "BookMeta")
-        info_layout.addWidget(author)
-
-        meta = QLabel(f"{book.book_type} / {book.file_format}")
-        meta.setProperty("class", "BookMeta")
-        info_layout.addWidget(meta)
-
-        progress = QProgressBar()
-        progress.setProperty("class", "BookProgress")
-        progress.setRange(0, 100)
-        progress.setValue(book.progress_percent)
-        progress.setFormat(f"{book.progress_percent}%")
-        progress.setFixedHeight(10)
-        info_layout.addWidget(progress)
         info_layout.addStretch(1)
-        layout.addLayout(info_layout, stretch=1)
+
+        control_bar_frame = QWidget()
+        control_bar_frame.setObjectName("BookListControlBar")
+        control_bar_frame.setFixedHeight(Theme.book_control_bar_height)
+        control_bar = QHBoxLayout(control_bar_frame)
+        control_bar.setContentsMargins(
+            Theme.book_control_bar_padding,
+            Theme.book_control_bar_padding,
+            Theme.book_control_bar_padding,
+            Theme.book_control_bar_padding,
+        )
+        control_bar.setSpacing(0)
+
+        progress_unit = QWidget()
+        progress_unit.setObjectName("BookProgressUnit")
+        progress_unit_layout = QHBoxLayout(progress_unit)
+        progress_unit_layout.setContentsMargins(0, 0, 0, 0)
+        progress_unit_layout.setSpacing(Theme.book_progress_percent_gap)
+        progress_unit_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        self._progress = BookProgressBar(book.progress_percent)
+        progress_unit_layout.addWidget(self._progress)
+
+        self._progress_percent_label = QLabel(f"{book.progress_percent}%")
+        self._progress_percent_label.setProperty("class", "BookProgressPercent")
+        progress_unit_layout.addWidget(self._progress_percent_label)
+
+        control_bar.addWidget(progress_unit)
+        control_bar.addStretch(1)
+
+        option_frame = QWidget()
+        option_frame.setObjectName("BookOptionFrame")
+        option_layout = QHBoxLayout(option_frame)
+        option_layout.setContentsMargins(0, 0, 0, 0)
+        option_layout.setSpacing(Theme.book_option_frame_gap)
 
         detail_button = QToolButton()
         detail_button.setProperty("class", "CardButton")
@@ -131,7 +186,7 @@ class BookListRowWidget(QFrame):
         detail_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
         detail_button.setToolTip("Detail")
         detail_button.clicked.connect(lambda: self.detail_requested.emit(self.book.uuid))
-        layout.addWidget(detail_button)
+        option_layout.addWidget(detail_button)
 
         option_button = QToolButton()
         option_button.setProperty("class", "CardButton")
@@ -145,7 +200,11 @@ class BookListRowWidget(QFrame):
                 button.mapToGlobal(QPoint(0, button.height())),
             )
         )
-        layout.addWidget(option_button)
+        option_layout.addWidget(option_button)
+
+        control_bar.addWidget(option_frame)
+        info_layout.addWidget(control_bar_frame)
+        layout.addWidget(content, stretch=1)
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", "true" if selected else "false")
@@ -157,6 +216,8 @@ class BookListRowWidget(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             additive = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
             self.book_selected.emit(self.book.uuid, additive)
+            event.accept()
+            return
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, Qt, Signal as QtSignal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QGridLayout, QScrollArea, QSizePolicy, QSpacerItem, QWidget
 
 from joyread.core.models.book import Book
@@ -16,6 +17,7 @@ class BookGridWidget(QScrollArea):
     book_opened = QtSignal(str)
     detail_requested = QtSignal(str)
     menu_requested = QtSignal(str, QPoint)
+    blank_clicked = QtSignal()
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -25,6 +27,7 @@ class BookGridWidget(QScrollArea):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.viewport().setObjectName("ShelfScrollViewport")
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.viewport().installEventFilter(self)
         self._books: list[Book] = []
         self._selected_ids: set[str] = set()
         self._cards: dict[str, BookCardWidget] = {}
@@ -35,6 +38,7 @@ class BookGridWidget(QScrollArea):
 
         self._content = QWidget()
         self._content.setObjectName("BookGridContent")
+        self._content.installEventFilter(self)
         self._layout = QGridLayout(self._content)
         self._layout.setContentsMargins(
             Theme.content_horizontal_padding,
@@ -46,6 +50,13 @@ class BookGridWidget(QScrollArea):
         self._layout.setVerticalSpacing(20)
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setWidget(self._content)
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:
+            mouse_event = event
+            if isinstance(mouse_event, QMouseEvent) and mouse_event.button() == Qt.MouseButton.LeftButton:
+                self.blank_clicked.emit()
+        return super().eventFilter(watched, event)
 
     def set_books(self, books: list[Book], selected_ids: set[str]) -> None:
         self._books = list(books)

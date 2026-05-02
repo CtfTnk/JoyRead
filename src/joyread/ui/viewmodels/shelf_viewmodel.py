@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import replace
 from enum import StrEnum
 
@@ -162,11 +163,19 @@ class ShelfViewModel:
             self.book_open_requested.emit(book_uuid)
 
     def toggle_favourite(self, book_uuid: str) -> None:
+        book = next((book for book in self.books if book.uuid == book_uuid), None)
+        if book is not None:
+            self.set_favourite((book_uuid,), not book.is_favourite)
+
+    def set_favourite(self, book_uuids: Iterable[str], is_favourite: bool) -> None:
+        target_ids = set(book_uuids)
+        if not target_ids:
+            return
         changed = False
         next_books: list[Book] = []
         for book in self.books:
-            if book.uuid == book_uuid:
-                next_books.append(book.with_favourite(not book.is_favourite))
+            if book.uuid in target_ids and book.is_favourite != is_favourite:
+                next_books.append(book.with_favourite(is_favourite))
                 changed = True
             else:
                 next_books.append(book)

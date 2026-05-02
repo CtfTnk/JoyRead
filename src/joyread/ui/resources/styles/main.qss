@@ -291,13 +291,13 @@ QWidget#BookListContent {
 
 QFrame[class="BookCard"] {
     background: __WINDOW_COLOR__;
-    border-radius: 10px;
-    border: 1px solid transparent;
+    border-radius: __BOOK_CARD_RADIUS__;
+    border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED_TRANSPARENT__;
 }
 
 QFrame[class="BookCard"][selected="true"] {
-    border: 2px solid #929292;
     background: __WINDOW_COLOR__;
+    border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED__;
 }
 
 QFrame[class="BookCard"][missing="true"] {
@@ -305,49 +305,54 @@ QFrame[class="BookCard"][missing="true"] {
 }
 
 QFrame#BookCover {
-    border-radius: 6px;
+    border-radius: __BOOK_COVER_RADIUS__;
     background: #f1f1f1;
+}
+
+QFrame#BookProgress {
+    background: __PROGRESS_BACKGROUND__;
+    border: none;
+    border-radius: __PROGRESS_RADIUS__;
+}
+
+QFrame#BookProgressIndicator {
+    background: __PROGRESS_FILL__;
+    border: none;
+    border-radius: __PROGRESS_RADIUS__;
 }
 
 QLabel[class="BookTitle"] {
     font-size: 12px;
+    font-weight: 400;
 }
 
 QLabel[class="BookMeta"] {
-    color: #6d6d6d;
+    color: __TEXT_MUTED_COLOR__;
     font-size: 12px;
 }
 
-QProgressBar[class="BookProgress"] {
-    border: none;
-    border-radius: 5px;
-    background: #c9c9c9;
-    max-height: 10px;
-    min-height: 10px;
-    text-align: center;
-}
-
-QProgressBar[class="BookProgress"]::chunk {
-    border-radius: 5px;
-    background: #8a8a8a;
+QLabel[class="BookProgressPercent"] {
+    color: __TEXT_COLOR__;
+    font-size: 12px;
+    font-weight: 400;
 }
 
 QToolButton[class="CardButton"] {
-    background: #ffffff;
-    border: 1px solid #e0e0e0;
-    border-radius: 6px;
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __CARD_BUTTON_RADIUS__;
     padding: 0;
 }
 
 QToolButton[class="CardButton"]:hover,
 QToolButton[class="CardButton"]:checked {
-    background: #e5e5e5;
-    border: 1px solid #e0e0e0;
+    background: __SELECTED_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
 }
 
 QToolButton[class="CardButton"]:disabled {
-    background: #929292;
-    border: 1px solid #e0e0e0;
+    background: __BUTTON_EDGE__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
 }
 
 /* Figma menu popups */
@@ -386,13 +391,14 @@ QLabel[class="FigmaMenuItemText"][destructive="true"] {
 }
 
 QFrame[class="BookListRow"] {
-    background: #ffffff;
-    border-radius: 10px;
-    border: 1px solid transparent;
+    background: __WINDOW_COLOR__;
+    border-radius: __BOOK_CARD_RADIUS__;
+    border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED_TRANSPARENT__;
 }
 
 QFrame[class="BookListRow"][selected="true"] {
-    border: 2px solid #929292;
+    background: __WINDOW_COLOR__;
+    border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED__;
 }
 
 /* Empty/loading/error placeholders */

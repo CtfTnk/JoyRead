@@ -23,9 +23,25 @@ class Theme:
     book_card_width = 190
     book_card_height = 340
     book_card_radius = 10
+    book_selection_border_width = 2
+    book_card_padding = 10
+    book_card_layout_margin = book_card_padding - book_selection_border_width
+    book_card_gap = 8
     cover_width = 170
     cover_height = 241
     cover_radius = 6
+    book_list_row_width = 598
+    book_list_row_height = 120
+    book_list_cover_width = 71
+    book_list_cover_height = 100
+    book_list_content_padding_horizontal = 2
+    book_control_bar_height = 32
+    book_control_bar_padding = 2
+    book_option_frame_gap = 4
+    book_progress_width = 65
+    book_progress_height = 10
+    book_progress_radius = 5
+    book_progress_percent_gap = 10
     grid_gap = 25
     grid_resize_relayout_buffer = 12
     grid_top_padding = 4
@@ -74,6 +90,7 @@ class Theme:
     # Reusable fixed control sizes
     toolbar_button_size = 36
     card_button_size = 28
+    card_button_radius = 6
 
     # Sidebar frame from Figma node 165:2982
     # The root uses px=4/py=10, then each section/item stretches to the
@@ -137,6 +154,8 @@ class Theme:
     color_switch_background = "#bfbfbf"
     color_progress_background = "#c9c9c9"
     color_progress_fill = "#8a8a8a"
+    color_card_selected = "#727272"
+    color_card_selected_transparent_rgba = (114, 114, 114, 0)
     color_scrollbar_handle_rgba = (138, 138, 138, 160)
     color_scrollbar_handle_hover_rgba = (138, 138, 138, 220)
     color_sidebar_section = "#6d6d6d"
@@ -183,6 +202,16 @@ class Theme:
             "__MENU_DESTRUCTIVE__": cls.color_menu_destructive,
             "__MENU_FONT_SIZE__": f"{cls.menu_font_size}px",
             "__TEXT_COLOR__": cls.color_text,
+            "__TEXT_MUTED_COLOR__": cls.color_text_muted,
+            "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",
+            "__BOOK_COVER_RADIUS__": f"{cls.cover_radius}px",
+            "__CARD_BUTTON_RADIUS__": f"{cls.card_button_radius}px",
+            "__CARD_SELECTED__": cls.color_card_selected,
+            "__CARD_SELECTED_TRANSPARENT__": cls._rgba_qss(cls.color_card_selected_transparent_rgba),
+            "__BOOK_SELECTION_BORDER_WIDTH__": f"{cls.book_selection_border_width}px",
+            "__PROGRESS_BACKGROUND__": cls.color_progress_background,
+            "__PROGRESS_FILL__": cls.color_progress_fill,
+            "__PROGRESS_RADIUS__": f"{cls.book_progress_radius}px",
             "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",

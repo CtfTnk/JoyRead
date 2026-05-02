@@ -77,3 +77,15 @@ def test_view_mode_selection_and_favourite_toggle() -> None:
     vm.toggle_favourite(second.uuid)
     updated = next(book for book in vm.books if book.uuid == second.uuid)
     assert updated.is_favourite is (not original.is_favourite)
+
+
+def test_set_favourite_applies_same_state_to_multiple_books() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    first, second = vm.visible_books[:2]
+
+    vm.set_favourite((first.uuid, second.uuid), True)
+
+    updated = {book.uuid: book for book in vm.books}
+    assert updated[first.uuid].is_favourite is True
+    assert updated[second.uuid].is_favourite is True

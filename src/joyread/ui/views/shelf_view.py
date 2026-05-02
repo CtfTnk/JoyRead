@@ -57,6 +57,7 @@ class ShelfView(QWidget):
             book_view.book_opened.connect(self._viewmodel.open_book)
             book_view.detail_requested.connect(self._show_detail_placeholder)
             book_view.menu_requested.connect(self._show_book_menu)
+            book_view.blank_clicked.connect(self._viewmodel.clear_selection)
 
         for widget in (
             self.grid,
@@ -102,17 +103,26 @@ class ShelfView(QWidget):
         book = self._book_by_uuid(book_uuid)
         if book is None:
             return
+        target_ids = self._menu_target_ids(book_uuid)
+        next_favourite_state = not book.is_favourite
         menu = build_book_context_menu(
             self,
             book,
             on_read=self._viewmodel.open_book,
-            on_favourite=self._viewmodel.toggle_favourite,
+            on_favourite=lambda _uuid: self._viewmodel.set_favourite(target_ids, next_favourite_state),
             on_detail=self._show_detail_placeholder,
-            on_add_to_collection=lambda uuid: self._show_placeholder("Add to Collection"),
-            on_remove=lambda uuid: self._show_placeholder("Remove from Library"),
+            on_add_to_collection=lambda _uuid: self._show_placeholder_for_targets("Add to Collection", target_ids),
+            on_remove=lambda _uuid: self._show_placeholder_for_targets("Remove from Library", target_ids),
             show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,
         )
         menu.exec(global_pos)
+
+    def _menu_target_ids(self, book_uuid: str) -> tuple[str, ...]:
+        selected_ids = set(self._viewmodel.selected_book_ids)
+        if book_uuid in selected_ids:
+            return tuple(book.uuid for book in self._viewmodel.visible_books if book.uuid in selected_ids)
+        self._viewmodel.select_book(book_uuid)
+        return (book_uuid,)
 
     def _book_by_uuid(self, book_uuid: str) -> Book | None:
         for book in self._viewmodel.books:
@@ -132,6 +142,10 @@ class ShelfView(QWidget):
 
     def _show_placeholder(self, action: str) -> None:
         QMessageBox.information(self, action, f"{action} is a placeholder in this phase.")
+
+    def _show_placeholder_for_targets(self, action: str, book_uuids: tuple[str, ...]) -> None:
+        suffix = f"\n\nSelected books: {len(book_uuids)}" if len(book_uuids) > 1 else ""
+        QMessageBox.information(self, action, f"{action} is a placeholder in this phase.{suffix}")
 
     def create_action_menu(self) -> FigmaMenu:
         return build_action_menu(
