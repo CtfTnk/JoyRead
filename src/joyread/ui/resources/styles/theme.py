@@ -15,7 +15,7 @@ class Theme:
     content_frame_width = 934
     content_frame_height = 808
     content_min_width = 719
-    content_horizontal_padding = 48
+    content_horizontal_padding = 36
     content_padding = content_horizontal_padding
     content_top_padding = 15
     content_radius = 10
