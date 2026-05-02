@@ -21,6 +21,9 @@ class ResourceLoader:
     def icon_path(self, name: str) -> Path:
         return self._package_root / "ui" / "resources" / "icons" / name
 
+    def app_icon_path(self) -> Path:
+        return self.icon_path("JoyRead.icns")
+
     def load_stylesheet(self, name: str = "main.qss") -> str:
         path = self.style_path(name)
         if not path.exists():

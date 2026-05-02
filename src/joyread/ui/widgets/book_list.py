@@ -142,6 +142,12 @@ class BookListRowWidget(QFrame):
         title.setToolTip(book.title)
         info_layout.addWidget(title)
 
+        author = QLabel(book.author or "Unknown author")
+        author.setProperty("class", "BookAuthor")
+        author.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        author.setToolTip(author.text())
+        info_layout.addWidget(author)
+
         info_layout.addStretch(1)
 
         control_bar_frame = QWidget()

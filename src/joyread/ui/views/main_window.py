@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSizeGrip, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
@@ -19,6 +20,7 @@ class MainWindow(QMainWindow):
         self._context = context
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
+        self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.resize(Theme.window_width, Theme.window_height)

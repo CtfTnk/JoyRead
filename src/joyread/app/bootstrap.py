@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from joyread.app.app_context import AppContext, create_app_context
@@ -19,6 +20,7 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
 
     app.setApplicationName(context.config.app_name)
     app.setOrganizationName(context.config.app_author)
+    app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
     app.setStyleSheet(context.resources.load_stylesheet())
 
     window = MainWindow(context)

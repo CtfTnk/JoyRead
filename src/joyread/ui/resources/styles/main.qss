@@ -331,6 +331,12 @@ QLabel[class="BookMeta"] {
     font-size: 12px;
 }
 
+QLabel[class="BookAuthor"] {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: 12px;
+    font-weight: 400;
+}
+
 QLabel[class="BookProgressPercent"] {
     color: __TEXT_COLOR__;
     font-size: 12px;

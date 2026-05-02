@@ -159,12 +159,15 @@ def test_book_list_row_matches_figma_structure_and_selected_variant(qtbot) -> No
     progress_percent_labels = [
         label for label in row.findChildren(QLabel) if label.property("class") == "BookProgressPercent"
     ]
+    author_labels = [label for label in row.findChildren(QLabel) if label.property("class") == "BookAuthor"]
 
     assert cover is not None
     assert cover.size().width() == Theme.book_list_cover_width
     assert cover.size().height() == Theme.book_list_cover_height
     assert row.height() == Theme.book_list_row_height
     assert row.minimumWidth() == Theme.book_list_row_width
+    assert author_labels
+    assert author_labels[0].text() == book.author
     assert progress_percent_labels
     assert progress_percent_labels[0].text() == f"{book.progress_percent}%"
     assert progress_percent_labels[0].isHidden() is False
