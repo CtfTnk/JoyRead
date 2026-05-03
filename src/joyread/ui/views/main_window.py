@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
     def _toggle_sidebar(self) -> None:
         visible = not self.sidebar.isVisible()
         self.sidebar.setVisible(visible)
+        self.shelf_view.set_sidebar_visible(visible)
         self.chrome.set_sidebar_visible(visible)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]

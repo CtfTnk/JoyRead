@@ -172,9 +172,17 @@ QWidget#ShelfContent {
     border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
+QWidget#ShelfContent[sidebarVisible="false"] {
+    border-bottom-left-radius: __WINDOW_RADIUS__;
+}
+
 QStackedWidget#ShelfStack {
     background: __CONTENT_COLOR__;
     border-bottom-right-radius: __WINDOW_RADIUS__;
+}
+
+QWidget#ShelfContent[sidebarVisible="false"] QStackedWidget#ShelfStack {
+    border-bottom-left-radius: __WINDOW_RADIUS__;
 }
 
 QLabel#PageTitle {
@@ -248,9 +256,17 @@ QScrollArea[class="ShelfScrollArea"] {
     border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
+QWidget#ShelfContent[sidebarVisible="false"] QScrollArea[class="ShelfScrollArea"] {
+    border-bottom-left-radius: __WINDOW_RADIUS__;
+}
+
 QWidget#ShelfScrollViewport {
     background: __CONTENT_COLOR__;
     border-bottom-right-radius: __WINDOW_RADIUS__;
+}
+
+QWidget#ShelfContent[sidebarVisible="false"] QWidget#ShelfScrollViewport {
+    border-bottom-left-radius: __WINDOW_RADIUS__;
 }
 
 QScrollArea[class="ShelfScrollArea"] QScrollBar:vertical {

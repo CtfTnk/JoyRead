@@ -53,6 +53,24 @@ def test_shelf_scroll_areas_keep_scrollbar_at_outer_edge(qtbot) -> None:
         assert margins.bottom() == Theme.grid_bottom_padding
 
 
+def test_shelf_content_switches_left_outer_radius_when_sidebar_hidden(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+
+    assert view.property("sidebarVisible") == "true"
+
+    view.set_sidebar_visible(False)
+
+    assert view.property("sidebarVisible") == "false"
+
+    view.set_sidebar_visible(True)
+
+    assert view.property("sidebarVisible") == "true"
+
+
 def test_grid_spacing_justifies_cards_across_available_row_width(qtbot) -> None:
     apply_theme()
     grid = BookGridWidget(ResourceLoader())
@@ -386,6 +404,8 @@ def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:
     assert "__DETAIL_PANEL_RADIUS__" not in stylesheet
     assert "__SHELF_SCROLLBAR_WIDTH__" not in stylesheet
     assert "__SHELF_SCROLLBAR_BOTTOM_MARGIN__" not in stylesheet
+    assert 'QWidget#ShelfContent[sidebarVisible="false"]' in stylesheet
+    assert f"border-bottom-left-radius: {Theme.window_corner_radius}px;" in stylesheet
     assert "QScrollArea[class=\"ShelfScrollArea\"] QScrollBar:vertical" in stylesheet
     assert f"margin: 0 0 {Theme.shelf_scrollbar_bottom_margin}px 0;" in stylesheet
     assert f"border-bottom-right-radius: {Theme.window_corner_radius}px;" in stylesheet

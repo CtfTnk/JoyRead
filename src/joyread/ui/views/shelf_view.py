@@ -27,6 +27,7 @@ class ShelfView(QWidget):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ShelfContent")
+        self.setProperty("sidebarVisible", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
 
@@ -167,6 +168,16 @@ class ShelfView(QWidget):
             on_open_and_import=lambda: self._show_placeholder("Open & Import"),
             on_import=lambda: self._show_placeholder("Import"),
         )
+
+    def set_sidebar_visible(self, visible: bool) -> None:
+        self.setProperty("sidebarVisible", "true" if visible else "false")
+        # QSS border-radius paints each widget independently. When the sidebar
+        # is hidden, ShelfContent and its scroll child become the left-edge
+        # painters, so they need their own bottom-left radius.
+        for widget in (self, self.stack, self.grid, self.grid.viewport(), self.list_view, self.list_view.viewport()):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+            widget.update()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
