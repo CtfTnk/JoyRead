@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QToolButton, QWidget
 
 from joyread.core.models.book import Book
@@ -289,6 +289,57 @@ def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
         620 - (Theme.detail_panel_horizontal_margin * 2),
         500 - Theme.detail_panel_top_margin,
     )
+
+
+def test_shelf_detail_panel_closes_with_escape(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    view.setFocus()
+    QApplication.processEvents()
+
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    assert view.detail_panel.isVisible()
+
+    qtbot.keyClick(view, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+
+    assert viewmodel.detail_book_uuid is None
+    assert view.detail_panel.isHidden()
+
+
+def test_shelf_detail_panel_closes_on_blank_shelf_click(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    QApplication.processEvents()
+
+    first, second = viewmodel.visible_books[:2]
+    viewmodel.select_book(first.uuid)
+    viewmodel.select_book(second.uuid, additive=True)
+    viewmodel.show_detail(first.uuid)
+    QApplication.processEvents()
+
+    assert view.detail_panel.isVisible()
+    assert viewmodel.selected_book_ids == {first.uuid, second.uuid}
+
+    qtbot.mouseClick(view, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    QApplication.processEvents()
+
+    assert viewmodel.detail_book_uuid is None
+    assert view.detail_panel.isHidden()
+    assert viewmodel.selected_book_ids == set()
 
 
 def test_blank_grid_area_emits_clear_selection_signal(qtbot) -> None:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QResizeEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QMessageBox, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.core.models.book import Book
@@ -59,7 +59,7 @@ class ShelfView(QWidget):
             book_view.book_opened.connect(self._viewmodel.open_book)
             book_view.detail_requested.connect(self._viewmodel.show_detail)
             book_view.menu_requested.connect(self._show_book_menu)
-            book_view.blank_clicked.connect(self._viewmodel.clear_selection)
+            book_view.blank_clicked.connect(self._handle_blank_clicked)
 
         for widget in (
             self.grid,
@@ -78,6 +78,10 @@ class ShelfView(QWidget):
         self.detail_panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
         self.detail_panel.menu_requested.connect(self._show_book_menu)
         self.detail_panel.cover_edit_requested.connect(lambda _uuid: self._show_placeholder("Cover Editor"))
+
+        self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
+        self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._escape_shortcut.activated.connect(self._viewmodel.hide_detail)
 
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.book_open_requested.connect(self._show_read_placeholder)
@@ -167,6 +171,33 @@ class ShelfView(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._position_detail_panel()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if (
+            event.button() == Qt.MouseButton.LeftButton
+            and self.detail_panel.isVisible()
+            and not self.detail_panel.geometry().contains(event.position().toPoint())
+        ):
+            self._handle_blank_clicked()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Escape and self._viewmodel.detail_book_uuid is not None:
+            self._viewmodel.hide_detail()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _handle_blank_clicked(self) -> None:
+        if self._viewmodel.detail_book_uuid is not None:
+            # Preserve the existing blank-click deselection behavior while
+            # using the same gesture as the natural way to dismiss detail.
+            self._viewmodel.clear_selection(emit_state=False)
+            self._viewmodel.hide_detail()
+            return
+        self._viewmodel.clear_selection()
 
     def _render_detail_panel(self) -> None:
         book_uuid = self._viewmodel.detail_book_uuid
