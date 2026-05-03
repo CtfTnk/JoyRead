@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QLayout, QLayoutItem, QScrollArea, QWidget
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCardWidget
 
 
@@ -44,6 +45,7 @@ class BookGridWidget(QScrollArea):
             Theme.grid_bottom_padding,
         )
         self.setWidget(self._content)
+        self._scroll_handle = AutoHideScrollHandle(self)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:

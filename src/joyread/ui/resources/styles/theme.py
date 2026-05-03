@@ -73,6 +73,9 @@ class Theme:
     detail_control_gap = 10
     detail_read_button_width = 100
     detail_button_size = 36
+    detail_button_border_width = 1
+    detail_button_visual_padding = 4
+    detail_button_layout_margin = detail_button_visual_padding - detail_button_border_width
     detail_button_radius = 10
     detail_title_font_size = 20
     detail_meta_font_size = 14
@@ -168,6 +171,7 @@ class Theme:
     shelf_scrollbar_radius = 5
     shelf_scrollbar_min_height = 40
     shelf_scrollbar_bottom_margin = 18
+    scrollbar_handle_hide_delay_ms = 900
     # Qt scrollbars consume viewport width. Reducing the content right margin
     # keeps the visual gap from content to app edge at Figma's 48px.
     content_scrollbar_adjusted_right_padding = content_horizontal_padding - shelf_scrollbar_width
@@ -200,6 +204,7 @@ class Theme:
     color_progress_fill = "#8a8a8a"
     color_card_selected = "#727272"
     color_card_selected_transparent_rgba = (114, 114, 114, 0)
+    color_scrollbar_handle_hidden_rgba = (138, 138, 138, 0)
     color_scrollbar_handle_rgba = (138, 138, 138, 160)
     color_scrollbar_handle_hover_rgba = (138, 138, 138, 220)
     color_sidebar_section = "#6d6d6d"
@@ -260,6 +265,8 @@ class Theme:
             "__DETAIL_PANEL_BORDER_WIDTH__": f"{cls.detail_panel_border_width}px",
             "__DETAIL_PANEL_RADIUS__": f"{cls.detail_panel_radius}px",
             "__DETAIL_ATTRIBUTE_RADIUS__": f"{cls.detail_attribute_radius}px",
+            "__DETAIL_BUTTON_BORDER_WIDTH__": f"{cls.detail_button_border_width}px",
+            "__DETAIL_BUTTON_LAYOUT_MARGIN__": f"{cls.detail_button_layout_margin}px",
             "__DETAIL_BUTTON_RADIUS__": f"{cls.detail_button_radius}px",
             "__DETAIL_TITLE_FONT_SIZE__": f"{cls.detail_title_font_size}px",
             "__DETAIL_META_FONT_SIZE__": f"{cls.detail_meta_font_size}px",
@@ -268,6 +275,7 @@ class Theme:
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",
             "__SHELF_SCROLLBAR_BOTTOM_MARGIN__": f"{cls.shelf_scrollbar_bottom_margin}px",
+            "__SHELF_SCROLLBAR_HANDLE_HIDDEN__": cls._rgba_qss(cls.color_scrollbar_handle_hidden_rgba),
             "__SHELF_SCROLLBAR_HANDLE__": cls._rgba_qss(cls.color_scrollbar_handle_rgba),
             "__SHELF_SCROLLBAR_HANDLE_HOVER__": cls._rgba_qss(cls.color_scrollbar_handle_hover_rgba),
         }

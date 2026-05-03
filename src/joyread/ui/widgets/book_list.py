@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
@@ -54,6 +55,7 @@ class BookListWidget(QScrollArea):
         self._layout.setSpacing(10)
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.setWidget(self._content)
+        self._scroll_handle = AutoHideScrollHandle(self)
 
     def set_books(self, books: list[Book], selected_ids: set[str]) -> None:
         while self._layout.count():

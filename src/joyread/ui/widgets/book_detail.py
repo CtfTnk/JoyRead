@@ -5,10 +5,11 @@ from __future__ import annotations
 from math import ceil
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QResizeEvent
+from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -23,8 +24,81 @@ from PySide6.QtWidgets import (
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.progress_bar import BookProgressBar
+
+
+class DetailReadButton(QFrame):
+    """Figma's 100x36 read button with an explicit icon/text layout frame."""
+
+    clicked = QtSignal()
+
+    def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pressed_inside = False
+        self.setProperty("class", "DetailReadButton")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setToolTip("Read")
+        self.setFixedSize(Theme.detail_read_button_width, Theme.detail_button_size)
+
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(4)
+        shadow.setOffset(0, 0)
+        shadow.setColor(QColor(0, 0, 0, 64))
+        self.setGraphicsEffect(shadow)
+
+        layout = QHBoxLayout(self)
+        # Figma's read button has 4px visual padding plus a 1px stroke. Qt's
+        # border consumes layout space, so a 3px margin keeps the icon at x=4.
+        layout.setContentsMargins(
+            Theme.detail_button_layout_margin,
+            Theme.detail_button_layout_margin,
+            Theme.detail_button_layout_margin,
+            Theme.detail_button_layout_margin,
+        )
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+
+        icon = QLabel()
+        icon.setObjectName("DetailReadIcon")
+        icon.setFixedSize(Theme.icon_size, Theme.icon_size)
+        icon.setPixmap(
+            QIcon(str(resources.icon_path("icon_read.svg"))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
+        )
+        layout.addWidget(icon)
+
+        label = QLabel("Read")
+        label.setProperty("class", "DetailReadButtonText")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(label, stretch=1)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            if self.rect().contains(event.position().toPoint()):
+                self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class BookDetailPanel(QFrame):
@@ -59,6 +133,7 @@ class BookDetailPanel(QFrame):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.viewport().setObjectName("BookDetailViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._scroll_handle = AutoHideScrollHandle(self._scroll, parent=self)
         root_layout.addWidget(self._scroll)
 
         content = QWidget()
@@ -119,23 +194,26 @@ class BookDetailPanel(QFrame):
 
         self._cover = DetailCoverWidget(QSize(Theme.detail_cover_width, Theme.detail_cover_height))
         self._cover.double_clicked.connect(self._emit_cover_edit_requested)
-        cover_layout.addWidget(self._cover)
+        # Figma's cover panel is `items-center`; per-item alignment is needed
+        # because the progress unit is narrower than the cover.
+        cover_layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         progress_unit = QWidget()
         progress_unit.setObjectName("BookDetailProgressUnit")
         progress_unit.setFixedWidth(Theme.detail_progress_unit_width)
         progress_layout = QHBoxLayout(progress_unit)
         progress_layout.setContentsMargins(0, 0, 0, 0)
-        progress_layout.setSpacing(Theme.book_progress_percent_gap)
+        progress_layout.setSpacing(0)
         progress_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
         self._progress = BookProgressBar(0, width=Theme.detail_progress_width)
         progress_layout.addWidget(self._progress)
+        progress_layout.addStretch(1)
 
         self._progress_percent_label = QLabel("0%")
         self._progress_percent_label.setProperty("class", "BookDetailProgressPercent")
         progress_layout.addWidget(self._progress_percent_label)
-        cover_layout.addWidget(progress_unit)
+        cover_layout.addWidget(progress_unit, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         layout.addWidget(cover_panel)
 
@@ -213,14 +291,7 @@ class BookDetailPanel(QFrame):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(Theme.detail_control_gap)
 
-        read_button = QToolButton()
-        read_button.setProperty("class", "DetailActionButton")
-        read_button.setIcon(QIcon(str(self._resources.icon_path("icon_read.svg"))))
-        read_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        read_button.setText("Read")
-        read_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        read_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        read_button.setFixedSize(Theme.detail_read_button_width, Theme.detail_button_size)
+        read_button = DetailReadButton(self._resources)
         read_button.clicked.connect(self._emit_read_requested)
         left_layout.addWidget(read_button)
 

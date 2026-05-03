@@ -287,6 +287,10 @@ QScrollArea[class="ShelfScrollArea"] QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
+QScrollArea[class="ShelfScrollArea"] QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
 QScrollArea[class="ShelfScrollArea"] QScrollBar::add-line:vertical,
 QScrollArea[class="ShelfScrollArea"] QScrollBar::sub-line:vertical {
     background: transparent;
@@ -463,6 +467,10 @@ QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
+QScrollArea#BookDetailScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
 QScrollArea#BookDetailScrollArea QScrollBar::add-line:vertical,
 QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
@@ -508,21 +516,24 @@ QLabel[class="BookDetailProgressPercent"] {
     font-weight: 400;
 }
 
-QToolButton[class="DetailActionButton"],
+QFrame[class="DetailReadButton"],
 QToolButton[class="DetailIconButton"] {
     background: __WINDOW_COLOR__;
-    border: 1px solid __BUTTON_EDGE__;
+    border: __DETAIL_BUTTON_BORDER_WIDTH__ solid __BUTTON_EDGE__;
     border-radius: __DETAIL_BUTTON_RADIUS__;
-    padding: 4px;
 }
 
-QToolButton[class="DetailActionButton"] {
+QToolButton[class="DetailIconButton"] {
+    padding: __DETAIL_BUTTON_LAYOUT_MARGIN__;
+}
+
+QLabel[class="DetailReadButtonText"] {
     color: __TEXT_COLOR__;
     font-size: __DETAIL_READ_FONT_SIZE__;
     font-weight: 400;
 }
 
-QToolButton[class="DetailActionButton"]:hover,
+QFrame[class="DetailReadButton"]:hover,
 QToolButton[class="DetailIconButton"]:hover {
     background: __SELECTED_COLOR__;
 }

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QToolButton, QWidget
 
 from joyread.core.models.book import Book
@@ -8,8 +8,9 @@ from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCardWidget
-from joyread.ui.widgets.book_detail import BookDetailPanel, DetailThumbnailGrid, DetailThumbnailWidget
+from joyread.ui.widgets.book_detail import BookDetailPanel, DetailReadButton, DetailThumbnailGrid, DetailThumbnailWidget
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
 from joyread.ui.widgets.progress_bar import BookProgressBar
@@ -51,6 +52,28 @@ def test_shelf_scroll_areas_keep_scrollbar_at_outer_edge(qtbot) -> None:
         assert margins.right() == Theme.content_scrollbar_adjusted_right_padding
         assert margins.top() == Theme.grid_top_padding
         assert margins.bottom() == Theme.grid_bottom_padding
+
+
+def test_auto_hide_scroll_handle_reveals_then_hides_after_idle(qtbot) -> None:
+    apply_theme()
+    scroll_area = BookGridWidget(ResourceLoader())
+    qtbot.addWidget(scroll_area)
+    controller = AutoHideScrollHandle(scroll_area, hide_delay_ms=15)
+    scrollbar = scroll_area.verticalScrollBar()
+
+    assert scrollbar.property("scrollHandleVisible") == "false"
+    assert controller.is_handle_visible is False
+
+    scrollbar.setRange(0, 100)
+    scrollbar.setValue(50)
+
+    assert scrollbar.property("scrollHandleVisible") == "true"
+    assert controller.is_handle_visible is True
+
+    qtbot.wait(30)
+
+    assert scrollbar.property("scrollHandleVisible") == "false"
+    assert controller.is_handle_visible is False
 
 
 def test_shelf_content_switches_left_outer_radius_when_sidebar_hidden(qtbot) -> None:
@@ -243,15 +266,48 @@ def test_book_detail_panel_binds_figma_metadata_and_mock_thumbnails(qtbot) -> No
     author_labels = [label for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailAuthor"]
     pill_labels = [label.text() for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailPillText"]
     progress = panel.findChild(BookProgressBar)
+    progress_unit = panel.findChild(QWidget, "BookDetailProgressUnit")
+    cover_panel = panel.findChild(QWidget, "BookDetailCoverPanel")
+    cover = panel.findChild(QWidget, "BookCover")
+    read_button = panel.findChild(DetailReadButton)
     thumbnails = panel.findChildren(DetailThumbnailWidget)
 
     assert title_labels[0].text() == book.title
     assert author_labels[0].text() == f"Author: {book.author}"
     assert f"Language: {book.language_tag}" in pill_labels
     assert f"Book Type: {book.file_format}" in pill_labels
+    assert cover_panel is not None
+    cover_margins = cover_panel.layout().contentsMargins()
+    assert (cover_margins.left(), cover_margins.top(), cover_margins.right(), cover_margins.bottom()) == (
+        0,
+        0,
+        0,
+        Theme.detail_cover_panel_bottom_padding,
+    )
+    assert cover_panel.layout().spacing() == Theme.detail_cover_panel_gap
+    assert progress_unit is not None
+    assert progress_unit.width() == Theme.detail_progress_unit_width
+    assert progress_unit.layout().spacing() == 0
+    assert progress_unit.layout().itemAt(1).spacerItem() is not None
+    assert cover is not None
+    assert progress_unit.geometry().center().x() == cover.geometry().center().x()
     assert progress is not None
     assert progress.width() == Theme.detail_progress_width
+    assert read_button is not None
+    assert read_button.size() == QSize(Theme.detail_read_button_width, Theme.detail_button_size)
+    read_margins = read_button.layout().contentsMargins()
+    assert (read_margins.left(), read_margins.top(), read_margins.right(), read_margins.bottom()) == (
+        Theme.detail_button_layout_margin,
+        Theme.detail_button_layout_margin,
+        Theme.detail_button_layout_margin,
+        Theme.detail_button_layout_margin,
+    )
     assert len(thumbnails) == book.page_count
+
+    emitted: list[str] = []
+    panel.read_requested.connect(emitted.append)
+    qtbot.mouseClick(read_button, Qt.MouseButton.LeftButton)
+    assert emitted == [book.uuid]
 
 
 def test_detail_thumbnail_grid_uses_figma_ideal_seven_column_spacing(qtbot) -> None:
@@ -404,9 +460,11 @@ def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:
     assert "__DETAIL_PANEL_RADIUS__" not in stylesheet
     assert "__SHELF_SCROLLBAR_WIDTH__" not in stylesheet
     assert "__SHELF_SCROLLBAR_BOTTOM_MARGIN__" not in stylesheet
+    assert "__SHELF_SCROLLBAR_HANDLE_HIDDEN__" not in stylesheet
     assert 'QWidget#ShelfContent[sidebarVisible="false"]' in stylesheet
     assert f"border-bottom-left-radius: {Theme.window_corner_radius}px;" in stylesheet
     assert "QScrollArea[class=\"ShelfScrollArea\"] QScrollBar:vertical" in stylesheet
+    assert 'QScrollBar[scrollHandleVisible="false"]::handle:vertical' in stylesheet
     assert f"margin: 0 0 {Theme.shelf_scrollbar_bottom_margin}px 0;" in stylesheet
     assert f"border-bottom-right-radius: {Theme.window_corner_radius}px;" in stylesheet
     assert "background: #fafafa;" not in stylesheet
