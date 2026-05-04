@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QIcon, QMouseEvent
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -210,6 +210,15 @@ class SidebarItemWidget(QFrame):
             event.accept()
             if self.rect().contains(event.position().toPoint()):
                 self.clicked.emit()
+                self._finish_click_interaction()
             return
         self._pressed_inside = False
         super().mouseReleaseEvent(event)
+
+    def _finish_click_interaction(self) -> None:
+        # Match the chrome action button behavior: opening an overlay can steal
+        # the leave event that normally clears a sidebar item's hover paint.
+        app = QApplication.instance()
+        if app is not None:
+            app.sendEvent(self, QEvent(QEvent.Type.Leave))
+        self.update()

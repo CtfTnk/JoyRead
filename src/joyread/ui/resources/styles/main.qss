@@ -185,6 +185,11 @@ QWidget#ShelfContent[sidebarVisible="false"] QStackedWidget#ShelfStack {
     border-bottom-left-radius: __WINDOW_RADIUS__;
 }
 
+QWidget#SettingsOverlay {
+    background: transparent;
+    border: none;
+}
+
 QLabel#PageTitle {
     font-size: 28px;
     font-weight: 700;
@@ -306,6 +311,136 @@ QScrollArea[class="ShelfScrollArea"] QScrollBar::sub-page:vertical {
 /* Book grid and list content */
 QWidget#BookGridContent,
 QWidget#BookListContent {
+    background: transparent;
+}
+
+/* Settings page */
+QFrame[class="SettingsPanel"] {
+    background: __WINDOW_COLOR__;
+    border: __SETTINGS_PANEL_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border-radius: __SETTINGS_PANEL_RADIUS__;
+}
+
+QFrame#SettingsSidebar {
+    background: __WINDOW_COLOR__;
+    border: __SETTINGS_SIDEBAR_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __SETTINGS_SIDEBAR_RADIUS__;
+}
+
+QWidget#SettingsSidebarUpperPart,
+QWidget#SettingsSidebarLowerPart,
+QScrollArea#SettingsRightScrollArea,
+QWidget#SettingsRightViewport,
+QWidget#SettingsRightContent,
+QWidget#SettingsItemName,
+QWidget#SettingsItemOption,
+QWidget#SettingsSwitchOption,
+QWidget#SettingsAddressOption,
+QWidget#SettingsDropdownIndicator {
+    background: transparent;
+    border: none;
+}
+
+QFrame[class="SettingsSidebarItem"] {
+    background: transparent;
+    border: none;
+    border-radius: __SETTINGS_SIDEBAR_ITEM_RADIUS__;
+}
+
+QFrame[class="SettingsSidebarItem"][selected="true"] {
+    background: __SELECTED_COLOR__;
+}
+
+QFrame[class="SettingsSidebarItem"][selected="false"]:hover {
+    background: __SIDEBAR_ITEM_HOVER__;
+}
+
+QLabel[class="SettingsSidebarItemText"],
+QLabel[class="SettingsItemNameText"] {
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_ITEM_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QFrame[class="SettingsItem"] {
+    background: __WINDOW_COLOR__;
+    border: none;
+    border-radius: __SETTINGS_ITEM_RADIUS__;
+}
+
+QFrame[class="SettingsDropdownButton"],
+QToolButton[class="SettingsPushButton"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __SETTINGS_ITEM_RADIUS__;
+}
+
+QFrame[class="SettingsDropdownButton"]:hover,
+QToolButton[class="SettingsPushButton"]:hover {
+    background: __SELECTED_COLOR__;
+}
+
+QLabel[class="SettingsControlText"],
+QToolButton[class="SettingsPushButton"],
+QLineEdit[class="SettingsPathField"] {
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_CONTROL_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QToolButton[class="SettingsPushButton"] {
+    padding: 0;
+}
+
+QLineEdit[class="SettingsPathField"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __SETTINGS_PATH_EDGE__;
+    border-radius: __SETTINGS_ITEM_RADIUS__;
+    padding: 0 2px;
+}
+
+QFrame[class="SettingsSwitch"] {
+    background: __SETTINGS_SWITCH_BACKGROUND__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __SETTINGS_SWITCH_RADIUS__;
+}
+
+QFrame[class="SettingsSwitchKnob"] {
+    background: __SETTINGS_SWITCH_KNOB__;
+    border: none;
+    border-radius: __SETTINGS_SWITCH_KNOB_RADIUS__;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar::add-line:vertical,
+QScrollArea#SettingsRightScrollArea QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea#SettingsRightScrollArea QScrollBar::add-page:vertical,
+QScrollArea#SettingsRightScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 

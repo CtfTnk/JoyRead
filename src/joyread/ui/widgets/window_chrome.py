@@ -66,7 +66,8 @@ class WindowChromeWidget(QWidget):
         self._list_mode_switch.value_changed.connect(self.view_mode_changed.emit)
         layout.addWidget(self._list_mode_switch)
 
-        layout.addWidget(_spacer())
+        self._toolbar_spacer = _spacer()
+        layout.addWidget(self._toolbar_spacer)
 
         self._sort_dropdown = FigmaDropdownButton(
             resources,
@@ -81,6 +82,13 @@ class WindowChromeWidget(QWidget):
         self._sort_mode_switch = SortModeSwitchWidget(resources)
         self._sort_mode_switch.value_changed.connect(self._handle_sort_mode_changed)
         layout.addWidget(self._sort_mode_switch)
+        self._shelf_controls = (
+            self._action_button,
+            self._list_mode_switch,
+            self._toolbar_spacer,
+            self._sort_dropdown,
+            self._sort_mode_switch,
+        )
 
     def set_action_menu(self, menu: FigmaMenu) -> None:
         self._action_button.setMenu(menu)
@@ -90,6 +98,10 @@ class WindowChromeWidget(QWidget):
 
     def set_view_mode(self, mode: str) -> None:
         self._list_mode_switch.set_value(mode)
+
+    def set_shelf_controls_visible(self, visible: bool) -> None:
+        for control in self._shelf_controls:
+            control.setVisible(visible)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

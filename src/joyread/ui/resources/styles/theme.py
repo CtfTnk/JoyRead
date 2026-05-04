@@ -190,6 +190,60 @@ class Theme:
     menu_item_height = menu_item_text_height + (menu_item_padding * 2)
     menu_font_size = 12
 
+    # Settings page from Figma node 231:1738.
+    settings_panel_width = 860
+    settings_panel_height = 616
+    settings_panel_min_width = 645
+    settings_panel_min_height = 462
+    settings_panel_max_width = 1075
+    settings_panel_max_height = 770
+    settings_panel_border_width = 2
+    settings_panel_visual_padding = 10
+    settings_panel_layout_margin = settings_panel_visual_padding - settings_panel_border_width
+    settings_panel_radius = 10
+    settings_panel_gap = 10
+    settings_sidebar_width = 200
+    settings_sidebar_border_width = 1
+    settings_sidebar_visual_padding = 4
+    settings_sidebar_layout_margin = settings_sidebar_visual_padding - settings_sidebar_border_width
+    settings_sidebar_radius = 6
+    settings_sidebar_gap = 4
+    settings_sidebar_item_height = 24
+    settings_sidebar_item_radius = 4
+    settings_sidebar_item_padding_left = 15
+    settings_sidebar_item_padding_right = 10
+    settings_sidebar_item_padding_vertical = 2
+    settings_content_padding = 4
+    settings_content_gap = 4
+    settings_item_radius = 4
+    settings_item_padding = 2
+    settings_item_height = 28
+    settings_item_name_height = 24
+    settings_item_name_padding = 10
+    settings_item_font_size = 14
+    settings_control_font_size = 12
+    settings_dropdown_width = 121
+    settings_dropdown_height = 24
+    settings_dropdown_indicator_width = 24
+    settings_dropdown_icon_size = 18
+    settings_push_button_width = 52
+    settings_push_button_height = 20
+    settings_address_item_height = 56
+    settings_address_option_height = 26
+    settings_address_option_gap = 8
+    settings_address_option_padding_left = 10
+    settings_address_option_padding_right = 4
+    settings_path_height = 20
+    settings_switch_width = 28
+    settings_switch_height = 16
+    settings_switch_option_padding_horizontal = 6
+    settings_switch_border_width = 1
+    settings_switch_visual_padding = 2
+    settings_switch_layout_margin = settings_switch_visual_padding - settings_switch_border_width
+    settings_switch_radius = 8
+    settings_switch_knob_size = 12
+    settings_switch_knob_radius = 6
+
     # Palette
     color_window = "#ffffff"
     color_content = "#f5f5f5"
@@ -211,6 +265,9 @@ class Theme:
     color_sidebar_item_hover = "#eeeeee"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
+    color_settings_path_edge = "#7f7f7f"
+    color_settings_switch_background = "#b9b9b9"
+    color_settings_switch_knob_rgba = (0, 0, 0, 191)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -250,6 +307,19 @@ class Theme:
             "__MENU_ITEM_HOVER__": cls._rgba_qss(cls.color_menu_item_hover_rgba),
             "__MENU_DESTRUCTIVE__": cls.color_menu_destructive,
             "__MENU_FONT_SIZE__": f"{cls.menu_font_size}px",
+            "__SETTINGS_PANEL_BORDER_WIDTH__": f"{cls.settings_panel_border_width}px",
+            "__SETTINGS_PANEL_RADIUS__": f"{cls.settings_panel_radius}px",
+            "__SETTINGS_SIDEBAR_BORDER_WIDTH__": f"{cls.settings_sidebar_border_width}px",
+            "__SETTINGS_SIDEBAR_RADIUS__": f"{cls.settings_sidebar_radius}px",
+            "__SETTINGS_SIDEBAR_ITEM_RADIUS__": f"{cls.settings_sidebar_item_radius}px",
+            "__SETTINGS_ITEM_RADIUS__": f"{cls.settings_item_radius}px",
+            "__SETTINGS_ITEM_FONT_SIZE__": f"{cls.settings_item_font_size}px",
+            "__SETTINGS_CONTROL_FONT_SIZE__": f"{cls.settings_control_font_size}px",
+            "__SETTINGS_PATH_EDGE__": cls.color_settings_path_edge,
+            "__SETTINGS_SWITCH_BACKGROUND__": cls.color_settings_switch_background,
+            "__SETTINGS_SWITCH_RADIUS__": f"{cls.settings_switch_radius}px",
+            "__SETTINGS_SWITCH_KNOB__": cls._rgba_qss(cls.color_settings_switch_knob_rgba),
+            "__SETTINGS_SWITCH_KNOB_RADIUS__": f"{cls.settings_switch_knob_radius}px",
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",

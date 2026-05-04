@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSizeGrip, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
+from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import WindowChromeWidget
@@ -43,9 +44,16 @@ class MainWindow(QMainWindow):
 
         self.sidebar = SidebarWidget(context.resources)
         self.shelf_view = ShelfView(context.shelf_viewmodel, context.resources)
+        self.content_stack = QStackedWidget()
+        self.content_stack.setObjectName("MainContentStack")
+        self.content_stack.addWidget(self.shelf_view)
         layout.addWidget(self.sidebar)
-        layout.addWidget(self.shelf_view, stretch=1)
+        layout.addWidget(self.content_stack, stretch=1)
         root_layout.addWidget(view_panel, stretch=1)
+
+        self.settings_view = SettingsView(context.settings_viewmodel, context.resources, root)
+        self.settings_view.close_requested.connect(self._hide_settings_page)
+        self.settings_view.hide()
 
         self._resize_grip = QSizeGrip(root)
         self._resize_grip.setFixedSize(Theme.resize_grip_size, Theme.resize_grip_size)
@@ -69,11 +77,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "New Collection", "Collection creation is not implemented yet.")
             return
         if key == "settings":
-            QMessageBox.information(self, "Settings", "Settings page is reserved for a future phase.")
+            self._show_settings_page()
             return
+        self._hide_settings_page()
         self._context.shelf_viewmodel.set_current_shelf(key)
 
     def _sync_sidebar(self) -> None:
+        if self.settings_view.isVisible():
+            self.sidebar.set_active("settings")
+            return
         current = self._context.shelf_viewmodel.current_shelf
         if current in {ShelfKey.ALL.value, ShelfKey.RECENT.value, ShelfKey.FAVOURITES.value} or current.startswith(
             "collection:"
@@ -87,10 +99,37 @@ class MainWindow(QMainWindow):
         visible = not self.sidebar.isVisible()
         self.sidebar.setVisible(visible)
         self.shelf_view.set_sidebar_visible(visible)
+        self.settings_view.set_sidebar_visible(visible)
         self.chrome.set_sidebar_visible(visible)
+
+    def _show_settings_page(self) -> None:
+        self._context.shelf_viewmodel.clear_selection(emit_state=False)
+        self._context.shelf_viewmodel.hide_detail()
+        self._position_settings_overlay()
+        self.settings_view.show()
+        self.settings_view.raise_()
+        self.settings_view.setFocus(Qt.FocusReason.PopupFocusReason)
+        self.sidebar.set_active("settings")
+
+    def _hide_settings_page(self) -> None:
+        if self.settings_view.isHidden():
+            return
+        self.settings_view.hide()
+        self._sync_sidebar()
+        if hasattr(self, "_resize_grip"):
+            self._resize_grip.raise_()
+
+    def _position_settings_overlay(self) -> None:
+        if not hasattr(self, "settings_view"):
+            return
+        root = self.centralWidget()
+        if root is None:
+            return
+        self.settings_view.setGeometry(0, 0, root.width(), root.height())
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        self._position_settings_overlay()
         if hasattr(self, "_resize_grip"):
             margin = 2
             self._resize_grip.move(

@@ -16,6 +16,7 @@ from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.filesystem.path_service import PathService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
+from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
 
 
@@ -31,6 +32,7 @@ class AppContext:
     thumbnail_service: ThumbnailService
     main_window_viewmodel: MainWindowViewModel
     shelf_viewmodel: ShelfViewModel
+    settings_viewmodel: SettingsViewModel
 
 
 def create_app_context() -> AppContext:
@@ -49,6 +51,7 @@ def create_app_context() -> AppContext:
     thumbnail_service = ThumbnailService(cache_service)
     main_window_viewmodel = MainWindowViewModel()
     shelf_viewmodel = ShelfViewModel(library_service)
+    settings_viewmodel = SettingsViewModel()
 
     return AppContext(
         config=config,
@@ -61,4 +64,5 @@ def create_app_context() -> AppContext:
         thumbnail_service=thumbnail_service,
         main_window_viewmodel=main_window_viewmodel,
         shelf_viewmodel=shelf_viewmodel,
+        settings_viewmodel=settings_viewmodel,
     )
