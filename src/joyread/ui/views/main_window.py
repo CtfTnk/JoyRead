@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QMessageBox, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
+from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import WindowChromeWidget
 
@@ -59,13 +60,19 @@ class MainWindow(QMainWindow):
         self._resize_grip.setFixedSize(Theme.resize_grip_size, Theme.resize_grip_size)
         self._resize_grip.setObjectName("ResizeGrip")
         self._resize_grip.raise_()
+
+        self.dialog_overlay = JoyReadDialogOverlay(root)
+        self.dialog_overlay.hide()
         self.setCentralWidget(root)
+        self._position_dialog_overlay()
 
         self.chrome.set_action_menu(self.shelf_view.create_action_menu())
         self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.chrome.view_mode_changed.connect(context.shelf_viewmodel.set_view_mode)
         self.chrome.sort_changed.connect(context.shelf_viewmodel.set_sort)
         self.sidebar.navigation_requested.connect(self._handle_navigation)
+        self.shelf_view.info_requested.connect(self.dialog_overlay.show_info)
+        self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
         context.shelf_viewmodel.load_books()
@@ -74,7 +81,7 @@ class MainWindow(QMainWindow):
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":
-            QMessageBox.information(self, "New Collection", "Collection creation is not implemented yet.")
+            self.dialog_overlay.show_info("New Collection", "Collection creation is not implemented yet.")
             return
         if key == "settings":
             self._show_settings_page()
@@ -109,6 +116,7 @@ class MainWindow(QMainWindow):
         self.settings_view.show()
         self.settings_view.raise_()
         self.settings_view.setFocus(Qt.FocusReason.PopupFocusReason)
+        self._raise_dialog_overlay_if_visible()
         self.sidebar.set_active("settings")
 
     def _hide_settings_page(self) -> None:
@@ -118,6 +126,7 @@ class MainWindow(QMainWindow):
         self._sync_sidebar()
         if hasattr(self, "_resize_grip"):
             self._resize_grip.raise_()
+        self._raise_dialog_overlay_if_visible()
 
     def _position_settings_overlay(self) -> None:
         if not hasattr(self, "settings_view"):
@@ -127,9 +136,23 @@ class MainWindow(QMainWindow):
             return
         self.settings_view.setGeometry(0, 0, root.width(), root.height())
 
+    def _position_dialog_overlay(self) -> None:
+        if not hasattr(self, "dialog_overlay"):
+            return
+        root = self.centralWidget()
+        if root is None:
+            return
+        self.dialog_overlay.setGeometry(0, 0, root.width(), root.height())
+        self._raise_dialog_overlay_if_visible()
+
+    def _raise_dialog_overlay_if_visible(self) -> None:
+        if hasattr(self, "dialog_overlay") and self.dialog_overlay.isVisible():
+            self.dialog_overlay.raise_()
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._position_settings_overlay()
+        self._position_dialog_overlay()
         if hasattr(self, "_resize_grip"):
             margin = 2
             self._resize_grip.move(

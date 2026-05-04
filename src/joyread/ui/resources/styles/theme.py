@@ -4,6 +4,19 @@ from __future__ import annotations
 
 
 class Theme:
+    # Typography
+    font_files = (
+        "NotoSansSC-Regular.otf",
+        "NotoSansSC-Bold.otf",
+        "NotoSansJP-Regular.otf",
+        "NotoSansJP-Bold.otf",
+    )
+    primary_font_family = "Noto Sans SC"
+    font_family_qss = (
+        '"Noto Sans SC", "Noto Sans JP", "Helvetica Neue", '
+        '"PingFang SC", "Hiragino Sans", "Arial"'
+    )
+
     # Window and page layout
     window_width = 1200
     window_height = 860
@@ -244,6 +257,26 @@ class Theme:
     settings_switch_knob_size = 12
     settings_switch_knob_radius = 6
 
+    # General popup dialog from Figma node 483:1989.
+    dialog_width = 400
+    dialog_height = 220
+    dialog_border_width = 2
+    dialog_visual_padding = 10
+    dialog_layout_margin = dialog_visual_padding - dialog_border_width
+    dialog_gap = 6
+    dialog_radius = 10
+    dialog_content_padding = 10
+    dialog_option_gap = 10
+    dialog_button_width = 100
+    dialog_button_height = 28
+    dialog_button_border_width = 1
+    dialog_button_visual_padding = 4
+    dialog_button_layout_margin = dialog_button_visual_padding - dialog_button_border_width
+    dialog_button_radius = 10
+    dialog_button_shadow_blur = 4
+    dialog_button_shadow_offset = 0
+    dialog_font_size = 12
+
     # Palette
     color_window = "#ffffff"
     color_content = "#f5f5f5"
@@ -268,6 +301,7 @@ class Theme:
     color_settings_path_edge = "#7f7f7f"
     color_settings_switch_background = "#b9b9b9"
     color_settings_switch_knob_rgba = (0, 0, 0, 191)
+    color_shadow_rgba = (0, 0, 0, 64)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -282,6 +316,7 @@ class Theme:
         """Theme values that QSS needs without duplicating literals."""
 
         return {
+            "__FONT_FAMILY__": cls.font_family_qss,
             "__BUTTON_INNER_EDGE__": cls.color_button_inner_edge,
             "__BUTTON_EDGE__": cls.color_button_edge,
             "__WINDOW_COLOR__": cls.color_window,
@@ -320,6 +355,11 @@ class Theme:
             "__SETTINGS_SWITCH_RADIUS__": f"{cls.settings_switch_radius}px",
             "__SETTINGS_SWITCH_KNOB__": cls._rgba_qss(cls.color_settings_switch_knob_rgba),
             "__SETTINGS_SWITCH_KNOB_RADIUS__": f"{cls.settings_switch_knob_radius}px",
+            "__DIALOG_PANEL_BORDER_WIDTH__": f"{cls.dialog_border_width}px",
+            "__DIALOG_PANEL_RADIUS__": f"{cls.dialog_radius}px",
+            "__DIALOG_BUTTON_BORDER_WIDTH__": f"{cls.dialog_button_border_width}px",
+            "__DIALOG_BUTTON_RADIUS__": f"{cls.dialog_button_radius}px",
+            "__DIALOG_FONT_SIZE__": f"{cls.dialog_font_size}px",
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",

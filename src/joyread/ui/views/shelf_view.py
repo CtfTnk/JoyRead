@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
-from PySide6.QtWidgets import QMessageBox, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -19,6 +19,8 @@ from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 
 
 class ShelfView(QWidget):
+    info_requested = QtSignal(str, str)
+
     def __init__(
         self,
         viewmodel: ShelfViewModel,
@@ -152,14 +154,14 @@ class ShelfView(QWidget):
     def _show_read_placeholder(self, book_uuid: str) -> None:
         book = self._book_by_uuid(book_uuid)
         title = book.title if book else "Book"
-        QMessageBox.information(self, "Read", f"Reader engine is not implemented yet.\n\n{title}")
+        self.info_requested.emit("Read", f"Reader engine is not implemented yet.\n\n{title}")
 
     def _show_placeholder(self, action: str) -> None:
-        QMessageBox.information(self, action, f"{action} is a placeholder in this phase.")
+        self.info_requested.emit(action, f"{action} is a placeholder in this phase.")
 
     def _show_placeholder_for_targets(self, action: str, book_uuids: tuple[str, ...]) -> None:
         suffix = f"\n\nSelected books: {len(book_uuids)}" if len(book_uuids) > 1 else ""
-        QMessageBox.information(self, action, f"{action} is a placeholder in this phase.{suffix}")
+        self.info_requested.emit(action, f"{action} is a placeholder in this phase.{suffix}")
 
     def create_action_menu(self) -> FigmaMenu:
         return build_action_menu(

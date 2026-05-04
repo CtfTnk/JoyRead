@@ -27,7 +27,7 @@ joyread-button-tester = "joyread.app.button_tester:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-joyread = ["ui/resources/styles/*.qss", "ui/resources/icons/*"]
+joyread = ["ui/resources/styles/*.qss", "ui/resources/icons/*", "ui/resources/fonts/*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

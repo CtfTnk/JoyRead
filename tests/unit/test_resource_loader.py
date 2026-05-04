@@ -20,3 +20,27 @@ def test_app_icon_uses_single_canonical_resource() -> None:
     assert not (icon_dir / "joyread_app_icon.icns").exists()
     assert not (icon_dir / "joyread_app_icon.iconset").exists()
     assert not (icon_dir / "icon_app.png").exists()
+
+
+def test_noto_font_resources_are_available() -> None:
+    loader = ResourceLoader()
+    font_paths = loader.font_paths()
+    font_dir = loader.font_path("")
+
+    assert {path.name for path in font_paths} == {
+        "NotoSansSC-Regular.otf",
+        "NotoSansSC-Bold.otf",
+        "NotoSansJP-Regular.otf",
+        "NotoSansJP-Bold.otf",
+    }
+    assert all(path.exists() for path in font_paths)
+    assert (font_dir / "OFL.txt").exists()
+
+
+def test_stylesheet_uses_noto_font_stack() -> None:
+    stylesheet = ResourceLoader().load_stylesheet()
+
+    assert "__FONT_FAMILY__" not in stylesheet
+    assert "Inter" not in stylesheet
+    assert "Noto Sans SC" in stylesheet
+    assert "Noto Sans JP" in stylesheet

@@ -1,6 +1,6 @@
 /* Base typography */
 QWidget {
-    font-family: "Inter", "Arial", sans-serif;
+    font-family: __FONT_FAMILY__;
     color: #000000;
 }
 
@@ -188,6 +188,43 @@ QWidget#ShelfContent[sidebarVisible="false"] QStackedWidget#ShelfStack {
 QWidget#SettingsOverlay {
     background: transparent;
     border: none;
+}
+
+/* General popup dialog */
+QWidget#JoyReadDialogOverlay {
+    background: transparent;
+    border: none;
+}
+
+QFrame[class="JoyReadDialogPanel"] {
+    background: __WINDOW_COLOR__;
+    border: __DIALOG_PANEL_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border-radius: __DIALOG_PANEL_RADIUS__;
+}
+
+QWidget#JoyReadDialogTitleArea,
+QWidget#JoyReadDialogContentArea,
+QWidget#JoyReadDialogOptionArea {
+    background: transparent;
+    border: none;
+}
+
+QLabel[class="JoyReadDialogTitle"],
+QLabel[class="JoyReadDialogContent"],
+QLabel[class="DialogTextButtonText"] {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QFrame[class="DialogTextButton"] {
+    background: __WINDOW_COLOR__;
+    border: __DIALOG_BUTTON_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border-radius: __DIALOG_BUTTON_RADIUS__;
+}
+
+QFrame[class="DialogTextButton"]:hover {
+    background: __SELECTED_COLOR__;
 }
 
 QLabel#PageTitle {

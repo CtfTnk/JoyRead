@@ -21,6 +21,12 @@ class ResourceLoader:
     def icon_path(self, name: str) -> Path:
         return self._package_root / "ui" / "resources" / "icons" / name
 
+    def font_path(self, name: str) -> Path:
+        return self._package_root / "ui" / "resources" / "fonts" / name
+
+    def font_paths(self) -> tuple[Path, ...]:
+        return tuple(self.font_path(name) for name in Theme.font_files)
+
     def app_icon_path(self) -> Path:
         return self.icon_path("JoyRead.icns")
 

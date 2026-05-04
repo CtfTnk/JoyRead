@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut, QShowEvent
-from PySide6.QtWidgets import QMessageBox, QWidget
+from PySide6.QtWidgets import QWidget
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -14,6 +14,7 @@ from joyread.ui.widgets.settings_page import SettingsPageWidget
 
 class SettingsView(QWidget):
     close_requested = QtSignal()
+    info_requested = QtSignal(str, str)
 
     def __init__(
         self,
@@ -62,7 +63,7 @@ class SettingsView(QWidget):
         self._position_page()
 
     def _show_storage_placeholder(self) -> None:
-        QMessageBox.information(self, "Storage Location", "Storage location selection is not implemented yet.")
+        self.info_requested.emit("Storage Location", "Storage location selection is not implemented yet.")
 
     def _position_page(self) -> None:
         width = _clamp(
