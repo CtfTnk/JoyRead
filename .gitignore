@@ -51,17 +51,17 @@ wheelhouse/
 
 # Logs and runtime files
 *.log
-logs/
-Logs/
-runtime/
-Data/
-Cache/
-Config/
-Backups/
-Plugins/
-Thumbnails/
-Database/
-Books/
+/logs/
+/Logs/
+/runtime/
+/Data/
+/Cache/
+/Config/
+/Backups/
+/Plugins/
+/Thumbnails/
+/Database/
+/Books/
 
 # Local databases and generated indexes
 *.db
