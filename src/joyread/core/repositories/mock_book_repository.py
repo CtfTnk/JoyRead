@@ -17,9 +17,9 @@ from joyread.core.repositories.book_repository import BookRepository
 class MockBookRepository(BookRepository):
     """Read bundled mock records from package data instead of hardcoded rows."""
 
-    _DATA_PACKAGE = "joyread"
-    _DATA_FILE = "data_set/mock_library.json"
-    _DATA_PREFIX = "data_set/"
+    _DATA_PACKAGE = "joyread.core.repositories"
+    _DATA_FILE = "mock_library.json"
+    _TEST_SET_PREFIX = "test_set/"
 
     def __init__(self, data_path: Path | None = None) -> None:
         raw_data = self._load_json(data_path)
@@ -59,13 +59,20 @@ class MockBookRepository(BookRepository):
         return Book(**book_data)
 
     def _resolve_mock_path(self, file_path: str) -> str:
-        if not file_path.startswith(self._DATA_PREFIX):
+        if not file_path.startswith(self._TEST_SET_PREFIX):
             return file_path
 
-        # Package fixtures are read-only resources. In source and PyInstaller
-        # layouts this resolves to a real path that the archive core can open.
-        data_root = resources.files(self._DATA_PACKAGE)
-        return str(data_root.joinpath(file_path))
+        # Mock library rows may reference dev-only pressure-test books. Keep
+        # those files outside the package tree so they never ship as app data.
+        relative_path = Path(file_path)
+        candidates = (
+            Path(__file__).resolve().parents[4] / relative_path,
+            Path.cwd() / relative_path,
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return str(candidate)
+        return str(candidates[0])
 
     @staticmethod
     def _parse_datetime(value: str) -> datetime:

@@ -18,13 +18,18 @@ def test_mock_repository_returns_stable_varied_books() -> None:
     assert repository.list_collections()[0].name == "A Collection"
 
 
-def test_mock_repository_resolves_bundled_cbz_fixture() -> None:
+def test_mock_repository_resolves_test_set_archives() -> None:
     repository = MockBookRepository()
 
-    sample_book = next(book for book in repository.list_books() if book.uuid == "mock-book-15")
+    akane_book = next(book for book in repository.list_books() if book.uuid == "mock-book-01")
+    pressure_book = next(book for book in repository.list_books() if book.uuid == "mock-book-15")
 
-    assert sample_book.file_format == "CBZ"
-    assert sample_book.page_count == 4
-    assert sample_book.collection_ids == ()
-    assert Path(sample_book.file_path).exists()
-    assert ArchiveImageService().open(sample_book.file_path).page_count == sample_book.page_count
+    assert akane_book.file_format == "CBZ"
+    assert akane_book.page_count == 18
+    assert Path(akane_book.file_path).exists()
+    assert ArchiveImageService().open(akane_book.file_path).page_count == akane_book.page_count
+    assert pressure_book.title == "Delicious in Dungeon v14"
+    assert pressure_book.page_count == 192
+    assert pressure_book.collection_ids == ()
+    assert Path(pressure_book.file_path).exists()
+    assert ArchiveImageService().open(pressure_book.file_path).page_count == pressure_book.page_count

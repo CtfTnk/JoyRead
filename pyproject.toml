@@ -32,7 +32,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 joyread = [
-    "data_set/*",
+    "core/repositories/*.json",
     "ui/resources/styles/*.qss",
     "ui/resources/icons/*",
     "ui/resources/fonts/*",

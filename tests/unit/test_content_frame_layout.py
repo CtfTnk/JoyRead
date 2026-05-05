@@ -296,7 +296,7 @@ def test_detail_button_emits_only_its_own_book_in_multi_selection_context(qtbot)
     assert emitted == [second.uuid]
 
 
-def test_book_detail_panel_binds_figma_metadata_and_mock_thumbnails(qtbot) -> None:
+def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_thumbnails(qtbot) -> None:
     apply_theme()
     book = MockBookRepository().list_books()[1]
     panel = BookDetailPanel(ResourceLoader())
@@ -346,7 +346,9 @@ def test_book_detail_panel_binds_figma_metadata_and_mock_thumbnails(qtbot) -> No
         Theme.detail_button_layout_margin,
         Theme.detail_button_layout_margin,
     )
-    assert len(thumbnails) == book.page_count
+    # Detail thumbnails are now archive-discovered in async batches. The panel
+    # must not allocate widgets from the mock/database page_count during open.
+    assert len(thumbnails) == 0
 
     emitted: list[str] = []
     panel.read_requested.connect(emitted.append)
@@ -392,6 +394,25 @@ def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> Non
 
     assert grid._thumbnails[0]._pixmap is None
     assert grid._thumbnails[1]._pixmap is not None
+
+
+def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) -> None:
+    apply_theme()
+    book = MockBookRepository().list_books()[0]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.set_book(book)
+
+    emitted: list[str] = []
+    panel.more_thumbnails_requested.connect(emitted.append)
+    panel._emit_more_thumbnails_if_near_bottom()
+    assert emitted == []
+
+    panel.show()
+    QApplication.processEvents()
+    panel._emit_more_thumbnails_if_near_bottom()
+
+    assert emitted == [book.uuid]
 
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:

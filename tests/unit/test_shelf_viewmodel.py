@@ -1,10 +1,9 @@
-from joyread.core.archive import ArchiveImageService
+from pathlib import Path
+
 from joyread.core.repositories.mock_book_repository import MockBookRepository
-from joyread.core.services.cache_service import CacheService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle
-from joyread.core.services.thumbnail_service import ThumbnailService
-from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
     ShelfKey,
@@ -111,29 +110,138 @@ def test_detail_page_state_tracks_visible_book() -> None:
 class RecordingTaskService:
     def __init__(self) -> None:
         self.submitted: list[str] = []
+        self.callbacks = []
+        self.success_callbacks = []
 
     def submit(self, name, callback, *, on_success=None, on_failure=None):  # noqa: ANN001
-        del callback, on_success, on_failure
+        del on_failure
         self.submitted.append(name)
+        self.callbacks.append(callback)
+        self.success_callbacks.append(on_success)
         return TaskHandle(task_id=name)
 
+    def complete(self, index: int = -1) -> None:
+        result = self.callbacks[index]()
+        callback = self.success_callbacks[index]
+        if callback is not None:
+            callback(result)
 
-def test_load_books_queues_cover_generation_for_existing_archive_files(tmp_path) -> None:
-    paths = PathService(base_dir=tmp_path)
-    paths.ensure_directories()
-    thumbnail_service = ThumbnailService(
-        paths,
-        ArchiveImageService(),
-        CacheService(thumbnail_limit_mb=128, page_limit_mb=512),
-    )
+
+class FakeThumbnailService:
+    def __init__(self) -> None:
+        self.coverable_ids = {"mock-book-01", "mock-book-15"}
+
+    def can_generate_from(self, book) -> bool:  # noqa: ANN001
+        return book.uuid in self.coverable_ids
+
+    def existing_cover_path(self, book, size):  # noqa: ANN001
+        del book, size
+        return None
+
+    def generate_cover(self, book, size):  # noqa: ANN001
+        del size
+        return Path(f"/tmp/{book.uuid}.png")
+
+    def generate_detail_thumbnail_batch(self, book, start_index, batch_size, size):  # noqa: ANN001
+        del size
+        items = tuple(
+            DetailThumbnailItem(page_index=index, image_bytes=f"page-{index}".encode())
+            for index in range(start_index, start_index + batch_size)
+        )
+        return DetailThumbnailBatch(
+            book_uuid=book.uuid,
+            start_index=start_index,
+            next_index=start_index + batch_size,
+            has_more=start_index == 0,
+            items=items,
+        )
+
+
+def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
         LibraryService(MockBookRepository()),
-        thumbnail_service,
+        FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
     )
 
     vm.load_books()
+    assert task_service.submitted == []
+
+    vm.request_covers_for_books(book.uuid for book in vm.visible_books)
 
     assert sorted(task_service.submitted) == ["cover-mock-book-01", "cover-mock-book-15"]
+
+
+def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> None:
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(MockBookRepository()),
+        FakeThumbnailService(),  # type: ignore[arg-type]
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+    vm.load_books()
+    book = next(book for book in vm.books if book.uuid == "mock-book-15")
+
+    vm.show_detail(book.uuid)
+    assert task_service.submitted == []
+
+    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+
+    assert task_service.submitted == [f"detail-thumbnail-batch-{book.uuid}-0"]
+
+
+def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(MockBookRepository()),
+        FakeThumbnailService(),  # type: ignore[arg-type]
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+    emitted: list[tuple[str, int, bytes]] = []
+    finished: list[tuple[str, int, bool]] = []
+    vm.page_thumbnail_ready.connect(lambda book_uuid, page_index, data: emitted.append((book_uuid, page_index, data)))
+    vm.detail_thumbnail_batch_finished.connect(
+        lambda book_uuid, next_index, has_more: finished.append((book_uuid, next_index, has_more))
+    )
+    vm.load_books()
+    book = next(book for book in vm.books if book.uuid == "mock-book-15")
+    vm.show_detail(book.uuid)
+
+    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    task_service.complete()
+    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+
+    assert len(emitted) == 14
+    assert emitted[0] == (book.uuid, 0, b"page-0")
+    assert finished == [(book.uuid, 14, True)]
+    assert task_service.submitted == [
+        f"detail-thumbnail-batch-{book.uuid}-0",
+        f"detail-thumbnail-batch-{book.uuid}-14",
+    ]
+
+
+def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(MockBookRepository()),
+        FakeThumbnailService(),  # type: ignore[arg-type]
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+    emitted: list[tuple[str, int, bytes]] = []
+    vm.page_thumbnail_ready.connect(lambda book_uuid, page_index, data: emitted.append((book_uuid, page_index, data)))
+    vm.load_books()
+    first = next(book for book in vm.books if book.uuid == "mock-book-15")
+    second = next(book for book in vm.books if book.uuid == "mock-book-01")
+
+    vm.show_detail(first.uuid)
+    vm.request_next_detail_thumbnail_batch(first.uuid, (100, 142))
+    vm.show_detail(second.uuid)
+    task_service.complete(0)
+
+    assert emitted == []

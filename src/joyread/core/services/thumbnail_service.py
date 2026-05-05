@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import re
+from threading import Lock
 
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
-from joyread.core.archive import ArchiveError, ArchiveImageService
+from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveImageSession
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.core.services.cache_service import CacheService
@@ -16,6 +18,21 @@ from joyread.infrastructure.filesystem.path_service import PathService
 
 
 SizeTuple = tuple[int, int]
+
+
+@dataclass(frozen=True)
+class DetailThumbnailItem:
+    page_index: int
+    image_bytes: bytes
+
+
+@dataclass(frozen=True)
+class DetailThumbnailBatch:
+    book_uuid: str
+    start_index: int
+    next_index: int
+    has_more: bool
+    items: tuple[DetailThumbnailItem, ...]
 
 
 class ThumbnailService:
@@ -32,6 +49,8 @@ class ThumbnailService:
         self._paths = paths
         self._archive_service = archive_service
         self._cache_service = cache_service
+        self._session_cache: dict[str, ArchiveImageSession] = {}
+        self._session_cache_lock = Lock()
 
     def can_generate_from(self, book: Book) -> bool:
         source = Path(book.file_path)
@@ -67,7 +86,7 @@ class ThumbnailService:
             return None
 
         try:
-            session = self._archive_service.open(book.file_path)
+            session = self._session_for(book, signature)
             first_page = session.get_image(0)
             if first_page is None:
                 return None
@@ -96,7 +115,79 @@ class ThumbnailService:
             return cached
 
         try:
-            session = self._archive_service.open(book.file_path)
+            session = self._session_for(book, signature)
+            page = session.get_image(page_index)
+            if page is None:
+                return None
+            rendered = render_contain_blur_thumbnail(page, size)
+        except (ArchiveError, OSError, UnidentifiedImageError):
+            return None
+
+        self._cache_service.page_thumbnail_cache.put(cache_key, rendered)
+        return rendered
+
+    def generate_detail_thumbnail_batch(
+        self,
+        book: Book,
+        start_index: int,
+        batch_size: int = 14,
+        size: SizeTuple = (100, 142),
+    ) -> DetailThumbnailBatch:
+        start_index = max(0, start_index)
+        batch_size = max(1, batch_size)
+        empty = DetailThumbnailBatch(
+            book_uuid=book.uuid,
+            start_index=start_index,
+            next_index=start_index,
+            has_more=False,
+            items=(),
+        )
+        if not self.can_generate_from(book):
+            return empty
+
+        signature = self._source_signature(book)
+        if signature is None:
+            return empty
+
+        try:
+            session = self._session_for(book, signature)
+        except (ArchiveError, OSError):
+            return empty
+
+        if start_index >= session.page_count:
+            return empty
+
+        items: list[DetailThumbnailItem] = []
+        page_index = start_index
+        end_index = min(session.page_count, start_index + batch_size)
+        while page_index < end_index:
+            rendered = self._generate_page_thumbnail_from_session(book, signature, session, page_index, size)
+            if rendered is not None:
+                items.append(DetailThumbnailItem(page_index=page_index, image_bytes=rendered))
+            page_index += 1
+
+        return DetailThumbnailBatch(
+            book_uuid=book.uuid,
+            start_index=start_index,
+            next_index=end_index,
+            has_more=end_index < session.page_count,
+            items=tuple(items),
+        )
+
+    def _generate_page_thumbnail_from_session(
+        self,
+        book: Book,
+        signature: str,
+        session: ArchiveImageSession,
+        page_index: int,
+        size: SizeTuple,
+    ) -> bytes | None:
+        cache_key = self._page_thumbnail_cache_key(book, signature, page_index, size)
+        cached = self._cache_service.page_thumbnail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
             page = session.get_image(page_index)
             if page is None:
                 return None
@@ -114,6 +205,20 @@ class ThumbnailService:
         except OSError:
             return None
         return f"{stat.st_mtime_ns}-{stat.st_size}"
+
+    def _session_for(self, book: Book, signature: str) -> ArchiveImageSession:
+        cache_key = f"session:{book.uuid}:{signature}"
+        with self._session_cache_lock:
+            session = self._session_cache.get(cache_key)
+        if session is not None:
+            return session
+
+        # Archive scanning is expensive for large books, so keep a source-stable
+        # session around for cover and detail thumbnail batches.
+        session = self._archive_service.open(book.file_path)
+        with self._session_cache_lock:
+            self._session_cache[cache_key] = session
+        return session
 
     def _cover_path(self, book: Book, signature: str, size: SizeTuple) -> Path:
         return self._covers_dir() / f"{self._safe_book_uuid(book.uuid)}-{signature}-{size[0]}x{size[1]}.png"

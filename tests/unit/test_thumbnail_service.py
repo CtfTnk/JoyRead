@@ -75,6 +75,30 @@ def test_thumbnail_service_generates_detail_page_thumbnail_bytes(tmp_path: Path)
     assert service.generate_page_thumbnail(book, book.page_count, (100, 142)) is None
 
 
+def test_thumbnail_service_generates_detail_thumbnail_batches_for_large_archive(tmp_path: Path) -> None:
+    service = _thumbnail_service(tmp_path)
+    book = _sample_book()
+
+    first_batch = service.generate_detail_thumbnail_batch(book, start_index=0, batch_size=14, size=(100, 142))
+
+    assert len(first_batch.items) == 14
+    assert first_batch.next_index == 14
+    assert first_batch.has_more is True
+    assert [item.page_index for item in first_batch.items] == list(range(14))
+    with Image.open(BytesIO(first_batch.items[0].image_bytes)) as image:
+        assert image.size == (100, 142)
+
+    end_batch = service.generate_detail_thumbnail_batch(
+        book,
+        start_index=book.page_count,
+        batch_size=14,
+        size=(100, 142),
+    )
+    assert end_batch.items == ()
+    assert end_batch.next_index == book.page_count
+    assert end_batch.has_more is False
+
+
 def test_contain_blur_renderer_outputs_exact_nonblank_sizes() -> None:
     wide = render_contain_blur_thumbnail(_png_bytes((320, 80), "#cc2222"), (100, 142))
     tall = render_contain_blur_thumbnail(_png_bytes((80, 320), "#22cc66"), (100, 142))

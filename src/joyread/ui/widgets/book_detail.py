@@ -107,6 +107,7 @@ class BookDetailPanel(QFrame):
     favourite_requested = QtSignal(str)
     menu_requested = QtSignal(str, QPoint)
     cover_edit_requested = QtSignal(str)
+    more_thumbnails_requested = QtSignal(str)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -134,6 +135,7 @@ class BookDetailPanel(QFrame):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.viewport().setObjectName("BookDetailViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._emit_more_thumbnails_if_near_bottom)
         self._scroll_handle = AutoHideScrollHandle(self._scroll, parent=self)
         root_layout.addWidget(self._scroll)
 
@@ -176,7 +178,8 @@ class BookDetailPanel(QFrame):
             self._cover.set_pixmap_from_path(cover_path)
         elif book_changed:
             self._cover.set_pixmap(_placeholder_cover())
-        self._thumbnail_grid.set_thumbnail_count(max(0, book.page_count), reset=book_changed)
+        if book_changed:
+            self._thumbnail_grid.reset_unknown()
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
@@ -185,6 +188,14 @@ class BookDetailPanel(QFrame):
     def set_page_thumbnail(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
             self._thumbnail_grid.set_thumbnail(page_index, image_bytes)
+
+    def mark_thumbnail_complete(self, book_uuid: str) -> None:
+        if self._book is not None and self._book.uuid == book_uuid:
+            self._thumbnail_grid.mark_complete()
+
+    def is_near_thumbnail_bottom(self, threshold: int = 400) -> bool:
+        scrollbar = self._scroll.verticalScrollBar()
+        return scrollbar.maximum() <= 0 or (scrollbar.maximum() - scrollbar.value()) <= threshold
 
     def _build_description(self) -> QWidget:
         frame = QWidget()
@@ -346,6 +357,10 @@ class BookDetailPanel(QFrame):
         if self._book is not None:
             self.cover_edit_requested.emit(self._book.uuid)
 
+    def _emit_more_thumbnails_if_near_bottom(self) -> None:
+        if self.isVisible() and self._book is not None and self.is_near_thumbnail_bottom():
+            self.more_thumbnails_requested.emit(self._book.uuid)
+
 
 class InlineEditableText(QWidget):
     """Label that only commits Figma's inline edit when Return is pressed."""
@@ -433,9 +448,10 @@ class DetailThumbnailGrid(QWidget):
         self.setObjectName("BookDetailThumbnails")
         self.setMinimumWidth(Theme.detail_thumbnail_min_width)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        self._thumbnail_count = 0
-        self._thumbnails: list[DetailThumbnailWidget] = []
+        self._thumbnail_order: list[int] = []
+        self._thumbnails: dict[int, DetailThumbnailWidget] = {}
         self._columns = 0
+        self._is_complete = False
 
         self._layout = QGridLayout(self)
         self._layout.setContentsMargins(
@@ -450,22 +466,44 @@ class DetailThumbnailGrid(QWidget):
         )
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
+    def reset_unknown(self) -> None:
+        while self._layout.count():
+            item = self._layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        self._thumbnail_order.clear()
+        self._thumbnails.clear()
+        self._columns = 0
+        self._is_complete = False
+        self._refresh_height(1)
+
     def set_thumbnail_count(self, count: int, reset: bool = False) -> None:
+        """Compatibility helper for tests; production detail loading appends."""
+        if reset:
+            self.reset_unknown()
         count = max(0, count)
-        if count == self._thumbnail_count and len(self._thumbnails) == count and not reset:
+        for index in range(count):
+            self.append_thumbnail_slot(index)
+        self._relayout(force=True)
+
+    def append_thumbnail_slot(self, index: int) -> None:
+        if index in self._thumbnails:
             return
-        self._thumbnail_count = count
-        while len(self._thumbnails) < count:
-            self._thumbnails.append(DetailThumbnailWidget())
-        for thumbnail in self._thumbnails:
-            if reset:
-                thumbnail.clear_thumbnail()
-            thumbnail.setVisible(False)
+        self._thumbnail_order.append(index)
+        self._thumbnail_order.sort()
+        self._thumbnails[index] = DetailThumbnailWidget()
         self._relayout(force=True)
 
     def set_thumbnail(self, index: int, image_bytes: bytes) -> None:
-        if 0 <= index < self._thumbnail_count and index < len(self._thumbnails):
-            self._thumbnails[index].set_thumbnail_bytes(image_bytes)
+        if index < 0:
+            return
+        self.append_thumbnail_slot(index)
+        self._thumbnails[index].set_thumbnail_bytes(image_bytes)
+
+    def mark_complete(self) -> None:
+        self._is_complete = True
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -482,9 +520,10 @@ class DetailThumbnailGrid(QWidget):
             self._layout.takeAt(0)
 
         self._layout.setHorizontalSpacing(self._calculate_horizontal_spacing(columns))
-        for index, thumbnail in enumerate(self._thumbnails[: self._thumbnail_count]):
+        for layout_index, page_index in enumerate(self._thumbnail_order):
+            thumbnail = self._thumbnails[page_index]
             thumbnail.setVisible(True)
-            self._layout.addWidget(thumbnail, index // columns, index % columns)
+            self._layout.addWidget(thumbnail, layout_index // columns, layout_index % columns)
         self._refresh_height(columns)
 
     def _calculate_columns(self) -> int:
@@ -509,7 +548,7 @@ class DetailThumbnailGrid(QWidget):
 
     def _refresh_height(self, columns: int) -> None:
         margins = self._layout.contentsMargins()
-        rows = ceil(self._thumbnail_count / columns) if self._thumbnail_count else 0
+        rows = ceil(len(self._thumbnail_order) / columns) if self._thumbnail_order else 0
         row_gap = self._layout.verticalSpacing()
         height = margins.top() + margins.bottom()
         if rows:

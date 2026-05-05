@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, Qt, Signal as QtSignal
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
@@ -81,6 +81,7 @@ class ShelfView(QWidget):
         self.detail_panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
         self.detail_panel.menu_requested.connect(self._show_book_menu)
         self.detail_panel.cover_edit_requested.connect(lambda _uuid: self._show_placeholder("Cover Editor"))
+        self.detail_panel.more_thumbnails_requested.connect(self._request_next_detail_thumbnail_batch)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -90,6 +91,7 @@ class ShelfView(QWidget):
         self._viewmodel.book_open_requested.connect(self._show_read_placeholder)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
+        self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)
 
     def render(self) -> None:
         self.toolbar.set_title(self._viewmodel.page_title)
@@ -121,6 +123,8 @@ class ShelfView(QWidget):
         else:
             self.list_view.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.list_view)
+        visible_ids = tuple(book.uuid for book in books)
+        QTimer.singleShot(0, lambda visible_ids=visible_ids: self._viewmodel.request_covers_for_books(visible_ids))
         self._render_detail_panel()
 
     def _show_book_menu(self, book_uuid: str, global_pos: QPoint) -> None:
@@ -225,10 +229,7 @@ class ShelfView(QWidget):
         self._position_detail_panel()
         self.detail_panel.show()
         self.detail_panel.raise_()
-        self._viewmodel.request_detail_thumbnails(
-            book.uuid,
-            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
-        )
+        QTimer.singleShot(0, lambda book_uuid=book.uuid: self._request_next_detail_thumbnail_batch(book_uuid))
 
     def _position_detail_panel(self) -> None:
         if not hasattr(self, "detail_panel"):
@@ -246,3 +247,16 @@ class ShelfView(QWidget):
 
     def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
+
+    def _handle_detail_thumbnail_batch_finished(self, book_uuid: str, _next_index: int, has_more: bool) -> None:
+        if not has_more:
+            self.detail_panel.mark_thumbnail_complete(book_uuid)
+            return
+        if self.detail_panel.isVisible() and self.detail_panel.is_near_thumbnail_bottom():
+            QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
+
+    def _request_next_detail_thumbnail_batch(self, book_uuid: str) -> None:
+        self._viewmodel.request_next_detail_thumbnail_batch(
+            book_uuid,
+            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+        )

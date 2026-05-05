@@ -9,8 +9,8 @@ from pathlib import Path
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.services.library_service import LibraryService
-from joyread.core.services.task_service import TaskService
-from joyread.core.services.thumbnail_service import ThumbnailService
+from joyread.core.services.task_service import TaskHandle, TaskService
+from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -55,11 +55,13 @@ class ShelfViewModel:
         self.book_open_requested: Signal[str] = Signal()
         self.cover_ready: Signal[tuple[str, Path]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
+        self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()
 
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
         self._task_service = task_service
         self._cover_size = cover_size
+        self._detail_batch_size = 14
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.search_query = ""
@@ -76,8 +78,11 @@ class ShelfViewModel:
         self.error_message: str | None = None
         self._cover_paths: dict[str, Path] = {}
         self._pending_cover_ids: set[str] = set()
-        self._page_thumbnail_bytes: dict[tuple[str, int, tuple[int, int]], bytes] = {}
-        self._pending_page_thumbnail_keys: set[tuple[str, int, tuple[int, int]]] = set()
+        self._detail_load_token = 0
+        self._detail_next_index = 0
+        self._detail_has_more = True
+        self._detail_batch_pending = False
+        self._detail_batch_handle: TaskHandle[DetailThumbnailBatch] | None = None
 
     @property
     def cover_paths(self) -> dict[str, Path]:
@@ -118,15 +123,13 @@ class ShelfViewModel:
         finally:
             self.is_loading = False
             self._emit_state()
-        if self.error_message is None:
-            self.request_cover_generation_for_loaded_books()
 
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
             return
         self.current_shelf = shelf
         self.clear_selection(emit_state=False)
-        self.detail_book_uuid = None
+        self._set_detail_book_uuid(None)
         self._emit_state()
 
     def set_search_query(self, query: str) -> None:
@@ -185,13 +188,13 @@ class ShelfViewModel:
 
     def show_detail(self, book_uuid: str) -> None:
         if any(book.uuid == book_uuid for book in self.books):
-            self.detail_book_uuid = book_uuid
+            self._set_detail_book_uuid(book_uuid)
             self._emit_state()
 
     def hide_detail(self) -> None:
         if self.detail_book_uuid is None:
             return
-        self.detail_book_uuid = None
+        self._set_detail_book_uuid(None)
         self._emit_state()
 
     def open_book(self, book_uuid: str) -> None:
@@ -220,10 +223,18 @@ class ShelfViewModel:
             self._emit_state()
 
     def request_cover_generation_for_loaded_books(self) -> None:
+        self.request_covers_for_books(book.uuid for book in self.books)
+
+    def request_covers_for_books(self, book_uuids: Iterable[str]) -> None:
         if self._thumbnail_service is None or self._task_service is None or self._cover_size is None:
             return
 
-        for book in self.books:
+        target_ids = set(book_uuids)
+        books_by_uuid = {book.uuid: book for book in self.books}
+        for book_uuid in target_ids:
+            book = books_by_uuid.get(book_uuid)
+            if book is None:
+                continue
             existing = self._thumbnail_service.existing_cover_path(book, self._cover_size)
             if existing is not None:
                 self._record_cover(book.uuid, existing)
@@ -240,37 +251,37 @@ class ShelfViewModel:
             )
 
     def request_detail_thumbnails(self, book_uuid: str, size: tuple[int, int]) -> None:
+        self.request_next_detail_thumbnail_batch(book_uuid, size)
+
+    def request_next_detail_thumbnail_batch(self, book_uuid: str, size: tuple[int, int]) -> None:
         if (
             self._thumbnail_service is None
             or self._task_service is None
             or self.detail_book_uuid != book_uuid
+            or self._detail_batch_pending
+            or not self._detail_has_more
         ):
             return
 
         book = next((book for book in self.books if book.uuid == book_uuid), None)
         if book is None or not self._thumbnail_service.can_generate_from(book):
+            self._detail_has_more = False
             return
 
-        for page_index in range(max(0, book.page_count)):
-            key = (book_uuid, page_index, size)
-            cached = self._page_thumbnail_bytes.get(key)
-            if cached is not None:
-                self.page_thumbnail_ready.emit(book_uuid, page_index, cached)
-                continue
-            if key in self._pending_page_thumbnail_keys:
-                continue
-
-            self._pending_page_thumbnail_keys.add(key)
-            self._task_service.submit(
-                f"detail-thumbnail-{book_uuid}-{page_index}",
-                lambda book=book, page_index=page_index: self._thumbnail_service.generate_page_thumbnail(
-                    book,
-                    page_index,
-                    size,
-                ),
-                on_success=lambda data, key=key: self._handle_page_thumbnail_result(key, data),
-                on_failure=lambda _error, key=key: self._pending_page_thumbnail_keys.discard(key),
-            )
+        token = self._detail_load_token
+        start_index = self._detail_next_index
+        self._detail_batch_pending = True
+        self._detail_batch_handle = self._task_service.submit(
+            f"detail-thumbnail-batch-{book_uuid}-{start_index}",
+            lambda book=book, start_index=start_index: self._thumbnail_service.generate_detail_thumbnail_batch(
+                book,
+                start_index=start_index,
+                batch_size=self._detail_batch_size,
+                size=size,
+            ),
+            on_success=lambda batch, token=token: self._handle_detail_thumbnail_batch_result(token, batch),
+            on_failure=lambda _error, token=token: self._handle_detail_thumbnail_batch_failure(token),
+        )
 
     def _book_in_current_shelf(self, book: Book) -> bool:
         if self.current_shelf == ShelfKey.ALL:
@@ -307,10 +318,12 @@ class ShelfViewModel:
             self.selected_book_ids -= removed
             self.selection_changed.emit(set(self.selected_book_ids))
         if self.detail_book_uuid is not None and self.detail_book_uuid not in visible_ids:
-            self.detail_book_uuid = None
+            self._set_detail_book_uuid(None)
         self.state_changed.emit()
 
     def _record_cover(self, book_uuid: str, path: Path) -> None:
+        if self._cover_paths.get(book_uuid) == path:
+            return
         self._cover_paths[book_uuid] = path
         self.cover_ready.emit(book_uuid, path)
 
@@ -320,19 +333,39 @@ class ShelfViewModel:
             return
         self._record_cover(book_uuid, path)
 
-    def _handle_page_thumbnail_result(
-        self,
-        key: tuple[str, int, tuple[int, int]],
-        data: bytes | None,
-    ) -> None:
-        self._pending_page_thumbnail_keys.discard(key)
-        if data is None:
+    def _handle_detail_thumbnail_batch_result(self, token: int, batch: DetailThumbnailBatch) -> None:
+        if token != self._detail_load_token or self.detail_book_uuid != batch.book_uuid:
             return
 
-        book_uuid, page_index, _size = key
-        self._page_thumbnail_bytes[key] = data
+        self._detail_batch_pending = False
+        self._detail_batch_handle = None
+        self._detail_next_index = batch.next_index
+        self._detail_has_more = batch.has_more
+        for item in batch.items:
+            self.page_thumbnail_ready.emit(batch.book_uuid, item.page_index, item.image_bytes)
+        self.detail_thumbnail_batch_finished.emit(batch.book_uuid, batch.next_index, batch.has_more)
+
+    def _handle_detail_thumbnail_batch_failure(self, token: int) -> None:
+        if token != self._detail_load_token:
+            return
+        self._detail_batch_pending = False
+        self._detail_batch_handle = None
+        self._detail_has_more = False
+
+    def _set_detail_book_uuid(self, book_uuid: str | None) -> None:
         if self.detail_book_uuid == book_uuid:
-            self.page_thumbnail_ready.emit(book_uuid, page_index, data)
+            return
+        self._cancel_detail_thumbnail_batch()
+        self.detail_book_uuid = book_uuid
+        self._detail_load_token += 1
+        self._detail_next_index = 0
+        self._detail_has_more = book_uuid is not None
+        self._detail_batch_pending = False
+
+    def _cancel_detail_thumbnail_batch(self) -> None:
+        if self._detail_batch_handle is not None:
+            self._detail_batch_handle.cancel()
+        self._detail_batch_handle = None
 
 
 def collection_shelf_key(collection_uuid: str) -> str:

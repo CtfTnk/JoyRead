@@ -16,7 +16,7 @@
       "language_tag": "English",
       "book_type": "Comic",
       "file_format": "CBZ",
-      "file_path": "data_set/Akane-banashi Story 148 (Yuki Suenaga) (z-library.sk, 1lib.sk, z-lib.sk).cbz",
+      "file_path": "test_set/Akane-banashi Story 148 (Yuki Suenaga) (z-library.sk, 1lib.sk, z-lib.sk).cbz",
       "progress": 0.18,
       "cover_thumbnail_path": null,
       "added_at": "2026-04-30T12:00:00",
@@ -263,12 +263,12 @@
     },
     {
       "uuid": "mock-book-15",
-      "title": "Synthetic CBZ Sample",
-      "author": "JoyRead Fixture",
+      "title": "Delicious in Dungeon v14",
+      "author": "Ryōko Kui",
       "language_tag": "English",
       "book_type": "Comic",
       "file_format": "CBZ",
-      "file_path": "data_set/sample_manga.cbz",
+      "file_path": "test_set/Delicious in Dungeon v14 (Ryōko Kui) (z-library.sk, 1lib.sk, z-lib.sk).cbz",
       "progress": 0.0,
       "cover_thumbnail_path": null,
       "added_at": "2026-05-05T12:00:00",
@@ -277,7 +277,7 @@
       "is_favourite": false,
       "is_missing": false,
       "collection_ids": [],
-      "page_count": 4
+      "page_count": 192
     }
   ]
 }
