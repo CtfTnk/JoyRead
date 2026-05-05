@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QLayout, QLayoutItem, QScrollArea, QWidget
@@ -33,6 +35,7 @@ class BookGridWidget(QScrollArea):
         self._selected_ids: set[str] = set()
         self._cards: dict[str, BookCardWidget] = {}
         self._book_ids: tuple[str, ...] = ()
+        self._cover_paths: dict[str, Path] = {}
 
         self._content = QWidget()
         self._content.setObjectName("BookGridContent")
@@ -54,13 +57,22 @@ class BookGridWidget(QScrollArea):
                 self.blank_clicked.emit()
         return super().eventFilter(watched, event)
 
-    def set_books(self, books: list[Book], selected_ids: set[str]) -> None:
+    def set_books(
+        self,
+        books: list[Book],
+        selected_ids: set[str],
+        cover_paths: dict[str, Path] | None = None,
+    ) -> None:
         self._books = list(books)
         self._selected_ids = set(selected_ids)
+        self._cover_paths = dict(cover_paths or {})
         book_ids = tuple(book.uuid for book in self._books)
         if self._book_ids == book_ids:
             for card in self._cards.values():
                 card.set_selected(card.book.uuid in self._selected_ids)
+                cover_path = self._cover_paths.get(card.book.uuid)
+                if cover_path is not None:
+                    card.set_cover_path(cover_path)
             return
 
         self._book_ids = book_ids
@@ -75,6 +87,9 @@ class BookGridWidget(QScrollArea):
         for index, book in enumerate(self._books):
             card = BookCardWidget(book, self._resources)
             card.set_selected(book.uuid in self._selected_ids)
+            cover_path = self._cover_paths.get(book.uuid)
+            if cover_path is not None:
+                card.set_cover_path(cover_path)
             card.book_selected.connect(self.book_selected.emit)
             card.book_opened.connect(self.book_opened.emit)
             card.detail_requested.connect(self.detail_requested.emit)
@@ -84,6 +99,12 @@ class BookGridWidget(QScrollArea):
 
         self._layout.invalidate()
         self._content.updateGeometry()
+
+    def set_cover_path(self, book_uuid: str, path: Path) -> None:
+        self._cover_paths[book_uuid] = path
+        card = self._cards.get(book_uuid)
+        if card is not None:
+            card.set_cover_path(path)
 
     def _calculate_columns(self) -> int:
         return self._calculate_columns_for_width(self._available_row_width())

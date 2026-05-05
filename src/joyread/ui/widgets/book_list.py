@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QContextMenuEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
@@ -41,6 +43,8 @@ class BookListWidget(QScrollArea):
         self.viewport().setObjectName("ShelfScrollViewport")
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.viewport().installEventFilter(self)
+        self._rows: dict[str, BookListRowWidget] = {}
+        self._cover_paths: dict[str, Path] = {}
 
         self._content = QWidget()
         self._content.setObjectName("BookListContent")
@@ -57,7 +61,14 @@ class BookListWidget(QScrollArea):
         self.setWidget(self._content)
         self._scroll_handle = AutoHideScrollHandle(self)
 
-    def set_books(self, books: list[Book], selected_ids: set[str]) -> None:
+    def set_books(
+        self,
+        books: list[Book],
+        selected_ids: set[str],
+        cover_paths: dict[str, Path] | None = None,
+    ) -> None:
+        self._cover_paths = dict(cover_paths or {})
+        self._rows.clear()
         while self._layout.count():
             item = self._layout.takeAt(0)
             widget = item.widget()
@@ -68,12 +79,22 @@ class BookListWidget(QScrollArea):
         for book in books:
             row = BookListRowWidget(book, self._resources)
             row.set_selected(book.uuid in selected_ids)
+            cover_path = self._cover_paths.get(book.uuid)
+            if cover_path is not None:
+                row.set_cover_path(cover_path)
             row.book_selected.connect(self.book_selected.emit)
             row.book_opened.connect(self.book_opened.emit)
             row.detail_requested.connect(self.detail_requested.emit)
             row.menu_requested.connect(self.menu_requested.emit)
             self._layout.addWidget(row)
+            self._rows[book.uuid] = row
         self._layout.addStretch(1)
+
+    def set_cover_path(self, book_uuid: str, path: Path) -> None:
+        self._cover_paths[book_uuid] = path
+        row = self._rows.get(book_uuid)
+        if row is not None:
+            row.set_cover_path(path)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:
@@ -120,11 +141,11 @@ class BookListRowWidget(QFrame):
         )
         layout.setSpacing(Theme.spacing_md)
 
-        cover = BookCoverWidget(
+        self._cover = BookCoverWidget(
             _placeholder_cover(),
             QSize(Theme.book_list_cover_width, Theme.book_list_cover_height),
         )
-        layout.addWidget(cover)
+        layout.addWidget(self._cover)
 
         content = QWidget()
         content.setObjectName("BookListRowContent")
@@ -219,6 +240,9 @@ class BookListRowWidget(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
+
+    def set_cover_path(self, path: Path) -> None:
+        self._cover.set_pixmap_from_path(path)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

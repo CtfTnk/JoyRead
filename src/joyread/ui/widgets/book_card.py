@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import (
@@ -70,8 +71,8 @@ class BookCardWidget(QFrame):
         )
         layout.setSpacing(Theme.book_card_gap)
 
-        cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
-        layout.addWidget(cover, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
+        layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter)
 
         title = QLabel(book.title)
         title.setProperty("class", "BookTitle")
@@ -131,6 +132,9 @@ class BookCardWidget(QFrame):
         self.style().polish(self)
         self.update()
 
+    def set_cover_path(self, path: Path) -> None:
+        self._cover.set_pixmap_from_path(path)
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             additive = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
@@ -161,10 +165,26 @@ class BookCoverWidget(QFrame):
         self.setFixedSize(size)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
+    def set_pixmap(self, pixmap: QPixmap) -> None:
+        if pixmap.isNull():
+            return
+        self._pixmap = pixmap
+        self.update()
+
+    def set_pixmap_from_path(self, path: Path) -> None:
+        pixmap = QPixmap(str(path))
+        self.set_pixmap(pixmap)
+
+    def set_pixmap_from_bytes(self, image_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        if pixmap.loadFromData(image_bytes):
+            self.set_pixmap(pixmap)
+
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), Theme.cover_radius, Theme.cover_radius)

@@ -88,6 +88,8 @@ class ShelfView(QWidget):
 
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.book_open_requested.connect(self._show_read_placeholder)
+        self._viewmodel.cover_ready.connect(self._handle_cover_ready)
+        self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
 
     def render(self) -> None:
         self.toolbar.set_title(self._viewmodel.page_title)
@@ -112,11 +114,12 @@ class ShelfView(QWidget):
             return
 
         selected_ids = set(self._viewmodel.selected_book_ids)
+        cover_paths = self._viewmodel.cover_paths
         if self._viewmodel.view_mode == ViewMode.GRID:
-            self.grid.set_books(books, selected_ids)
+            self.grid.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.grid)
         else:
-            self.list_view.set_books(books, selected_ids)
+            self.list_view.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.list_view)
         self._render_detail_panel()
 
@@ -218,10 +221,14 @@ class ShelfView(QWidget):
         if book is None:
             self.detail_panel.hide()
             return
-        self.detail_panel.set_book(book)
+        self.detail_panel.set_book(book, self._viewmodel.cover_paths.get(book.uuid))
         self._position_detail_panel()
         self.detail_panel.show()
         self.detail_panel.raise_()
+        self._viewmodel.request_detail_thumbnails(
+            book.uuid,
+            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+        )
 
     def _position_detail_panel(self) -> None:
         if not hasattr(self, "detail_panel"):
@@ -231,3 +238,11 @@ class ShelfView(QWidget):
         width = max(0, self.width() - (left * 2))
         height = max(0, self.height() - top)
         self.detail_panel.setGeometry(left, top, width, height)
+
+    def _handle_cover_ready(self, book_uuid: str, path) -> None:
+        self.grid.set_cover_path(book_uuid, path)
+        self.list_view.set_cover_path(book_uuid, path)
+        self.detail_panel.set_cover_path(book_uuid, path)
+
+    def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
+        self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)

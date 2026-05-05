@@ -1,8 +1,13 @@
-"""Deterministic mock data for the first bookshelf UI phase."""
+"""JSON-backed deterministic mock data for the bookshelf UI."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+import json
+from dataclasses import fields
+from datetime import datetime
+from importlib import resources
+from pathlib import Path
+from typing import Any
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
@@ -10,18 +15,16 @@ from joyread.core.repositories.book_repository import BookRepository
 
 
 class MockBookRepository(BookRepository):
-    def __init__(self) -> None:
-        self._now = datetime(2026, 4, 30, 12, 0, 0)
-        self._collections = [
-            Collection(
-                uuid="collection-a",
-                name="A Collection",
-                is_private=False,
-                created_at=self._now - timedelta(days=40),
-                updated_at=self._now - timedelta(days=2),
-            )
-        ]
-        self._books = self._build_books()
+    """Read bundled mock records from package data instead of hardcoded rows."""
+
+    _DATA_PACKAGE = "joyread"
+    _DATA_FILE = "data_set/mock_library.json"
+    _DATA_PREFIX = "data_set/"
+
+    def __init__(self, data_path: Path | None = None) -> None:
+        raw_data = self._load_json(data_path)
+        self._collections = [self._build_collection(row) for row in raw_data.get("collections", [])]
+        self._books = [self._build_book(row) for row in raw_data.get("books", [])]
 
     def list_books(self) -> list[Book]:
         return list(self._books)
@@ -29,45 +32,47 @@ class MockBookRepository(BookRepository):
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
 
-    def _build_books(self) -> list[Book]:
-        rows = [
-            ("Akane-banashi Story 148", "Yuki Suenaga", "Comic", "CBZ", 0.18, True, False, 21),
-            ("Spy x Family Vol. 1", "Tatsuya Endo", "PDF", "PDF", 0.42, False, False, 28),
-            ("Frieren Beyond Journey", "Kanehito Yamada", "Comic", "CBZ", 0.73, True, False, 35),
-            ("Dungeon Meshi Archive", "Ryoko Kui", "Comic", "ZIP", 0.11, False, False, 18),
-            ("Mother of All Attacks", "Dachima Inaka", "Novel", "EPUB", 0.33, False, False, 14),
-            ("The Apothecary Notes", "Natsu Hyuuga", "Novel", "EPUB", 0.62, True, False, 24),
-            ("Blue Period Sketchbook", "Tsubasa Yamaguchi", "Comic", "CBZ", 0.05, False, True, 16),
-            ("Witch Hat Atelier", "Kamome Shirahama", "Comic", "CBR", 0.95, True, False, 42),
-            ("A Sign of Affection", "Suu Morishita", "Comic", "CBZ", 0.27, False, False, 20),
-            ("Ascendance of a Bookworm", "Miya Kazuki", "Novel", "EPUB", 0.49, False, False, 14),
-            ("Yotsuba Collection", "Kiyohiko Azuma", "Comic", "7Z", 0.84, True, False, 32),
-            ("Local PDF Sample", None, "PDF", "PDF", 0.0, False, True, 12),
-            ("Mushishi Volume Notes", "Yuki Urushibara", "Comic", "RAR", 0.58, False, False, 26),
-            ("Light Novel Draft", "Mock Author", "Novel", "EPUB", 0.21, False, False, 14),
-        ]
+    def _load_json(self, data_path: Path | None) -> dict[str, Any]:
+        if data_path is not None:
+            return json.loads(data_path.read_text(encoding="utf-8"))
 
-        books: list[Book] = []
-        for index, (title, author, book_type, file_format, progress, favourite, missing, page_count) in enumerate(rows):
-            collection_ids = ("collection-a",) if index in {0, 2, 5, 8, 10} else ()
-            books.append(
-                Book(
-                    uuid=f"mock-book-{index + 1:02d}",
-                    title=title,
-                    author=author,
-                    language_tag="English",
-                    book_type=book_type,
-                    file_format=file_format,
-                    file_path=f"/mock/library/{title}.{file_format.lower()}",
-                    progress=progress,
-                    cover_thumbnail_path=None,
-                    added_at=self._now - timedelta(days=index * 3),
-                    updated_at=self._now - timedelta(days=index),
-                    last_read_at=None if index in {11, 13} else self._now - timedelta(hours=index * 7),
-                    is_favourite=favourite,
-                    is_missing=missing,
-                    collection_ids=collection_ids,
-                    page_count=page_count,
-                )
-            )
-        return books
+        data_resource = resources.files(self._DATA_PACKAGE).joinpath(self._DATA_FILE)
+        return json.loads(data_resource.read_text(encoding="utf-8"))
+
+    def _build_collection(self, row: dict[str, Any]) -> Collection:
+        return Collection(
+            uuid=row["uuid"],
+            name=row["name"],
+            is_private=bool(row["is_private"]),
+            created_at=self._parse_datetime(row["created_at"]),
+            updated_at=self._parse_datetime(row["updated_at"]),
+        )
+
+    def _build_book(self, row: dict[str, Any]) -> Book:
+        valid_fields = {field.name for field in fields(Book)}
+        book_data = {key: value for key, value in row.items() if key in valid_fields}
+        book_data["file_path"] = self._resolve_mock_path(str(book_data["file_path"]))
+        book_data["added_at"] = self._parse_datetime(str(book_data["added_at"]))
+        book_data["updated_at"] = self._parse_datetime(str(book_data["updated_at"]))
+        book_data["last_read_at"] = self._parse_optional_datetime(book_data.get("last_read_at"))
+        book_data["collection_ids"] = tuple(book_data.get("collection_ids") or ())
+        return Book(**book_data)
+
+    def _resolve_mock_path(self, file_path: str) -> str:
+        if not file_path.startswith(self._DATA_PREFIX):
+            return file_path
+
+        # Package fixtures are read-only resources. In source and PyInstaller
+        # layouts this resolves to a real path that the archive core can open.
+        data_root = resources.files(self._DATA_PACKAGE)
+        return str(data_root.joinpath(file_path))
+
+    @staticmethod
+    def _parse_datetime(value: str) -> datetime:
+        return datetime.fromisoformat(value)
+
+    @staticmethod
+    def _parse_optional_datetime(value: Any) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromisoformat(str(value))

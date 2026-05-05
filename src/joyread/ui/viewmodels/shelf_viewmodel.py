@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import replace
 from enum import StrEnum
+from pathlib import Path
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.services.library_service import LibraryService
+from joyread.core.services.task_service import TaskService
+from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -41,12 +43,23 @@ class ShelfKey(StrEnum):
 
 
 class ShelfViewModel:
-    def __init__(self, library_service: LibraryService) -> None:
+    def __init__(
+        self,
+        library_service: LibraryService,
+        thumbnail_service: ThumbnailService | None = None,
+        task_service: TaskService | None = None,
+        cover_size: tuple[int, int] | None = None,
+    ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
         self.book_open_requested: Signal[str] = Signal()
+        self.cover_ready: Signal[tuple[str, Path]] = Signal()
+        self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
 
         self._library_service = library_service
+        self._thumbnail_service = thumbnail_service
+        self._task_service = task_service
+        self._cover_size = cover_size
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.search_query = ""
@@ -61,6 +74,14 @@ class ShelfViewModel:
         self.is_importing = False
         self.import_progress = 0
         self.error_message: str | None = None
+        self._cover_paths: dict[str, Path] = {}
+        self._pending_cover_ids: set[str] = set()
+        self._page_thumbnail_bytes: dict[tuple[str, int, tuple[int, int]], bytes] = {}
+        self._pending_page_thumbnail_keys: set[tuple[str, int, tuple[int, int]]] = set()
+
+    @property
+    def cover_paths(self) -> dict[str, Path]:
+        return dict(self._cover_paths)
 
     @property
     def page_title(self) -> str:
@@ -97,6 +118,8 @@ class ShelfViewModel:
         finally:
             self.is_loading = False
             self._emit_state()
+        if self.error_message is None:
+            self.request_cover_generation_for_loaded_books()
 
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
@@ -196,6 +219,59 @@ class ShelfViewModel:
             self.books = next_books
             self._emit_state()
 
+    def request_cover_generation_for_loaded_books(self) -> None:
+        if self._thumbnail_service is None or self._task_service is None or self._cover_size is None:
+            return
+
+        for book in self.books:
+            existing = self._thumbnail_service.existing_cover_path(book, self._cover_size)
+            if existing is not None:
+                self._record_cover(book.uuid, existing)
+                continue
+            if book.uuid in self._pending_cover_ids or not self._thumbnail_service.can_generate_from(book):
+                continue
+
+            self._pending_cover_ids.add(book.uuid)
+            self._task_service.submit(
+                f"cover-{book.uuid}",
+                lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
+                on_success=lambda path, book_uuid=book.uuid: self._handle_cover_result(book_uuid, path),
+                on_failure=lambda _error, book_uuid=book.uuid: self._pending_cover_ids.discard(book_uuid),
+            )
+
+    def request_detail_thumbnails(self, book_uuid: str, size: tuple[int, int]) -> None:
+        if (
+            self._thumbnail_service is None
+            or self._task_service is None
+            or self.detail_book_uuid != book_uuid
+        ):
+            return
+
+        book = next((book for book in self.books if book.uuid == book_uuid), None)
+        if book is None or not self._thumbnail_service.can_generate_from(book):
+            return
+
+        for page_index in range(max(0, book.page_count)):
+            key = (book_uuid, page_index, size)
+            cached = self._page_thumbnail_bytes.get(key)
+            if cached is not None:
+                self.page_thumbnail_ready.emit(book_uuid, page_index, cached)
+                continue
+            if key in self._pending_page_thumbnail_keys:
+                continue
+
+            self._pending_page_thumbnail_keys.add(key)
+            self._task_service.submit(
+                f"detail-thumbnail-{book_uuid}-{page_index}",
+                lambda book=book, page_index=page_index: self._thumbnail_service.generate_page_thumbnail(
+                    book,
+                    page_index,
+                    size,
+                ),
+                on_success=lambda data, key=key: self._handle_page_thumbnail_result(key, data),
+                on_failure=lambda _error, key=key: self._pending_page_thumbnail_keys.discard(key),
+            )
+
     def _book_in_current_shelf(self, book: Book) -> bool:
         if self.current_shelf == ShelfKey.ALL:
             return True
@@ -233,6 +309,30 @@ class ShelfViewModel:
         if self.detail_book_uuid is not None and self.detail_book_uuid not in visible_ids:
             self.detail_book_uuid = None
         self.state_changed.emit()
+
+    def _record_cover(self, book_uuid: str, path: Path) -> None:
+        self._cover_paths[book_uuid] = path
+        self.cover_ready.emit(book_uuid, path)
+
+    def _handle_cover_result(self, book_uuid: str, path: Path | None) -> None:
+        self._pending_cover_ids.discard(book_uuid)
+        if path is None or not any(book.uuid == book_uuid for book in self.books):
+            return
+        self._record_cover(book_uuid, path)
+
+    def _handle_page_thumbnail_result(
+        self,
+        key: tuple[str, int, tuple[int, int]],
+        data: bytes | None,
+    ) -> None:
+        self._pending_page_thumbnail_keys.discard(key)
+        if data is None:
+            return
+
+        book_uuid, page_index, _size = key
+        self._page_thumbnail_bytes[key] = data
+        if self.detail_book_uuid == book_uuid:
+            self.page_thumbnail_ready.emit(book_uuid, page_index, data)
 
 
 def collection_shelf_key(collection_uuid: str) -> str:

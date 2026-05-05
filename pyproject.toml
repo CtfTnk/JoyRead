@@ -9,8 +9,12 @@ description = "Cross-platform desktop manga and light novel reader."
 readme = "docs/CODEX_MAIN_UI_BRIEF.md"
 requires-python = ">=3.11"
 dependencies = [
+    "Pillow>=11.0",
     "PySide6>=6.7",
+    "py7zr>=1.1",
+    "pyzipper>=0.3",
     "platformdirs>=4.2",
+    "rarfile>=4.2",
 ]
 
 [project.optional-dependencies]
@@ -27,7 +31,12 @@ joyread-button-tester = "joyread.app.button_tester:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-joyread = ["ui/resources/styles/*.qss", "ui/resources/icons/*", "ui/resources/fonts/*"]
+joyread = [
+    "data_set/*",
+    "ui/resources/styles/*.qss",
+    "ui/resources/icons/*",
+    "ui/resources/fonts/*",
+]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

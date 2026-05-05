@@ -1,7 +1,10 @@
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSize, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QToolButton, QWidget
+from PIL import Image
 
 from joyread.core.models.book import Book
 from joyread.core.repositories.mock_book_repository import MockBookRepository
@@ -9,7 +12,7 @@ from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
-from joyread.ui.widgets.book_card import BookCardWidget
+from joyread.ui.widgets.book_card import BookCardWidget, BookCoverWidget
 from joyread.ui.widgets.book_detail import BookDetailPanel, DetailReadButton, DetailThumbnailGrid, DetailThumbnailWidget
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
@@ -23,6 +26,16 @@ def apply_theme() -> None:
     app = QApplication.instance()
     assert app is not None
     app.setStyleSheet(ResourceLoader().load_stylesheet())
+
+
+def write_test_png(path: Path, size: tuple[int, int] = (40, 60), color: str = "#336699") -> None:
+    Image.new("RGB", size, color).save(path, format="PNG")
+
+
+def make_test_image_bytes(size: tuple[int, int] = (40, 60), color: str = "#cc4422") -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def test_toolbar_uses_figma_content_frame_padding(qtbot) -> None:
@@ -187,6 +200,22 @@ def test_book_card_selected_outline_does_not_change_layout_geometry(qtbot) -> No
     assert card.property("selected") == "true"
 
 
+def test_book_card_cover_can_update_from_generated_path(qtbot, tmp_path) -> None:
+    apply_theme()
+    cover_path = tmp_path / "cover.png"
+    write_test_png(cover_path)
+    book = MockBookRepository().list_books()[0]
+    card = BookCardWidget(book, ResourceLoader())
+    qtbot.addWidget(card)
+    cover = card.findChild(BookCoverWidget, "BookCover")
+    assert cover is not None
+    before = cover._pixmap.cacheKey()
+
+    card.set_cover_path(cover_path)
+
+    assert cover._pixmap.cacheKey() != before
+
+
 def test_book_progress_bar_clamps_value_and_keeps_figma_size(qtbot) -> None:
     progress = BookProgressBar(5)
     qtbot.addWidget(progress)
@@ -234,6 +263,21 @@ def test_book_list_row_matches_figma_structure_and_selected_variant(qtbot) -> No
 
     row.set_selected(True)
     assert progress_percent_labels[0].isHidden() is False
+
+
+def test_book_list_row_cover_can_update_from_generated_path(qtbot, tmp_path) -> None:
+    apply_theme()
+    cover_path = tmp_path / "list-cover.png"
+    write_test_png(cover_path)
+    row = BookListRowWidget(MockBookRepository().list_books()[0], ResourceLoader())
+    qtbot.addWidget(row)
+    cover = row.findChild(BookCoverWidget, "BookCover")
+    assert cover is not None
+    before = cover._pixmap.cacheKey()
+
+    row.set_cover_path(cover_path)
+
+    assert cover._pixmap.cacheKey() != before
 
 
 def test_detail_button_emits_only_its_own_book_in_multi_selection_context(qtbot) -> None:
@@ -310,6 +354,23 @@ def test_book_detail_panel_binds_figma_metadata_and_mock_thumbnails(qtbot) -> No
     assert emitted == [book.uuid]
 
 
+def test_book_detail_panel_cover_can_update_for_current_book(qtbot, tmp_path) -> None:
+    apply_theme()
+    cover_path = tmp_path / "detail-cover.png"
+    write_test_png(cover_path, size=(200, 284))
+    book = MockBookRepository().list_books()[0]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.set_book(book)
+    cover = panel.findChild(BookCoverWidget, "BookCover")
+    assert cover is not None
+    before = cover._pixmap.cacheKey()
+
+    panel.set_cover_path(book.uuid, cover_path)
+
+    assert cover._pixmap.cacheKey() != before
+
+
 def test_detail_thumbnail_grid_uses_figma_ideal_seven_column_spacing(qtbot) -> None:
     grid = DetailThumbnailGrid()
     qtbot.addWidget(grid)
@@ -320,6 +381,17 @@ def test_detail_thumbnail_grid_uses_figma_ideal_seven_column_spacing(qtbot) -> N
 
     assert grid._calculate_columns() == 7
     assert grid._calculate_horizontal_spacing(7) == Theme.detail_thumbnail_gap
+
+
+def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> None:
+    grid = DetailThumbnailGrid()
+    qtbot.addWidget(grid)
+    grid.set_thumbnail_count(2)
+
+    grid.set_thumbnail(1, make_test_image_bytes())
+
+    assert grid._thumbnails[0]._pixmap is None
+    assert grid._thumbnails[1]._pixmap is not None
 
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:

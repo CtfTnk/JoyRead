@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from math import ceil
+from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QResizeEvent
+from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -153,7 +154,8 @@ class BookDetailPanel(QFrame):
 
         self._scroll.setWidget(content)
 
-    def set_book(self, book: Book) -> None:
+    def set_book(self, book: Book, cover_path: Path | None = None) -> None:
+        book_changed = self._book is None or self._book.uuid != book.uuid
         self._book = book
         self._title_field.set_value(book.title)
         self._author_field.set_value(book.author or "None")
@@ -170,7 +172,19 @@ class BookDetailPanel(QFrame):
                 )
             )
         )
-        self._thumbnail_grid.set_thumbnail_count(max(0, book.page_count))
+        if cover_path is not None:
+            self._cover.set_pixmap_from_path(cover_path)
+        elif book_changed:
+            self._cover.set_pixmap(_placeholder_cover())
+        self._thumbnail_grid.set_thumbnail_count(max(0, book.page_count), reset=book_changed)
+
+    def set_cover_path(self, book_uuid: str, path: Path) -> None:
+        if self._book is not None and self._book.uuid == book_uuid:
+            self._cover.set_pixmap_from_path(path)
+
+    def set_page_thumbnail(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
+        if self._book is not None and self._book.uuid == book_uuid:
+            self._thumbnail_grid.set_thumbnail(page_index, image_bytes)
 
     def _build_description(self) -> QWidget:
         frame = QWidget()
@@ -436,16 +450,22 @@ class DetailThumbnailGrid(QWidget):
         )
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
 
-    def set_thumbnail_count(self, count: int) -> None:
+    def set_thumbnail_count(self, count: int, reset: bool = False) -> None:
         count = max(0, count)
-        if count == self._thumbnail_count and len(self._thumbnails) == count:
+        if count == self._thumbnail_count and len(self._thumbnails) == count and not reset:
             return
         self._thumbnail_count = count
         while len(self._thumbnails) < count:
             self._thumbnails.append(DetailThumbnailWidget())
         for thumbnail in self._thumbnails:
+            if reset:
+                thumbnail.clear_thumbnail()
             thumbnail.setVisible(False)
         self._relayout(force=True)
+
+    def set_thumbnail(self, index: int, image_bytes: bytes) -> None:
+        if 0 <= index < self._thumbnail_count and index < len(self._thumbnails):
+            self._thumbnails[index].set_thumbnail_bytes(image_bytes)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
@@ -502,22 +522,37 @@ class DetailThumbnailWidget(QFrame):
         super().__init__(parent)
         self.setObjectName("BookDetailThumbnail")
         self.setFixedSize(Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
+        self._pixmap: QPixmap | None = None
+
+    def set_thumbnail_bytes(self, image_bytes: bytes) -> None:
+        pixmap = QPixmap()
+        if pixmap.loadFromData(image_bytes):
+            self._pixmap = pixmap
+            self.update()
+
+    def clear_thumbnail(self) -> None:
+        self._pixmap = None
+        self.update()
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
         painter.setClipPath(path)
 
-        colors = (QColor("#d8d8d8"), QColor("#cfcfcf"))
-        square = 8
-        for y in range(0, self.height(), square):
-            for x in range(0, self.width(), square):
-                painter.fillRect(x, y, square, square, colors[((x // square) + (y // square)) % 2])
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 28))
+        if self._pixmap is not None and not self._pixmap.isNull():
+            painter.drawPixmap(self.rect(), self._pixmap)
+        else:
+            colors = (QColor("#d8d8d8"), QColor("#cfcfcf"))
+            square = 8
+            for y in range(0, self.height(), square):
+                for x in range(0, self.width(), square):
+                    painter.fillRect(x, y, square, square, colors[((x // square) + (y // square)) % 2])
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 28))
         painter.end()
 
 

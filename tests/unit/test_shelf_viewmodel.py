@@ -1,5 +1,10 @@
+from joyread.core.archive import ArchiveImageService
 from joyread.core.repositories.mock_book_repository import MockBookRepository
+from joyread.core.services.cache_service import CacheService
 from joyread.core.services.library_service import LibraryService
+from joyread.core.services.task_service import TaskHandle
+from joyread.core.services.thumbnail_service import ThumbnailService
+from joyread.infrastructure.filesystem.path_service import PathService
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
     ShelfKey,
@@ -19,7 +24,7 @@ def test_load_books_populates_books_and_collections() -> None:
 
     vm.load_books()
 
-    assert len(vm.books) == 14
+    assert len(vm.books) == 15
     assert vm.collections[0].uuid == "collection-a"
     assert vm.page_title == "All"
 
@@ -101,3 +106,34 @@ def test_detail_page_state_tracks_visible_book() -> None:
 
     vm.set_filter(FileFilter.EPUB.value)
     assert vm.detail_book_uuid is None
+
+
+class RecordingTaskService:
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None):  # noqa: ANN001
+        del callback, on_success, on_failure
+        self.submitted.append(name)
+        return TaskHandle(task_id=name)
+
+
+def test_load_books_queues_cover_generation_for_existing_archive_files(tmp_path) -> None:
+    paths = PathService(base_dir=tmp_path)
+    paths.ensure_directories()
+    thumbnail_service = ThumbnailService(
+        paths,
+        ArchiveImageService(),
+        CacheService(thumbnail_limit_mb=128, page_limit_mb=512),
+    )
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(MockBookRepository()),
+        thumbnail_service,
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+
+    vm.load_books()
+
+    assert sorted(task_service.submitted) == ["cover-mock-book-01", "cover-mock-book-15"]
