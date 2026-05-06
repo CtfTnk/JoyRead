@@ -1,0 +1,385 @@
+from __future__ import annotations
+
+from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
+
+from PIL import Image
+
+from joyread.app.app_context import create_app_context
+from joyread.core.archive import ArchiveImageService
+from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
+from joyread.core.services.hash_service import HashService
+from joyread.core.services.import_service import ImportService
+from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
+from joyread.infrastructure.filesystem.path_service import PathService
+
+
+def _database(tmp_path: Path) -> DatabaseInterpreter:
+    database = DatabaseInterpreter(tmp_path / "joyread.sqlite3")
+    database.execute(apply_migrations, DatabasePriority.CRITICAL)
+    return database
+
+
+def _png_bytes(path: Path, color: str = "#336699") -> None:
+    Image.new("RGB", (10, 20), color).save(path, format="PNG")
+
+
+def _write_cbz(path: Path, color: str = "#336699") -> None:
+    image = path.with_suffix(".png")
+    _png_bytes(image, color)
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+
+
+def _import_service(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter, PathService]:
+    paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
+    paths.ensure_directories()
+    database = _database(paths.paths.database)
+    service = ImportService(paths, database, ArchiveImageService(), HashService())
+    return service, database, paths
+
+
+def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+
+    database.execute(apply_migrations, DatabasePriority.CRITICAL)
+    tables = set(
+        database.execute(
+            lambda connection: [
+                row["name"]
+                for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            ]
+        )
+    )
+
+    assert {
+        "schema_migrations",
+        "book_files",
+        "books",
+        "progress",
+        "bookmarks",
+        "collections",
+        "collection_books",
+        "private_collections",
+        "private_books",
+        "recent_books",
+        "import_batches",
+        "import_items",
+    } <= tables
+    database.close()
+
+
+def test_database_interpreter_respects_priority_before_start(tmp_path: Path) -> None:
+    database = DatabaseInterpreter(tmp_path / "priority.sqlite3", autostart=False)
+    seen: list[str] = []
+
+    low = database.submit(lambda _connection: seen.append("low"), DatabasePriority.BACKGROUND)
+    high = database.submit(lambda _connection: seen.append("high"), DatabasePriority.CRITICAL)
+    database.start()
+    low.result(timeout=2)
+    high.result(timeout=2)
+
+    assert seen == ["high", "low"]
+    database.close()
+
+
+def test_settings_config_is_outside_storage_root(tmp_path: Path) -> None:
+    store = SettingsStore(
+        support_root=tmp_path / "support",
+        default_storage_root=tmp_path / "storage",
+    )
+    settings = store.load()
+    paths = PathService(storage_root=Path(settings.storage_location), support_root=store.support_root)
+
+    assert store.settings_path.is_relative_to(tmp_path / "support")
+    assert not store.settings_path.is_relative_to(paths.paths.books.parent)
+    assert paths.paths.config.is_relative_to(tmp_path / "support")
+    assert paths.paths.cache == tmp_path / "storage" / "Cache"
+    assert paths.paths.thumbnails == tmp_path / "storage" / "Thumbnails"
+
+
+def test_manifest_import_copies_book_and_repository_lists_it(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Example Manga.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        '{"version": 1, "items": [{"source_path": "source/Example Manga.cbz"}]}',
+        encoding="utf-8",
+    )
+    service, database, paths = _import_service(tmp_path)
+
+    result = service.import_manifest(manifest)
+    books = SqliteBookRepository(database).list_books()
+    stored_page_count_columns = database.execute(
+        lambda connection: [
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(books)").fetchall()
+            if row["name"] == "page_count"
+        ]
+    )
+
+    assert result.imported_count == 1
+    assert result.failed_count == 0
+    assert books[0].title == "Example Manga"
+    assert books[0].author == "Unknown"
+    assert books[0].book_type == "manga"
+    assert Path(books[0].file_path).is_relative_to(paths.paths.books)
+    assert Path(books[0].file_path).exists()
+    assert stored_page_count_columns == []
+    database.close()
+
+
+def test_duplicate_manifest_import_reuses_existing_book(tmp_path: Path) -> None:
+    source = tmp_path / "duplicate.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+
+    first = service.import_files([source])
+    second = service.import_files([source])
+    books = SqliteBookRepository(database).list_books()
+
+    assert first.imported_count == 1
+    assert second.duplicate_count == 1
+    assert len(books) == 1
+    database.close()
+
+
+def test_recent_books_are_public_only_and_capped_at_ten(tmp_path: Path) -> None:
+    service, database, _paths = _import_service(tmp_path)
+    sources: list[Path] = []
+    for index in range(11):
+        source = tmp_path / f"recent-{index:02d}.cbz"
+        _write_cbz(source, color=f"#{index:02x}3366")
+        sources.append(source)
+    service.import_files(sources)
+    repository = SqliteBookRepository(database)
+    books = sorted(repository.list_books(), key=lambda book: book.title)
+
+    for book in books:
+        repository.set_progress(book.uuid, page_index=1, progress_percent=10.0)
+
+    recent_rows = database.execute(
+        lambda connection: connection.execute(
+            "SELECT book_id FROM recent_books ORDER BY last_read_at DESC"
+        ).fetchall()
+    )
+    recent_books = [book for book in repository.list_books() if book.last_read_at is not None]
+
+    assert len(recent_rows) == 10
+    assert len(recent_books) == 10
+
+    database.execute(
+        lambda connection: connection.execute(
+            """
+            INSERT INTO progress(book_scope, book_id, page_index, progress_percent, updated_at)
+            VALUES ('private', 'private-book', 1, 10.0, '2026-01-01T00:00:00')
+            """
+        )
+    )
+    private_recent_count = database.execute(
+        lambda connection: connection.execute(
+            "SELECT COUNT(*) AS count FROM recent_books WHERE book_id = 'private-book'"
+        ).fetchone()["count"]
+    )
+    assert private_recent_count == 0
+    database.close()
+
+
+def test_import_failures_are_recorded_without_books(tmp_path: Path) -> None:
+    unsupported = tmp_path / "sample.txt"
+    unsupported.write_text("not a book", encoding="utf-8")
+    corrupt = tmp_path / "corrupt.cbz"
+    corrupt.write_bytes(b"not a zip")
+    service, database, _paths = _import_service(tmp_path)
+
+    result = service.import_files([tmp_path / "missing.cbz", unsupported, corrupt])
+    item_rows = database.execute(lambda connection: connection.execute("SELECT status FROM import_items").fetchall())
+
+    assert result.failed_count == 3
+    assert SqliteBookRepository(database).list_books() == []
+    assert [row["status"] for row in item_rows] == ["failed", "failed", "failed"]
+    database.close()
+
+
+def test_collection_delete_and_private_move_keep_public_books_consistent(tmp_path: Path) -> None:
+    source = tmp_path / "book.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    collection = repository.create_collection("Reading")
+    repository.add_book_to_collection(book.uuid, collection.uuid)
+    repository.delete_collection(collection.uuid)
+
+    assert repository.list_books()[0].collection_ids == ()
+
+    private_id = repository.move_book_to_private(book.uuid)
+    assert private_id
+    assert repository.list_books() == []
+    private_count = database.execute(
+        lambda connection: connection.execute("SELECT COUNT(*) AS count FROM private_books").fetchone()["count"]
+    )
+    assert private_count == 1
+    database.close()
+
+
+def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(tmp_path: Path) -> None:
+    source = tmp_path / "ops.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+
+    repository.update_book_metadata(book.uuid, title="Edited Title", author="Edited Author")
+    repository.set_favourite(book.uuid, True)
+    bookmark = repository.add_bookmark(book.uuid, "Good page", 7)
+    updated = repository.get_book(book.uuid)
+
+    assert updated is not None
+    assert updated.title == "Edited Title"
+    assert updated.author == "Edited Author"
+    assert updated.is_favourite is True
+    assert repository.list_bookmarks(book.uuid) == [bookmark]
+
+    repository.delete_book(book.uuid)
+    assert repository.get_book(book.uuid) is None
+    assert repository.list_bookmarks(book.uuid) == []
+    database.close()
+
+
+def test_delete_book_removes_related_rows_and_managed_files(tmp_path: Path) -> None:
+    source = tmp_path / "delete-me.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(
+        database,
+        managed_books_root=paths.paths.books,
+        thumbnails_root=paths.paths.thumbnails,
+    )
+    book = repository.list_books()[0]
+    stored_file = Path(book.file_path)
+    collection = repository.create_collection("Delete Test")
+    repository.add_book_to_collection(book.uuid, collection.uuid)
+    repository.set_progress(book.uuid, page_index=3, progress_percent=33.0)
+    repository.add_bookmark(book.uuid, "A page", 3)
+    covers_dir = paths.paths.thumbnails / "covers"
+    covers_dir.mkdir(parents=True)
+    generated_cover = covers_dir / f"{book.uuid}-signature-200x284.png"
+    generated_cover.write_bytes(b"cover")
+
+    repository.delete_book(book.uuid)
+
+    counts = database.execute(
+        lambda connection: {
+            table: connection.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
+            for table in (
+                "books",
+                "book_files",
+                "bookmarks",
+                "progress",
+                "recent_books",
+                "collection_books",
+                "import_items",
+            )
+        }
+    )
+    assert counts == {
+        "books": 0,
+        "book_files": 0,
+        "bookmarks": 0,
+        "progress": 0,
+        "recent_books": 0,
+        "collection_books": 0,
+        "import_items": 0,
+    }
+    assert stored_file.exists() is False
+    assert source.exists() is True
+    assert generated_cover.exists() is False
+    database.close()
+
+
+def test_delete_book_preserves_managed_file_when_private_book_references_it(tmp_path: Path) -> None:
+    source = tmp_path / "shared.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    stored_file = Path(book.file_path)
+    file_id = database.execute(
+        lambda connection: connection.execute(
+            "SELECT file_id FROM books WHERE book_id = ?",
+            (book.uuid,),
+        ).fetchone()["file_id"]
+    )
+    database.execute(
+        lambda connection: connection.execute(
+            """
+            INSERT INTO private_books(
+                private_book_id, file_id, title, author, language_tag, book_type,
+                cover_path, encrypted_cover_path, encryption_status,
+                private_collection_id, created_at, updated_at
+            )
+            VALUES ('private-copy', ?, 'Private Copy', 'Unknown', NULL, 'manga',
+                NULL, NULL, 'not_encrypted', NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00')
+            """,
+            (file_id,),
+        )
+    )
+
+    repository.delete_book(book.uuid)
+
+    assert stored_file.exists() is True
+    assert database.execute(lambda connection: connection.execute("SELECT COUNT(*) AS count FROM book_files").fetchone()["count"]) == 1
+    assert database.execute(lambda connection: connection.execute("SELECT COUNT(*) AS count FROM private_books").fetchone()["count"]) == 1
+    database.close()
+
+
+def test_progress_stores_page_index_and_percent_without_clamping(tmp_path: Path) -> None:
+    source = tmp_path / "progress.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+
+    repository.set_progress(book.uuid, page_index=9999, progress_percent=125.0)
+    row = database.execute(lambda connection: connection.execute("SELECT * FROM progress").fetchone())
+
+    assert row["page_index"] == 9999
+    assert row["progress_percent"] == 125.0
+    database.close()
+
+
+def test_storage_migration_moves_storage_and_updates_config(tmp_path: Path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "old")
+    store.save(AppSettings(storage_location=str(tmp_path / "old")))
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "Books").mkdir()
+    (old / "Books" / "book.cbz").write_bytes(b"book")
+
+    result = StorageMigrationService(store).move_storage_location(old, tmp_path / "new")
+
+    assert (tmp_path / "new" / "Books" / "book.cbz").exists()
+    assert result.old_backup_root is not None
+    assert result.old_backup_root.exists()
+    assert store.load().storage_location == str((tmp_path / "new").resolve())
+
+
+def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.delenv("JOYREAD_USE_MOCK_REPOSITORY", raising=False)
+
+    context = create_app_context()
+
+    assert isinstance(context.book_repository, SqliteBookRepository)
+    assert (context.paths.paths.database / "joyread.sqlite3").exists()
+    assert context.settings_store.settings_path.is_relative_to(tmp_path / "runtime" / ".joyread_support")
+    context.database_interpreter.close()

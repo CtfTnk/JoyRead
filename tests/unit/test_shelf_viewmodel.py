@@ -4,6 +4,7 @@ from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
+from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
     ShelfKey,
@@ -93,6 +94,70 @@ def test_set_favourite_applies_same_state_to_multiple_books() -> None:
     updated = {book.uuid: book for book in vm.books}
     assert updated[first.uuid].is_favourite is True
     assert updated[second.uuid].is_favourite is True
+
+
+def test_delete_books_clears_selection_detail_and_reloads_books() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    first, second = vm.visible_books[:2]
+    deleted: list[tuple[str, ...]] = []
+    vm.books_deleted.connect(deleted.append)
+
+    vm.select_book(first.uuid)
+    vm.select_book(second.uuid, additive=True)
+    vm.show_detail(first.uuid)
+    vm.delete_books((first.uuid, second.uuid))
+
+    remaining_ids = {book.uuid for book in vm.books}
+    assert first.uuid not in remaining_ids
+    assert second.uuid not in remaining_ids
+    assert vm.selected_book_ids == set()
+    assert vm.detail_book_uuid is None
+    assert deleted == [(first.uuid, second.uuid)]
+
+
+def test_shelf_preferences_round_trip_through_settings_store(tmp_path: Path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = AppSettings(
+        storage_location=str(tmp_path / "storage"),
+        shelf_sort_field=SortField.AUTHOR.value,
+        shelf_sort_ascending=True,
+        shelf_file_filter=FileFilter.EPUB.value,
+        shelf_view_mode=ViewMode.LIST.value,
+    )
+    store.save(settings)
+
+    vm = ShelfViewModel(LibraryService(MockBookRepository()), settings=store.load(), settings_store=store)
+
+    assert vm.sort_field == SortField.AUTHOR
+    assert vm.sort_ascending is True
+    assert vm.file_filter == FileFilter.EPUB
+    assert vm.view_mode == ViewMode.LIST
+
+    vm.set_sort(SortField.TITLE.value, ascending=False)
+    vm.set_filter(FileFilter.CBZ.value)
+    vm.set_view_mode(ViewMode.GRID.value)
+    persisted = store.load()
+
+    assert persisted.shelf_sort_field == SortField.TITLE.value
+    assert persisted.shelf_sort_ascending is False
+    assert persisted.shelf_file_filter == FileFilter.CBZ.value
+    assert persisted.shelf_view_mode == ViewMode.GRID.value
+
+
+def test_shelf_preferences_fall_back_when_settings_are_stale(tmp_path: Path) -> None:
+    settings = AppSettings(
+        storage_location=str(tmp_path / "storage"),
+        shelf_sort_field="Bad Sort",
+        shelf_file_filter="BAD",
+        shelf_view_mode="bad",
+    )
+
+    vm = ShelfViewModel(LibraryService(MockBookRepository()), settings=settings)
+
+    assert vm.sort_field == SortField.ADD_TIME
+    assert vm.file_filter == FileFilter.ALL
+    assert vm.view_mode == ViewMode.GRID
 
 
 def test_detail_page_state_tracks_visible_book() -> None:

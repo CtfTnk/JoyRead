@@ -11,6 +11,7 @@ from joyread.core.models.collection import Collection
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
+from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -49,6 +50,8 @@ class ShelfViewModel:
         thumbnail_service: ThumbnailService | None = None,
         task_service: TaskService | None = None,
         cover_size: tuple[int, int] | None = None,
+        settings: AppSettings | None = None,
+        settings_store: SettingsStore | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
@@ -56,19 +59,22 @@ class ShelfViewModel:
         self.cover_ready: Signal[tuple[str, Path]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
         self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()
+        self.books_deleted: Signal[tuple[str, ...]] = Signal()
+        self.delete_failed: Signal[str] = Signal()
 
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
         self._task_service = task_service
         self._cover_size = cover_size
+        self._settings_store = settings_store
         self._detail_batch_size = 14
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.search_query = ""
-        self.sort_field = SortField.ADD_TIME
-        self.sort_ascending = False
-        self.file_filter = FileFilter.ALL
-        self.view_mode = ViewMode.GRID
+        self.sort_field = _coerce_sort_field(settings.shelf_sort_field if settings is not None else None)
+        self.sort_ascending = bool(settings.shelf_sort_ascending) if settings is not None else False
+        self.file_filter = _coerce_file_filter(settings.shelf_file_filter if settings is not None else None)
+        self.view_mode = _coerce_view_mode(settings.shelf_view_mode if settings is not None else None)
         self.current_shelf = ShelfKey.ALL.value
         self.selected_book_ids: set[str] = set()
         self.detail_book_uuid: str | None = None
@@ -124,6 +130,18 @@ class ShelfViewModel:
             self.is_loading = False
             self._emit_state()
 
+    def replace_services(
+        self,
+        library_service: LibraryService,
+        thumbnail_service: ThumbnailService | None = None,
+    ) -> None:
+        self._library_service = library_service
+        if thumbnail_service is not None:
+            self._thumbnail_service = thumbnail_service
+        self._cover_paths.clear()
+        self._pending_cover_ids.clear()
+        self._set_detail_book_uuid(None)
+
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
             return
@@ -147,6 +165,7 @@ class ShelfViewModel:
             self.sort_ascending = ascending
             changed = True
         if changed:
+            self._save_shelf_preferences()
             self._emit_state()
 
     def set_filter(self, filter_name: str) -> None:
@@ -155,6 +174,7 @@ class ShelfViewModel:
             return
         self.file_filter = normalized_filter
         self.clear_selection(emit_state=False)
+        self._save_shelf_preferences()
         self._emit_state()
 
     def set_view_mode(self, mode: str) -> None:
@@ -162,6 +182,7 @@ class ShelfViewModel:
         if normalized_mode == self.view_mode:
             return
         self.view_mode = normalized_mode
+        self._save_shelf_preferences()
         self._emit_state()
 
     def select_book(self, book_uuid: str, additive: bool = False) -> None:
@@ -221,6 +242,27 @@ class ShelfViewModel:
         if changed:
             self.books = next_books
             self._emit_state()
+
+    def delete_books(self, book_uuids: Iterable[str]) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
+        if not target_ids:
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.delete_books(target_ids)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.delete_failed.emit(str(exc))
+                return
+            self._handle_delete_success(target_ids)
+            return
+
+        self._task_service.submit(
+            "delete-books",
+            lambda target_ids=target_ids: self._library_service.delete_books(target_ids),
+            on_success=lambda _result, target_ids=target_ids: self._handle_delete_success(target_ids),
+            on_failure=lambda error, target_ids=target_ids: self._handle_delete_failure(error, target_ids),
+        )
 
     def request_cover_generation_for_loaded_books(self) -> None:
         self.request_covers_for_books(book.uuid for book in self.books)
@@ -321,6 +363,38 @@ class ShelfViewModel:
             self._set_detail_book_uuid(None)
         self.state_changed.emit()
 
+    def _save_shelf_preferences(self) -> None:
+        if self._settings_store is None:
+            return
+        self._settings_store.update(
+            shelf_sort_field=self.sort_field.value,
+            shelf_sort_ascending=self.sort_ascending,
+            shelf_file_filter=self.file_filter.value,
+            shelf_view_mode=self.view_mode.value,
+        )
+
+    def _handle_delete_success(self, target_ids: tuple[str, ...]) -> None:
+        target_set = set(target_ids)
+        self.selected_book_ids -= target_set
+        if self.detail_book_uuid in target_set:
+            self._set_detail_book_uuid(None)
+        self._cover_paths = {
+            book_uuid: path for book_uuid, path in self._cover_paths.items() if book_uuid not in target_set
+        }
+        self._pending_cover_ids -= target_set
+        self.load_books()
+        self.selection_changed.emit(set(self.selected_book_ids))
+        self.books_deleted.emit(target_ids)
+
+    def _handle_delete_failure(self, error: Exception, target_ids: tuple[str, ...]) -> None:
+        target_set = set(target_ids)
+        self.selected_book_ids -= target_set
+        if self.detail_book_uuid in target_set:
+            self._set_detail_book_uuid(None)
+        self.load_books()
+        self.selection_changed.emit(set(self.selected_book_ids))
+        self.delete_failed.emit(str(error))
+
     def _record_cover(self, book_uuid: str, path: Path) -> None:
         if self._cover_paths.get(book_uuid) == path:
             return
@@ -370,3 +444,24 @@ class ShelfViewModel:
 
 def collection_shelf_key(collection_uuid: str) -> str:
     return f"collection:{collection_uuid}"
+
+
+def _coerce_sort_field(value: str | None) -> SortField:
+    try:
+        return SortField(value)
+    except ValueError:
+        return SortField.ADD_TIME
+
+
+def _coerce_file_filter(value: str | None) -> FileFilter:
+    try:
+        return FileFilter(value)
+    except ValueError:
+        return FileFilter.ALL
+
+
+def _coerce_view_mode(value: str | None) -> ViewMode:
+    try:
+        return ViewMode(value)
+    except ValueError:
+        return ViewMode.GRID

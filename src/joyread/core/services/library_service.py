@@ -16,3 +16,10 @@ class LibraryService:
 
     def list_collections(self) -> list[Collection]:
         return self._book_repository.list_collections()
+
+    def delete_book(self, book_uuid: str) -> None:
+        self._book_repository.delete_book(book_uuid)
+
+    def delete_books(self, book_uuids: tuple[str, ...]) -> None:
+        for book_uuid in book_uuids:
+            self.delete_book(book_uuid)

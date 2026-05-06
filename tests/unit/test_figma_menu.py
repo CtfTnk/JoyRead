@@ -133,6 +133,7 @@ def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
     apply_theme()
     parent = QWidget()
     qtbot.addWidget(parent)
+    deleted: list[str] = []
 
     menu = build_book_context_menu(
         parent,
@@ -142,13 +143,20 @@ def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
         on_detail=lambda _uuid: None,
         on_add_to_collection=lambda _uuid: None,
         on_remove=lambda _uuid: None,
+        on_delete=deleted.append,
     )
     qtbot.addWidget(menu)
 
     assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Remove", "Delete"])
     delete_row = menu_rows(menu)[-1]
     assert delete_row.property("destructive") == "true"
-    assert delete_row.property("menuEnabled") == "false"
+    assert delete_row.property("menuEnabled") == "true"
+    menu.show()
+    QApplication.processEvents()
+    qtbot.mousePress(delete_row, Qt.MouseButton.LeftButton)
+    qtbot.mouseRelease(delete_row, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert deleted == ["book-1"]
 
 
 def test_book_context_menu_can_hide_remove_action(qtbot) -> None:
@@ -164,6 +172,7 @@ def test_book_context_menu_can_hide_remove_action(qtbot) -> None:
         on_detail=lambda _uuid: None,
         on_add_to_collection=lambda _uuid: None,
         on_remove=lambda _uuid: None,
+        on_delete=lambda _uuid: None,
         show_remove=False,
     )
     qtbot.addWidget(menu)

@@ -60,10 +60,12 @@ class PathService:
         app_name: str = "JoyRead",
         app_author: str = "JoyRead",
         base_dir: Path | None = None,
+        storage_root: Path | None = None,
+        support_root: Path | None = None,
     ) -> None:
         self._app_name = app_name
         self._app_author = app_author
-        self._paths = self._build_paths(base_dir)
+        self._paths = self._build_paths(base_dir, storage_root, support_root)
 
     @property
     def paths(self) -> AppPaths:
@@ -79,23 +81,37 @@ class PathService:
         for directory in self.required_directories():
             directory.mkdir(parents=True, exist_ok=True)
 
-    def _build_paths(self, base_dir: Path | None) -> AppPaths:
-        if base_dir is not None:
+    def _build_paths(
+        self,
+        base_dir: Path | None,
+        storage_root: Path | None,
+        support_root: Path | None,
+    ) -> AppPaths:
+        if storage_root is not None:
+            data_root = storage_root.expanduser().resolve()
+            support = support_root.expanduser().resolve() if support_root is not None else data_root
+            cache_root = data_root / "Cache"
+            thumbnails_root = data_root / "Thumbnails"
+            config_root = support / "Config"
+            logs_root = support / "Logs"
+        elif base_dir is not None:
             root = base_dir.expanduser().resolve()
             data_root = root / "Data"
             cache_root = root / "Cache"
+            thumbnails_root = cache_root / "Thumbnails"
             config_root = root / "Config"
             logs_root = root / "Logs"
         else:
             data_root = self._platform_path("data")
             cache_root = self._platform_path("cache")
+            thumbnails_root = cache_root / "Thumbnails"
             config_root = self._platform_path("config")
             logs_root = self._platform_path("logs")
 
         return AppPaths(
             books=data_root / "Books",
             database=data_root / "Database",
-            thumbnails=cache_root / "Thumbnails",
+            thumbnails=thumbnails_root,
             cache=cache_root,
             logs=logs_root,
             plugins=data_root / "Plugins",

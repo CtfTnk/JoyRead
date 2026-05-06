@@ -16,6 +16,7 @@ from joyread.ui.widgets.book_card import BookCardWidget, BookCoverWidget
 from joyread.ui.widgets.book_detail import BookDetailPanel, DetailReadButton, DetailThumbnailGrid, DetailThumbnailWidget
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
+from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
@@ -198,6 +199,26 @@ def test_book_card_selected_outline_does_not_change_layout_geometry(qtbot) -> No
     assert before == after
     assert margins.left() == Theme.book_card_layout_margin
     assert card.property("selected") == "true"
+
+
+def test_elided_title_label_hides_overflow_and_tooltips_only_when_needed(qtbot) -> None:
+    long_title = "This Is A Very Long JoyRead Book Title That Cannot Fit"
+    label = ElidedLabel(long_title)
+    qtbot.addWidget(label)
+    label.resize(80, 20)
+    label.show()
+    QApplication.processEvents()
+
+    assert label.text() != long_title
+    assert label.toolTip() == long_title
+
+    short_title = "Short"
+    label.set_full_text(short_title)
+    label.resize(200, 20)
+    QApplication.processEvents()
+
+    assert label.text() == short_title
+    assert label.toolTip() == ""
 
 
 def test_book_card_cover_can_update_from_generated_path(qtbot, tmp_path) -> None:

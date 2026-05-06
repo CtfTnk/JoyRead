@@ -24,6 +24,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
+from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
 
@@ -159,10 +160,9 @@ class BookListRowWidget(QFrame):
         )
         info_layout.setSpacing(0)
 
-        title = QLabel(book.title)
+        title = ElidedLabel(book.title)
         title.setProperty("class", "BookTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        title.setToolTip(book.title)
         info_layout.addWidget(title)
 
         author = QLabel(book.author or "Unknown author")

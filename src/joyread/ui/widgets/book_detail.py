@@ -27,6 +27,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
+from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
 
@@ -416,7 +417,7 @@ class InlineEditableText(QWidget):
         self._stack.setCurrentWidget(self._label)
 
 
-class DoubleClickLabel(QLabel):
+class DoubleClickLabel(ElidedLabel):
     double_clicked = QtSignal()
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:

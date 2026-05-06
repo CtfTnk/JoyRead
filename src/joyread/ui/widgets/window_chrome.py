@@ -99,6 +99,11 @@ class WindowChromeWidget(QWidget):
     def set_view_mode(self, mode: str) -> None:
         self._list_mode_switch.set_value(mode)
 
+    def set_sort(self, field: str, ascending: bool) -> None:
+        self._sort_dropdown.set_value(field)
+        self._sort_ascending = ascending
+        self._sort_mode_switch.set_ascending(ascending)
+
     def set_shelf_controls_visible(self, visible: bool) -> None:
         for control in self._shelf_controls:
             control.setVisible(visible)

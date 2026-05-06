@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
 
@@ -74,11 +75,9 @@ class BookCardWidget(QFrame):
         self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
         layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        title = QLabel(book.title)
+        title = ElidedLabel(book.title)
         title.setProperty("class", "BookTitle")
-        title.setWordWrap(True)
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        title.setToolTip(book.title)
         layout.addWidget(title, stretch=1)
 
         control_bar_frame = QWidget()

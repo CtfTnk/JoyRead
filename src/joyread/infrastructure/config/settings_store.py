@@ -1,0 +1,116 @@
+"""Persistent app settings stored outside the movable library data root."""
+
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass
+import json
+from pathlib import Path
+from typing import Any
+
+try:
+    from platformdirs import user_config_path, user_data_path
+except ImportError:  # pragma: no cover - platformdirs is a project dependency.
+    user_config_path = user_data_path = None
+
+
+@dataclass(frozen=True)
+class AppSettings:
+    storage_location: str
+    hash_algorithm: str = "sha256"
+    language: str = "English"
+    import_book_when_opening: bool = False
+    individual_read_window: bool = False
+    shelf_sort_field: str = "Add Time"
+    shelf_sort_ascending: bool = False
+    shelf_file_filter: str = "ALL"
+    shelf_view_mode: str = "grid"
+
+
+class SettingsStore:
+    """Loads the bootstrap settings needed before PathService exists.
+
+    The storage location cannot live in SQLite because SQLite itself is inside
+    the movable storage root. Keep this config in a stable support directory.
+    """
+
+    _FILENAME = "settings.json"
+
+    def __init__(
+        self,
+        app_name: str = "JoyRead",
+        app_author: str = "JoyRead",
+        support_root: Path | None = None,
+        default_storage_root: Path | None = None,
+    ) -> None:
+        self._app_name = app_name
+        self._app_author = app_author
+        self._support_root = (support_root or self._default_support_root()).expanduser().resolve()
+        self._default_storage_root = (
+            default_storage_root or self._default_storage_root_for_environment()
+        ).expanduser().resolve()
+
+    @property
+    def support_root(self) -> Path:
+        return self._support_root
+
+    @property
+    def config_dir(self) -> Path:
+        return self._support_root / "Config"
+
+    @property
+    def settings_path(self) -> Path:
+        return self.config_dir / self._FILENAME
+
+    def load(self) -> AppSettings:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        if not self.settings_path.exists():
+            settings = self.default_settings()
+            self.save(settings)
+            return settings
+
+        raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        return AppSettings(
+            storage_location=str(raw.get("storage_location") or self._default_storage_root),
+            hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
+            language=str(raw.get("language") or "English"),
+            import_book_when_opening=bool(raw.get("import_book_when_opening", False)),
+            individual_read_window=bool(raw.get("individual_read_window", False)),
+            shelf_sort_field=str(raw.get("shelf_sort_field") or "Add Time"),
+            shelf_sort_ascending=bool(raw.get("shelf_sort_ascending", False)),
+            shelf_file_filter=str(raw.get("shelf_file_filter") or "ALL"),
+            shelf_view_mode=str(raw.get("shelf_view_mode") or "grid"),
+        )
+
+    def save(self, settings: AppSettings) -> None:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        self.settings_path.write_text(
+            json.dumps(asdict(settings), indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+
+    def update(self, **changes: Any) -> AppSettings:
+        current = self.load()
+        next_settings = AppSettings(**{**asdict(current), **changes})
+        self.save(next_settings)
+        return next_settings
+
+    def default_settings(self) -> AppSettings:
+        return AppSettings(storage_location=str(self._default_storage_root))
+
+    def _default_support_root(self) -> Path:
+        if _looks_like_source_checkout(Path.cwd()):
+            return Path.cwd() / ".joyread_support"
+        if user_config_path is not None:
+            return Path(user_config_path(self._app_name, self._app_author, roaming=True))
+        return Path.home() / ".config" / self._app_name
+
+    def _default_storage_root_for_environment(self) -> Path:
+        if _looks_like_source_checkout(Path.cwd()):
+            return Path.cwd() / ".joyread_storage"
+        if user_data_path is not None:
+            return Path(user_data_path(self._app_name, self._app_author, roaming=True))
+        return Path.home() / ".local" / "share" / self._app_name
+
+
+def _looks_like_source_checkout(path: Path) -> bool:
+    return (path / "pyproject.toml").exists() and (path / "src" / "joyread").exists()

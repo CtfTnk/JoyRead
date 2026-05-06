@@ -1,0 +1,186 @@
+"""SQLite schema migrations for the JoyRead library database."""
+
+from __future__ import annotations
+
+import sqlite3
+
+
+MIGRATIONS: tuple[tuple[int, str], ...] = (
+    (
+        1,
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS book_files (
+            file_id TEXT PRIMARY KEY,
+            original_path TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            file_format TEXT NOT NULL,
+            file_size INTEGER NOT NULL,
+            mtime_ns INTEGER NOT NULL,
+            hash_algorithm TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('healthy', 'missing')),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(hash_algorithm, content_hash)
+        );
+
+        CREATE TABLE IF NOT EXISTS books (
+            book_id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL REFERENCES book_files(file_id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            author TEXT NOT NULL,
+            language_tag TEXT,
+            book_type TEXT NOT NULL CHECK (book_type IN ('manga', 'book')),
+            cover_path TEXT,
+            is_favourite INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS progress (
+            book_scope TEXT NOT NULL CHECK (book_scope IN ('public', 'private')),
+            book_id TEXT NOT NULL,
+            page_index INTEGER NOT NULL DEFAULT 0,
+            progress_percent REAL NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (book_scope, book_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            bookmark_id TEXT PRIMARY KEY,
+            book_scope TEXT NOT NULL CHECK (book_scope IN ('public', 'private')),
+            book_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            page_index INTEGER NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collections (
+            collection_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS collection_books (
+            collection_id TEXT NOT NULL REFERENCES collections(collection_id) ON DELETE CASCADE,
+            book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (collection_id, book_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS private_collections (
+            private_collection_id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS private_books (
+            private_book_id TEXT PRIMARY KEY,
+            file_id TEXT NOT NULL REFERENCES book_files(file_id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            author TEXT NOT NULL,
+            language_tag TEXT,
+            book_type TEXT NOT NULL CHECK (book_type IN ('manga', 'book')),
+            cover_path TEXT,
+            encrypted_cover_path TEXT,
+            encryption_status TEXT NOT NULL DEFAULT 'not_encrypted',
+            private_collection_id TEXT REFERENCES private_collections(private_collection_id) ON DELETE SET NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS import_batches (
+            batch_id TEXT PRIMARY KEY,
+            manifest_path TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS import_items (
+            import_item_id TEXT PRIMARY KEY,
+            batch_id TEXT NOT NULL REFERENCES import_batches(batch_id) ON DELETE CASCADE,
+            source_path TEXT NOT NULL,
+            external_id TEXT,
+            status TEXT NOT NULL,
+            book_id TEXT,
+            file_id TEXT,
+            message TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_book_files_hash
+            ON book_files(hash_algorithm, content_hash);
+        CREATE INDEX IF NOT EXISTS idx_book_files_state
+            ON book_files(state);
+        CREATE INDEX IF NOT EXISTS idx_books_title
+            ON books(title COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_books_author
+            ON books(author COLLATE NOCASE);
+        CREATE INDEX IF NOT EXISTS idx_books_file_id
+            ON books(file_id);
+        CREATE INDEX IF NOT EXISTS idx_progress_book
+            ON progress(book_scope, book_id);
+        CREATE INDEX IF NOT EXISTS idx_bookmarks_book
+            ON bookmarks(book_scope, book_id);
+        CREATE INDEX IF NOT EXISTS idx_collection_books_book
+            ON collection_books(book_id);
+        CREATE INDEX IF NOT EXISTS idx_import_items_batch
+            ON import_items(batch_id);
+        """,
+    ),
+    (
+        2,
+        """
+        CREATE TABLE IF NOT EXISTS recent_books (
+            book_id TEXT PRIMARY KEY REFERENCES books(book_id) ON DELETE CASCADE,
+            last_read_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_recent_books_last_read
+            ON recent_books(last_read_at DESC);
+        """,
+    ),
+)
+
+
+def apply_migrations(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    applied = {
+        int(row["version"])
+        for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
+    }
+    for version, sql in MIGRATIONS:
+        if version in applied:
+            continue
+        try:
+            connection.executescript(
+                f"""
+                BEGIN;
+                {sql}
+                INSERT INTO schema_migrations(version) VALUES ({int(version)});
+                COMMIT;
+                """
+            )
+        except Exception:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.OperationalError:
+                pass
+            raise

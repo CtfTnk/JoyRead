@@ -32,6 +32,9 @@ class MockBookRepository(BookRepository):
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
 
+    def delete_book(self, book_id: str) -> None:
+        self._books = [book for book in self._books if book.uuid != book_id]
+
     def _load_json(self, data_path: Path | None) -> dict[str, Any]:
         if data_path is not None:
             return json.loads(data_path.read_text(encoding="utf-8"))

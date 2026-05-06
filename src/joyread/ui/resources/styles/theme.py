@@ -276,6 +276,8 @@ class Theme:
     dialog_button_shadow_blur = 4
     dialog_button_shadow_offset = 0
     dialog_font_size = 12
+    tooltip_radius = 2
+    tooltip_padding = 4
 
     # Palette
     color_window = "#ffffff"
@@ -360,6 +362,8 @@ class Theme:
             "__DIALOG_BUTTON_BORDER_WIDTH__": f"{cls.dialog_button_border_width}px",
             "__DIALOG_BUTTON_RADIUS__": f"{cls.dialog_button_radius}px",
             "__DIALOG_FONT_SIZE__": f"{cls.dialog_font_size}px",
+            "__TOOLTIP_RADIUS__": f"{cls.tooltip_radius}px",
+            "__TOOLTIP_PADDING__": f"{cls.tooltip_padding}px",
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",

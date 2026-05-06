@@ -14,3 +14,6 @@ class BookRepository(Protocol):
 
     def list_collections(self) -> list[Collection]:
         ...
+
+    def delete_book(self, book_id: str) -> None:
+        ...

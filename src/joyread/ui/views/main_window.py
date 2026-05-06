@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
 from joyread.ui.resources.styles.theme import Theme
@@ -72,12 +74,108 @@ class MainWindow(QMainWindow):
         self.chrome.sort_changed.connect(context.shelf_viewmodel.set_sort)
         self.sidebar.navigation_requested.connect(self._handle_navigation)
         self.shelf_view.info_requested.connect(self.dialog_overlay.show_info)
+        self.shelf_view.import_manifest_requested.connect(self._select_import_manifest)
+        self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
+        self.settings_view.storage_change_requested.connect(self._select_storage_location)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
+        context.shelf_viewmodel.books_deleted.connect(self._handle_books_deleted)
+        context.shelf_viewmodel.delete_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Delete Failed", message)
+        )
         context.shelf_viewmodel.load_books()
         self.sidebar.set_collections(context.shelf_viewmodel.collections)
         self.shelf_view.render()
+
+    def _select_import_manifest(self) -> None:
+        manifest_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import JoyRead Manifest",
+            "",
+            "JSON Manifest (*.json)",
+        )
+        if not manifest_path:
+            return
+        self._context.task_service.submit(
+            "import-manifest",
+            lambda: self._context.import_service.import_manifest(manifest_path),
+            on_success=self._handle_import_finished,
+            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+        )
+
+    def _handle_import_finished(self, result) -> None:  # noqa: ANN001
+        self._context.shelf_viewmodel.load_books()
+        self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
+        self.shelf_view.render()
+        self.dialog_overlay.show_info(
+            "Import Finished",
+            (
+                f"Imported: {result.imported_count}\n"
+                f"Duplicates: {result.duplicate_count}\n"
+                f"Failed: {result.failed_count}"
+            ),
+        )
+
+    def _confirm_delete_books(self, book_uuids: tuple[str, ...]) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuids))
+        if not target_ids:
+            return
+        books_by_uuid = {book.uuid: book for book in self._context.shelf_viewmodel.books}
+        titles = [books_by_uuid[book_uuid].title for book_uuid in target_ids if book_uuid in books_by_uuid]
+        if not titles:
+            return
+
+        if len(titles) == 1:
+            title = "Delete Book"
+            message = (
+                f"Delete '{titles[0]}' from JoyRead?\n\n"
+                "This removes its library record, collections, progress, bookmarks, recent history, "
+                "and the app-managed copied file."
+            )
+        else:
+            title = "Delete Books"
+            message = (
+                f"Delete {len(titles)} books from JoyRead?\n\n"
+                "This removes their library records, collections, progress, bookmarks, recent history, "
+                "and app-managed copied files."
+            )
+        self.dialog_overlay.show_confirm(
+            title,
+            message,
+            on_confirm=lambda target_ids=target_ids: self._context.shelf_viewmodel.delete_books(target_ids),
+            confirm_text="Delete",
+            cancel_text="Cancel",
+        )
+
+    def _select_storage_location(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Choose JoyRead Storage Location",
+            self._context.settings_viewmodel.storage_location,
+        )
+        if not directory:
+            return
+        old_root = Path(self._context.settings.storage_location)
+        new_root = Path(directory)
+        self._context.database_interpreter.close()
+        self._context.task_service.submit(
+            "move-storage-location",
+            lambda: self._context.storage_migration_service.move_storage_location(old_root, new_root),
+            on_success=lambda _result: self._handle_storage_location_changed(),
+            on_failure=lambda error: self._handle_storage_location_failed(error),
+        )
+
+    def _handle_storage_location_changed(self) -> None:
+        self._context.reload_storage_from_settings()
+        self._context.shelf_viewmodel.load_books()
+        self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
+        self.shelf_view.render()
+        self.dialog_overlay.show_info("Storage Location", "JoyRead storage location has been updated.")
+
+    def _handle_storage_location_failed(self, error: Exception) -> None:
+        self._context.reload_storage_from_settings()
+        self.dialog_overlay.show_info("Storage Location", str(error))
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":
@@ -101,6 +199,13 @@ class MainWindow(QMainWindow):
 
     def _sync_chrome(self) -> None:
         self.chrome.set_view_mode(self._context.shelf_viewmodel.view_mode.value)
+        self.chrome.set_sort(
+            self._context.shelf_viewmodel.sort_field.value,
+            self._context.shelf_viewmodel.sort_ascending,
+        )
+
+    def _handle_books_deleted(self, _book_uuids: tuple[str, ...]) -> None:
+        self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
 
     def _toggle_sidebar(self) -> None:
         visible = not self.sidebar.isVisible()

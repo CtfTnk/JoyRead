@@ -58,10 +58,13 @@ class TopToolbarWidget(QWidget):
     def set_title(self, title: str) -> None:
         self._title.setText(title)
 
+    def set_filter(self, filter_name: str) -> None:
+        self._filter_dropdown.set_value(filter_name)
+
+
 def _spacer() -> QFrame:
     frame = QFrame()
     frame.setObjectName("ToolbarSpacer")
     frame.setFixedSize(Theme.toolbar_spacer_width, Theme.toolbar_control_height)
     frame.setFrameShape(QFrame.Shape.NoFrame)
     return frame
-    

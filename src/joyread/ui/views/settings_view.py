@@ -15,6 +15,7 @@ from joyread.ui.widgets.settings_page import SettingsPageWidget
 class SettingsView(QWidget):
     close_requested = QtSignal()
     info_requested = QtSignal(str, str)
+    storage_change_requested = QtSignal()
 
     def __init__(
         self,
@@ -28,7 +29,7 @@ class SettingsView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.page = SettingsPageWidget(viewmodel, resources, self)
-        self.page.storage_change_requested.connect(self._show_storage_placeholder)
+        self.page.storage_change_requested.connect(self.storage_change_requested.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -61,9 +62,6 @@ class SettingsView(QWidget):
     def showEvent(self, event: QShowEvent) -> None:
         super().showEvent(event)
         self._position_page()
-
-    def _show_storage_placeholder(self) -> None:
-        self.info_requested.emit("Storage Location", "Storage location selection is not implemented yet.")
 
     def _position_page(self) -> None:
         width = _clamp(

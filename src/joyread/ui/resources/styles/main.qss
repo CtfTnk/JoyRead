@@ -4,6 +4,15 @@ QWidget {
     color: #000000;
 }
 
+/* Conditional title overflow hints */
+QToolTip {
+    color: __TEXT_COLOR__;
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __TOOLTIP_RADIUS__;
+    padding: __TOOLTIP_PADDING__;
+}
+
 /* Figma control dimensions are fixed in Python via Theme constants.
    Do not add QSS min/max sizes to those controls: Qt treats them as
    content-box values and then adds border/padding, which changes the

@@ -200,6 +200,7 @@ def build_book_context_menu(
     on_detail: Callable[[str], None],
     on_add_to_collection: Callable[[str], None],
     on_remove: Callable[[str], None],
+    on_delete: Callable[[str], None],
     *,
     show_remove: bool = True,
 ) -> FigmaMenu:
@@ -211,7 +212,7 @@ def build_book_context_menu(
     menu.add_item("Add to...", lambda: on_add_to_collection(book.uuid))
     if show_remove:
         menu.add_item("Remove", lambda: on_remove(book.uuid))
-    menu.add_item("Delete", None, destructive=True, enabled=False)
+    menu.add_item("Delete", lambda: on_delete(book.uuid), destructive=True)
 
     return menu
 

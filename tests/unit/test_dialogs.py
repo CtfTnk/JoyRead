@@ -166,9 +166,37 @@ def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     assert title_labels == ["New Collection"]
 
 
+def test_main_window_uses_global_confirm_dialog_for_delete(qtbot, monkeypatch) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    book = context.shelf_viewmodel.books[0]
+    window._confirm_delete_books((book.uuid,))
+    QApplication.processEvents()
+
+    title_labels = [
+        label.text()
+        for label in window.dialog_overlay.panel.findChildren(QLabel)
+        if label.property("class") == "JoyReadDialogTitle"
+    ]
+    buttons = [button.text for button in window.dialog_overlay.panel.findChildren(DialogTextButton)]
+
+    assert window.dialog_overlay.isVisible()
+    assert title_labels == ["Delete Book"]
+    assert buttons == ["Cancel", "Delete"]
+    context.close()
+
+
 def test_stylesheet_resolves_dialog_tokens() -> None:
     stylesheet = ResourceLoader().load_stylesheet()
 
     assert "__DIALOG_PANEL_BORDER_WIDTH__" not in stylesheet
     assert "__DIALOG_BUTTON_RADIUS__" not in stylesheet
+    assert "__TOOLTIP_RADIUS__" not in stylesheet
     assert "QFrame[class=\"JoyReadDialogPanel\"]" in stylesheet

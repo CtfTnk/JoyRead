@@ -24,6 +24,7 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
     _load_application_fonts(context.resources)
     app.setStyleSheet(context.resources.load_stylesheet())
+    app.aboutToQuit.connect(context.close)
 
     window = MainWindow(context)
     return app, context, window

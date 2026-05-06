@@ -51,6 +51,8 @@ wheelhouse/
 
 # Logs and runtime files
 *.log
+.joyread_support/
+.joyread_storage/
 /logs/
 /Logs/
 /runtime/

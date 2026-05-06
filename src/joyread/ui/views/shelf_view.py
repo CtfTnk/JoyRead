@@ -20,6 +20,8 @@ from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 
 class ShelfView(QWidget):
     info_requested = QtSignal(str, str)
+    import_manifest_requested = QtSignal()
+    delete_books_requested = QtSignal(tuple)
 
     def __init__(
         self,
@@ -95,6 +97,7 @@ class ShelfView(QWidget):
 
     def render(self) -> None:
         self.toolbar.set_title(self._viewmodel.page_title)
+        self.toolbar.set_filter(self._viewmodel.file_filter.value)
 
         if self._viewmodel.is_loading:
             self.stack.setCurrentWidget(self.loading_state)
@@ -141,6 +144,7 @@ class ShelfView(QWidget):
             on_detail=self._viewmodel.show_detail,
             on_add_to_collection=lambda _uuid: self._show_placeholder_for_targets("Add to Collection", target_ids),
             on_remove=lambda _uuid: self._show_placeholder_for_targets("Remove from Library", target_ids),
+            on_delete=lambda _uuid: self.delete_books_requested.emit(target_ids),
             show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,
         )
         menu.exec(global_pos)
@@ -175,7 +179,7 @@ class ShelfView(QWidget):
             self,
             on_open_book=lambda: self._show_placeholder("Open Book"),
             on_open_and_import=lambda: self._show_placeholder("Open & Import"),
-            on_import=lambda: self._show_placeholder("Import"),
+            on_import=self.import_manifest_requested.emit,
         )
 
     def set_sidebar_visible(self, visible: bool) -> None:
