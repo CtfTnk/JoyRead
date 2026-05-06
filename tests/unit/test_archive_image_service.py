@@ -17,6 +17,7 @@ from joyread.core.archive import (
     ArchivePasswordRejected,
     ArchivePasswordRequired,
     ArchiveUnsupportedFormat,
+    ArchiveValidationCode,
 )
 
 
@@ -175,6 +176,78 @@ def test_empty_corrupt_and_unsupported_archives_are_controlled(tmp_path: Path) -
         ArchiveImageService().open(unsupported_path)
 
 
+def test_archive_validation_returns_structured_success_and_failure_feedback(tmp_path: Path) -> None:
+    service = ArchiveImageService()
+    archive_path = tmp_path / "valid.cbz"
+    _write_zip(archive_path, {"001.png": _png_bytes((20, 10)), "notes.txt": b"ignored"})
+    missing_path = tmp_path / "missing.cbz"
+    directory_path = tmp_path / "folder.cbz"
+    directory_path.mkdir()
+    unsupported_path = tmp_path / "sample.tar"
+    unsupported_path.write_bytes(b"not supported")
+    empty_path = tmp_path / "empty.cbz"
+    _write_zip(empty_path, {"notes.txt": b"no images"})
+    corrupt_path = tmp_path / "corrupt.cbz"
+    corrupt_path.write_bytes(b"not a zip")
+
+    valid = service.validate_archive(archive_path)
+    assert valid.is_valid is True
+    assert valid.code == ArchiveValidationCode.OK
+    assert valid.page_count == 1
+    assert valid.archive_format == "CBZ"
+    assert valid.file_size == archive_path.stat().st_size
+    assert valid.mtime_ns == archive_path.stat().st_mtime_ns
+
+    missing = service.validate_archive(missing_path)
+    assert missing.is_valid is False
+    assert missing.code == ArchiveValidationCode.MISSING
+    assert "does not exist" in missing.message
+
+    not_file = service.validate_archive(directory_path)
+    assert not_file.code == ArchiveValidationCode.NOT_FILE
+    assert not_file.error_type == "ArchiveOpenError"
+
+    unsupported = service.validate_archive(unsupported_path)
+    assert unsupported.code == ArchiveValidationCode.UNSUPPORTED_FORMAT
+    assert unsupported.error_type == "ArchiveUnsupportedFormat"
+
+    empty = service.validate_archive(empty_path)
+    assert empty.code == ArchiveValidationCode.EMPTY
+    assert empty.error_type == "ArchiveEmptyError"
+
+    corrupt = service.validate_archive(corrupt_path)
+    assert corrupt.code == ArchiveValidationCode.CORRUPT
+    assert corrupt.error_type == "ArchiveCorruptError"
+
+
+def test_archive_validation_reports_password_feedback(tmp_path: Path) -> None:
+    archive_path = tmp_path / "encrypted.cbz"
+    with pyzipper.AESZipFile(
+        archive_path,
+        "w",
+        compression=ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword(b"secret")
+        archive.writestr("001.png", _png_bytes((32, 16)))
+
+    service = ArchiveImageService()
+
+    required = service.validate_archive(archive_path)
+    assert required.is_valid is False
+    assert required.code == ArchiveValidationCode.PASSWORD_REQUIRED
+    assert required.error_type == "ArchivePasswordRequired"
+
+    rejected = service.validate_archive(archive_path, password_provider=lambda _request: "wrong")
+    assert rejected.code == ArchiveValidationCode.PASSWORD_REJECTED
+    assert rejected.error_type == "ArchivePasswordRejected"
+
+    accepted = service.validate_archive(archive_path, password_provider=lambda _request: "secret")
+    assert accepted.is_valid is True
+    assert accepted.code == ArchiveValidationCode.OK
+    assert accepted.page_count == 1
+
+
 def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from joyread.core.archive import service as archive_service
 
@@ -191,3 +264,7 @@ def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.M
 
     with pytest.raises(ArchiveDependencyMissing):
         ArchiveImageService().open(archive_path)
+
+    result = ArchiveImageService().validate_archive(archive_path)
+    assert result.code == ArchiveValidationCode.DEPENDENCY_MISSING
+    assert result.error_type == "ArchiveDependencyMissing"

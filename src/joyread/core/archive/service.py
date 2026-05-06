@@ -21,12 +21,18 @@ from joyread.core.archive.errors import (
     ArchiveCorruptError,
     ArchiveDependencyMissing,
     ArchiveEmptyError,
+    ArchiveError,
     ArchiveOpenError,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
     ArchiveUnsupportedFormat,
 )
-from joyread.core.archive.models import ArchivePasswordRequest, PasswordProvider
+from joyread.core.archive.models import (
+    ArchivePasswordRequest,
+    ArchiveValidationCode,
+    ArchiveValidationResult,
+    PasswordProvider,
+)
 
 try:  # pragma: no cover - exercised through dependency-missing branches.
     import py7zr
@@ -195,6 +201,72 @@ class ArchiveImageSession:
 class ArchiveImageService:
     """Create image sessions from supported comic archive files."""
 
+    def validate_archive(
+        self,
+        archive_path: str | Path,
+        password_provider: PasswordProvider | None = None,
+        max_nested_depth: int = 5,
+    ) -> ArchiveValidationResult:
+        """Return structured feedback without raising controlled archive errors.
+
+        Use this for import/preflight/UI paths. Reader code that needs page
+        access should still call `open()` and keep the returned session alive.
+        """
+
+        path = Path(archive_path)
+        suffix = path.suffix.lower()
+        archive_format = suffix.lstrip(".").upper() or None
+
+        if not path.exists():
+            return self._validation_result(
+                path,
+                ArchiveValidationCode.MISSING,
+                f"Archive file does not exist: {path}",
+                archive_format=archive_format,
+                error_type=ArchiveOpenError.__name__,
+            )
+        if not path.is_file():
+            return self._validation_result(
+                path,
+                ArchiveValidationCode.NOT_FILE,
+                f"Archive path is not a file: {path}",
+                archive_format=archive_format,
+                error_type=ArchiveOpenError.__name__,
+            )
+        if suffix not in ARCHIVE_EXTENSIONS:
+            return self._validation_result(
+                path,
+                ArchiveValidationCode.UNSUPPORTED_FORMAT,
+                f"Unsupported archive format: {suffix or path.name}",
+                archive_format=archive_format,
+                error_type=ArchiveUnsupportedFormat.__name__,
+            )
+
+        try:
+            session = self.open(
+                path,
+                password_provider=password_provider,
+                max_nested_depth=max_nested_depth,
+            )
+        except ArchiveError as exc:
+            code = _validation_code_for_error(exc)
+            return self._validation_result(
+                path,
+                code,
+                str(exc),
+                archive_format=archive_format,
+                error_type=type(exc).__name__,
+            )
+
+        return self._validation_result(
+            path,
+            ArchiveValidationCode.OK,
+            f"Archive is readable with {session.page_count} image page(s).",
+            archive_format=archive_format,
+            page_count=session.page_count,
+            is_valid=True,
+        )
+
     def open(
         self,
         archive_path: str | Path,
@@ -203,16 +275,52 @@ class ArchiveImageService:
     ) -> ArchiveImageSession:
         path = Path(archive_path)
         suffix = path.suffix.lower()
-        if suffix not in ARCHIVE_EXTENSIONS:
-            raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
         if not path.exists():
             raise ArchiveOpenError(f"Archive does not exist: {path}")
+        if not path.is_file():
+            raise ArchiveOpenError(f"Archive path is not a file: {path}")
+        if suffix not in ARCHIVE_EXTENSIONS:
+            raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
 
         source = _ArchiveSource(label=path.name, suffix=suffix, path=path)
         pages = self._scan_archive(source, password_provider, depth=0, max_nested_depth=max_nested_depth)
         if not pages:
             raise ArchiveEmptyError(f"No supported image pages found in archive: {path}")
         return ArchiveImageSession(pages)
+
+    def _validation_result(
+        self,
+        path: Path,
+        code: ArchiveValidationCode,
+        message: str,
+        *,
+        archive_format: str | None,
+        page_count: int | None = None,
+        is_valid: bool = False,
+        error_type: str | None = None,
+    ) -> ArchiveValidationResult:
+        file_size: int | None = None
+        mtime_ns: int | None = None
+        try:
+            if path.is_file():
+                stat = path.stat()
+                file_size = stat.st_size
+                mtime_ns = stat.st_mtime_ns
+        except OSError:
+            # Validation must be safe for UI/import scans; stat failures are
+            # reported through the main validation code instead of bubbling up.
+            pass
+        return ArchiveValidationResult(
+            path=path,
+            is_valid=is_valid,
+            code=code,
+            message=message,
+            archive_format=archive_format,
+            page_count=page_count,
+            file_size=file_size,
+            mtime_ns=mtime_ns,
+            error_type=error_type,
+        )
 
     def _scan_archive(
         self,
@@ -519,3 +627,21 @@ def _natural_key(value: str) -> tuple[object, ...]:
 def _looks_like_password_error(exc: Exception) -> bool:
     text = str(exc).lower()
     return "password" in text or "encrypted" in text or "bad decrypt" in text
+
+
+def _validation_code_for_error(error: ArchiveError) -> ArchiveValidationCode:
+    if isinstance(error, ArchiveUnsupportedFormat):
+        return ArchiveValidationCode.UNSUPPORTED_FORMAT
+    if isinstance(error, ArchiveOpenError):
+        return ArchiveValidationCode.OPEN_FAILED
+    if isinstance(error, ArchiveCorruptError):
+        return ArchiveValidationCode.CORRUPT
+    if isinstance(error, ArchiveEmptyError):
+        return ArchiveValidationCode.EMPTY
+    if isinstance(error, ArchivePasswordRequired):
+        return ArchiveValidationCode.PASSWORD_REQUIRED
+    if isinstance(error, ArchivePasswordRejected):
+        return ArchiveValidationCode.PASSWORD_REJECTED
+    if isinstance(error, ArchiveDependencyMissing):
+        return ArchiveValidationCode.DEPENDENCY_MISSING
+    return ArchiveValidationCode.UNKNOWN_ERROR

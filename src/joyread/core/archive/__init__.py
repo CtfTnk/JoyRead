@@ -10,7 +10,12 @@ from joyread.core.archive.errors import (
     ArchivePasswordRequired,
     ArchiveUnsupportedFormat,
 )
-from joyread.core.archive.models import ArchivePasswordRequest, PasswordProvider
+from joyread.core.archive.models import (
+    ArchivePasswordRequest,
+    ArchiveValidationCode,
+    ArchiveValidationResult,
+    PasswordProvider,
+)
 from joyread.core.archive.service import ArchiveImageService, ArchiveImageSession
 
 __all__ = [
@@ -25,5 +30,7 @@ __all__ = [
     "ArchivePasswordRequest",
     "ArchivePasswordRequired",
     "ArchiveUnsupportedFormat",
+    "ArchiveValidationCode",
+    "ArchiveValidationResult",
     "PasswordProvider",
 ]
