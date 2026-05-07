@@ -245,6 +245,16 @@ class SqliteBookRepository(BookRepository):
             DatabasePriority.NORMAL,
         )
 
+    def rename_collection(self, collection_id: str, name: str) -> None:
+        now = _now()
+        self._database.execute(
+            lambda connection: connection.execute(
+                "UPDATE collections SET name = ?, updated_at = ? WHERE collection_id = ?",
+                (name, now, collection_id),
+            ),
+            DatabasePriority.NORMAL,
+        )
+
     def add_book_to_collection(self, book_id: str, collection_id: str) -> None:
         now = _now()
         self._database.execute(

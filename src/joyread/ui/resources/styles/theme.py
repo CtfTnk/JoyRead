@@ -39,7 +39,7 @@ class Theme:
     book_selection_border_width = 2
     book_card_padding = 10
     book_card_layout_margin = book_card_padding - book_selection_border_width
-    book_card_gap = 8
+    book_card_gap = 7
     cover_width = 170
     cover_height = 241
     cover_radius = 6
@@ -55,6 +55,7 @@ class Theme:
     book_progress_height = 10
     book_progress_radius = 5
     book_progress_percent_gap = 10
+    elided_label_clip_guard = 2
 
     # Floating book detail panel from Figma node 162:1473 / component 162:861.
     detail_panel_top_margin = 81
@@ -265,7 +266,27 @@ class Theme:
     dialog_layout_margin = dialog_visual_padding - dialog_border_width
     dialog_gap = 6
     dialog_radius = 10
-    dialog_content_padding = 10
+    dialog_content_padding = 6
+    dialog_content_outer_padding = 2
+    dialog_content_max_height = 215
+    dialog_message_clip_guard = 2
+    dialog_input_area_padding = 10
+    dialog_input_area_gap = 6
+    dialog_input_group_width = 200
+    dialog_input_group_padding = 4
+    dialog_input_field_height = 28
+    dialog_input_field_radius = 8
+    dialog_input_field_border_width = 1
+    dialog_input_field_padding_horizontal = 6
+    dialog_input_field_padding_vertical = 4
+    dialog_input_header_font_size = 14
+    dialog_input_state_font_size = 12
+    dialog_collection_scroll_width = 260
+    dialog_collection_scroll_radius = 6
+    dialog_collection_scroll_border_width = 1
+    dialog_collection_scroll_visual_padding = 10
+    dialog_collection_scroll_layout_margin = dialog_collection_scroll_visual_padding - dialog_collection_scroll_border_width
+    dialog_collection_scrollbar_margin = dialog_collection_scroll_radius
     dialog_option_gap = 10
     dialog_button_width = 100
     dialog_button_height = 28
@@ -300,6 +321,7 @@ class Theme:
     color_sidebar_item_hover = "#eeeeee"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
+    color_dialog_input_header = "#5f5f5f"
     color_settings_path_edge = "#7f7f7f"
     color_settings_switch_background = "#b9b9b9"
     color_settings_switch_knob_rgba = (0, 0, 0, 191)
@@ -362,6 +384,18 @@ class Theme:
             "__DIALOG_BUTTON_BORDER_WIDTH__": f"{cls.dialog_button_border_width}px",
             "__DIALOG_BUTTON_RADIUS__": f"{cls.dialog_button_radius}px",
             "__DIALOG_FONT_SIZE__": f"{cls.dialog_font_size}px",
+            "__DIALOG_INPUT_HEADER_FONT_SIZE__": f"{cls.dialog_input_header_font_size}px",
+            "__DIALOG_INPUT_STATE_FONT_SIZE__": f"{cls.dialog_input_state_font_size}px",
+            "__DIALOG_INPUT_FIELD_BORDER_WIDTH__": f"{cls.dialog_input_field_border_width}px",
+            "__DIALOG_INPUT_FIELD_RADIUS__": f"{cls.dialog_input_field_radius}px",
+            "__DIALOG_INPUT_FIELD_PADDING__": (
+                f"{cls.dialog_input_field_padding_vertical}px "
+                f"{cls.dialog_input_field_padding_horizontal}px"
+            ),
+            "__DIALOG_INPUT_HEADER_COLOR__": cls.color_dialog_input_header,
+            "__DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__": f"{cls.dialog_collection_scroll_border_width}px",
+            "__DIALOG_COLLECTION_SCROLL_RADIUS__": f"{cls.dialog_collection_scroll_radius}px",
+            "__DIALOG_COLLECTION_SCROLLBAR_MARGIN__": f"{cls.dialog_collection_scrollbar_margin}px",
             "__TOOLTIP_RADIUS__": f"{cls.tooltip_radius}px",
             "__TOOLTIP_PADDING__": f"{cls.tooltip_padding}px",
             "__TEXT_COLOR__": cls.color_text,

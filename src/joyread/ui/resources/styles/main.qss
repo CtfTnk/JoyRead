@@ -134,8 +134,15 @@ QWidget#Sidebar {
 
 QWidget#SidebarUpperPart,
 QWidget#SidebarLowerPart,
-QWidget#SidebarSectionGroup {
+QWidget#SidebarSectionGroup,
+QWidget#SidebarCollectionsContainer {
     background: transparent;
+}
+
+QScrollArea#SidebarScrollArea,
+QWidget#SidebarScrollViewport {
+    background: transparent;
+    border: none;
 }
 
 QFrame#SidebarSectionBanner {
@@ -171,6 +178,35 @@ QLabel#SidebarItemLabel {
 
 QLabel#SidebarItemIcon,
 QLabel#SidebarSectionArrow {
+    background: transparent;
+}
+
+QScrollArea#SidebarScrollArea QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea#SidebarScrollArea QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#SidebarScrollArea QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea#SidebarScrollArea QScrollBar::add-line:vertical,
+QScrollArea#SidebarScrollArea QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea#SidebarScrollArea QScrollBar::add-page:vertical,
+QScrollArea#SidebarScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
@@ -213,7 +249,20 @@ QFrame[class="JoyReadDialogPanel"] {
 
 QWidget#JoyReadDialogTitleArea,
 QWidget#JoyReadDialogContentArea,
-QWidget#JoyReadDialogOptionArea {
+QWidget#JoyReadDialogOptionArea,
+QWidget#DialogMessageContent,
+QWidget#DialogInputContent,
+QWidget#DialogPasswordContent,
+QWidget#DialogInputArea {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea,
+QScrollArea#JoyReadDialogContentScrollArea QWidget,
+QScrollArea#DialogCollectionInnerScrollArea,
+QWidget#DialogCollectionInnerViewport,
+QWidget#DialogCollectionRowContent {
     background: transparent;
     border: none;
 }
@@ -234,6 +283,122 @@ QFrame[class="DialogTextButton"] {
 
 QFrame[class="DialogTextButton"]:hover {
     background: __SELECTED_COLOR__;
+}
+
+QWidget#DialogInputFieldWithHeader {
+    background: __CONTENT_COLOR__;
+    border: none;
+}
+
+QLabel[class="DialogInputHeader"] {
+    color: __DIALOG_INPUT_HEADER_COLOR__;
+    font-size: __DIALOG_INPUT_HEADER_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QLineEdit[class="DialogInputField"] {
+    background: __WINDOW_COLOR__;
+    border: __DIALOG_INPUT_FIELD_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __DIALOG_INPUT_FIELD_RADIUS__;
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_INPUT_HEADER_FONT_SIZE__;
+    font-weight: 400;
+    padding: __DIALOG_INPUT_FIELD_PADDING__;
+}
+
+QLabel#DialogStatePrompt {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QFrame#DialogCollectionScrollPanel {
+    background: __WINDOW_COLOR__;
+    border: __DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __DIALOG_COLLECTION_SCROLL_RADIUS__;
+}
+
+QFrame[class="DialogCollectionChoice"] {
+    background: transparent;
+    border: none;
+    border-radius: __SIDEBAR_ITEM_RADIUS__;
+}
+
+QFrame[class="DialogCollectionChoice"][selected="true"] {
+    background: __SELECTED_COLOR__;
+}
+
+QFrame[class="DialogCollectionChoice"][selected="false"]:hover {
+    background: __SIDEBAR_ITEM_HOVER__;
+}
+
+QLabel#DialogCollectionChoiceLabel {
+    color: __TEXT_COLOR__;
+    font-size: __SIDEBAR_ITEM_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QLabel#DialogCollectionChoiceIcon {
+    background: transparent;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::add-line:vertical,
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::add-page:vertical,
+QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    margin: __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 2px __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 0;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-line:vertical,
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-page:vertical,
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical {
+    background: transparent;
 }
 
 QLabel#PageTitle {

@@ -230,3 +230,17 @@ def build_action_menu(
     menu.add_item("Import", on_import)
 
     return menu
+
+
+def build_collection_context_menu(
+    parent: QWidget,
+    collection_uuid: str,
+    on_rename: Callable[[str], None],
+    on_delete: Callable[[str], None],
+) -> FigmaMenu:
+    menu = _figma_menu(parent)
+
+    menu.add_item("Rename", lambda: on_rename(collection_uuid))
+    menu.add_item("Delete", lambda: on_delete(collection_uuid), destructive=True)
+
+    return menu

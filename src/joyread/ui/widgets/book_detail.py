@@ -268,7 +268,7 @@ class BookDetailPanel(QFrame):
         name_author_layout.setContentsMargins(0, 0, 0, 0)
         name_author_layout.setSpacing(Theme.detail_meta_name_gap)
 
-        self._title_field = InlineEditableText("Book Name", label_class="BookDetailTitle")
+        self._title_field = InlineEditableText("Book Name", label_class="BookDetailTitle", max_lines=2)
         name_author_layout.addWidget(self._title_field)
         self._author_field = InlineEditableText(
             "None",
@@ -366,7 +366,14 @@ class BookDetailPanel(QFrame):
 class InlineEditableText(QWidget):
     """Label that only commits Figma's inline edit when Return is pressed."""
 
-    def __init__(self, value: str, *, label_class: str, display_prefix: str = "") -> None:
+    def __init__(
+        self,
+        value: str,
+        *,
+        label_class: str,
+        display_prefix: str = "",
+        max_lines: int = 1,
+    ) -> None:
         super().__init__()
         self._value = value
         self._display_prefix = display_prefix
@@ -376,7 +383,7 @@ class InlineEditableText(QWidget):
         layout.setStackingMode(QStackedLayout.StackingMode.StackOne)
         self._stack = layout
 
-        self._label = DoubleClickLabel()
+        self._label = DoubleClickLabel(max_lines=max_lines)
         self._label.setProperty("class", label_class)
         self._label.double_clicked.connect(self._begin_edit)
         layout.addWidget(self._label)

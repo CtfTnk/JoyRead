@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QIcon, QMouseEvent
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtGui import QContextMenuEvent, QIcon, QMouseEvent
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -14,6 +23,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
 
 class SidebarWidget(QWidget):
     navigation_requested = QtSignal(str)
+    collection_menu_requested = QtSignal(str, QPoint)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -21,7 +31,6 @@ class SidebarWidget(QWidget):
         self.setObjectName("Sidebar")
         self.setFixedWidth(Theme.sidebar_width)
         self._buttons: dict[str, SidebarItemWidget] = {}
-        self._visible_collection_key = collection_shelf_key("collection-a")
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(
@@ -31,6 +40,14 @@ class SidebarWidget(QWidget):
             Theme.sidebar_margin_vertical,
         )
         root_layout.setSpacing(0)
+
+        scroll_area = QScrollArea()
+        scroll_area.setObjectName("SidebarScrollArea")
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll_area.viewport().setObjectName("SidebarScrollViewport")
+        scroll_area.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
 
         upper_part = QWidget()
         upper_part.setObjectName("SidebarUpperPart")
@@ -48,18 +65,25 @@ class SidebarWidget(QWidget):
                 ),
             )
         )
-        upper_layout.addWidget(
-            self._section(
-                "Collections",
-                (
-                    ("New Collection", "new_collection", "icon_add.svg", False),
-                    ("A Collection", self._visible_collection_key, "icon_collection.svg", False),
-                ),
-            )
-        )
+        self._collections_section = QWidget()
+        self._collections_section.setObjectName("SidebarSectionGroup")
+        collections_layout = QVBoxLayout(self._collections_section)
+        collections_layout.setContentsMargins(0, 0, 0, 0)
+        collections_layout.setSpacing(Theme.sidebar_gap)
+        collections_layout.addWidget(SidebarSectionBanner("Collections", self._resources))
+        collections_layout.addWidget(self._item("New Collection", "new_collection", "icon_add.svg"))
 
-        root_layout.addWidget(upper_part)
-        root_layout.addStretch(1)
+        self._collections_container = QWidget()
+        self._collections_container.setObjectName("SidebarCollectionsContainer")
+        self._collections_layout = QVBoxLayout(self._collections_container)
+        self._collections_layout.setContentsMargins(0, 0, 0, 0)
+        self._collections_layout.setSpacing(Theme.sidebar_gap)
+        collections_layout.addWidget(self._collections_container)
+        upper_layout.addWidget(self._collections_section)
+        upper_layout.addStretch(1)
+
+        scroll_area.setWidget(upper_part)
+        root_layout.addWidget(scroll_area, stretch=1)
 
         lower_part = QWidget()
         lower_part.setObjectName("SidebarLowerPart")
@@ -70,15 +94,25 @@ class SidebarWidget(QWidget):
         root_layout.addWidget(lower_part)
 
     def set_collections(self, collections: list[Collection]) -> None:
-        # The first implementation keeps one mock collection visible per Figma.
-        if collections:
-            key = collection_shelf_key(collections[0].uuid)
-            button = self._buttons.pop(self._visible_collection_key, None)
-            if button is not None:
-                button.set_label(collections[0].name)
-                button.set_navigation_key(key)
-                self._buttons[key] = button
-                self._visible_collection_key = key
+        for key in tuple(self._buttons):
+            if key.startswith("collection:"):
+                self._buttons.pop(key)
+        while self._collections_layout.count():
+            item = self._collections_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        for collection in collections:
+            key = collection_shelf_key(collection.uuid)
+            button = self._item(
+                collection.name,
+                key,
+                "icon_collection.svg",
+                allow_context_menu=True,
+            )
+            self._collections_layout.addWidget(button)
 
     def set_active(self, key: str) -> None:
         for item_key, button in self._buttons.items():
@@ -96,9 +130,24 @@ class SidebarWidget(QWidget):
             layout.addWidget(self._item(label, key, icon_name, checked=checked))
         return section
 
-    def _item(self, label: str, key: str, icon_name: str, checked: bool = False) -> "SidebarItemWidget":
-        button = SidebarItemWidget(label, icon_name, self._resources, navigation_key=key, checked=checked)
+    def _item(
+        self,
+        label: str,
+        key: str,
+        icon_name: str,
+        checked: bool = False,
+        allow_context_menu: bool = False,
+    ) -> "SidebarItemWidget":
+        button = SidebarItemWidget(
+            label,
+            icon_name,
+            self._resources,
+            navigation_key=key,
+            checked=checked,
+            allow_context_menu=allow_context_menu,
+        )
         button.clicked.connect(lambda item=button: self.navigation_requested.emit(item.navigation_key))
+        button.menu_requested.connect(lambda item_key, pos: self.collection_menu_requested.emit(item_key, pos))
         self._buttons[key] = button
         return button
 
@@ -141,6 +190,7 @@ class SidebarItemWidget(QFrame):
     """Figma sidebar item with fixed padding and a 5px icon/text label group gap."""
 
     clicked = QtSignal()
+    menu_requested = QtSignal(str, QPoint)
 
     def __init__(
         self,
@@ -150,10 +200,12 @@ class SidebarItemWidget(QFrame):
         *,
         navigation_key: str,
         checked: bool = False,
+        allow_context_menu: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.navigation_key = navigation_key
+        self._allow_context_menu = allow_context_menu
         self._pressed_inside = False
         self.setProperty("class", "SidebarItem")
         self.setProperty("selected", "true" if checked else "false")
@@ -214,6 +266,13 @@ class SidebarItemWidget(QFrame):
             return
         self._pressed_inside = False
         super().mouseReleaseEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self._allow_context_menu:
+            self.menu_requested.emit(self.navigation_key, event.globalPos())
+            event.accept()
+            return
+        super().contextMenuEvent(event)
 
     def _finish_click_interaction(self) -> None:
         # Match the chrome action button behavior: opening an overlay can steal

@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
+from joyread.ui.widgets.menus import build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import WindowChromeWidget
 
@@ -63,7 +65,7 @@ class MainWindow(QMainWindow):
         self._resize_grip.setObjectName("ResizeGrip")
         self._resize_grip.raise_()
 
-        self.dialog_overlay = JoyReadDialogOverlay(root)
+        self.dialog_overlay = JoyReadDialogOverlay(root, context.resources)
         self.dialog_overlay.hide()
         self.setCentralWidget(root)
         self._position_dialog_overlay()
@@ -73,16 +75,25 @@ class MainWindow(QMainWindow):
         self.chrome.view_mode_changed.connect(context.shelf_viewmodel.set_view_mode)
         self.chrome.sort_changed.connect(context.shelf_viewmodel.set_sort)
         self.sidebar.navigation_requested.connect(self._handle_navigation)
+        self.sidebar.collection_menu_requested.connect(self._show_collection_menu)
         self.shelf_view.info_requested.connect(self.dialog_overlay.show_info)
         self.shelf_view.import_manifest_requested.connect(self._select_import_manifest)
         self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
+        self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
         context.shelf_viewmodel.books_deleted.connect(self._handle_books_deleted)
+        context.shelf_viewmodel.collections_changed.connect(self._handle_collections_changed)
         context.shelf_viewmodel.delete_failed.connect(
             lambda message: self.dialog_overlay.show_info("Delete Failed", message)
+        )
+        context.shelf_viewmodel.favourite_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Favourite Failed", message)
+        )
+        context.shelf_viewmodel.collection_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Collection", message)
         )
         context.shelf_viewmodel.load_books()
         self.sidebar.set_collections(context.shelf_viewmodel.collections)
@@ -179,13 +190,97 @@ class MainWindow(QMainWindow):
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":
-            self.dialog_overlay.show_info("New Collection", "Collection creation is not implemented yet.")
+            self._show_new_collection_dialog()
             return
         if key == "settings":
             self._show_settings_page()
             return
         self._hide_settings_page()
         self._context.shelf_viewmodel.set_current_shelf(key)
+
+    def _show_new_collection_dialog(self) -> None:
+        self.dialog_overlay.show_input(
+            "New Collection",
+            "Collection Name",
+            on_confirm=self._context.shelf_viewmodel.create_collection,
+            confirm_text="Create",
+            cancel_text="Cancel",
+            validator=_validate_collection_name,
+        )
+
+    def _show_collection_menu(self, collection_key: str, global_pos: QPoint) -> None:
+        collection_uuid = _collection_uuid_from_key(collection_key)
+        if self._collection_by_uuid(collection_uuid) is None:
+            return
+        menu = build_collection_context_menu(
+            self,
+            collection_uuid,
+            on_rename=self._show_rename_collection_dialog,
+            on_delete=self._confirm_delete_collection,
+        )
+        menu.exec(global_pos)
+
+    def _show_rename_collection_dialog(self, collection_uuid: str) -> None:
+        collection = self._collection_by_uuid(collection_uuid)
+        if collection is None:
+            return
+        self.dialog_overlay.show_input(
+            "Rename Collection",
+            "Collection Name",
+            on_confirm=lambda name, collection_uuid=collection_uuid: self._context.shelf_viewmodel.rename_collection(
+                collection_uuid,
+                name,
+            ),
+            initial_text=collection.name,
+            confirm_text="Rename",
+            cancel_text="Cancel",
+            validator=_validate_collection_name,
+        )
+
+    def _confirm_delete_collection(self, collection_uuid: str) -> None:
+        collection = self._collection_by_uuid(collection_uuid)
+        if collection is None:
+            return
+        self.dialog_overlay.show_confirm(
+            "Delete Collection",
+            (
+                f"Delete '{collection.name}'?\n\n"
+                "This removes only the collection and its book membership records. "
+                "Books and app-managed files are not deleted."
+            ),
+            on_confirm=lambda collection_uuid=collection_uuid: self._context.shelf_viewmodel.delete_collection(
+                collection_uuid,
+            ),
+            confirm_text="Delete",
+            cancel_text="Cancel",
+        )
+
+    def _show_add_to_collection_dialog(self, book_uuids: tuple[str, ...]) -> None:
+        collections = list(self._context.shelf_viewmodel.collections)
+        if not collections:
+            self.dialog_overlay.show_info("Add to Collection", "Create a collection before adding books.")
+            return
+
+        def add_to_collection(collection_uuid: str) -> None:
+            self._context.shelf_viewmodel.add_books_to_collection(book_uuids, collection_uuid)
+
+        self.dialog_overlay.show_collection_select(
+            "Add to Collection",
+            collections,
+            on_confirm=add_to_collection,
+            confirm_text="Add",
+            cancel_text="Cancel",
+        )
+
+    def _collection_by_uuid(self, collection_uuid: str) -> Collection | None:
+        return next(
+            (
+                collection
+                for collection in self._context.shelf_viewmodel.collections
+                if collection.uuid == collection_uuid
+            ),
+            None,
+        )
 
     def _sync_sidebar(self) -> None:
         if self.settings_view.isVisible():
@@ -206,6 +301,10 @@ class MainWindow(QMainWindow):
 
     def _handle_books_deleted(self, _book_uuids: tuple[str, ...]) -> None:
         self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
+
+    def _handle_collections_changed(self, active_key: str | None = None) -> None:
+        self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
+        self.sidebar.set_active(active_key or self._context.shelf_viewmodel.current_shelf)
 
     def _toggle_sidebar(self) -> None:
         visible = not self.sidebar.isVisible()
@@ -264,3 +363,12 @@ class MainWindow(QMainWindow):
                 self.centralWidget().width() - self._resize_grip.width() - margin,
                 self.centralWidget().height() - self._resize_grip.height() - margin,
             )
+
+
+def _validate_collection_name(name: str) -> str | None:
+    return None if name.strip() else "Collection name cannot be empty."
+
+
+def _collection_uuid_from_key(collection_key: str) -> str:
+    prefix = "collection:"
+    return collection_key[len(prefix) :] if collection_key.startswith(prefix) else collection_key

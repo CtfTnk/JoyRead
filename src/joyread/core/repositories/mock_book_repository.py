@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
@@ -32,8 +33,58 @@ class MockBookRepository(BookRepository):
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
 
+    def set_favourite(self, book_id: str, is_favourite: bool) -> None:
+        self._books = [
+            book.with_favourite(is_favourite) if book.uuid == book_id else book
+            for book in self._books
+        ]
+
     def delete_book(self, book_id: str) -> None:
         self._books = [book for book in self._books if book.uuid != book_id]
+
+    def create_collection(self, name: str) -> Collection:
+        now = datetime.now()
+        collection = Collection(
+            uuid=str(uuid4()),
+            name=name,
+            is_private=False,
+            created_at=now,
+            updated_at=now,
+        )
+        self._collections.append(collection)
+        return collection
+
+    def rename_collection(self, collection_id: str, name: str) -> None:
+        now = datetime.now()
+        self._collections = [
+            replace(collection, name=name, updated_at=now) if collection.uuid == collection_id else collection
+            for collection in self._collections
+        ]
+
+    def delete_collection(self, collection_id: str) -> None:
+        self._collections = [collection for collection in self._collections if collection.uuid != collection_id]
+        self._books = [
+            replace(
+                book,
+                collection_ids=tuple(value for value in book.collection_ids if value != collection_id),
+                updated_at=datetime.now(),
+            )
+            if collection_id in book.collection_ids
+            else book
+            for book in self._books
+        ]
+
+    def add_book_to_collection(self, book_id: str, collection_id: str) -> None:
+        self._books = [
+            replace(
+                book,
+                collection_ids=(*book.collection_ids, collection_id),
+                updated_at=datetime.now(),
+            )
+            if book.uuid == book_id and collection_id not in book.collection_ids
+            else book
+            for book in self._books
+        ]
 
     def _load_json(self, data_path: Path | None) -> dict[str, Any]:
         if data_path is not None:

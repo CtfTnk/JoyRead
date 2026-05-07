@@ -1,21 +1,25 @@
-"""Reusable app-centered popup dialogs adapted from Figma node 483:1989."""
+"""Reusable app-centered popup dialogs adapted from JoyRead Figma nodes."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
+from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
+    QScrollArea,
     QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from joyread.core.models.collection import Collection
+from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 
 
@@ -87,8 +91,376 @@ class DialogTextButton(QFrame):
         super().keyPressEvent(event)
 
 
+class DialogMessageContent(QWidget):
+    """Centered text content used by info, confirm, and delete prompts."""
+
+    def __init__(self, message: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogMessageContent")
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+        )
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self._label = QLabel(message)
+        self._label.setProperty("class", "JoyReadDialogContent")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setWordWrap(True)
+        self._label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self._label)
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+        inner_width = max(0, width - (Theme.dialog_content_padding * 2))
+        self._label.setFixedWidth(inner_width)
+        wrapped_height = max(self._label.sizeHint().height(), self._label.heightForWidth(inner_width))
+        # QLabel word-wrap can be one or two pixels short with platform font
+        # fallback. Keep the measured content explicit so dialog panels do not
+        # clip tall glyphs or the last wrapped line.
+        self._label.setFixedHeight(wrapped_height + Theme.dialog_message_clip_guard)
+        self.setFixedHeight(self._label.height() + (Theme.dialog_content_padding * 2))
+        self.updateGeometry()
+
+
+class DialogInputFieldWithHeader(QWidget):
+    """Figma `input_field-with-header`: 200px group with a 192px input field."""
+
+    def __init__(
+        self,
+        header: str,
+        *,
+        initial_text: str = "",
+        echo_mode: QLineEdit.EchoMode = QLineEdit.EchoMode.Normal,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogInputFieldWithHeader")
+        self.setFixedWidth(Theme.dialog_input_group_width)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_input_group_padding,
+            Theme.dialog_input_group_padding,
+            Theme.dialog_input_group_padding,
+            Theme.dialog_input_group_padding,
+        )
+        layout.setSpacing(Theme.dialog_input_area_gap)
+
+        self._header = QLabel(header)
+        self._header.setProperty("class", "DialogInputHeader")
+        layout.addWidget(self._header)
+
+        self.line_edit = QLineEdit(initial_text)
+        self.line_edit.setProperty("class", "DialogInputField")
+        self.line_edit.setEchoMode(echo_mode)
+        self.line_edit.setFixedHeight(Theme.dialog_input_field_height)
+        layout.addWidget(self.line_edit)
+
+    @property
+    def value(self) -> str:
+        return self.line_edit.text()
+
+
+class DialogInputContent(QWidget):
+    """Figma one-field input content used for general JoyRead text prompts."""
+
+    submitted = QtSignal()
+
+    def __init__(self, header: str, initial_text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogInputContent")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+        )
+        layout.setSpacing(Theme.dialog_input_area_gap - 2)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        input_area = QWidget()
+        input_area.setObjectName("DialogInputArea")
+        input_layout = QVBoxLayout(input_area)
+        input_layout.setContentsMargins(
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+        )
+        input_layout.setSpacing(0)
+        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.field = DialogInputFieldWithHeader(header, initial_text=initial_text)
+        self.field.line_edit.returnPressed.connect(self.submitted.emit)
+        input_layout.addWidget(self.field, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(input_area)
+
+        self._state_label = QLabel("")
+        self._state_label.setObjectName("DialogStatePrompt")
+        self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._state_label)
+
+    @property
+    def value(self) -> str:
+        return self.field.value
+
+    def set_state_prompt(self, message: str) -> None:
+        self._state_label.setText(message)
+        self.updateGeometry()
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+
+
+class DialogPasswordContent(QWidget):
+    """Future-ready password input content following the Figma password frame."""
+
+    def __init__(
+        self,
+        headers: tuple[str, ...] = ("Old Password", "New Password", "Confirm New Password"),
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogPasswordContent")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+        )
+        layout.setSpacing(Theme.dialog_input_area_gap - 2)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        input_area = QWidget()
+        input_area.setObjectName("DialogInputArea")
+        input_layout = QVBoxLayout(input_area)
+        input_layout.setContentsMargins(
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+        )
+        input_layout.setSpacing(Theme.dialog_input_area_gap)
+        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.fields: list[DialogInputFieldWithHeader] = []
+        for header in headers:
+            field = DialogInputFieldWithHeader(header, echo_mode=QLineEdit.EchoMode.Password)
+            self.fields.append(field)
+            input_layout.addWidget(field, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(input_area)
+
+        self._state_label = QLabel("")
+        self._state_label.setObjectName("DialogStatePrompt")
+        self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._state_label)
+
+    @property
+    def values(self) -> tuple[str, ...]:
+        return tuple(field.value for field in self.fields)
+
+    def set_state_prompt(self, message: str) -> None:
+        self._state_label.setText(message)
+        self.updateGeometry()
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+
+
+class DialogCollectionChoiceRow(QFrame):
+    """Selectable collection row reused inside the Add-to dialog list."""
+
+    clicked = QtSignal(str)
+
+    def __init__(
+        self,
+        collection: Collection,
+        resources: ResourceLoader | None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.collection_uuid = collection.uuid
+        self._pressed_inside = False
+        self.setProperty("class", "DialogCollectionChoice")
+        self.setProperty("selected", "false")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(Theme.sidebar_item_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.sidebar_item_padding_left,
+            Theme.sidebar_item_padding_vertical,
+            Theme.sidebar_item_padding_right,
+            Theme.sidebar_item_padding_vertical,
+        )
+        layout.setSpacing(Theme.sidebar_item_icon_text_gap)
+
+        if resources is not None:
+            icon = QLabel()
+            icon.setObjectName("DialogCollectionChoiceIcon")
+            icon.setFixedSize(Theme.icon_size, Theme.icon_size)
+            icon.setPixmap(
+                QIcon(str(resources.icon_path("icon_collection.svg"))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
+            )
+            layout.addWidget(icon)
+
+        label = QLabel(collection.name)
+        label.setObjectName("DialogCollectionChoiceLabel")
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(label)
+        layout.addStretch(1)
+
+    def set_selected(self, selected: bool) -> None:
+        self.setProperty("selected", "true" if selected else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
+        self._pressed_inside = False
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            event.accept()
+            if self.rect().contains(event.position().toPoint()):
+                self.clicked.emit(self.collection_uuid)
+            return
+        self._pressed_inside = False
+        super().mouseReleaseEvent(event)
+
+
+class DialogCollectionSelectContent(QWidget):
+    """Figma Add-to collection content with a 260px bordered scroll panel."""
+
+    def __init__(
+        self,
+        collections: list[Collection],
+        resources: ResourceLoader | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogCollectionSelectContent")
+        self._selected_collection_uuid: str | None = collections[0].uuid if collections else None
+        self._rows: dict[str, DialogCollectionChoiceRow] = {}
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+        )
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        input_area = QWidget()
+        input_area.setObjectName("DialogInputArea")
+        input_layout = QVBoxLayout(input_area)
+        input_layout.setContentsMargins(
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+        )
+        input_layout.setSpacing(0)
+        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        panel = QFrame()
+        panel.setObjectName("DialogCollectionScrollPanel")
+        panel.setFixedWidth(Theme.dialog_collection_scroll_width)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        panel_layout = QVBoxLayout(panel)
+        # Figma gives this panel 10px visual padding with a 1px stroke. The Qt
+        # border consumes one pixel, so 9px margins preserve the 10px inset.
+        panel_layout.setContentsMargins(
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+        )
+        panel_layout.setSpacing(0)
+
+        self._row_scroll = QScrollArea()
+        self._row_scroll.setObjectName("DialogCollectionInnerScrollArea")
+        self._row_scroll.setWidgetResizable(True)
+        self._row_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._row_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._row_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._row_scroll.viewport().setObjectName("DialogCollectionInnerViewport")
+        self._row_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        row_content = QWidget()
+        row_content.setObjectName("DialogCollectionRowContent")
+        row_layout = QVBoxLayout(row_content)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(0)
+        row_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        for collection in collections:
+            row = DialogCollectionChoiceRow(collection, resources)
+            row.clicked.connect(self._select_collection)
+            row.set_selected(collection.uuid == self._selected_collection_uuid)
+            self._rows[collection.uuid] = row
+            row_layout.addWidget(row)
+
+        row_content.setFixedHeight(len(collections) * Theme.sidebar_item_height)
+        self._row_scroll.setWidget(row_content)
+
+        max_panel_height = (
+            Theme.dialog_content_max_height
+            - (Theme.dialog_content_outer_padding * 2)
+            - (Theme.dialog_input_area_padding * 2)
+        )
+        max_scroll_height = max(0, max_panel_height - (Theme.dialog_collection_scroll_layout_margin * 2))
+        scroll_height = min(row_content.height(), max_scroll_height)
+        self._row_scroll.setFixedHeight(scroll_height)
+        panel_layout.addWidget(self._row_scroll)
+        panel.setFixedHeight((Theme.dialog_collection_scroll_layout_margin * 2) + scroll_height)
+        input_layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(input_area)
+        self.setFixedHeight(
+            (Theme.dialog_content_outer_padding * 2)
+            + (Theme.dialog_input_area_padding * 2)
+            + panel.height()
+        )
+
+    @property
+    def selected_collection_uuid(self) -> str | None:
+        return self._selected_collection_uuid
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+        self._row_scroll.verticalScrollBar().setValue(0)
+
+    def _select_collection(self, collection_uuid: str) -> None:
+        self._selected_collection_uuid = collection_uuid
+        for row_uuid, row in self._rows.items():
+            row.set_selected(row_uuid == collection_uuid)
+
+
 class JoyReadDialogPanel(QFrame):
-    """Figma's 400x220 general popup panel with title/content/options areas."""
+    """Figma's 400px popup panel with dynamic content up to 215px."""
 
     accepted = QtSignal()
     rejected = QtSignal()
@@ -97,7 +469,9 @@ class JoyReadDialogPanel(QFrame):
         super().__init__(parent)
         self.setProperty("class", "JoyReadDialogPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedSize(Theme.dialog_width, Theme.dialog_height)
+        self.setFixedWidth(Theme.dialog_width)
+        self.setMinimumHeight(0)
+        self._preferred_height = 0
 
         root_layout = QVBoxLayout(self)
         # Figma panel has 10px visual padding and a 2px stroke. Subtract the
@@ -125,23 +499,26 @@ class JoyReadDialogPanel(QFrame):
 
         self._content_area = QWidget()
         self._content_area.setObjectName("JoyReadDialogContentArea")
-        self._content_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._content_area.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         content_layout = QHBoxLayout(self._content_area)
         content_layout.setContentsMargins(
-            Theme.dialog_content_padding,
-            Theme.dialog_content_padding,
-            Theme.dialog_content_padding,
-            Theme.dialog_content_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
         )
         content_layout.setSpacing(0)
         content_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._content_label = QLabel("content")
-        self._content_label.setProperty("class", "JoyReadDialogContent")
-        self._content_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._content_label.setWordWrap(True)
-        content_layout.addWidget(self._content_label)
-        root_layout.addWidget(self._content_area, stretch=1)
+        self._content_scroll = QScrollArea()
+        self._content_scroll.setObjectName("JoyReadDialogContentScrollArea")
+        self._content_scroll.setWidgetResizable(False)
+        self._content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._content_scroll.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        content_layout.addWidget(self._content_scroll, alignment=Qt.AlignmentFlag.AlignCenter)
+        self._content_widget: QWidget | None = None
+        root_layout.addWidget(self._content_area)
 
         self._option_area = QWidget()
         self._option_area.setObjectName("JoyReadDialogOptionArea")
@@ -152,14 +529,16 @@ class JoyReadDialogPanel(QFrame):
         root_layout.addWidget(self._option_area)
 
     def sizeHint(self) -> QSize:
-        return QSize(Theme.dialog_width, Theme.dialog_height)
+        return QSize(Theme.dialog_width, self._preferred_height or self.layout().sizeHint().height())
 
     def set_info(self, title: str, message: str, button_text: str) -> None:
-        self._set_text(title, message)
+        self._set_title(title)
+        self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(((button_text, self.accepted.emit),))
 
     def set_confirm(self, title: str, message: str, cancel_text: str, confirm_text: str) -> None:
-        self._set_text(title, message)
+        self._set_title(title)
+        self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(
             (
                 (cancel_text, self.rejected.emit),
@@ -167,9 +546,27 @@ class JoyReadDialogPanel(QFrame):
             )
         )
 
-    def _set_text(self, title: str, message: str) -> None:
+    def set_input_content(
+        self,
+        title: str,
+        content: QWidget,
+        cancel_text: str,
+        confirm_text: str,
+    ) -> None:
+        self._set_title(title)
+        self._set_content_widget(content)
+        self._set_buttons(
+            (
+                (cancel_text, self.rejected.emit),
+                (confirm_text, self.accepted.emit),
+            )
+        )
+
+    def refresh_size(self) -> None:
+        self._refresh_size()
+
+    def _set_title(self, title: str) -> None:
         self._title_label.setText(title)
-        self._content_label.setText(message)
 
     def _set_buttons(self, buttons: tuple[tuple[str, Callable[[], None]], ...]) -> None:
         while self._option_layout.count():
@@ -184,18 +581,81 @@ class JoyReadDialogPanel(QFrame):
             button = DialogTextButton(label, self)
             button.clicked.connect(callback)
             self._option_layout.addWidget(button)
+        self._refresh_size()
+
+    def _set_content_widget(self, widget: QWidget) -> None:
+        if self._content_widget is not None:
+            old_widget = self._content_scroll.takeWidget()
+            if old_widget is not None:
+                old_widget.setParent(None)
+                old_widget.deleteLater()
+        self._content_widget = widget
+        self._content_scroll.setWidget(widget)
+        self._refresh_size()
+
+    def _refresh_size(self) -> None:
+        if self._content_widget is None:
+            return
+        self._content_scroll.verticalScrollBar().setValue(0)
+        self._content_scroll.horizontalScrollBar().setValue(0)
+        available_width = (
+            Theme.dialog_width
+            - (Theme.dialog_layout_margin * 2)
+            - (Theme.dialog_content_outer_padding * 2)
+        )
+        self._content_scroll.setFixedWidth(available_width)
+        if hasattr(self._content_widget, "set_available_width"):
+            self._content_widget.set_available_width(available_width)  # type: ignore[attr-defined]
+        else:
+            self._content_widget.setFixedWidth(available_width)
+
+        if self._content_widget.layout() is not None:
+            self._content_widget.layout().activate()
+        self._content_widget.adjustSize()
+        content_height = self._content_widget.sizeHint().height()
+        viewport_height = min(max(0, content_height), Theme.dialog_content_max_height)
+        self._content_scroll.setFixedHeight(viewport_height)
+        self.layout().activate()
+        self._preferred_height = self._calculate_panel_height()
+        self.setFixedHeight(self._preferred_height)
+        self.updateGeometry()
+
+    def _calculate_panel_height(self) -> int:
+        """Measure the fixed-height Figma frames explicitly before show/layout."""
+
+        root_layout = self.layout()
+        margins = root_layout.contentsMargins()
+        content_margins = self._content_area.layout().contentsMargins()
+        title_height = max(self._title_area.sizeHint().height(), self._title_label.sizeHint().height())
+        content_height = self._content_scroll.height() + content_margins.top() + content_margins.bottom()
+        option_height = max(self._option_area.sizeHint().height(), Theme.dialog_button_height)
+        return (
+            margins.top()
+            + title_height
+            + root_layout.spacing()
+            + content_height
+            + root_layout.spacing()
+            + option_height
+            + margins.bottom()
+        )
 
 
 class JoyReadDialogOverlay(QWidget):
     """Window-local modal layer that closes only through dialog buttons."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        resources: ResourceLoader | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("JoyReadDialogOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._resources = resources
         self._on_accept: Callable[[], None] | None = None
         self._on_reject: Callable[[], None] | None = None
+        self._before_accept: Callable[[], bool] | None = None
 
         self._panel = JoyReadDialogPanel(self)
         self._panel.accepted.connect(self._accept)
@@ -209,6 +669,7 @@ class JoyReadDialogOverlay(QWidget):
     def show_info(self, title: str, message: str, button_text: str = "Confirm") -> None:
         self._on_accept = None
         self._on_reject = None
+        self._before_accept = None
         self._panel.set_info(title, message, button_text)
         self._show_centered()
 
@@ -223,7 +684,61 @@ class JoyReadDialogOverlay(QWidget):
     ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
+        self._before_accept = None
         self._panel.set_confirm(title, message, cancel_text, confirm_text)
+        self._show_centered()
+
+    def show_input(
+        self,
+        title: str,
+        header: str,
+        on_confirm: Callable[[str], None],
+        *,
+        initial_text: str = "",
+        confirm_text: str = "Confirm",
+        cancel_text: str = "Cancel",
+        validator: Callable[[str], str | None] | None = None,
+    ) -> None:
+        content = DialogInputContent(header, initial_text)
+
+        def before_accept() -> bool:
+            if validator is None:
+                return True
+            error = validator(content.value)
+            if error is None:
+                return True
+            content.set_state_prompt(error)
+            self._panel.refresh_size()
+            self._position_panel()
+            return False
+
+        self._before_accept = before_accept
+        self._on_accept = lambda: on_confirm(content.value)
+        self._on_reject = None
+        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        content.submitted.connect(self._panel.accepted.emit)
+        self._show_centered()
+        content.field.line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
+        content.field.line_edit.selectAll()
+
+    def show_collection_select(
+        self,
+        title: str,
+        collections: list[Collection],
+        on_confirm: Callable[[str], None],
+        *,
+        confirm_text: str = "Confirm",
+        cancel_text: str = "Cancel",
+    ) -> None:
+        content = DialogCollectionSelectContent(collections, self._resources)
+
+        def before_accept() -> bool:
+            return content.selected_collection_uuid is not None
+
+        self._before_accept = before_accept
+        self._on_accept = lambda: on_confirm(content.selected_collection_uuid or "")
+        self._on_reject = None
+        self._panel.set_input_content(title, content, cancel_text, confirm_text)
         self._show_centered()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -246,6 +761,7 @@ class JoyReadDialogOverlay(QWidget):
         self._position_panel()
 
     def _show_centered(self) -> None:
+        self._panel.refresh_size()
         self._position_panel()
         self.show()
         self.raise_()
@@ -258,6 +774,8 @@ class JoyReadDialogOverlay(QWidget):
         self._panel.move(max(0, x), max(0, y))
 
     def _accept(self) -> None:
+        if self._before_accept is not None and not self._before_accept():
+            return
         callback = self._on_accept
         self._clear_and_hide()
         if callback is not None:
@@ -272,4 +790,5 @@ class JoyReadDialogOverlay(QWidget):
     def _clear_and_hide(self) -> None:
         self._on_accept = None
         self._on_reject = None
+        self._before_accept = None
         self.hide()

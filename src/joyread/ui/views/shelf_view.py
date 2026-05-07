@@ -22,6 +22,7 @@ class ShelfView(QWidget):
     info_requested = QtSignal(str, str)
     import_manifest_requested = QtSignal()
     delete_books_requested = QtSignal(tuple)
+    add_to_collection_requested = QtSignal(tuple)
 
     def __init__(
         self,
@@ -142,7 +143,7 @@ class ShelfView(QWidget):
             on_read=self._viewmodel.open_book,
             on_favourite=lambda _uuid: self._viewmodel.set_favourite(target_ids, next_favourite_state),
             on_detail=self._viewmodel.show_detail,
-            on_add_to_collection=lambda _uuid: self._show_placeholder_for_targets("Add to Collection", target_ids),
+            on_add_to_collection=lambda _uuid: self.add_to_collection_requested.emit(target_ids),
             on_remove=lambda _uuid: self._show_placeholder_for_targets("Remove from Library", target_ids),
             on_delete=lambda _uuid: self.delete_books_requested.emit(target_ids),
             show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,

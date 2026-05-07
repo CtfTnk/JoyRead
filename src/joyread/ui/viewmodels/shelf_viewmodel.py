@@ -61,6 +61,10 @@ class ShelfViewModel:
         self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()
         self.books_deleted: Signal[tuple[str, ...]] = Signal()
         self.delete_failed: Signal[str] = Signal()
+        self.favourite_failed: Signal[str] = Signal()
+        self.collections_changed: Signal[str | None] = Signal()
+        self.collection_failed: Signal[str] = Signal()
+        self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
 
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
@@ -228,9 +232,113 @@ class ShelfViewModel:
             self.set_favourite((book_uuid,), not book.is_favourite)
 
     def set_favourite(self, book_uuids: Iterable[str], is_favourite: bool) -> None:
-        target_ids = set(book_uuids)
+        target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
         if not target_ids:
             return
+
+        if self._task_service is None:
+            try:
+                self._library_service.set_favourites(target_ids, is_favourite)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.favourite_failed.emit(str(exc))
+                return
+            self._handle_favourite_success(target_ids, is_favourite)
+            return
+
+        self._task_service.submit(
+            "set-favourite",
+            lambda target_ids=target_ids: self._library_service.set_favourites(target_ids, is_favourite),
+            on_success=lambda _result, target_ids=target_ids: self._handle_favourite_success(
+                target_ids,
+                is_favourite,
+            ),
+            on_failure=lambda error: self.favourite_failed.emit(str(error)),
+        )
+
+    def create_collection(self, name: str) -> None:
+        normalized_name = _normalize_collection_name(name)
+        if normalized_name is None:
+            self.collection_failed.emit("Collection name cannot be empty.")
+            return
+
+        if self._task_service is None:
+            try:
+                collection = self._library_service.create_collection(normalized_name)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.collection_failed.emit(str(exc))
+                return
+            self._handle_collection_created(collection)
+            return
+
+        self._task_service.submit(
+            "create-collection",
+            lambda: self._library_service.create_collection(normalized_name),
+            on_success=self._handle_collection_created,
+            on_failure=lambda error: self.collection_failed.emit(str(error)),
+        )
+
+    def rename_collection(self, collection_uuid: str, name: str) -> None:
+        normalized_name = _normalize_collection_name(name)
+        if normalized_name is None:
+            self.collection_failed.emit("Collection name cannot be empty.")
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.rename_collection(collection_uuid, normalized_name)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.collection_failed.emit(str(exc))
+                return
+            self._handle_collection_changed()
+            return
+
+        self._task_service.submit(
+            "rename-collection",
+            lambda: self._library_service.rename_collection(collection_uuid, normalized_name),
+            on_success=lambda _result: self._handle_collection_changed(),
+            on_failure=lambda error: self.collection_failed.emit(str(error)),
+        )
+
+    def delete_collection(self, collection_uuid: str) -> None:
+        collection_key = collection_shelf_key(collection_uuid)
+        if self._task_service is None:
+            try:
+                self._library_service.delete_collection(collection_uuid)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.collection_failed.emit(str(exc))
+                return
+            self._handle_collection_deleted(collection_key)
+            return
+
+        self._task_service.submit(
+            "delete-collection",
+            lambda: self._library_service.delete_collection(collection_uuid),
+            on_success=lambda _result, collection_key=collection_key: self._handle_collection_deleted(collection_key),
+            on_failure=lambda error: self.collection_failed.emit(str(error)),
+        )
+
+    def add_books_to_collection(self, book_uuids: Iterable[str], collection_uuid: str) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
+        if not target_ids:
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.add_books_to_collection(target_ids, collection_uuid)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.collection_failed.emit(str(exc))
+                return
+            self._handle_books_added_to_collection(target_ids)
+            return
+
+        self._task_service.submit(
+            "add-books-to-collection",
+            lambda: self._library_service.add_books_to_collection(target_ids, collection_uuid),
+            on_success=lambda _result, target_ids=target_ids: self._handle_books_added_to_collection(target_ids),
+            on_failure=lambda error: self.collection_failed.emit(str(error)),
+        )
+
+    def _handle_favourite_success(self, target_ids: tuple[str, ...], is_favourite: bool) -> None:
         changed = False
         next_books: list[Book] = []
         for book in self.books:
@@ -242,6 +350,31 @@ class ShelfViewModel:
         if changed:
             self.books = next_books
             self._emit_state()
+
+    def _handle_collection_created(self, collection: Collection) -> None:
+        next_shelf = collection_shelf_key(collection.uuid)
+        self.current_shelf = next_shelf
+        self.clear_selection(emit_state=False)
+        self._set_detail_book_uuid(None)
+        self.load_books()
+        self._emit_state()
+        self.collections_changed.emit(next_shelf)
+
+    def _handle_collection_changed(self) -> None:
+        self.load_books()
+        self.collections_changed.emit(self.current_shelf)
+
+    def _handle_collection_deleted(self, collection_key: str) -> None:
+        if self.current_shelf == collection_key:
+            self.current_shelf = ShelfKey.ALL.value
+            self.clear_selection(emit_state=False)
+            self._set_detail_book_uuid(None)
+        self.load_books()
+        self.collections_changed.emit(self.current_shelf)
+
+    def _handle_books_added_to_collection(self, target_ids: tuple[str, ...]) -> None:
+        self.load_books()
+        self.books_added_to_collection.emit(target_ids)
 
     def delete_books(self, book_uuids: Iterable[str]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
@@ -444,6 +577,11 @@ class ShelfViewModel:
 
 def collection_shelf_key(collection_uuid: str) -> str:
     return f"collection:{collection_uuid}"
+
+
+def _normalize_collection_name(name: str) -> str | None:
+    normalized = name.strip()
+    return normalized or None
 
 
 def _coerce_sort_field(value: str | None) -> SortField:

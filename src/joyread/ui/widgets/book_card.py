@@ -73,12 +73,12 @@ class BookCardWidget(QFrame):
         layout.setSpacing(Theme.book_card_gap)
 
         self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
-        layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
 
-        title = ElidedLabel(book.title)
+        title = ElidedLabel(book.title, max_lines=2)
         title.setProperty("class", "BookTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(title, stretch=1)
+        layout.addWidget(title)
 
         control_bar_frame = QWidget()
         control_bar_frame.setObjectName("BookControlBar")

@@ -221,6 +221,74 @@ def test_elided_title_label_hides_overflow_and_tooltips_only_when_needed(qtbot) 
     assert label.toolTip() == ""
 
 
+def test_two_line_elided_label_reserves_two_lines_and_tooltips_when_clipped(qtbot) -> None:
+    long_title = "This Is A Very Long JoyRead Book Title That Needs Two Display Lines"
+    label = ElidedLabel(long_title, max_lines=2)
+    qtbot.addWidget(label)
+    label.resize(140, 100)
+    label.show()
+    QApplication.processEvents()
+
+    assert label.max_lines == 2
+    assert label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
+    assert len(label.text().splitlines()) <= 2
+    assert label.text() != long_title
+    assert label.toolTip() == long_title
+
+    short_title = "Short Title"
+    label.set_full_text(short_title)
+    label.resize(600, 100)
+    QApplication.processEvents()
+
+    assert label.text() == short_title
+    assert label.toolTip() == ""
+
+
+def test_book_title_surfaces_reserve_two_lines(qtbot) -> None:
+    apply_theme()
+    now = datetime(2026, 1, 1)
+    book = Book(
+        uuid="long-title",
+        title="A Very Long JoyRead Title That Should Use The Two Line Display Space",
+        author="Author",
+        language_tag="en",
+        book_type="Comic",
+        file_format="CBZ",
+        file_path="/tmp/book.cbz",
+        progress=0.25,
+        cover_thumbnail_path=None,
+        added_at=now,
+        updated_at=now,
+        last_read_at=None,
+        is_favourite=False,
+    )
+    card = BookCardWidget(book, ResourceLoader())
+    row = BookListRowWidget(book, ResourceLoader())
+    detail = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(card)
+    qtbot.addWidget(row)
+    qtbot.addWidget(detail)
+    detail.set_book(book)
+    for widget in (card, row, detail):
+        widget.show()
+    QApplication.processEvents()
+
+    title_labels = [
+        label
+        for widget in (card, row, detail)
+        for label in widget.findChildren(ElidedLabel)
+        if label.property("class") in {"BookTitle", "BookDetailTitle"}
+    ]
+
+    assert len(title_labels) == 3
+    assert all(label.max_lines == 2 for label in title_labels)
+    assert all(
+        label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
+        for label in title_labels
+    )
+    assert card.height() == Theme.book_card_height
+
+
 def test_book_card_cover_can_update_from_generated_path(qtbot, tmp_path) -> None:
     apply_theme()
     cover_path = tmp_path / "cover.png"

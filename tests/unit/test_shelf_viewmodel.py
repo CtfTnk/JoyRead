@@ -95,6 +95,43 @@ def test_set_favourite_applies_same_state_to_multiple_books() -> None:
     assert updated[first.uuid].is_favourite is True
     assert updated[second.uuid].is_favourite is True
 
+    vm.load_books()
+    reloaded = {book.uuid: book for book in vm.books}
+    assert reloaded[first.uuid].is_favourite is True
+    assert reloaded[second.uuid].is_favourite is True
+
+
+def test_collection_commands_validate_and_reload_state() -> None:
+    vm = make_viewmodel()
+    failures: list[str] = []
+    changed: list[str | None] = []
+    vm.collection_failed.connect(failures.append)
+    vm.collections_changed.connect(changed.append)
+    vm.load_books()
+    first, second = vm.visible_books[:2]
+
+    vm.create_collection("  ")
+    assert failures == ["Collection name cannot be empty."]
+
+    vm.create_collection(" Reading Queue ")
+    created = vm.collections[-1]
+    assert created.name == "Reading Queue"
+    assert vm.current_shelf == collection_shelf_key(created.uuid)
+    assert changed[-1] == collection_shelf_key(created.uuid)
+
+    vm.add_books_to_collection((first.uuid, second.uuid), created.uuid)
+    books_by_uuid = {book.uuid: book for book in vm.books}
+    assert created.uuid in books_by_uuid[first.uuid].collection_ids
+    assert created.uuid in books_by_uuid[second.uuid].collection_ids
+
+    vm.rename_collection(created.uuid, "Finished")
+    renamed = next(collection for collection in vm.collections if collection.uuid == created.uuid)
+    assert renamed.name == "Finished"
+
+    vm.delete_collection(created.uuid)
+    assert all(collection.uuid != created.uuid for collection in vm.collections)
+    assert vm.current_shelf == ShelfKey.ALL.value
+
 
 def test_delete_books_clears_selection_detail_and_reloads_books() -> None:
     vm = make_viewmodel()

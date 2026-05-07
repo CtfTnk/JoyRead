@@ -160,7 +160,7 @@ class BookListRowWidget(QFrame):
         )
         info_layout.setSpacing(0)
 
-        title = ElidedLabel(book.title)
+        title = ElidedLabel(book.title, max_lines=2)
         title.setProperty("class", "BookTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         info_layout.addWidget(title)

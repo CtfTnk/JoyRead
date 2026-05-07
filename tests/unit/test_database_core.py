@@ -213,6 +213,12 @@ def test_collection_delete_and_private_move_keep_public_books_consistent(tmp_pat
     book = repository.list_books()[0]
     collection = repository.create_collection("Reading")
     repository.add_book_to_collection(book.uuid, collection.uuid)
+    repository.add_book_to_collection(book.uuid, collection.uuid)
+    repository.rename_collection(collection.uuid, "Reading Queue")
+
+    assert repository.list_collections()[0].name == "Reading Queue"
+    assert repository.list_books()[0].collection_ids == (collection.uuid,)
+
     repository.delete_collection(collection.uuid)
 
     assert repository.list_books()[0].collection_ids == ()
