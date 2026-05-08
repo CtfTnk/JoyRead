@@ -61,6 +61,17 @@ class _FakeSessionService:
         return ReaderPageImage(page_index, image, dimensions)
 
 
+class _FakeLibraryService:
+    def __init__(self) -> None:
+        self.progress_calls: list[tuple[str, int, float]] = []
+
+    def set_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        self.progress_calls.append((book_uuid, page_index, progress_percent))
+
+    def save_reader_settings(self, _book_uuid, _settings):  # noqa: ANN001
+        return None
+
+
 def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path) -> None:
     viewmodel = _viewmodel(tmp_path)
 
@@ -69,16 +80,104 @@ def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path
 
     assert viewmodel.layout_result is not None
     assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+    assert viewmodel.current_display_indices == (0, 1)
     viewmodel.handle_horizontal_key("left")
     assert viewmodel.current_index == 2
+    assert viewmodel.current_display_indices == (2, 3)
     viewmodel.handle_horizontal_key("right")
-    assert viewmodel.current_index == 0
+    assert viewmodel.current_index == 1
+    assert viewmodel.current_display_indices == (1, 0)
 
     viewmodel.seek(2)
     viewmodel.toggle_spread_offset()
 
     assert viewmodel.current_index == 1
     assert viewmodel.current_display_indices == (1, 2)
+
+
+def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+    layout_modes: list[ReaderDisplayMode] = []
+    viewmodel.layout_changed.connect(lambda result: layout_modes.append(result.mode))
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+
+    assert layout_modes
+    assert ReaderDisplayMode.SINGLE not in layout_modes
+    assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
+
+
+def test_reader_viewmodel_backward_navigation_uses_previous_page_as_primary(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.go_next()
+    viewmodel.go_previous()
+
+    assert viewmodel.current_index == 1
+    assert viewmodel.current_display_indices == (1, 0)
+
+
+def test_reader_viewmodel_does_not_skip_hidden_companion_in_single_mode(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(700, 900)
+
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.SINGLE
+    assert viewmodel.current_display_indices == (0, 1)
+
+    viewmodel.go_next()
+
+    assert viewmodel.current_index == 1
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [1]
+
+
+def test_reader_viewmodel_previous_does_not_skip_hidden_companion_in_single_mode(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(700, 900)
+    viewmodel.seek(4)
+
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.SINGLE
+    assert viewmodel.current_display_indices == (4, 3)
+
+    viewmodel.go_previous()
+
+    assert viewmodel.current_index == 3
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [3]
+
+
+def test_reader_viewmodel_shift_button_advances_archive_index(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.set_direction(viewmodel.settings.direction)
+
+    viewmodel.shift_to_next_index()
+
+    assert viewmodel.current_index == 1
+
+
+def test_reader_viewmodel_emits_progress_after_persist(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    progress_events: list[tuple[str, int, float]] = []
+    viewmodel = _viewmodel(tmp_path, library_service=library)
+    viewmodel.progress_changed.connect(lambda book_uuid, page, percent: progress_events.append((book_uuid, page, percent)))
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.seek(2)
+
+    assert library.progress_calls[-1] == ("book-1", 2, 50.0)
+    assert progress_events[-1] == ("book-1", 2, 50.0)
 
 
 def test_reader_viewmodel_pans_wide_page_before_turning_page(tmp_path: Path) -> None:
@@ -98,13 +197,19 @@ def test_reader_viewmodel_pans_wide_page_before_turning_page(tmp_path: Path) -> 
     assert viewmodel.pan_x < before_pan
 
 
-def _viewmodel(tmp_path: Path, dimensions: tuple[int, int] = (600, 900)) -> ReaderViewModel:
+def _viewmodel(
+    tmp_path: Path,
+    dimensions: tuple[int, int] = (600, 900),
+    library_service=None,  # noqa: ANN001
+) -> ReaderViewModel:
     source = tmp_path / "book.cbz"
     source.write_bytes(b"fake")
     return ReaderViewModel(
         _FakeSessionService(dimensions),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         CacheService(16, 16),
+        library_service,  # type: ignore[arg-type]
+        book_uuid="book-1" if library_service is not None else None,
         title="Book",
     )
 

@@ -106,30 +106,23 @@ QMainWindow#ReaderWindow {
 }
 
 QWidget#ReaderRootPanel {
-    background: __READER_BACKGROUND__;
+    background: transparent;
     border-radius: __READER_RADIUS__;
 }
 
 QWidget#ReaderCanvas {
-    background: __READER_BACKGROUND__;
+    background: transparent;
     border-radius: __READER_RADIUS__;
 }
 
 QWidget#ReaderHeader {
-    background: qlineargradient(
-        x1: 0,
-        y1: 1,
-        x2: 0,
-        y2: 0,
-        stop: 0 rgba(255, 255, 255, 51),
-        stop: 0.495 rgba(255, 255, 255, 204)
-    );
+    background: transparent;
     border-top-left-radius: __READER_RADIUS__;
     border-top-right-radius: __READER_RADIUS__;
 }
 
 QWidget#ReaderFooter {
-    background: __READER_FOOTER_BACKGROUND__;
+    background: transparent;
     border: none;
 }
 
@@ -194,29 +187,6 @@ QLabel#ReaderStatusText {
     color: __TEXT_MUTED_COLOR__;
     font-size: __BODY_FONT_SIZE__;
     font-weight: 500;
-}
-
-QSlider#ReaderProgressSlider::groove:horizontal {
-    background: __READER_SLIDER_EMPTY__;
-    border: none;
-    border-radius: 3px;
-    height: 6px;
-}
-
-QSlider#ReaderProgressSlider::sub-page:horizontal {
-    background: __READER_SLIDER_FILLED__;
-    border: none;
-    border-radius: 3px;
-    height: 6px;
-}
-
-QSlider#ReaderProgressSlider::handle:horizontal {
-    background: __WINDOW_COLOR__;
-    border: 1px solid __BUTTON_INNER_EDGE__;
-    border-radius: 3px;
-    width: 14px;
-    height: 10px;
-    margin: -2px 0;
 }
 
 QFrame#ReaderSettingsPanel {

@@ -12,6 +12,7 @@ from joyread.app.app_context import AppContext
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
@@ -27,6 +28,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._context = context
         self._reader_windows: list[ReaderWindow] = []
+        self._embedded_reader: ReaderShellWidget | None = None
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
@@ -113,7 +115,10 @@ class MainWindow(QMainWindow):
         if book is None:
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
             return
-        self._show_reader_window(Path(book.file_path), book=book)
+        if self._settings_for_reader_launch().individual_read_window:
+            self._show_reader_window(Path(book.file_path), book=book)
+        else:
+            self._show_embedded_reader(Path(book.file_path), book=book)
 
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
@@ -140,14 +145,56 @@ class MainWindow(QMainWindow):
 
     def _show_reader_window(self, path: Path, *, book=None, title: str | None = None) -> None:  # noqa: ANN001
         reader = ReaderWindow(self._context, path, book=book, title=title)
+        reader.progress_changed.connect(self._handle_reader_progress_changed)
         reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
         self._reader_windows.append(reader)
         reader.show()
         reader.raise_()
 
+    def _show_embedded_reader(self, path: Path, *, book) -> None:  # noqa: ANN001
+        root = self.centralWidget()
+        if root is None:
+            return
+        self._hide_settings_page()
+        self._close_embedded_reader()
+        self._embedded_reader = ReaderShellWidget(
+            self._context,
+            path,
+            book=book,
+            show_back_button=True,
+            parent=root,
+        )
+        self._embedded_reader.back_requested.connect(self._close_embedded_reader)
+        self._embedded_reader.progress_changed.connect(self._handle_reader_progress_changed)
+        self._embedded_reader.setGeometry(root.rect())
+        self._embedded_reader.show()
+        self._embedded_reader.raise_()
+        self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if hasattr(self, "_resize_grip"):
+            self._resize_grip.hide()
+
+    def _close_embedded_reader(self) -> None:
+        if self._embedded_reader is None:
+            return
+        reader = self._embedded_reader
+        self._embedded_reader = None
+        reader.cancel()
+        reader.hide()
+        reader.deleteLater()
+        if hasattr(self, "_resize_grip"):
+            self._resize_grip.show()
+            self._resize_grip.raise_()
+
     def _forget_reader_window(self, reader: ReaderWindow) -> None:
         if reader in self._reader_windows:
             self._reader_windows.remove(reader)
+
+    def _handle_reader_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        self._context.shelf_viewmodel.apply_reader_progress(book_uuid, page_index, progress_percent)
+
+    def _settings_for_reader_launch(self):
+        self._context.settings = self._context.settings_store.load()
+        return self._context.settings
 
     def _reload_after_background_import(self) -> None:
         self._context.shelf_viewmodel.load_books()
@@ -446,6 +493,9 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._position_settings_overlay()
         self._position_dialog_overlay()
+        if self._embedded_reader is not None and self.centralWidget() is not None:
+            self._embedded_reader.setGeometry(self.centralWidget().rect())
+            self._embedded_reader.raise_()
         if hasattr(self, "_resize_grip"):
             margin = 2
             self._resize_grip.move(

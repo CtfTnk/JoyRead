@@ -157,16 +157,18 @@ class SmartLayoutEngine:
         left = (viewport.width - (page1_width + page2_width)) / 2.0
         top = (viewport.height - height) / 2.0
 
-        if settings.direction == ReaderDirection.RIGHT_TO_LEFT:
-            draws = (
-                PageDraw(page2_index, RectF(left, top, page2_width, height)),
-                PageDraw(page1_index, RectF(left + page2_width, top, page1_width, height)),
-            )
-        else:
-            draws = (
-                PageDraw(page1_index, RectF(left, top, page1_width, height)),
-                PageDraw(page2_index, RectF(left + page1_width, top, page2_width, height)),
-            )
+        widths = {page1_index: page1_width, page2_index: page2_width}
+        ordered_indexes = sorted(
+            widths,
+            reverse=settings.direction == ReaderDirection.RIGHT_TO_LEFT,
+        )
+        left_index, right_index = ordered_indexes
+        left_width = widths[left_index]
+        right_width = widths[right_index]
+        draws = (
+            PageDraw(left_index, RectF(left, top, left_width, height)),
+            PageDraw(right_index, RectF(left + left_width, top, right_width, height)),
+        )
         return ReaderLayoutResult(
             mode=ReaderDisplayMode.DOUBLE,
             scale=scale,

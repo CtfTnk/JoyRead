@@ -46,6 +46,28 @@ def test_double_page_wins_when_it_uses_more_screen_area() -> None:
     assert [draw.page_index for draw in result.page_draws] == [1, 0]
 
 
+def test_double_page_draw_order_uses_archive_order_not_primary_order() -> None:
+    right_to_left = SmartLayoutEngine().calculate(
+        SizeF(1600, 900),
+        SizeF(600, 900),
+        SizeF(600, 900),
+        ReaderLayoutSettings(direction=ReaderDirection.RIGHT_TO_LEFT),
+        page1_index=1,
+        page2_index=0,
+    )
+    left_to_right = SmartLayoutEngine().calculate(
+        SizeF(1600, 900),
+        SizeF(600, 900),
+        SizeF(600, 900),
+        ReaderLayoutSettings(direction=ReaderDirection.LEFT_TO_RIGHT),
+        page1_index=1,
+        page2_index=0,
+    )
+
+    assert [draw.page_index for draw in right_to_left.page_draws] == [1, 0]
+    assert [draw.page_index for draw in left_to_right.page_draws] == [0, 1]
+
+
 def test_single_page_wins_when_double_spread_is_too_small() -> None:
     result = SmartLayoutEngine().calculate(
         SizeF(700, 900),

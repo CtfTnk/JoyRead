@@ -122,6 +122,12 @@ class ShelfViewModel:
         books = [book for book in self.books if self._book_in_current_shelf(book)]
         books = [book for book in books if book.matches_query(self.search_query)]
         books = [book for book in books if self._book_matches_filter(book)]
+        if self.current_shelf == ShelfKey.RECENT:
+            return sorted(
+                books,
+                key=lambda book: (book.last_read_at or datetime.min, book.title.lower()),
+                reverse=True,
+            )
         return sorted(books, key=self._sort_key, reverse=not self.sort_ascending)
 
     def load_books(self) -> None:
@@ -232,6 +238,29 @@ class ShelfViewModel:
     def open_book(self, book_uuid: str) -> None:
         if any(book.uuid == book_uuid for book in self.books):
             self.book_open_requested.emit(book_uuid)
+
+    def apply_reader_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        del page_index
+        now = datetime.now()
+        changed = False
+        next_books: list[Book] = []
+        normalized_progress = max(0.0, min(100.0, progress_percent)) / 100.0
+        for book in self.books:
+            if book.uuid == book_uuid:
+                next_books.append(
+                    replace(
+                        book,
+                        progress=normalized_progress,
+                        last_read_at=now,
+                        updated_at=now,
+                    )
+                )
+                changed = True
+            else:
+                next_books.append(book)
+        if changed:
+            self.books = next_books
+            self._emit_state()
 
     def toggle_favourite(self, book_uuid: str) -> None:
         book = next((book for book in self.books if book.uuid == book_uuid), None)

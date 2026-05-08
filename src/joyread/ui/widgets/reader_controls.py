@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QFontMetrics, QIcon
+from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QSlider,
@@ -44,11 +45,12 @@ class ReaderHeader(QWidget):
         controls.zoom_requested.connect(self._toggle_zoom)
         layout.addWidget(controls)
 
-        back = reader_button(resources, "icon_left.svg", "Back")
-        back.setProperty("class", "ChromeButton")
-        back.clicked.connect(self.back_requested.emit)
-        layout.addWidget(back)
-        layout.addWidget(_spacer(height=Theme.reader_control_size))
+        self.back_button = reader_button(resources, "icon_left.svg", "Back")
+        self.back_button.setProperty("class", "ChromeButton")
+        self.back_button.clicked.connect(self.back_requested.emit)
+        layout.addWidget(self.back_button)
+        self.back_spacer = _spacer(height=Theme.reader_control_size)
+        layout.addWidget(self.back_spacer)
 
         self.mode_group = QFrame()
         self.mode_group.setProperty("class", "ReaderTopGroup")
@@ -64,6 +66,9 @@ class ReaderHeader(QWidget):
         mode_layout.setSpacing(Theme.reader_switch_gap)
         self.detail_button = switch_option(resources, "icon_list_detailMode.svg", "Details")
         self.detail_button.setEnabled(False)
+        disabled_effect = QGraphicsOpacityEffect(self.detail_button)
+        disabled_effect.setOpacity(0.3)
+        self.detail_button.setGraphicsEffect(disabled_effect)
         self.bookmark_button = switch_option(resources, "icon_bookmark.svg", "Bookmarks")
         self.thumbnail_button = switch_option(resources, "icon_list_cardMode.svg", "Thumbnails")
         self.thumbnail_button.setChecked(True)
@@ -82,6 +87,11 @@ class ReaderHeader(QWidget):
         layout.addStretch(1)
         layout.addWidget(QWidget(), stretch=0)
 
+    def set_back_visible(self, visible: bool) -> None:
+        self.back_button.setVisible(visible)
+        self.back_spacer.setVisible(visible)
+        self._position_title()
+
     def set_title(self, title: str) -> None:
         self._full_title = title
         self._position_title()
@@ -94,8 +104,22 @@ class ReaderHeader(QWidget):
         self.mouse_activity.emit()
         super().enterEvent(event)
 
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        gradient = QLinearGradient(0, self.height(), 0, 0)
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 51))
+        gradient.setColorAt(0.5, QColor(255, 255, 255, 204))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 204))
+        painter.fillPath(_top_rounded_path(self.rect()), gradient)
+        painter.end()
+
     def _position_title(self) -> None:
-        max_width = max(80, self.width() - 360)
+        left_edge = self.mode_group.geometry().right() + 12 if self.mode_group.width() else 160
+        right_edge = 52 + 12
+        safe_side = max(left_edge, right_edge)
+        max_width = max(80, self.width() - (safe_side * 2))
         metrics = QFontMetrics(self.title.font())
         self.title.setFixedWidth(max_width)
         self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, max_width))
@@ -152,12 +176,13 @@ class ReaderFooter(QWidget):
         left_layout = QHBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
-        left_layout.addWidget(reader_button(resources, "icon_go-left-end.svg", "Jump to start", self.start_requested.emit))
-        left_layout.addWidget(reader_button(resources, "icon_left.svg", "Previous page", self.previous_requested.emit))
+        self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", "Jump to start", self.start_requested.emit)
+        self.left_inner_button = reader_button(resources, "icon_left.svg", "Previous page", self.previous_requested.emit)
+        left_layout.addWidget(self.left_outer_button)
+        left_layout.addWidget(self.left_inner_button)
         upper_layout.addWidget(left)
 
-        self.slider = QSlider(Qt.Orientation.Horizontal)
-        self.slider.setObjectName("ReaderProgressSlider")
+        self.slider = ReaderProgressSlider()
         self.slider.setFixedHeight(Theme.reader_slider_height)
         self.slider.setMinimum(0)
         self.slider.setMaximum(0)
@@ -168,8 +193,10 @@ class ReaderFooter(QWidget):
         right_layout = QHBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        right_layout.addWidget(reader_button(resources, "icon_right.svg", "Next page", self.next_requested.emit))
-        right_layout.addWidget(reader_button(resources, "icon_go-right-end.svg", "Jump to end", self.end_requested.emit))
+        self.right_inner_button = reader_button(resources, "icon_right.svg", "Next page", self.next_requested.emit)
+        self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", "Jump to end", self.end_requested.emit)
+        right_layout.addWidget(self.right_inner_button)
+        right_layout.addWidget(self.right_outer_button)
         upper_layout.addWidget(right)
         layout.addWidget(upper)
 
@@ -185,9 +212,9 @@ class ReaderFooter(QWidget):
         self.direction_switch = ReaderSwitch(
             resources,
             (
-                ("right", "icon_read-from-right.svg", ReaderDirection.RIGHT_TO_LEFT),
-                ("left", "icon_read-from-left.svg", ReaderDirection.LEFT_TO_RIGHT),
-                ("top", "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
+                ("Right-to-left", "icon_read-from-left.svg", ReaderDirection.RIGHT_TO_LEFT),
+                ("Left-to-right", "icon_read-from-right.svg", ReaderDirection.LEFT_TO_RIGHT),
+                ("Top-to-down", "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
             ),
         )
         self.direction_switch.value_changed.connect(self.direction_changed.emit)
@@ -208,29 +235,128 @@ class ReaderFooter(QWidget):
             "Shift spread pairing",
             self.spread_shift_requested.emit,
         )
-        self.shift_button.setCheckable(True)
         lower_layout.addWidget(self.shift_button)
         lower_layout.addWidget(reader_button(resources, "icon_setting.svg", "Reader settings", self.settings_requested.emit))
         layout.addWidget(lower)
 
-    def set_page_state(self, current_index: int, page_count: int) -> None:
+    def set_page_state(self, current_index: int, page_count: int, direction: ReaderDirection) -> None:
         self.slider.blockSignals(True)
+        self.slider.set_reading_direction(direction)
         self.slider.setMaximum(max(0, page_count - 1))
         self.slider.setValue(max(0, min(current_index, max(0, page_count - 1))))
         self.slider.blockSignals(False)
 
     def set_direction(self, direction: ReaderDirection) -> None:
         self.direction_switch.set_value(direction)
+        self.slider.set_reading_direction(direction)
+        if direction == ReaderDirection.RIGHT_TO_LEFT:
+            self.left_outer_button.setToolTip("Jump to end")
+            self.left_inner_button.setToolTip("Next page")
+            self.right_inner_button.setToolTip("Previous page")
+            self.right_outer_button.setToolTip("Jump to start")
+        else:
+            self.left_outer_button.setToolTip("Jump to start")
+            self.left_inner_button.setToolTip("Previous page")
+            self.right_inner_button.setToolTip("Next page")
+            self.right_outer_button.setToolTip("Jump to end")
 
     def set_transition_mode(self, mode: ReaderTransitionMode) -> None:
         self.effect_switch.set_value(mode)
 
-    def set_spread_shifted(self, shifted: bool) -> None:
-        self.shift_button.setChecked(shifted)
+    def is_slider_active(self) -> bool:
+        return self.slider.isSliderDown()
 
     def enterEvent(self, event) -> None:  # type: ignore[override]
         self.mouse_activity.emit()
         super().enterEvent(event)
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        gradient = QLinearGradient(0, 0, 0, self.height())
+        gradient.setColorAt(0.0, QColor(255, 255, 255, 38))
+        gradient.setColorAt(0.55, QColor(255, 255, 255, 188))
+        gradient.setColorAt(1.0, QColor(255, 255, 255, 210))
+        painter.fillPath(_bottom_rounded_path(self.rect()), gradient)
+        painter.end()
+
+
+class ReaderProgressSlider(QSlider):
+    """Paint the reader progress track so archive order can mirror by direction."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(Qt.Orientation.Horizontal, parent)
+        self.setObjectName("ReaderProgressSlider")
+        self._reading_direction = ReaderDirection.RIGHT_TO_LEFT
+        self.set_reading_direction(self._reading_direction)
+
+    @property
+    def reading_direction(self) -> ReaderDirection:
+        return self._reading_direction
+
+    def set_reading_direction(self, direction: ReaderDirection) -> None:
+        self._reading_direction = direction
+        inverted = direction == ReaderDirection.RIGHT_TO_LEFT
+        self.setInvertedAppearance(inverted)
+        self.setInvertedControls(inverted)
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        track = self._track_rect()
+        track_radius = Theme.reader_slider_track_height / 2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(Theme.color_reader_slider_empty))
+        painter.drawRoundedRect(track, track_radius, track_radius)
+
+        filled = self._filled_track_rect()
+        if filled.width() > 0.5:
+            painter.setBrush(QColor(Theme.color_reader_slider_filled))
+            painter.drawRoundedRect(filled, track_radius, track_radius)
+
+        handle = self._handle_rect()
+        handle_radius = min(Theme.reader_slider_knob_height, Theme.reader_slider_track_height) / 2
+        painter.setBrush(QColor(Theme.color_window))
+        painter.setPen(QPen(QColor(Theme.color_button_inner_edge), 1))
+        painter.drawRoundedRect(handle, handle_radius, handle_radius)
+        painter.end()
+
+    def _track_rect(self) -> QRectF:
+        handle_margin = Theme.reader_slider_knob_width / 2
+        return QRectF(
+            handle_margin,
+            (self.height() - Theme.reader_slider_track_height) / 2,
+            max(0, self.width() - Theme.reader_slider_knob_width),
+            Theme.reader_slider_track_height,
+        )
+
+    def _filled_track_rect(self) -> QRectF:
+        track = self._track_rect()
+        center_x = self._handle_center_x()
+        if self._reading_direction == ReaderDirection.RIGHT_TO_LEFT:
+            return QRectF(center_x, track.y(), max(0, track.right() - center_x), track.height())
+        return QRectF(track.left(), track.y(), max(0, center_x - track.left()), track.height())
+
+    def _handle_rect(self) -> QRectF:
+        return QRectF(
+            self._handle_center_x() - (Theme.reader_slider_knob_width / 2),
+            (self.height() - Theme.reader_slider_knob_height) / 2,
+            Theme.reader_slider_knob_width,
+            Theme.reader_slider_knob_height,
+        )
+
+    def _handle_center_x(self) -> float:
+        track = self._track_rect()
+        minimum = self.minimum()
+        maximum = self.maximum()
+        fraction = 0.0 if maximum <= minimum else (self.value() - minimum) / (maximum - minimum)
+        if self._reading_direction == ReaderDirection.RIGHT_TO_LEFT:
+            fraction = 1.0 - fraction
+        return track.left() + (track.width() * max(0.0, min(1.0, fraction)))
 
 
 class ReaderSwitch(QFrame):
@@ -286,6 +412,7 @@ def reader_button(
 ) -> QToolButton:
     button = QToolButton()
     button.setProperty("class", "ReaderButton")
+    button.setProperty("iconName", icon_name)
     button.setIcon(QIcon(str(resources.icon_path(icon_name))))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
     button.setToolTip(tooltip)
@@ -299,6 +426,7 @@ def reader_button(
 def switch_option(resources: ResourceLoader, icon_name: str, tooltip: str) -> QToolButton:
     button = QToolButton()
     button.setProperty("class", "ReaderSwitchOption")
+    button.setProperty("iconName", icon_name)
     button.setCheckable(True)
     button.setIcon(QIcon(str(resources.icon_path(icon_name))))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
@@ -314,3 +442,38 @@ def _spacer(height: int) -> QFrame:
     frame.setFixedSize(Theme.toolbar_spacer_width, height)
     frame.setFrameShape(QFrame.Shape.NoFrame)
     return frame
+
+
+def _top_rounded_path(rect) -> QPainterPath:  # noqa: ANN001
+    bounds = QRectF(rect)
+    radius = _panel_radius(bounds)
+    path = QPainterPath()
+    # Build one continuous shape. Overlapping addRect/addRoundedRect paths can
+    # cancel under Qt's fill rule and leave the glass panel visually missing.
+    path.moveTo(bounds.left(), bounds.bottom())
+    path.lineTo(bounds.left(), bounds.top() + radius)
+    path.quadTo(bounds.left(), bounds.top(), bounds.left() + radius, bounds.top())
+    path.lineTo(bounds.right() - radius, bounds.top())
+    path.quadTo(bounds.right(), bounds.top(), bounds.right(), bounds.top() + radius)
+    path.lineTo(bounds.right(), bounds.bottom())
+    path.closeSubpath()
+    return path
+
+
+def _bottom_rounded_path(rect) -> QPainterPath:  # noqa: ANN001
+    bounds = QRectF(rect)
+    radius = _panel_radius(bounds)
+    path = QPainterPath()
+    path.moveTo(bounds.left(), bounds.top())
+    path.lineTo(bounds.right(), bounds.top())
+    path.lineTo(bounds.right(), bounds.bottom() - radius)
+    path.quadTo(bounds.right(), bounds.bottom(), bounds.right() - radius, bounds.bottom())
+    path.lineTo(bounds.left() + radius, bounds.bottom())
+    path.quadTo(bounds.left(), bounds.bottom(), bounds.left(), bounds.bottom() - radius)
+    path.lineTo(bounds.left(), bounds.top())
+    path.closeSubpath()
+    return path
+
+
+def _panel_radius(bounds: QRectF) -> float:
+    return max(0.0, min(float(Theme.reader_radius), bounds.width() / 2, bounds.height()))

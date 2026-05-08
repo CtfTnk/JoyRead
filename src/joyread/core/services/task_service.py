@@ -49,19 +49,19 @@ class _Runnable(QRunnable):
 
     def run(self) -> None:
         if self._handle.status == TaskStatus.CANCELLED:
-            self._signals.finished.emit()
+            _safe_emit(self._signals.finished)
             return
         try:
             result = self._callback()
         except Exception as exc:  # pragma: no cover - exact task failures are callback-specific.
             if self._handle.status != TaskStatus.CANCELLED:
-                self._signals.failed.emit(exc)
-            self._signals.finished.emit()
+                _safe_emit(self._signals.failed, exc)
+            _safe_emit(self._signals.finished)
             return
 
         if self._handle.status != TaskStatus.CANCELLED:
-            self._signals.completed.emit(result)
-        self._signals.finished.emit()
+            _safe_emit(self._signals.completed, result)
+        _safe_emit(self._signals.finished)
 
 
 class TaskService:
@@ -127,3 +127,12 @@ class TaskService:
             handle.error = exc
             handle.status = TaskStatus.FAILED
         return handle
+
+
+def _safe_emit(signal, *args: object) -> None:  # noqa: ANN001
+    try:
+        signal.emit(*args)
+    except RuntimeError:
+        # A window can be closed while a background QRunnable is finishing.
+        # Dropping the late signal is safer than letting shutdown surface a Qt wrapper error.
+        return

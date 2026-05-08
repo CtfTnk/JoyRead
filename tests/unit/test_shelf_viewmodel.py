@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from joyread.core.repositories.mock_book_repository import MockBookRepository
@@ -66,6 +67,55 @@ def test_shelf_filters_recent_favourites_and_collection() -> None:
     vm.set_current_shelf(collection_shelf_key("collection-a"))
     assert vm.page_title == "A Collection"
     assert all("collection-a" in book.collection_ids for book in vm.visible_books)
+
+
+def test_reader_progress_update_refreshes_visible_state() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    book = vm.visible_books[0]
+    events: list[None] = []
+    vm.state_changed.connect(lambda: events.append(None))
+
+    vm.apply_reader_progress(book.uuid, page_index=3, progress_percent=75.0)
+
+    updated = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
+    assert updated.progress == 0.75
+    assert updated.last_read_at is not None
+    assert events
+
+
+def test_recent_shelf_ignores_user_sort_and_uses_latest_read_first() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    older, newer = vm.books[:2]
+    now = datetime.now()
+    vm.books = [
+        replace(older, title="Zeta", last_read_at=now - timedelta(days=1)),
+        replace(newer, title="Alpha", last_read_at=now),
+        *vm.books[2:],
+    ]
+
+    vm.set_current_shelf(ShelfKey.RECENT.value)
+    vm.set_sort(SortField.TITLE.value, ascending=True)
+
+    assert vm.visible_books[0].uuid == newer.uuid
+
+
+def test_reader_progress_update_moves_book_to_front_of_recent() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    now = datetime.now()
+    vm.books = [
+        replace(book, last_read_at=now - timedelta(days=index + 1))
+        for index, book in enumerate(vm.books)
+    ]
+    target = vm.books[-1]
+
+    vm.set_current_shelf(ShelfKey.RECENT.value)
+
+    vm.apply_reader_progress(target.uuid, page_index=4, progress_percent=80.0)
+
+    assert vm.visible_books[0].uuid == target.uuid
 
 
 def test_view_mode_selection_and_favourite_toggle() -> None:

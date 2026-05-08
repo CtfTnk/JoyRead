@@ -23,6 +23,7 @@ from joyread.core.reader import (
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService
+from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -46,6 +47,7 @@ class ReaderViewModel:
         self.page_ready: Signal[ReaderPageImage] = Signal()
         self.error_changed: Signal[str | None] = Signal()
         self.password_required: Signal[str] = Signal()
+        self.progress_changed: Signal[tuple[str, int, float]] = Signal()
 
         self._session_service = session_service
         self._task_service = task_service
@@ -63,8 +65,10 @@ class ReaderViewModel:
         self._viewport_size = SizeF(1.0, 1.0)
         self._layout_result: ReaderLayoutResult | None = None
         self._pages: dict[int, ReaderPageImage] = {}
+        self._unavailable_pages: set[int] = set()
         self._page_count = 0
-        self._current_index = max(0, progress.page_index if progress is not None else 0)
+        self._primary_index = max(0, progress.page_index if progress is not None else 0)
+        self._companion_index: int | None = None
         self._pan_x = 0.0
 
         self.title = title
@@ -78,20 +82,18 @@ class ReaderViewModel:
 
     @property
     def current_index(self) -> int:
-        return self._current_index
+        return self._primary_index
 
     @property
     def current_display_indices(self) -> tuple[int, ...]:
         if self._page_count <= 0:
             return ()
-        start = max(0, min(self._current_index, self._page_count - 1))
-        indices = [start]
-        if (
-            not self.settings.always_one_page
-            and start + 1 < self._page_count
-            and not (self.settings.spread_offset and start == 0)
-        ):
-            indices.append(start + 1)
+        primary = max(0, min(self._primary_index, self._page_count - 1))
+        indices = [primary]
+        if self._can_use_companion() and self._companion_index is not None:
+            companion = max(0, min(self._companion_index, self._page_count - 1))
+            if companion != primary:
+                indices.append(companion)
         return tuple(indices)
 
     @property
@@ -102,6 +104,10 @@ class ReaderViewModel:
     def pan_x(self) -> float:
         return self._pan_x
 
+    @property
+    def is_right_to_left(self) -> bool:
+        return self.settings.direction == ReaderDirection.RIGHT_TO_LEFT
+
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
         self.cancel()
         self._source_path = Path(source_path)
@@ -109,6 +115,7 @@ class ReaderViewModel:
         self.is_loading = True
         self.error_message = None
         self._pages.clear()
+        self._unavailable_pages.clear()
         self._page_count = 0
         self._layout_result = None
         self._emit_state()
@@ -148,6 +155,9 @@ class ReaderViewModel:
         page2 = self._pages.get(indices[1]) if len(indices) > 1 else None
         if len(indices) > 1 and page2 is None:
             self._request_page(indices[1])
+            if indices[1] not in self._unavailable_pages:
+                return
+            self._companion_index = None
 
         result = self._layout_engine.calculate(
             self._viewport_size,
@@ -166,12 +176,10 @@ class ReaderViewModel:
         if self._page_count <= 0:
             return
         next_index = max(0, min(page_index, self._page_count - 1))
-        if next_index == self._current_index:
+        next_companion = self._companion_for_seek(next_index)
+        if next_index == self._primary_index and next_companion == self._companion_index:
             return
-        self._current_index = next_index
-        self._pan_x = 0.0
-        self._request_visible_pages()
-        self.recalculate_layout()
+        self._set_target_spread(next_index, next_companion)
         self._save_progress()
         self._emit_state()
 
@@ -180,13 +188,31 @@ class ReaderViewModel:
 
     def jump_to_end(self) -> None:
         if self._page_count > 0:
-            self.seek(self._page_count - 1)
+            self._set_target_spread(self._page_count - 1, self._previous_companion(self._page_count - 1))
+            self._save_progress()
+            self._emit_state()
 
     def go_next(self) -> None:
-        self.seek(self._current_index + self._current_step())
+        if self._page_count <= 0:
+            return
+        current_high = max(self._navigation_anchor_indices())
+        next_primary = current_high + 1
+        if next_primary >= self._page_count:
+            return
+        self._set_target_spread(next_primary, self._next_companion(next_primary))
+        self._save_progress()
+        self._emit_state()
 
     def go_previous(self) -> None:
-        self.seek(self._current_index - self._current_step())
+        if self._page_count <= 0:
+            return
+        current_low = min(self._navigation_anchor_indices())
+        if current_low <= 0:
+            return
+        previous_primary = max(0, current_low - 1)
+        self._set_target_spread(previous_primary, self._previous_companion(previous_primary))
+        self._save_progress()
+        self._emit_state()
 
     def handle_horizontal_key(self, side: str) -> None:
         if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.WIDE_PAN:
@@ -213,6 +239,7 @@ class ReaderViewModel:
             direction=direction,
             vertical_enabled=direction == ReaderDirection.TOP_TO_BOTTOM,
         )
+        self._refresh_companion_for_primary()
         self._persist_settings()
         self.recalculate_layout()
         self._emit_state()
@@ -227,15 +254,19 @@ class ReaderViewModel:
     def toggle_spread_offset(self) -> None:
         next_offset = 0 if self.settings.spread_offset else 1
         self.settings = replace(self.settings, spread_offset=next_offset)
-        if self._current_index > 0:
-            if next_offset and self._current_index % 2 == 0:
-                self._current_index -= 1
-            if not next_offset and self._current_index % 2 == 1:
-                self._current_index -= 1
+        if self._primary_index > 0:
+            if next_offset and self._primary_index % 2 == 0:
+                self._primary_index -= 1
+            if not next_offset and self._primary_index % 2 == 1:
+                self._primary_index -= 1
+        self._companion_index = self._next_companion(self._primary_index)
         self._persist_settings()
         self._request_visible_pages()
         self.recalculate_layout()
         self._emit_state()
+
+    def shift_to_next_index(self) -> None:
+        self.seek(self._primary_index + 1)
 
     def set_custom_enabled(self, enabled: bool) -> None:
         self.settings = replace(self.settings, custom_enabled=enabled)
@@ -245,6 +276,7 @@ class ReaderViewModel:
 
     def set_always_one_page(self, enabled: bool) -> None:
         self.settings = replace(self.settings, always_one_page=enabled)
+        self._refresh_companion_for_primary()
         self._persist_settings()
         self.recalculate_layout()
         self._emit_state()
@@ -261,13 +293,51 @@ class ReaderViewModel:
         self.recalculate_layout()
         self._emit_state()
 
+    def _set_target_spread(self, primary_index: int, companion_index: int | None) -> None:
+        self._primary_index = max(0, min(primary_index, max(0, self._page_count - 1)))
+        self._companion_index = self._valid_companion(companion_index)
+        self._pan_x = 0.0
+        self._request_visible_pages()
+        self.recalculate_layout()
+
+    def _refresh_companion_for_primary(self) -> None:
+        self._companion_index = self._companion_for_seek(self._primary_index)
+
+    def _can_use_companion(self) -> bool:
+        return (
+            self._page_count > 1
+            and not self.settings.always_one_page
+            and self.settings.direction != ReaderDirection.TOP_TO_BOTTOM
+        )
+
+    def _companion_for_seek(self, primary_index: int) -> int | None:
+        return self._next_companion(primary_index) or self._previous_companion(primary_index)
+
+    def _next_companion(self, primary_index: int) -> int | None:
+        return self._valid_companion(primary_index + 1, primary_index)
+
+    def _previous_companion(self, primary_index: int) -> int | None:
+        return self._valid_companion(primary_index - 1, primary_index)
+
+    def _valid_companion(self, companion_index: int | None, primary_index: int | None = None) -> int | None:
+        if companion_index is None or not self._can_use_companion():
+            return None
+        primary = self._primary_index if primary_index is None else primary_index
+        if not 0 <= companion_index < self._page_count:
+            return None
+        if companion_index == primary or companion_index in self._unavailable_pages:
+            return None
+        return companion_index
+
     def _handle_open_success(self, session: ArchiveImageSession) -> None:
         self._session = session
         self._page_count = session.page_count
-        self._current_index = max(0, min(self._current_index, max(0, self._page_count - 1)))
+        self._primary_index = max(0, min(self._primary_index, max(0, self._page_count - 1)))
+        self._companion_index = self._companion_for_seek(self._primary_index)
         self.is_loading = False
         self.error_message = None
         self._request_visible_pages()
+        self._save_progress()
         self._emit_state()
 
     def _handle_open_failure(self, error: Exception) -> None:
@@ -307,15 +377,27 @@ class ReaderViewModel:
             f"reader-page-{page_index}",
             load,
             on_success=lambda image, page_index=page_index: self._handle_page_task_success(page_index, image),
-            on_failure=lambda _error, page_index=page_index: self._page_handles.pop(page_index, None),
+            on_failure=lambda _error, page_index=page_index: self._handle_page_task_failure(page_index),
         )
 
     def _handle_page_task_success(self, page_index: int, image: ReaderPageImage | None) -> None:
         self._page_handles.pop(page_index, None)
         if image is None:
+            self._mark_page_unavailable(page_index)
             return
+        self._unavailable_pages.discard(page_index)
         self._cache_service.page_cache.put(self._cache_key(page_index), image.image_bytes)
         self._handle_page_loaded(image)
+
+    def _handle_page_task_failure(self, page_index: int) -> None:
+        self._page_handles.pop(page_index, None)
+        self._mark_page_unavailable(page_index)
+
+    def _mark_page_unavailable(self, page_index: int) -> None:
+        self._unavailable_pages.add(page_index)
+        if page_index == self._companion_index:
+            self._companion_index = None
+            self.recalculate_layout()
 
     def _handle_page_loaded(self, image: ReaderPageImage) -> None:
         self._pages[image.page_index] = image
@@ -326,9 +408,9 @@ class ReaderViewModel:
         if self._page_count <= 0:
             return
         for index in {
-            max(0, self._current_index - 1),
-            min(self._page_count - 1, self._current_index + 1),
-            min(self._page_count - 1, self._current_index + self._current_step()),
+            max(0, self._primary_index - 1),
+            min(self._page_count - 1, self._primary_index + 1),
+            min(self._page_count - 1, self._primary_index + self._current_step()),
         }:
             self._request_page(index)
 
@@ -337,11 +419,16 @@ class ReaderViewModel:
             return 2
         return 1
 
+    def _navigation_anchor_indices(self) -> tuple[int, ...]:
+        if self._layout_result is not None and self._layout_result.page_draws:
+            return tuple(draw.page_index for draw in self._layout_result.page_draws)
+        return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
+
     def _pan_for_side(self, side: str) -> bool:
         result = self._layout_result
         if result is None or not result.supports_horizontal_pan:
             return False
-        step = max(ThemeLessReaderPan.MIN_STEP, self._viewport_size.width * ThemeLessReaderPan.STEP_RATIO)
+        step = max(Theme.reader_pan_min_step, self._viewport_size.width * Theme.reader_pan_step_ratio)
         next_pan = self._pan_x + (-step if side == "left" else step)
         next_pan = max(result.pan_min_x, min(result.pan_max_x, next_pan))
         if next_pan == self._pan_x:
@@ -352,10 +439,13 @@ class ReaderViewModel:
     def _save_progress(self) -> None:
         if self._library_service is None or self._book_uuid is None or self._page_count <= 0:
             return
-        percent = 0.0 if self._page_count <= 1 else (self._current_index / (self._page_count - 1)) * 100.0
+        percent = 0.0 if self._page_count <= 1 else (self._primary_index / (self._page_count - 1)) * 100.0
+        book_uuid = self._book_uuid
+        page_index = self._primary_index
         self._save_handle = self._task_service.submit(
             "reader-progress",
-            lambda: self._library_service.set_progress(self._book_uuid or "", self._current_index, percent),
+            lambda: self._library_service.set_progress(book_uuid, page_index, percent),
+            on_success=lambda _result: self.progress_changed.emit(book_uuid, page_index, percent),
         )
 
     def _persist_settings(self) -> None:
@@ -372,13 +462,6 @@ class ReaderViewModel:
 
     def _emit_state(self) -> None:
         self.state_changed.emit()
-
-
-class ThemeLessReaderPan:
-    """Small constants kept out of Theme to avoid importing UI tokens here."""
-
-    STEP_RATIO = 0.18
-    MIN_STEP = 80.0
 
 
 def _source_signature(path: Path | None) -> str:

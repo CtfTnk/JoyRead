@@ -13,8 +13,6 @@ from joyread.ui.resources.styles.theme import Theme
 class ReaderCanvas(QWidget):
     mouse_moved = QtSignal(QPoint)
     right_clicked = QtSignal()
-    left_side_requested = QtSignal()
-    right_side_requested = QtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -51,10 +49,6 @@ class ReaderCanvas(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            if event.position().x() < self.width() / 2:
-                self.left_side_requested.emit()
-            else:
-                self.right_side_requested.emit()
             event.accept()
             return
         super().mousePressEvent(event)
@@ -64,6 +58,9 @@ class ReaderCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        shell_clip = QPainterPath()
+        shell_clip.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
+        painter.setClipPath(shell_clip)
         painter.fillRect(self.rect(), QColor(Theme.color_reader_background))
 
         if self._layout_result is None or not self._layout_result.page_draws:
