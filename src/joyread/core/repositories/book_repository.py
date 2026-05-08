@@ -18,6 +18,15 @@ class BookRepository(Protocol):
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
         ...
 
+    def update_book_metadata(
+        self,
+        book_id: str,
+        *,
+        title: str | None = None,
+        author: str | None = None,
+    ) -> None:
+        ...
+
     def delete_book(self, book_id: str) -> None:
         ...
 

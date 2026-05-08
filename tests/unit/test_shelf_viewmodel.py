@@ -101,6 +101,24 @@ def test_set_favourite_applies_same_state_to_multiple_books() -> None:
     assert reloaded[second.uuid].is_favourite is True
 
 
+def test_update_book_metadata_persists_detail_edits_after_reload() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    book = vm.visible_books[0]
+
+    vm.update_book_title(book.uuid, "  Edited Detail Title  ")
+    vm.update_book_author(book.uuid, "  Edited Author  ")
+
+    updated = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
+    assert updated.title == "Edited Detail Title"
+    assert updated.author == "Edited Author"
+
+    vm.load_books()
+    reloaded = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
+    assert reloaded.title == "Edited Detail Title"
+    assert reloaded.author == "Edited Author"
+
+
 def test_collection_commands_validate_and_reload_state() -> None:
     vm = make_viewmodel()
     failures: list[str] = []

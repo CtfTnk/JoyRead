@@ -85,6 +85,8 @@ class ShelfView(QWidget):
         self.detail_panel.menu_requested.connect(self._show_book_menu)
         self.detail_panel.cover_edit_requested.connect(lambda _uuid: self._show_placeholder("Cover Editor"))
         self.detail_panel.more_thumbnails_requested.connect(self._request_next_detail_thumbnail_batch)
+        self.detail_panel.title_change_requested.connect(self._viewmodel.update_book_title)
+        self.detail_panel.author_change_requested.connect(self._viewmodel.update_book_author)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)

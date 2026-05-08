@@ -24,6 +24,15 @@ class LibraryService:
         for book_uuid in book_uuids:
             self.set_favourite(book_uuid, is_favourite)
 
+    def update_book_metadata(
+        self,
+        book_uuid: str,
+        *,
+        title: str | None = None,
+        author: str | None = None,
+    ) -> None:
+        self._book_repository.update_book_metadata(book_uuid, title=title, author=author)
+
     def delete_book(self, book_uuid: str) -> None:
         self._book_repository.delete_book(book_uuid)
 

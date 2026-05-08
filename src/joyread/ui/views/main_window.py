@@ -92,6 +92,9 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.favourite_failed.connect(
             lambda message: self.dialog_overlay.show_info("Favourite Failed", message)
         )
+        context.shelf_viewmodel.book_metadata_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Book Detail", message)
+        )
         context.shelf_viewmodel.collection_failed.connect(
             lambda message: self.dialog_overlay.show_info("Collection", message)
         )

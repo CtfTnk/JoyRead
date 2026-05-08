@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import replace
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -62,6 +64,7 @@ class ShelfViewModel:
         self.books_deleted: Signal[tuple[str, ...]] = Signal()
         self.delete_failed: Signal[str] = Signal()
         self.favourite_failed: Signal[str] = Signal()
+        self.book_metadata_failed: Signal[str] = Signal()
         self.collections_changed: Signal[str | None] = Signal()
         self.collection_failed: Signal[str] = Signal()
         self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
@@ -255,6 +258,56 @@ class ShelfViewModel:
             on_failure=lambda error: self.favourite_failed.emit(str(error)),
         )
 
+    def update_book_title(self, book_uuid: str, title: str) -> None:
+        normalized_title = _normalize_detail_text(title)
+        self.update_book_metadata(book_uuid, title=normalized_title)
+
+    def update_book_author(self, book_uuid: str, author: str) -> None:
+        normalized_author = _normalize_detail_text(author)
+        self.update_book_metadata(book_uuid, author=normalized_author)
+
+    def update_book_metadata(
+        self,
+        book_uuid: str,
+        *,
+        title: str | None = None,
+        author: str | None = None,
+    ) -> None:
+        book = next((book for book in self.books if book.uuid == book_uuid), None)
+        if book is None:
+            return
+
+        next_title = title if title is not None else book.title
+        next_author = author if author is not None else book.author
+        title_changed = title is not None and title != book.title
+        author_changed = author is not None and author != book.author
+        if not title_changed and not author_changed:
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.update_book_metadata(
+                    book_uuid,
+                    title=title if title_changed else None,
+                    author=author if author_changed else None,
+                )
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self.book_metadata_failed.emit(str(exc))
+                return
+            self._handle_book_metadata_success(book_uuid, next_title, next_author)
+            return
+
+        self._task_service.submit(
+            "update-book-metadata",
+            lambda: self._library_service.update_book_metadata(
+                book_uuid,
+                title=title if title_changed else None,
+                author=author if author_changed else None,
+            ),
+            on_success=lambda _result: self._handle_book_metadata_success(book_uuid, next_title, next_author),
+            on_failure=lambda error: self._handle_book_metadata_failure(error),
+        )
+
     def create_collection(self, name: str) -> None:
         normalized_name = _normalize_collection_name(name)
         if normalized_name is None:
@@ -350,6 +403,17 @@ class ShelfViewModel:
         if changed:
             self.books = next_books
             self._emit_state()
+
+    def _handle_book_metadata_success(self, book_uuid: str, title: str, author: str | None) -> None:
+        self.books = [
+            replace(book, title=title, author=author, updated_at=datetime.now()) if book.uuid == book_uuid else book
+            for book in self.books
+        ]
+        self._emit_state()
+
+    def _handle_book_metadata_failure(self, error: Exception) -> None:
+        self.load_books()
+        self.book_metadata_failed.emit(str(error))
 
     def _handle_collection_created(self, collection: Collection) -> None:
         next_shelf = collection_shelf_key(collection.uuid)
@@ -582,6 +646,10 @@ def collection_shelf_key(collection_uuid: str) -> str:
 def _normalize_collection_name(name: str) -> str | None:
     normalized = name.strip()
     return normalized or None
+
+
+def _normalize_detail_text(value: str) -> str:
+    return value.strip() or "None"
 
 
 def _coerce_sort_field(value: str | None) -> SortField:

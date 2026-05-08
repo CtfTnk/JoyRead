@@ -39,6 +39,26 @@ class MockBookRepository(BookRepository):
             for book in self._books
         ]
 
+    def update_book_metadata(
+        self,
+        book_id: str,
+        *,
+        title: str | None = None,
+        author: str | None = None,
+    ) -> None:
+        now = datetime.now()
+        self._books = [
+            replace(
+                book,
+                title=title if title is not None else book.title,
+                author=author if author is not None else book.author,
+                updated_at=now,
+            )
+            if book.uuid == book_id
+            else book
+            for book in self._books
+        ]
+
     def delete_book(self, book_id: str) -> None:
         self._books = [book for book in self._books if book.uuid != book_id]
 

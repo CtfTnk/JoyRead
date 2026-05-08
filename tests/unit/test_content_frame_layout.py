@@ -3,7 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QLineEdit, QToolButton, QWidget
 from PIL import Image
 
 from joyread.core.models.book import Book
@@ -13,7 +13,13 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCardWidget, BookCoverWidget
-from joyread.ui.widgets.book_detail import BookDetailPanel, DetailReadButton, DetailThumbnailGrid, DetailThumbnailWidget
+from joyread.ui.widgets.book_detail import (
+    BookDetailPanel,
+    DetailReadButton,
+    DetailThumbnailGrid,
+    DetailThumbnailWidget,
+    InlineEditableText,
+)
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -443,6 +449,38 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     panel.read_requested.connect(emitted.append)
     qtbot.mouseClick(read_button, Qt.MouseButton.LeftButton)
     assert emitted == [book.uuid]
+
+
+def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
+    apply_theme()
+    book = MockBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    emitted_titles: list[tuple[str, str]] = []
+    emitted_authors: list[tuple[str, str]] = []
+    panel.title_change_requested.connect(lambda book_uuid, value: emitted_titles.append((book_uuid, value)))
+    panel.author_change_requested.connect(lambda book_uuid, value: emitted_authors.append((book_uuid, value)))
+    qtbot.addWidget(panel)
+    panel.set_book(book)
+    panel.show()
+    QApplication.processEvents()
+
+    fields = panel.findChildren(InlineEditableText)
+    title_field, author_field = fields[0], fields[1]
+
+    title_field._begin_edit()
+    title_editor = title_field.findChild(QLineEdit)
+    assert title_editor is not None
+    title_editor.setText("Edited Detail Title")
+    qtbot.keyClick(title_editor, Qt.Key.Key_Return)
+
+    author_field._begin_edit()
+    author_editor = author_field.findChild(QLineEdit)
+    assert author_editor is not None
+    author_editor.setText("Edited Author")
+    qtbot.keyClick(author_editor, Qt.Key.Key_Return)
+
+    assert emitted_titles == [(book.uuid, "Edited Detail Title")]
+    assert emitted_authors == [(book.uuid, "Edited Author")]
 
 
 def test_book_detail_panel_cover_can_update_for_current_book(qtbot, tmp_path) -> None:

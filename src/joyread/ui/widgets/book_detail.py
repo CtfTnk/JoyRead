@@ -109,6 +109,8 @@ class BookDetailPanel(QFrame):
     menu_requested = QtSignal(str, QPoint)
     cover_edit_requested = QtSignal(str)
     more_thumbnails_requested = QtSignal(str)
+    title_change_requested = QtSignal(str, str)
+    author_change_requested = QtSignal(str, str)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -269,12 +271,14 @@ class BookDetailPanel(QFrame):
         name_author_layout.setSpacing(Theme.detail_meta_name_gap)
 
         self._title_field = InlineEditableText("Book Name", label_class="BookDetailTitle", max_lines=2)
+        self._title_field.committed.connect(self._emit_title_change_requested)
         name_author_layout.addWidget(self._title_field)
         self._author_field = InlineEditableText(
             "None",
             label_class="BookDetailAuthor",
             display_prefix="Author: ",
         )
+        self._author_field.committed.connect(self._emit_author_change_requested)
         name_author_layout.addWidget(self._author_field)
         meta_layout.addWidget(name_author)
         meta_layout.addStretch(1)
@@ -362,9 +366,19 @@ class BookDetailPanel(QFrame):
         if self.isVisible() and self._book is not None and self.is_near_thumbnail_bottom():
             self.more_thumbnails_requested.emit(self._book.uuid)
 
+    def _emit_title_change_requested(self, title: str) -> None:
+        if self._book is not None and title != self._book.title:
+            self.title_change_requested.emit(self._book.uuid, title)
+
+    def _emit_author_change_requested(self, author: str) -> None:
+        if self._book is not None and author != (self._book.author or "None"):
+            self.author_change_requested.emit(self._book.uuid, author)
+
 
 class InlineEditableText(QWidget):
     """Label that only commits Figma's inline edit when Return is pressed."""
+
+    committed = QtSignal(str)
 
     def __init__(
         self,
@@ -417,7 +431,9 @@ class InlineEditableText(QWidget):
         self._editor.selectAll()
 
     def _commit_edit(self) -> None:
-        self.set_value(self._editor.text().strip() or "None")
+        value = self._editor.text().strip() or "None"
+        self.set_value(value)
+        self.committed.emit(value)
 
     def _cancel_edit(self) -> None:
         self._editor.setText(self._value)
