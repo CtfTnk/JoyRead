@@ -87,10 +87,10 @@ class ThumbnailService:
 
         try:
             session = self._session_for(book, signature)
-            first_page = session.get_image(0)
+            first_page = session.get_page(0)
             if first_page is None:
                 return None
-            rendered = render_contain_blur_thumbnail(first_page, size)
+            rendered = render_contain_blur_thumbnail(first_page.image_bytes, size)
         except (ArchiveError, OSError, UnidentifiedImageError):
             return None
 
@@ -116,10 +116,10 @@ class ThumbnailService:
 
         try:
             session = self._session_for(book, signature)
-            page = session.get_image(page_index)
+            page = session.get_page(page_index)
             if page is None:
                 return None
-            rendered = render_contain_blur_thumbnail(page, size)
+            rendered = render_contain_blur_thumbnail(page.image_bytes, size)
         except (ArchiveError, OSError, UnidentifiedImageError):
             return None
 
@@ -160,10 +160,14 @@ class ThumbnailService:
         items: list[DetailThumbnailItem] = []
         page_index = start_index
         end_index = min(session.page_count, start_index + batch_size)
-        while page_index < end_index:
-            rendered = self._generate_page_thumbnail_from_session(book, signature, session, page_index, size)
+        pages = session.get_pages(range(start_index, end_index))
+        for page in pages:
+            if page is None:
+                page_index += 1
+                continue
+            rendered = self._generate_page_thumbnail_from_page(book, signature, page.index, page.image_bytes, size)
             if rendered is not None:
-                items.append(DetailThumbnailItem(page_index=page_index, image_bytes=rendered))
+                items.append(DetailThumbnailItem(page_index=page.index, image_bytes=rendered))
             page_index += 1
 
         return DetailThumbnailBatch(
@@ -188,11 +192,32 @@ class ThumbnailService:
             return cached
 
         try:
-            page = session.get_image(page_index)
+            page = session.get_page(page_index)
             if page is None:
                 return None
-            rendered = render_contain_blur_thumbnail(page, size)
+            rendered = render_contain_blur_thumbnail(page.image_bytes, size)
         except (ArchiveError, OSError, UnidentifiedImageError):
+            return None
+
+        self._cache_service.page_thumbnail_cache.put(cache_key, rendered)
+        return rendered
+
+    def _generate_page_thumbnail_from_page(
+        self,
+        book: Book,
+        signature: str,
+        page_index: int,
+        page_bytes: bytes,
+        size: SizeTuple,
+    ) -> bytes | None:
+        cache_key = self._page_thumbnail_cache_key(book, signature, page_index, size)
+        cached = self._cache_service.page_thumbnail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            rendered = render_contain_blur_thumbnail(page_bytes, size)
+        except (OSError, UnidentifiedImageError):
             return None
 
         self._cache_service.page_thumbnail_cache.put(cache_key, rendered)

@@ -125,6 +125,32 @@ def test_7z_archive_reads_images(tmp_path: Path) -> None:
     assert [session.get_dimensions(index) for index in session.index_range] == [(40, 20), (60, 20)]
 
 
+def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_path = tmp_path / "sample.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+        archive.writestr(_png_bytes((60, 20)), "002.png")
+
+    service = ArchiveImageService(page_cache_dir=tmp_path / "archive_pages")
+    session = service.open(archive_path)
+    original = service._read_7z_entries
+    calls: list[tuple[str, ...]] = []
+
+    def counted_read(source, entries):  # noqa: ANN001
+        calls.append(tuple(name for name, _password in entries))
+        return original(source, entries)
+
+    monkeypatch.setattr(service, "_read_7z_entries", counted_read)
+
+    pages = session.get_pages((0, 1))
+    assert [page.dimensions if page is not None else None for page in pages] == [(40, 20), (60, 20)]
+    assert calls == [("001.png", "002.png")]
+
+    second_session = service.open(archive_path)
+    assert second_session.get_page(0) is not None
+    assert calls == [("001.png", "002.png")]
+
+
 def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
     with pyzipper.AESZipFile(
@@ -220,6 +246,17 @@ def test_archive_validation_returns_structured_success_and_failure_feedback(tmp_
     assert corrupt.error_type == "ArchiveCorruptError"
 
 
+def test_archive_validation_reports_listed_but_undecodable_first_page(tmp_path: Path) -> None:
+    archive_path = tmp_path / "bad-image.cbz"
+    _write_zip(archive_path, {"001.png": b"not an image"})
+
+    result = ArchiveImageService().validate_archive(archive_path)
+
+    assert result.is_valid is False
+    assert result.code == ArchiveValidationCode.READ_FAILED
+    assert result.error_type == "ArchiveReadError"
+
+
 def test_archive_validation_reports_password_feedback(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
     with pyzipper.AESZipFile(
@@ -268,3 +305,75 @@ def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.M
     result = ArchiveImageService().validate_archive(archive_path)
     assert result.code == ArchiveValidationCode.DEPENDENCY_MISSING
     assert result.error_type == "ArchiveDependencyMissing"
+
+
+def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from joyread.core.archive import service as archive_service
+
+    archive_path = tmp_path / "sample.cbr"
+    archive_path.write_bytes(b"fake-rar")
+    page_bytes = _png_bytes((32, 16))
+
+    class FakeInfo:
+        filename = "001.jpg"
+        file_size = len(page_bytes)
+
+        def isdir(self) -> bool:
+            return False
+
+    class FakeRarFile:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN001
+            return None
+
+        def needs_password(self) -> bool:
+            return False
+
+        def infolist(self):
+            return [FakeInfo()]
+
+        def read(self, *_args, **_kwargs) -> bytes:
+            raise FakeRarModule.BadRarFile("rarfile backend failed")
+
+    class FakeRarModule:
+        class RarCannotExec(Exception):
+            pass
+
+        class NeedFirstVolume(Exception):
+            pass
+
+        class BadRarFile(Exception):
+            pass
+
+        class PasswordRequired(Exception):
+            pass
+
+        class RarWrongPassword(Exception):
+            pass
+
+        RarFile = FakeRarFile
+
+        def tool_setup(self) -> None:
+            return None
+
+    def fake_which(name: str) -> str | None:
+        return "/usr/bin/bsdtar" if name == "bsdtar" else None
+
+    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+        assert command[:2] == ["/usr/bin/bsdtar", "-xOf"]
+        return archive_service.subprocess.CompletedProcess(command, 0, stdout=page_bytes, stderr=b"")
+
+    monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
+    monkeypatch.setattr(archive_service.shutil, "which", fake_which)
+    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+
+    session = ArchiveImageService().open(archive_path)
+    page = session.get_page(0)
+
+    assert page is not None
+    assert page.dimensions == (32, 16)

@@ -8,11 +8,16 @@ instead of parsing archive formats directly.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
+import hashlib
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 import re
-from typing import Callable, Iterable
+import shutil
+import subprocess
+from tempfile import TemporaryDirectory
+from typing import Iterable, Sequence
 from zipfile import BadZipFile
 
 from PIL import Image, UnidentifiedImageError
@@ -25,9 +30,11 @@ from joyread.core.archive.errors import (
     ArchiveOpenError,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
+    ArchiveReadError,
     ArchiveUnsupportedFormat,
 )
 from joyread.core.archive.models import (
+    ArchivePage,
     ArchivePasswordRequest,
     ArchiveValidationCode,
     ArchiveValidationResult,
@@ -60,6 +67,7 @@ _RAR_EXTENSIONS = frozenset({".rar", ".cbr"})
 _NATURAL_PART_RE = re.compile(r"(\d+)")
 _SEVEN_ZIP_READ_LIMIT = 512 * 1024 * 1024
 _ZIP_BAD_FILE_ERRORS = (BadZipFile,)
+_EXPENSIVE_CACHE_EXTENSIONS = _SEVEN_ZIP_EXTENSIONS | _RAR_EXTENSIONS
 if pyzipper is not None:  # pyzipper uses its own BadZipFile class.
     _ZIP_BAD_FILE_ERRORS = (BadZipFile, pyzipper.zipfile.BadZipFile)
 
@@ -93,30 +101,61 @@ class _ArchiveEntry:
 @dataclass
 class _PageRecord:
     display_path: str
-    read_bytes: Callable[[], bytes]
-    _dimensions: tuple[int, int] | None = None
-    _dimensions_loaded: bool = False
+    source: _ArchiveSource
+    name: str
+    password: str | None
+    _page: ArchivePage | None = None
 
-    def dimensions(self) -> tuple[int, int] | None:
-        if self._dimensions_loaded:
-            return self._dimensions
 
-        self._dimensions_loaded = True
+class _ArchivePageCache:
+    """Small disk cache for extracted bytes from slow random-access formats."""
+
+    def __init__(self, cache_dir: Path | None) -> None:
+        self._cache_dir = cache_dir
+
+    def get(self, source: _ArchiveSource, name: str) -> bytes | None:
+        path = self._cache_path(source, name)
+        if path is None or not path.exists():
+            return None
         try:
-            with Image.open(BytesIO(self.read_bytes())) as image:
-                self._dimensions = (int(image.width), int(image.height))
-        except (ArchiveCorruptError, ArchivePasswordRejected, ArchivePasswordRequired):
-            raise
-        except (OSError, UnidentifiedImageError):
-            self._dimensions = None
-        return self._dimensions
+            return path.read_bytes()
+        except OSError:
+            return None
+
+    def put(self, source: _ArchiveSource, name: str, data: bytes) -> None:
+        path = self._cache_path(source, name)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+        except OSError:
+            return
+
+    def _cache_path(self, source: _ArchiveSource, name: str) -> Path | None:
+        if self._cache_dir is None or source.path is None:
+            return None
+        try:
+            stat = source.path.stat()
+        except OSError:
+            return None
+        digest = hashlib.sha256(
+            f"{source.path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{name}".encode("utf-8")
+        ).hexdigest()
+        suffix = PurePosixPath(name).suffix.lower() or ".bin"
+        return self._cache_dir / f"{digest}{suffix}"
 
 
 class ArchiveImageSession:
     """Bounded access to image pages discovered inside one archive."""
 
-    def __init__(self, pages: Iterable[_PageRecord]) -> None:
+    def __init__(
+        self,
+        pages: Iterable[_PageRecord],
+        read_entries: Callable[[_ArchiveSource, Sequence[tuple[str, str | None]]], dict[str, bytes]],
+    ) -> None:
         self._pages = list(pages)
+        self._read_entries = read_entries
         self.current_index = 0
 
     @property
@@ -142,19 +181,59 @@ class ArchiveImageSession:
         return self.is_valid_index(checked_index - 1)
 
     def get_image(self, index: int) -> bytes | None:
-        if not self.is_valid_index(index):
+        page = self.get_page(index)
+        if page is None:
             return None
-        return self._pages[index].read_bytes()
+        return page.image_bytes
 
     def get_images(self, start: int, count: int) -> list[bytes | None]:
         if count <= 0:
             return []
-        return [self.get_image(index) for index in range(start, start + count)]
+        return [page.image_bytes if page is not None else None for page in self.get_pages(range(start, start + count))]
 
     def get_dimensions(self, index: int) -> tuple[int, int] | None:
-        if not self.is_valid_index(index):
+        page = self.get_page(index)
+        if page is None:
             return None
-        return self._pages[index].dimensions()
+        return page.dimensions
+
+    def get_page(self, index: int) -> ArchivePage | None:
+        return self.get_pages((index,))[0]
+
+    def get_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
+        requested = list(indices)
+        results: list[ArchivePage | None] = [None] * len(requested)
+        missing: list[tuple[int, int, _PageRecord]] = []
+
+        for result_index, page_index in enumerate(requested):
+            if not self.is_valid_index(page_index):
+                continue
+            record = self._pages[page_index]
+            if record._page is not None:
+                results[result_index] = record._page
+            else:
+                missing.append((result_index, page_index, record))
+
+        groups: OrderedDict[tuple[int, str | None], list[tuple[int, int, _PageRecord]]] = OrderedDict()
+        for item in missing:
+            record = item[2]
+            groups.setdefault((id(record.source), record.password), []).append(item)
+
+        for group in groups.values():
+            source = group[0][2].source
+            requests = [(record.name, record.password) for _result_index, _page_index, record in group]
+            payloads = self._read_entries(source, requests)
+            for result_index, page_index, record in group:
+                payload = payloads.get(record.name)
+                if payload is None:
+                    continue
+                page = _archive_page_from_bytes(page_index, record, payload)
+                if page is None:
+                    continue
+                record._page = page
+                results[result_index] = page
+
+        return results
 
     def get_aspect_ratio(self, index: int) -> tuple[float, float] | None:
         dimensions = self.get_dimensions(index)
@@ -200,6 +279,9 @@ class ArchiveImageSession:
 
 class ArchiveImageService:
     """Create image sessions from supported comic archive files."""
+
+    def __init__(self, page_cache_dir: str | Path | None = None) -> None:
+        self._page_cache = _ArchivePageCache(Path(page_cache_dir) if page_cache_dir is not None else None)
 
     def validate_archive(
         self,
@@ -248,6 +330,7 @@ class ArchiveImageService:
                 password_provider=password_provider,
                 max_nested_depth=max_nested_depth,
             )
+            first_page = session.get_page(0)
         except ArchiveError as exc:
             code = _validation_code_for_error(exc)
             return self._validation_result(
@@ -256,6 +339,16 @@ class ArchiveImageService:
                 str(exc),
                 archive_format=archive_format,
                 error_type=type(exc).__name__,
+            )
+
+        if first_page is None:
+            return self._validation_result(
+                path,
+                ArchiveValidationCode.READ_FAILED,
+                f"Archive pages were listed but the first image could not be decoded: {path}",
+                archive_format=archive_format,
+                page_count=session.page_count,
+                error_type=ArchiveReadError.__name__,
             )
 
         return self._validation_result(
@@ -286,7 +379,7 @@ class ArchiveImageService:
         pages = self._scan_archive(source, password_provider, depth=0, max_nested_depth=max_nested_depth)
         if not pages:
             raise ArchiveEmptyError(f"No supported image pages found in archive: {path}")
-        return ArchiveImageSession(pages)
+        return ArchiveImageSession(pages, self._read_entries)
 
     def _validation_result(
         self,
@@ -381,7 +474,9 @@ class ArchiveImageService:
         display_path = f"{source.label}/{name}"
         return _PageRecord(
             display_path=display_path,
-            read_bytes=lambda source=source, name=name, password=password: self._read_entry(source, name, password),
+            source=source,
+            name=name,
+            password=password,
         )
 
     def _list_entries(
@@ -398,13 +493,60 @@ class ArchiveImageService:
         raise ArchiveUnsupportedFormat(f"Unsupported nested archive format: {source.suffix}")
 
     def _read_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        payload = self._read_entries(source, ((name, password),)).get(name)
+        if payload is None:
+            raise ArchiveReadError(f"Archive entry was not extracted: {name}")
+        return payload
+
+    def _read_entries(
+        self,
+        source: _ArchiveSource,
+        entries: Sequence[tuple[str, str | None]],
+    ) -> dict[str, bytes]:
+        if not entries:
+            return {}
+
+        if self._should_cache_extracted_entries(source, entries):
+            cached: dict[str, bytes] = {}
+            missing: list[tuple[str, str | None]] = []
+            for name, password in entries:
+                page = self._page_cache.get(source, name)
+                if page is None:
+                    missing.append((name, password))
+                else:
+                    cached[name] = page
+            if missing:
+                extracted = self._read_entries_uncached(source, missing)
+                for name, payload in extracted.items():
+                    self._page_cache.put(source, name, payload)
+                cached.update(extracted)
+            return cached
+
+        return self._read_entries_uncached(source, entries)
+
+    def _read_entries_uncached(
+        self,
+        source: _ArchiveSource,
+        entries: Sequence[tuple[str, str | None]],
+    ) -> dict[str, bytes]:
         if source.suffix in _ZIP_EXTENSIONS:
-            return self._read_zip_entry(source, name, password)
+            return self._read_zip_entries(source, entries)
         if source.suffix in _SEVEN_ZIP_EXTENSIONS:
-            return self._read_7z_entry(source, name, password)
+            return self._read_7z_entries(source, entries)
         if source.suffix in _RAR_EXTENSIONS:
-            return self._read_rar_entry(source, name, password)
+            return {name: self._read_rar_entry(source, name, password) for name, password in entries}
         raise ArchiveUnsupportedFormat(f"Unsupported archive format: {source.suffix}")
+
+    def _should_cache_extracted_entries(
+        self,
+        source: _ArchiveSource,
+        entries: Sequence[tuple[str, str | None]],
+    ) -> bool:
+        return (
+            source.suffix in _EXPENSIVE_CACHE_EXTENSIONS
+            and source.path is not None
+            and all(password is None for _name, password in entries)
+        )
 
     def _list_zip_entries(
         self,
@@ -433,19 +575,32 @@ class ArchiveImageService:
             raise ArchiveOpenError(f"Could not open ZIP archive: {source.display_name}") from exc
 
     def _read_zip_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        payload = self._read_zip_entries(source, ((name, password),)).get(name)
+        if payload is None:
+            raise ArchiveReadError(f"ZIP entry was not extracted: {name}")
+        return payload
+
+    def _read_zip_entries(
+        self,
+        source: _ArchiveSource,
+        entries: Sequence[tuple[str, str | None]],
+    ) -> dict[str, bytes]:
         if pyzipper is None:
             raise ArchiveDependencyMissing("pyzipper is required for ZIP/CBZ archives.")
 
         try:
+            payloads: dict[str, bytes] = {}
             with pyzipper.AESZipFile(source.open_arg(), "r") as archive:
-                pwd = password.encode("utf-8") if password is not None else None
-                return archive.read(name, pwd=pwd)
+                for name, password in entries:
+                    pwd = password.encode("utf-8") if password is not None else None
+                    payloads[name] = archive.read(name, pwd=pwd)
+            return payloads
         except RuntimeError as exc:
             if _looks_like_password_error(exc):
-                raise ArchivePasswordRejected(f"Password rejected for ZIP entry: {name}") from exc
-            raise ArchiveCorruptError(f"Could not read ZIP entry: {name}") from exc
+                raise ArchivePasswordRejected(f"Password rejected for ZIP entry: {entries[0][0]}") from exc
+            raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
         except (*_ZIP_BAD_FILE_ERRORS, KeyError) as exc:
-            raise ArchiveCorruptError(f"Could not read ZIP entry: {name}") from exc
+            raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
 
     def _verify_zip_password(self, source: _ArchiveSource, name: str, password: str | None) -> None:
         self._read_zip_entry(source, name, password)
@@ -493,35 +648,52 @@ class ArchiveImageService:
         raise ArchivePasswordRejected(f"Password rejected for 7Z archive: {source.display_name}")
 
     def _read_7z_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        payload = self._read_7z_entries(source, ((name, password),)).get(name)
+        if payload is None:
+            raise ArchiveReadError(f"7Z entry was not extracted: {name}")
+        return payload
+
+    def _read_7z_entries(
+        self,
+        source: _ArchiveSource,
+        entries: Sequence[tuple[str, str | None]],
+    ) -> dict[str, bytes]:
         if py7zr is None or BytesIOFactory is None:
             raise ArchiveDependencyMissing("py7zr is required for 7Z/CB7 archives.")
 
+        targets = [name for name, _password in entries]
+        password = entries[0][1]
         try:
             factory = BytesIOFactory(_SEVEN_ZIP_READ_LIMIT)
             with py7zr.SevenZipFile(source.open_arg(), "r", password=password) as archive:
-                archive.extract(targets=[name], factory=factory)
-            product = factory.products.get(name)
-            if product is None and factory.products:
-                product = next(iter(factory.products.values()))
-            if product is None:
-                raise ArchiveCorruptError(f"7Z entry was not extracted: {name}")
-            product.seek(0)
-            return product.read()
+                archive.extract(targets=targets, factory=factory)
+            payloads: dict[str, bytes] = {}
+            for name in targets:
+                product = factory.products.get(name)
+                if product is None:
+                    continue
+                product.seek(0)
+                payloads[name] = product.read()
+            missing = [name for name in targets if name not in payloads]
+            if missing:
+                raise ArchiveReadError(f"7Z entries were not extracted: {', '.join(missing[:3])}")
+            return payloads
         except py7zr.PasswordRequired as exc:
-            raise ArchivePasswordRequired(f"Password required for 7Z entry: {name}") from exc
+            raise ArchivePasswordRequired(f"Password required for 7Z entry: {targets[0]}") from exc
         except py7zr.DecompressionError as exc:
             if password is not None:
-                raise ArchivePasswordRejected(f"Password rejected for 7Z entry: {name}") from exc
-            raise ArchiveCorruptError(f"Could not decompress 7Z entry: {name}") from exc
+                raise ArchivePasswordRejected(f"Password rejected for 7Z entry: {targets[0]}") from exc
+            raise ArchiveReadError(f"Could not decompress 7Z entry: {targets[0]}") from exc
         except py7zr.Bad7zFile as exc:
-            raise ArchiveCorruptError(f"Could not read 7Z entry: {name}") from exc
+            raise ArchiveReadError(f"Could not read 7Z entry: {targets[0]}") from exc
 
     def _list_rar_entries(
         self,
         source: _ArchiveSource,
         password_provider: PasswordProvider | None,
     ) -> list[_ArchiveEntry]:
-        self._ensure_rar_backend()
+        if rarfile is None or not hasattr(rarfile, "RarFile"):
+            raise ArchiveDependencyMissing("rarfile is required for RAR/CBR archives.")
 
         password = None
         try:
@@ -543,19 +715,31 @@ class ArchiveImageService:
             raise ArchiveOpenError(f"Could not open RAR archive: {source.display_name}") from exc
 
     def _read_rar_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
-        self._ensure_rar_backend()
-
+        rar_failure: Exception | None = None
         try:
-            with rarfile.RarFile(source.open_arg(), "r") as archive:
-                return archive.read(name, pwd=password)
-        except rarfile.RarCannotExec as exc:
-            raise ArchiveDependencyMissing("RAR/CBR requires an installed unar, unrar, bsdtar, or 7z backend.") from exc
+            if rarfile is not None:
+                self._ensure_rar_backend()
+                with rarfile.RarFile(source.open_arg(), "r") as archive:
+                    return archive.read(name, pwd=password)
         except rarfile.PasswordRequired as exc:
             raise ArchivePasswordRequired(f"Password required for RAR entry: {name}") from exc
         except rarfile.RarWrongPassword as exc:
             raise ArchivePasswordRejected(f"Password rejected for RAR entry: {name}") from exc
-        except rarfile.BadRarFile as exc:
-            raise ArchiveCorruptError(f"Could not read RAR entry: {name}") from exc
+        except (rarfile.RarCannotExec, rarfile.BadRarFile, OSError) as exc:
+            rar_failure = exc
+
+        try:
+            return self._read_rar_entry_external(source, name, password)
+        except ArchiveDependencyMissing:
+            if rar_failure is not None:
+                raise ArchiveDependencyMissing(
+                    "RAR/CBR requires a working extraction backend such as bsdtar, 7zz/7z, or unar."
+                ) from rar_failure
+            raise
+        except ArchiveReadError as exc:
+            if rar_failure is not None:
+                raise ArchiveReadError(f"Could not read RAR entry with any backend: {name}") from rar_failure
+            raise exc
 
     def _ensure_rar_backend(self) -> None:
         if rarfile is None:
@@ -564,6 +748,71 @@ class ArchiveImageService:
             rarfile.tool_setup()
         except rarfile.RarCannotExec as exc:
             raise ArchiveDependencyMissing("RAR/CBR requires an installed unar, unrar, bsdtar, or 7z backend.") from exc
+
+    def _read_rar_entry_external(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        dependency_errors: list[str] = []
+        read_errors: list[str] = []
+        for reader in (
+            self._read_rar_with_bsdtar,
+            self._read_rar_with_7zip,
+            self._read_rar_with_unar,
+        ):
+            try:
+                return reader(source, name, password)
+            except ArchiveDependencyMissing as exc:
+                dependency_errors.append(str(exc))
+                continue
+            except ArchiveReadError as exc:
+                read_errors.append(str(exc))
+                continue
+        if read_errors:
+            raise ArchiveReadError("; ".join(read_errors))
+        raise ArchiveDependencyMissing("; ".join(dependency_errors) or "No RAR/CBR extraction backend is available.")
+
+    def _read_rar_with_bsdtar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        if source.path is None:
+            raise ArchiveDependencyMissing("bsdtar fallback requires a filesystem archive path.")
+        if password is not None:
+            raise ArchiveDependencyMissing("bsdtar password-protected RAR fallback is not enabled.")
+        tool = shutil.which("bsdtar")
+        if tool is None:
+            raise ArchiveDependencyMissing("bsdtar is not installed.")
+        return _run_archive_stdout_command([tool, "-xOf", str(source.path), name], name)
+
+    def _read_rar_with_7zip(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        if source.path is None:
+            raise ArchiveDependencyMissing("7z fallback requires a filesystem archive path.")
+        tool = shutil.which("7zz") or shutil.which("7z")
+        if tool is None:
+            raise ArchiveDependencyMissing("7zz/7z is not installed.")
+        command = [tool, "x", "-so", "-y"]
+        if password is not None:
+            command.append(f"-p{password}")
+        command.extend([str(source.path), name])
+        return _run_archive_stdout_command(command, name)
+
+    def _read_rar_with_unar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
+        if source.path is None:
+            raise ArchiveDependencyMissing("unar fallback requires a filesystem archive path.")
+        tool = shutil.which("unar")
+        if tool is None:
+            raise ArchiveDependencyMissing("unar is not installed.")
+        with TemporaryDirectory(prefix="joyread-rar-") as temp_dir:
+            command = [tool, "-quiet", "-force-overwrite", "-output-directory", temp_dir]
+            if password is not None:
+                command.extend(["-password", password])
+            command.extend([str(source.path), name])
+            result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+            if result.returncode != 0:
+                stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                raise ArchiveReadError(f"unar could not extract {name}: {stderr or result.returncode}")
+            extracted = Path(temp_dir) / name
+            if not extracted.exists():
+                matches = list(Path(temp_dir).rglob(PurePosixPath(name).name))
+                extracted = matches[0] if matches else extracted
+            if not extracted.exists() or not extracted.is_file():
+                raise ArchiveReadError(f"unar did not produce expected entry: {name}")
+            return extracted.read_bytes()
 
     def _request_password(
         self,
@@ -629,11 +878,40 @@ def _looks_like_password_error(exc: Exception) -> bool:
     return "password" in text or "encrypted" in text or "bad decrypt" in text
 
 
+def _archive_page_from_bytes(index: int, record: _PageRecord, payload: bytes) -> ArchivePage | None:
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            dimensions = (int(image.width), int(image.height))
+    except (OSError, UnidentifiedImageError):
+        return None
+    return ArchivePage(
+        index=index,
+        image_bytes=payload,
+        dimensions=dimensions,
+        display_path=record.display_path,
+    )
+
+
+def _run_archive_stdout_command(command: Sequence[str], entry_name: str) -> bytes:
+    try:
+        result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+    except OSError as exc:
+        raise ArchiveDependencyMissing(f"Could not start archive backend: {command[0]}") from exc
+    if result.returncode != 0:
+        stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ArchiveReadError(f"{command[0]} could not extract {entry_name}: {stderr or result.returncode}")
+    if not result.stdout:
+        raise ArchiveReadError(f"{command[0]} returned no data for {entry_name}")
+    return result.stdout
+
+
 def _validation_code_for_error(error: ArchiveError) -> ArchiveValidationCode:
     if isinstance(error, ArchiveUnsupportedFormat):
         return ArchiveValidationCode.UNSUPPORTED_FORMAT
     if isinstance(error, ArchiveOpenError):
         return ArchiveValidationCode.OPEN_FAILED
+    if isinstance(error, ArchiveReadError):
+        return ArchiveValidationCode.READ_FAILED
     if isinstance(error, ArchiveCorruptError):
         return ArchiveValidationCode.CORRUPT
     if isinstance(error, ArchiveEmptyError):

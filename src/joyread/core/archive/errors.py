@@ -23,6 +23,10 @@ class ArchiveEmptyError(ArchiveError):
     """The archive opened but no supported image pages were found."""
 
 
+class ArchiveReadError(ArchiveError):
+    """A listed archive entry could not be extracted or decoded as an image."""
+
+
 class ArchivePasswordRequired(ArchiveError):
     """The archive is encrypted and no usable password was provided."""
 

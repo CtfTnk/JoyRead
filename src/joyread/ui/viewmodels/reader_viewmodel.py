@@ -353,48 +353,85 @@ class ReaderViewModel:
         self._emit_state()
 
     def _request_visible_pages(self) -> None:
-        for index in self.current_display_indices:
-            self._request_page(index)
+        self._request_pages(self.current_display_indices)
 
     def _request_page(self, page_index: int) -> None:
-        if page_index in self._pages or page_index in self._page_handles or self._session is None:
+        self._request_pages((page_index,))
+
+    def _request_pages(self, page_indices: tuple[int, ...] | set[int]) -> None:
+        if self._session is None:
             return
-        cached = self._cache_service.page_cache.get(self._cache_key(page_index))
-        if cached is not None:
+
+        missing: list[int] = []
+        for page_index in dict.fromkeys(page_indices):
+            if (
+                not 0 <= page_index < self._page_count
+                or page_index in self._pages
+                or page_index in self._page_handles
+            ):
+                continue
+            cached = self._cache_service.page_cache.get(self._cache_key(page_index))
+            if cached is None:
+                missing.append(page_index)
+                continue
             with self._session_lock:
                 dimensions = self._session.get_dimensions(page_index)
             if dimensions is not None:
                 self._handle_page_loaded(ReaderPageImage(page_index, cached, dimensions))
-                return
+                continue
+            missing.append(page_index)
 
-        def load() -> ReaderPageImage | None:
+        if not missing:
+            return
+
+        requested = tuple(missing)
+
+        def load() -> dict[int, ReaderPageImage]:
             with self._session_lock:
                 if self._session is None:
-                    return None
-                return self._session_service.load_page(self._session, page_index)
+                    return {}
+                return self._session_service.load_pages(self._session, requested)
 
-        self._page_handles[page_index] = self._task_service.submit(
-            f"reader-page-{page_index}",
+        handle = self._task_service.submit(
+            f"reader-pages-{requested[0]}",
             load,
-            on_success=lambda image, page_index=page_index: self._handle_page_task_success(page_index, image),
-            on_failure=lambda _error, page_index=page_index: self._handle_page_task_failure(page_index),
+            on_success=lambda images, requested=requested: self._handle_page_batch_success(requested, images),
+            on_failure=lambda error, requested=requested: self._handle_page_batch_failure(requested, error),
         )
+        for page_index in requested:
+            self._page_handles[page_index] = handle
 
-    def _handle_page_task_success(self, page_index: int, image: ReaderPageImage | None) -> None:
-        self._page_handles.pop(page_index, None)
-        if image is None:
-            self._mark_page_unavailable(page_index)
-            return
-        self._unavailable_pages.discard(page_index)
-        self._cache_service.page_cache.put(self._cache_key(page_index), image.image_bytes)
-        self._handle_page_loaded(image)
+    def _handle_page_batch_success(self, page_indices: tuple[int, ...], images: dict[int, ReaderPageImage]) -> None:
+        loaded = False
+        for page_index in page_indices:
+            self._page_handles.pop(page_index, None)
+            image = images.get(page_index)
+            if image is None:
+                self._mark_page_unavailable(page_index)
+                continue
+            self._unavailable_pages.discard(page_index)
+            self._cache_service.page_cache.put(self._cache_key(page_index), image.image_bytes)
+            self._pages[image.page_index] = image
+            self.page_ready.emit(image)
+            loaded = True
+        if loaded:
+            self.recalculate_layout()
 
-    def _handle_page_task_failure(self, page_index: int) -> None:
-        self._page_handles.pop(page_index, None)
-        self._mark_page_unavailable(page_index)
+    def _handle_page_batch_failure(self, page_indices: tuple[int, ...], error: Exception) -> None:
+        for page_index in page_indices:
+            self._page_handles.pop(page_index, None)
+            self._mark_page_unavailable(page_index, error)
 
-    def _mark_page_unavailable(self, page_index: int) -> None:
+    def _mark_page_unavailable(self, page_index: int, error: Exception | None = None) -> None:
         self._unavailable_pages.add(page_index)
+        if page_index == self._primary_index:
+            detail = f": {error}" if error is not None else "."
+            self.error_message = f"Could not load page {page_index + 1}{detail}"
+            self._layout_result = None
+            self.error_changed.emit(self.error_message)
+            self.layout_changed.emit(None)  # type: ignore[arg-type]
+            self._emit_state()
+            return
         if page_index == self._companion_index:
             self._companion_index = None
             self.recalculate_layout()
@@ -407,12 +444,11 @@ class ReaderViewModel:
     def _preload_nearby_pages(self) -> None:
         if self._page_count <= 0:
             return
-        for index in {
+        self._request_pages({
             max(0, self._primary_index - 1),
             min(self._page_count - 1, self._primary_index + 1),
             min(self._page_count - 1, self._primary_index + self._current_step()),
-        }:
-            self._request_page(index)
+        })
 
     def _current_step(self) -> int:
         if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.DOUBLE:

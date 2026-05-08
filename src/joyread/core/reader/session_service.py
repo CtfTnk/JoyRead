@@ -22,11 +22,23 @@ class ReaderSessionService:
         return self._archive_image_service.open(path, password_provider=provider)
 
     def load_page(self, session: ArchiveImageSession, page_index: int) -> ReaderPageImage | None:
-        image_bytes = session.get_image(page_index)
-        dimensions = session.get_dimensions(page_index)
-        if image_bytes is None or dimensions is None:
+        page = session.get_page(page_index)
+        if page is None:
             return None
-        return ReaderPageImage(page_index=page_index, image_bytes=image_bytes, dimensions=dimensions)
+        return ReaderPageImage(page_index=page.index, image_bytes=page.image_bytes, dimensions=page.dimensions)
+
+    def load_pages(self, session: ArchiveImageSession, page_indices: list[int] | tuple[int, ...]) -> dict[int, ReaderPageImage]:
+        pages = session.get_pages(page_indices)
+        loaded: dict[int, ReaderPageImage] = {}
+        for page in pages:
+            if page is None:
+                continue
+            loaded[page.index] = ReaderPageImage(
+                page_index=page.index,
+                image_bytes=page.image_bytes,
+                dimensions=page.dimensions,
+            )
+        return loaded
 
     def password_request_label(self, request: ArchivePasswordRequest) -> str:
         return f"{request.archive_format} archive password"

@@ -25,6 +25,7 @@ class ArchiveValidationCode(StrEnum):
     NOT_FILE = "not_file"
     UNSUPPORTED_FORMAT = "unsupported_format"
     EMPTY = "empty"
+    READ_FAILED = "read_failed"
     CORRUPT = "corrupt"
     PASSWORD_REQUIRED = "password_required"
     PASSWORD_REJECTED = "password_rejected"
@@ -46,3 +47,11 @@ class ArchiveValidationResult:
     file_size: int | None = None
     mtime_ns: int | None = None
     error_type: str | None = None
+
+
+@dataclass(frozen=True)
+class ArchivePage:
+    index: int
+    image_bytes: bytes
+    dimensions: tuple[int, int]
+    display_path: str

@@ -66,6 +66,8 @@ class AppContext:
         self.settings = self.settings_store.load()
         self.paths = _create_path_service(self.config, self.settings_store, self.settings)
         self.paths.ensure_directories()
+        self.archive_image_service = ArchiveImageService(self.paths.paths.cache / "archive_pages")
+        self.reader_session_service = ReaderSessionService(self.archive_image_service)
         self.database_interpreter = _create_database_interpreter(self.paths)
         self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
         self.library_service = LibraryService(self.book_repository)
@@ -102,7 +104,7 @@ def create_app_context() -> AppContext:
     book_repository: BookRepository = (
         MockBookRepository() if use_mock else _create_sqlite_book_repository(database_interpreter, paths)
     )
-    archive_image_service = ArchiveImageService()
+    archive_image_service = ArchiveImageService(paths.paths.cache / "archive_pages")
     reader_session_service = ReaderSessionService(archive_image_service)
     library_service = LibraryService(book_repository)
     task_service = TaskService(config.max_background_workers)

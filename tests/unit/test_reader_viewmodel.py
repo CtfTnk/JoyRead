@@ -60,6 +60,14 @@ class _FakeSessionService:
             return None
         return ReaderPageImage(page_index, image, dimensions)
 
+    def load_pages(self, session: _FakeSession, page_indices: tuple[int, ...]) -> dict[int, ReaderPageImage]:
+        loaded: dict[int, ReaderPageImage] = {}
+        for page_index in page_indices:
+            page = self.load_page(session, page_index)
+            if page is not None:
+                loaded[page_index] = page
+        return loaded
+
 
 class _FakeLibraryService:
     def __init__(self) -> None:
