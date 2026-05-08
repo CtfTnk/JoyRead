@@ -10,6 +10,7 @@ from joyread.core.archive import ArchiveImageService
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
+from joyread.core.reader import ReaderSessionService
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
@@ -39,6 +40,7 @@ class AppContext:
     database_interpreter: DatabaseInterpreter
     book_repository: BookRepository
     archive_image_service: ArchiveImageService
+    reader_session_service: ReaderSessionService
     library_service: LibraryService
     task_service: TaskService
     cache_service: CacheService
@@ -101,6 +103,7 @@ def create_app_context() -> AppContext:
         MockBookRepository() if use_mock else _create_sqlite_book_repository(database_interpreter, paths)
     )
     archive_image_service = ArchiveImageService()
+    reader_session_service = ReaderSessionService(archive_image_service)
     library_service = LibraryService(book_repository)
     task_service = TaskService(config.max_background_workers)
     hash_service = HashService()
@@ -138,6 +141,7 @@ def create_app_context() -> AppContext:
         database_interpreter=database_interpreter,
         book_repository=book_repository,
         archive_image_service=archive_image_service,
+        reader_session_service=reader_session_service,
         library_service=library_service,
         task_service=task_service,
         cache_service=cache_service,

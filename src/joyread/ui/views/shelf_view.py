@@ -29,6 +29,8 @@ class ShelfView(QWidget):
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
+    read_book_requested = QtSignal(str)
+    open_file_requested = QtSignal(bool)
 
     def __init__(
         self,
@@ -104,7 +106,7 @@ class ShelfView(QWidget):
         self._escape_shortcut.activated.connect(self._viewmodel.hide_detail)
 
         self._viewmodel.state_changed.connect(self.render)
-        self._viewmodel.book_open_requested.connect(self._show_read_placeholder)
+        self._viewmodel.book_open_requested.connect(self.read_book_requested.emit)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
         self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)
@@ -190,11 +192,6 @@ class ShelfView(QWidget):
                 return book
         return None
 
-    def _show_read_placeholder(self, book_uuid: str) -> None:
-        book = self._book_by_uuid(book_uuid)
-        title = book.title if book else "Book"
-        self.info_requested.emit("Read", f"Reader engine is not implemented yet.\n\n{title}")
-
     def _show_placeholder(self, action: str) -> None:
         self.info_requested.emit(action, f"{action} is a placeholder in this phase.")
 
@@ -205,8 +202,8 @@ class ShelfView(QWidget):
     def create_action_menu(self) -> FigmaMenu:
         return build_action_menu(
             self,
-            on_open_book=lambda: self._show_placeholder("Open Book"),
-            on_open_and_import=lambda: self._show_placeholder("Open & Import"),
+            on_open_book=lambda: self.open_file_requested.emit(False),
+            on_open_and_import=lambda: self.open_file_requested.emit(True),
             on_import=self.import_manifest_requested.emit,
         )
 

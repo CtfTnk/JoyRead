@@ -6,6 +6,7 @@ from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
+from joyread.core.reader.models import ReaderProgress, ReaderSettings
 
 
 class LibraryService:
@@ -62,3 +63,20 @@ class LibraryService:
     def add_books_to_collection(self, book_uuids: tuple[str, ...], collection_uuid: str) -> None:
         for book_uuid in book_uuids:
             self._book_repository.add_book_to_collection(book_uuid, collection_uuid)
+
+    def get_progress(self, book_uuid: str, book_scope: str = "public") -> ReaderProgress | None:
+        return self._book_repository.get_progress(book_uuid, book_scope)
+
+    def set_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        self._book_repository.set_progress(book_uuid, page_index, progress_percent)
+
+    def get_reader_settings(self, book_uuid: str, book_scope: str = "public") -> ReaderSettings | None:
+        return self._book_repository.get_reader_settings(book_uuid, book_scope)
+
+    def save_reader_settings(
+        self,
+        book_uuid: str,
+        settings: ReaderSettings,
+        book_scope: str = "public",
+    ) -> None:
+        self._book_repository.save_reader_settings(book_uuid, settings, book_scope)

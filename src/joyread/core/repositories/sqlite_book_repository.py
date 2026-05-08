@@ -15,6 +15,13 @@ from joyread.core.models.collection import Collection
 from joyread.core.models.export import BookExportRecord
 from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
+from joyread.core.reader.models import (
+    ReaderDirection,
+    ReaderFitMode,
+    ReaderProgress,
+    ReaderSettings,
+    ReaderTransitionMode,
+)
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 
 
@@ -335,6 +342,102 @@ class SqliteBookRepository(BookRepository):
 
         self._database.execute(write, DatabasePriority.NORMAL)
 
+    def get_progress(self, book_id: str, book_scope: str = "public") -> ReaderProgress | None:
+        def read(connection: sqlite3.Connection) -> ReaderProgress | None:
+            row = connection.execute(
+                """
+                SELECT page_index, progress_percent
+                FROM progress
+                WHERE book_scope = ? AND book_id = ?
+                """,
+                (book_scope, book_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return ReaderProgress(
+                page_index=int(row["page_index"]),
+                progress_percent=float(row["progress_percent"]),
+            )
+
+        return self._database.execute(read, DatabasePriority.HIGH)
+
+    def get_reader_settings(self, book_id: str, book_scope: str = "public") -> ReaderSettings | None:
+        def read(connection: sqlite3.Connection) -> ReaderSettings | None:
+            row = connection.execute(
+                """
+                SELECT
+                    direction,
+                    vertical_enabled,
+                    page_spacing,
+                    custom_enabled,
+                    always_one_page,
+                    fit_mode,
+                    transition_mode,
+                    spread_offset
+                FROM reader_settings
+                WHERE book_scope = ? AND book_id = ?
+                """,
+                (book_scope, book_id),
+            ).fetchone()
+            if row is None:
+                return None
+            return _reader_settings_from_row(row)
+
+        return self._database.execute(read, DatabasePriority.HIGH)
+
+    def save_reader_settings(
+        self,
+        book_id: str,
+        settings: ReaderSettings,
+        book_scope: str = "public",
+    ) -> None:
+        now = _now()
+
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                """
+                INSERT INTO reader_settings(
+                    book_scope,
+                    book_id,
+                    direction,
+                    vertical_enabled,
+                    page_spacing,
+                    custom_enabled,
+                    always_one_page,
+                    fit_mode,
+                    transition_mode,
+                    spread_offset,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(book_scope, book_id) DO UPDATE SET
+                    direction = excluded.direction,
+                    vertical_enabled = excluded.vertical_enabled,
+                    page_spacing = excluded.page_spacing,
+                    custom_enabled = excluded.custom_enabled,
+                    always_one_page = excluded.always_one_page,
+                    fit_mode = excluded.fit_mode,
+                    transition_mode = excluded.transition_mode,
+                    spread_offset = excluded.spread_offset,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    book_scope,
+                    book_id,
+                    settings.direction.value,
+                    1 if settings.vertical_enabled else 0,
+                    int(settings.page_spacing),
+                    1 if settings.custom_enabled else 0,
+                    1 if settings.always_one_page else 0,
+                    settings.fit_mode.value,
+                    settings.transition_mode.value,
+                    int(settings.spread_offset),
+                    now,
+                ),
+            )
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
     def add_bookmark(self, book_id: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
         bookmark_id = str(uuid4())
         now = _now()
@@ -599,3 +702,37 @@ def _trim_recent_books(connection: sqlite3.Connection) -> None:
         )
         """
     )
+
+
+def _reader_settings_from_row(row: sqlite3.Row) -> ReaderSettings:
+    return ReaderSettings(
+        direction=_coerce_direction(row["direction"]),
+        vertical_enabled=bool(row["vertical_enabled"]),
+        page_spacing=max(0, int(row["page_spacing"])),
+        custom_enabled=bool(row["custom_enabled"]),
+        always_one_page=bool(row["always_one_page"]),
+        fit_mode=_coerce_fit_mode(row["fit_mode"]),
+        transition_mode=_coerce_transition_mode(row["transition_mode"]),
+        spread_offset=1 if int(row["spread_offset"] or 0) else 0,
+    )
+
+
+def _coerce_direction(value: object) -> ReaderDirection:
+    try:
+        return ReaderDirection(str(value))
+    except ValueError:
+        return ReaderDirection.RIGHT_TO_LEFT
+
+
+def _coerce_fit_mode(value: object) -> ReaderFitMode:
+    try:
+        return ReaderFitMode(str(value))
+    except ValueError:
+        return ReaderFitMode.AUTO
+
+
+def _coerce_transition_mode(value: object) -> ReaderTransitionMode:
+    try:
+        return ReaderTransitionMode(str(value))
+    except ValueError:
+        return ReaderTransitionMode.NONE

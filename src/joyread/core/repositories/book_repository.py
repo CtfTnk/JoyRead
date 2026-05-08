@@ -8,6 +8,7 @@ from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.export import BookExportRecord
 from joyread.core.models.language import Language
+from joyread.core.reader.models import ReaderProgress, ReaderSettings
 
 
 class BookRepository(Protocol):
@@ -49,4 +50,21 @@ class BookRepository(Protocol):
         ...
 
     def add_book_to_collection(self, book_id: str, collection_id: str) -> None:
+        ...
+
+    def get_progress(self, book_id: str, book_scope: str = "public") -> ReaderProgress | None:
+        ...
+
+    def set_progress(self, book_id: str, page_index: int, progress_percent: float) -> None:
+        ...
+
+    def get_reader_settings(self, book_id: str, book_scope: str = "public") -> ReaderSettings | None:
+        ...
+
+    def save_reader_settings(
+        self,
+        book_id: str,
+        settings: ReaderSettings,
+        book_scope: str = "public",
+    ) -> None:
         ...

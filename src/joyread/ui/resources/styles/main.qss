@@ -100,6 +100,146 @@ QToolButton[class="ChromeButton"]::menu-indicator {
     width: 0;
 }
 
+/* Reader window */
+QMainWindow#ReaderWindow {
+    background: transparent;
+}
+
+QWidget#ReaderRootPanel {
+    background: __READER_BACKGROUND__;
+    border-radius: __READER_RADIUS__;
+}
+
+QWidget#ReaderCanvas {
+    background: __READER_BACKGROUND__;
+    border-radius: __READER_RADIUS__;
+}
+
+QWidget#ReaderHeader {
+    background: qlineargradient(
+        x1: 0,
+        y1: 1,
+        x2: 0,
+        y2: 0,
+        stop: 0 rgba(255, 255, 255, 51),
+        stop: 0.495 rgba(255, 255, 255, 204)
+    );
+    border-top-left-radius: __READER_RADIUS__;
+    border-top-right-radius: __READER_RADIUS__;
+}
+
+QWidget#ReaderFooter {
+    background: __READER_FOOTER_BACKGROUND__;
+    border: none;
+}
+
+QToolButton[class="ReaderButton"] {
+    background: __READER_CONTROL_NORMAL__;
+    border: none;
+    border-radius: __READER_CONTROL_RADIUS__;
+    padding: 4px;
+}
+
+QToolButton[class="ReaderButton"]:hover,
+QToolButton[class="ReaderButton"]:checked {
+    background: __READER_CONTROL_SELECTED__;
+}
+
+QToolButton[class="ReaderButton"]:disabled {
+    background: rgba(146, 146, 146, 0.35);
+}
+
+QFrame[class="ReaderTopGroup"] {
+    background: __WINDOW_COLOR__;
+    border: 2px solid __BUTTON_EDGE__;
+    border-radius: __READER_CONTROL_RADIUS__;
+}
+
+QFrame[class="ReaderSwitch"] {
+    background: __READER_SWITCH_PANEL__;
+    border: none;
+    border-radius: __READER_CONTROL_RADIUS__;
+}
+
+QToolButton[class="ReaderSwitchOption"] {
+    background: transparent;
+    border: none;
+    border-radius: __READER_SWITCH_OPTION_RADIUS__;
+    padding: 0;
+}
+
+QToolButton[class="ReaderSwitchOption"]:hover,
+QToolButton[class="ReaderSwitchOption"]:checked {
+    background: __READER_CONTROL_SELECTED__;
+}
+
+QToolButton[class="ReaderSideButton"] {
+    background: __READER_PANEL__;
+    border: none;
+    border-radius: __READER_SIDE_BUTTON_RADIUS__;
+    padding: 0;
+}
+
+QToolButton[class="ReaderSideButton"]:hover {
+    background: rgba(146, 146, 146, 0.55);
+}
+
+QLabel#ReaderTitle {
+    color: __TEXT_COLOR__;
+    font-size: __BODY_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QLabel#ReaderStatusText {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __BODY_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QSlider#ReaderProgressSlider::groove:horizontal {
+    background: __READER_SLIDER_EMPTY__;
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+}
+
+QSlider#ReaderProgressSlider::sub-page:horizontal {
+    background: __READER_SLIDER_FILLED__;
+    border: none;
+    border-radius: 3px;
+    height: 6px;
+}
+
+QSlider#ReaderProgressSlider::handle:horizontal {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: 3px;
+    width: 14px;
+    height: 10px;
+    margin: -2px 0;
+}
+
+QFrame#ReaderSettingsPanel {
+    background: __MENU_BACKGROUND__;
+    border: __READER_SETTINGS_PANEL_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border-radius: __READER_SETTINGS_PANEL_RADIUS__;
+}
+
+QLabel[class="ReaderSettingsLabel"] {
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_ITEM_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QComboBox#ReaderFitModeCombo {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __SETTINGS_ITEM_RADIUS__;
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_CONTROL_FONT_SIZE__;
+    padding: 2px 6px;
+}
+
 QFrame[class="ActionMenuButton"] {
     background: #ffffff;
     border: 1px solid #929292;

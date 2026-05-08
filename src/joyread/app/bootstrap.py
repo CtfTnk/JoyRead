@@ -3,18 +3,22 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMainWindow
 
 from joyread.app.app_context import AppContext, create_app_context
+from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.infrastructure.logging.logging_service import configure_logging
 from joyread.ui.views.main_window import MainWindow
+from joyread.ui.views.reader_window import ReaderWindow
 
 
-def create_application(argv: list[str] | None = None) -> tuple[QApplication, AppContext, MainWindow]:
-    app = QApplication(argv or sys.argv)
+def create_application(argv: list[str] | None = None) -> tuple[QApplication, AppContext, QMainWindow]:
+    argv = argv or sys.argv
+    app = QApplication(argv)
     context = create_app_context()
     context.paths.ensure_directories()
     configure_logging(context.paths.paths.logs)
@@ -26,7 +30,11 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     app.setStyleSheet(context.resources.load_stylesheet())
     app.aboutToQuit.connect(context.close)
 
-    window = MainWindow(context)
+    direct_path = _direct_reader_path(argv[1:])
+    if direct_path is not None:
+        window = ReaderWindow(context, direct_path)
+    else:
+        window = MainWindow(context)
     return app, context, window
 
 
@@ -40,3 +48,11 @@ def _load_application_fonts(resources: ResourceLoader) -> None:
     for path in resources.font_paths():
         if path.exists():
             QFontDatabase.addApplicationFont(str(path))
+
+
+def _direct_reader_path(arguments: list[str]) -> Path | None:
+    for argument in arguments:
+        path = Path(argument).expanduser()
+        if path.suffix.lower() in ARCHIVE_EXTENSIONS:
+            return path
+    return None

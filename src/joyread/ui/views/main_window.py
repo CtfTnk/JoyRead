@@ -9,8 +9,10 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
@@ -24,6 +26,7 @@ class MainWindow(QMainWindow):
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._context = context
+        self._reader_windows: list[ReaderWindow] = []
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
@@ -81,6 +84,8 @@ class MainWindow(QMainWindow):
         self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
+        self.shelf_view.read_book_requested.connect(self.open_reader_for_book)
+        self.shelf_view.open_file_requested.connect(self._select_reader_file)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
@@ -101,6 +106,52 @@ class MainWindow(QMainWindow):
         )
         context.shelf_viewmodel.load_books()
         self.sidebar.set_collections(context.shelf_viewmodel.collections)
+        self.shelf_view.render()
+
+    def open_reader_for_book(self, book_uuid: str) -> None:
+        book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+        if book is None:
+            self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
+            return
+        self._show_reader_window(Path(book.file_path), book=book)
+
+    def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
+        source_path = Path(path)
+        self._show_reader_window(source_path, title=source_path.stem)
+        if import_mode:
+            self._context.task_service.submit(
+                "open-and-import-file",
+                lambda: self._context.import_service.import_files([source_path]),
+                on_success=lambda _result: self._reload_after_background_import(),
+                on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+            )
+
+    def _select_reader_file(self, import_mode: bool) -> None:
+        extensions = " ".join(f"*{suffix}" for suffix in sorted(ARCHIVE_EXTENSIONS))
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Open Book",
+            "",
+            f"Comic Archives ({extensions})",
+        )
+        if not file_path:
+            return
+        self.open_reader_for_file(file_path, import_mode=import_mode)
+
+    def _show_reader_window(self, path: Path, *, book=None, title: str | None = None) -> None:  # noqa: ANN001
+        reader = ReaderWindow(self._context, path, book=book, title=title)
+        reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
+        self._reader_windows.append(reader)
+        reader.show()
+        reader.raise_()
+
+    def _forget_reader_window(self, reader: ReaderWindow) -> None:
+        if reader in self._reader_windows:
+            self._reader_windows.remove(reader)
+
+    def _reload_after_background_import(self) -> None:
+        self._context.shelf_viewmodel.load_books()
+        self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
         self.shelf_view.render()
 
     def _select_import_manifest(self) -> None:

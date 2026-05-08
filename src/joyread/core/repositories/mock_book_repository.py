@@ -14,6 +14,7 @@ from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.export import BookExportRecord
 from joyread.core.models.language import Language
+from joyread.core.reader.models import ReaderProgress, ReaderSettings
 from joyread.core.repositories.book_repository import BookRepository
 
 
@@ -34,6 +35,8 @@ class MockBookRepository(BookRepository):
         raw_data = self._load_json(data_path)
         self._collections = [self._build_collection(row) for row in raw_data.get("collections", [])]
         self._books = [self._build_book(row) for row in raw_data.get("books", [])]
+        self._progress: dict[tuple[str, str], ReaderProgress] = {}
+        self._reader_settings: dict[tuple[str, str], ReaderSettings] = {}
 
     def list_books(self) -> list[Book]:
         return list(self._books)
@@ -150,6 +153,35 @@ class MockBookRepository(BookRepository):
             else book
             for book in self._books
         ]
+
+    def get_progress(self, book_id: str, book_scope: str = "public") -> ReaderProgress | None:
+        return self._progress.get((book_scope, book_id))
+
+    def set_progress(self, book_id: str, page_index: int, progress_percent: float) -> None:
+        now = datetime.now()
+        self._progress[("public", book_id)] = ReaderProgress(page_index, progress_percent)
+        self._books = [
+            replace(
+                book,
+                progress=max(0.0, min(100.0, progress_percent)) / 100.0,
+                last_read_at=now,
+                updated_at=now,
+            )
+            if book.uuid == book_id
+            else book
+            for book in self._books
+        ]
+
+    def get_reader_settings(self, book_id: str, book_scope: str = "public") -> ReaderSettings | None:
+        return self._reader_settings.get((book_scope, book_id))
+
+    def save_reader_settings(
+        self,
+        book_id: str,
+        settings: ReaderSettings,
+        book_scope: str = "public",
+    ) -> None:
+        self._reader_settings[(book_scope, book_id)] = settings
 
     def _load_json(self, data_path: Path | None) -> dict[str, Any]:
         if data_path is not None:

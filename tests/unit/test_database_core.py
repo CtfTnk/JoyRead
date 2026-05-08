@@ -9,6 +9,7 @@ from PIL import Image
 from joyread.app.app_context import create_app_context
 from joyread.core.archive import ArchiveImageService
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
+from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.storage_migration_service import StorageMigrationService
@@ -67,6 +68,7 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
         "private_collections",
         "private_books",
         "recent_books",
+        "reader_settings",
         "languages",
         "import_batches",
         "import_items",
@@ -287,6 +289,48 @@ def test_recent_books_are_public_only_and_capped_at_ten(tmp_path: Path) -> None:
         ).fetchone()["count"]
     )
     assert private_recent_count == 0
+    database.close()
+
+
+def test_reader_settings_persist_per_public_book(tmp_path: Path) -> None:
+    source = tmp_path / "reader-settings.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    settings = ReaderSettings(
+        direction=ReaderDirection.LEFT_TO_RIGHT,
+        vertical_enabled=False,
+        page_spacing=24,
+        custom_enabled=True,
+        always_one_page=True,
+        fit_mode=ReaderFitMode.FIT_HEIGHT,
+        transition_mode=ReaderTransitionMode.SLIDE,
+        spread_offset=1,
+    )
+
+    repository.save_reader_settings(book.uuid, settings)
+    loaded = repository.get_reader_settings(book.uuid)
+
+    assert loaded == settings
+    database.close()
+
+
+def test_reader_progress_round_trips_without_page_count(tmp_path: Path) -> None:
+    source = tmp_path / "reader-progress.cbz"
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+
+    repository.set_progress(book.uuid, page_index=12, progress_percent=42.5)
+    progress = repository.get_progress(book.uuid)
+
+    assert progress is not None
+    assert progress.page_index == 12
+    assert progress.progress_percent == 42.5
     database.close()
 
 

@@ -45,3 +45,4 @@ class CacheService:
         self.page_config = CacheConfig(page_limit_mb)
         self.thumbnail_cache: MemoryCache[str, str] = MemoryCache()
         self.page_thumbnail_cache: MemoryCache[str, bytes] = MemoryCache()
+        self.page_cache: MemoryCache[str, bytes] = MemoryCache()

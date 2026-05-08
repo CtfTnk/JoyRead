@@ -211,6 +211,28 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         WHERE original_file_name IS NULL OR trim(original_file_name) = '';
         """,
     ),
+    (
+        5,
+        """
+        CREATE TABLE IF NOT EXISTS reader_settings (
+            book_scope TEXT NOT NULL CHECK (book_scope IN ('public', 'private')),
+            book_id TEXT NOT NULL,
+            direction TEXT NOT NULL DEFAULT 'right_to_left',
+            vertical_enabled INTEGER NOT NULL DEFAULT 0,
+            page_spacing INTEGER NOT NULL DEFAULT 12,
+            custom_enabled INTEGER NOT NULL DEFAULT 0,
+            always_one_page INTEGER NOT NULL DEFAULT 0,
+            fit_mode TEXT NOT NULL DEFAULT 'auto',
+            transition_mode TEXT NOT NULL DEFAULT 'none',
+            spread_offset INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (book_scope, book_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_reader_settings_book
+            ON reader_settings(book_scope, book_id);
+        """,
+    ),
 )
 
 

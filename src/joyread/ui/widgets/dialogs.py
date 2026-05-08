@@ -173,7 +173,14 @@ class DialogInputContent(QWidget):
 
     submitted = QtSignal()
 
-    def __init__(self, header: str, initial_text: str = "", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        header: str,
+        initial_text: str = "",
+        *,
+        echo_mode: QLineEdit.EchoMode = QLineEdit.EchoMode.Normal,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogInputContent")
 
@@ -199,7 +206,7 @@ class DialogInputContent(QWidget):
         input_layout.setSpacing(0)
         input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self.field = DialogInputFieldWithHeader(header, initial_text=initial_text)
+        self.field = DialogInputFieldWithHeader(header, initial_text=initial_text, echo_mode=echo_mode)
         self.field.line_edit.returnPressed.connect(self.submitted.emit)
         input_layout.addWidget(self.field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
@@ -700,6 +707,38 @@ class JoyReadDialogOverlay(QWidget):
         validator: Callable[[str], str | None] | None = None,
     ) -> None:
         content = DialogInputContent(header, initial_text)
+
+        def before_accept() -> bool:
+            if validator is None:
+                return True
+            error = validator(content.value)
+            if error is None:
+                return True
+            content.set_state_prompt(error)
+            self._panel.refresh_size()
+            self._position_panel()
+            return False
+
+        self._before_accept = before_accept
+        self._on_accept = lambda: on_confirm(content.value)
+        self._on_reject = None
+        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        content.submitted.connect(self._panel.accepted.emit)
+        self._show_centered()
+        content.field.line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
+        content.field.line_edit.selectAll()
+
+    def show_password_input(
+        self,
+        title: str,
+        header: str,
+        on_confirm: Callable[[str], None],
+        *,
+        confirm_text: str = "Confirm",
+        cancel_text: str = "Cancel",
+        validator: Callable[[str], str | None] | None = None,
+    ) -> None:
+        content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.Password)
 
         def before_accept() -> bool:
             if validator is None:

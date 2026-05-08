@@ -308,6 +308,51 @@ class Theme:
     tooltip_radius = 2
     tooltip_padding = 4
 
+    # Reader window from Figma node 283:5236.
+    reader_width = 1200
+    reader_height = 860
+    reader_min_width = 500
+    reader_min_height = 706
+    reader_radius = 18
+    reader_banner_height = 52
+    reader_footer_height = 104
+    reader_footer_padding_horizontal = 6
+    reader_footer_padding_vertical = 8
+    reader_footer_row_height = 40
+    reader_footer_row_padding_horizontal = 6
+    reader_footer_row_padding_vertical = 2
+    reader_control_size = 36
+    reader_control_radius = 10
+    reader_control_visual_padding = 4
+    reader_control_border_width = 1
+    reader_control_layout_margin = reader_control_visual_padding - reader_control_border_width
+    reader_side_button_width = 28
+    reader_side_button_height = 70
+    reader_side_button_margin = 16
+    reader_side_button_radius = 7
+    reader_side_button_padding_horizontal = 9
+    reader_side_button_padding_vertical = 14
+    reader_switch_visual_padding = 4
+    reader_switch_gap = 6
+    reader_switch_option_size = 28
+    reader_switch_option_radius = 6
+    reader_slider_height = 24
+    reader_slider_track_height = 6
+    reader_slider_knob_width = 14
+    reader_slider_knob_height = 10
+    reader_settings_panel_width = 360
+    reader_settings_panel_border_width = 2
+    reader_settings_panel_visual_padding = 10
+    reader_settings_panel_layout_margin = reader_settings_panel_visual_padding - reader_settings_panel_border_width
+    reader_settings_panel_radius = 10
+    reader_settings_row_height = 32
+    reader_settings_gap = 8
+    reader_auto_hide_delay_ms = 1600
+    reader_fade_duration_ms = 160
+    reader_edge_reveal_distance = 78
+    reader_pan_step_ratio = 0.18
+    reader_pan_min_step = 80
+
     # Palette
     color_window = "#ffffff"
     color_content = "#f5f5f5"
@@ -334,6 +379,14 @@ class Theme:
     color_settings_switch_background = "#b9b9b9"
     color_settings_switch_knob_rgba = (0, 0, 0, 191)
     color_shadow_rgba = (0, 0, 0, 64)
+    color_reader_background = "#ececec"
+    color_reader_control_normal_rgba = (255, 255, 255, 153)
+    color_reader_control_selected_rgba = (255, 255, 255, 255)
+    color_reader_panel_rgba = (146, 146, 146, 102)
+    color_reader_switch_panel_rgba = (191, 191, 191, 178)
+    color_reader_slider_empty = "#d7d7d7"
+    color_reader_slider_filled = "#9e9e9e"
+    color_reader_footer_background_rgba = (255, 255, 255, 188)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -406,6 +459,20 @@ class Theme:
             "__DIALOG_COLLECTION_SCROLLBAR_MARGIN__": f"{cls.dialog_collection_scrollbar_margin}px",
             "__TOOLTIP_RADIUS__": f"{cls.tooltip_radius}px",
             "__TOOLTIP_PADDING__": f"{cls.tooltip_padding}px",
+            "__READER_RADIUS__": f"{cls.reader_radius}px",
+            "__READER_BACKGROUND__": cls.color_reader_background,
+            "__READER_CONTROL_NORMAL__": cls._rgba_qss(cls.color_reader_control_normal_rgba),
+            "__READER_CONTROL_SELECTED__": cls._rgba_qss(cls.color_reader_control_selected_rgba),
+            "__READER_CONTROL_RADIUS__": f"{cls.reader_control_radius}px",
+            "__READER_PANEL__": cls._rgba_qss(cls.color_reader_panel_rgba),
+            "__READER_SIDE_BUTTON_RADIUS__": f"{cls.reader_side_button_radius}px",
+            "__READER_SWITCH_PANEL__": cls._rgba_qss(cls.color_reader_switch_panel_rgba),
+            "__READER_SWITCH_OPTION_RADIUS__": f"{cls.reader_switch_option_radius}px",
+            "__READER_SLIDER_EMPTY__": cls.color_reader_slider_empty,
+            "__READER_SLIDER_FILLED__": cls.color_reader_slider_filled,
+            "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
+            "__READER_SETTINGS_PANEL_BORDER_WIDTH__": f"{cls.reader_settings_panel_border_width}px",
+            "__READER_SETTINGS_PANEL_RADIUS__": f"{cls.reader_settings_panel_radius}px",
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",
