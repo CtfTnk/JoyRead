@@ -11,6 +11,7 @@ from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.services.cache_service import CacheService
+from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
@@ -43,6 +44,7 @@ class AppContext:
     cache_service: CacheService
     hash_service: HashService
     import_service: ImportService
+    export_service: ExportService
     storage_migration_service: StorageMigrationService
     thumbnail_service: ThumbnailService
     main_window_viewmodel: MainWindowViewModel
@@ -73,6 +75,7 @@ class AppContext:
             self.hash_service,
             self.settings.hash_algorithm,
         )
+        self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
         self.settings_viewmodel.set_storage_location(self.settings.storage_location)
 
@@ -112,6 +115,7 @@ def create_app_context() -> AppContext:
         hash_service,
         settings.hash_algorithm,
     )
+    export_service = ExportService(book_repository, hash_service)
     storage_migration_service = StorageMigrationService(settings_store)
     thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service)
     main_window_viewmodel = MainWindowViewModel()
@@ -139,6 +143,7 @@ def create_app_context() -> AppContext:
         cache_service=cache_service,
         hash_service=hash_service,
         import_service=import_service,
+        export_service=export_service,
         storage_migration_service=storage_migration_service,
         thumbnail_service=thumbnail_service,
         main_window_viewmodel=main_window_viewmodel,

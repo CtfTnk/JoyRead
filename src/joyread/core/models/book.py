@@ -24,6 +24,8 @@ class Book:
     is_missing: bool = False
     collection_ids: tuple[str, ...] = ()
     page_count: int = 14
+    language_name: str | None = None
+    original_file_name: str | None = None
 
     def with_favourite(self, value: bool) -> Book:
         return replace(self, is_favourite=value, updated_at=datetime.now())
@@ -38,6 +40,8 @@ class Book:
                 self.title,
                 self.author,
                 self.language_tag,
+                self.language_name,
+                self.original_file_name,
                 self.book_type,
                 self.file_format,
             )

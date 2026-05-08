@@ -12,6 +12,8 @@ from uuid import uuid4
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.export import BookExportRecord
+from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
 
 
@@ -21,6 +23,12 @@ class MockBookRepository(BookRepository):
     _DATA_PACKAGE = "joyread.core.repositories"
     _DATA_FILE = "mock_library.json"
     _TEST_SET_PREFIX = "test_set/"
+    _LANGUAGES = (
+        Language(plain_text="English", iso_code="en"),
+        Language(plain_text="Chinese", iso_code="zh"),
+        Language(plain_text="Japanese", iso_code="ja"),
+        Language(plain_text="Unknown", iso_code="und"),
+    )
 
     def __init__(self, data_path: Path | None = None) -> None:
         raw_data = self._load_json(data_path)
@@ -32,6 +40,34 @@ class MockBookRepository(BookRepository):
 
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
+
+    def list_languages(self) -> list[Language]:
+        return list(self._LANGUAGES)
+
+    def get_export_records(self, book_ids: tuple[str, ...]) -> list[BookExportRecord]:
+        target_ids = tuple(dict.fromkeys(book_ids))
+        books_by_id = {book.uuid: book for book in self._books}
+        return [
+            self._export_record_for_book(book)
+            for book_id in target_ids
+            if (book := books_by_id.get(book_id)) is not None
+        ]
+
+    def _export_record_for_book(self, book: Book) -> BookExportRecord:
+        original_file_name = (
+            book.original_file_name
+            or _basename(book.file_path)
+            or f"{book.title}.{book.file_format.lower()}"
+        )
+        return BookExportRecord(
+            book_uuid=book.uuid,
+            title=book.title,
+            storage_path=book.file_path,
+            original_file_name=original_file_name,
+            hash_algorithm="sha256",
+            content_hash="",
+            is_missing=book.is_missing,
+        )
 
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
         self._books = [
@@ -45,13 +81,22 @@ class MockBookRepository(BookRepository):
         *,
         title: str | None = None,
         author: str | None = None,
+        language_tag: str | None = None,
     ) -> None:
+        if language_tag is not None and language_tag not in self._language_names_by_code():
+            raise ValueError(f"Unknown language code: {language_tag}")
         now = datetime.now()
         self._books = [
             replace(
                 book,
                 title=title if title is not None else book.title,
                 author=author if author is not None else book.author,
+                language_tag=language_tag if language_tag is not None else book.language_tag,
+                language_name=(
+                    self._language_names_by_code()[language_tag]
+                    if language_tag is not None
+                    else book.language_name
+                ),
                 updated_at=now,
             )
             if book.uuid == book_id
@@ -125,11 +170,15 @@ class MockBookRepository(BookRepository):
     def _build_book(self, row: dict[str, Any]) -> Book:
         valid_fields = {field.name for field in fields(Book)}
         book_data = {key: value for key, value in row.items() if key in valid_fields}
-        book_data["file_path"] = self._resolve_mock_path(str(book_data["file_path"]))
+        file_path = str(book_data["file_path"])
+        book_data["file_path"] = self._resolve_mock_path(file_path)
+        book_data["original_file_name"] = book_data.get("original_file_name") or _basename(file_path)
         book_data["added_at"] = self._parse_datetime(str(book_data["added_at"]))
         book_data["updated_at"] = self._parse_datetime(str(book_data["updated_at"]))
         book_data["last_read_at"] = self._parse_optional_datetime(book_data.get("last_read_at"))
         book_data["collection_ids"] = tuple(book_data.get("collection_ids") or ())
+        book_data["language_tag"] = self._normalize_language_tag(book_data.get("language_tag"))
+        book_data["language_name"] = self._language_names_by_code()[book_data["language_tag"]]
         return Book(**book_data)
 
     def _resolve_mock_path(self, file_path: str) -> str:
@@ -157,3 +206,25 @@ class MockBookRepository(BookRepository):
         if value is None:
             return None
         return datetime.fromisoformat(str(value))
+
+    @classmethod
+    def _language_names_by_code(cls) -> dict[str, str]:
+        return {language.iso_code: language.plain_text for language in cls._LANGUAGES}
+
+    @classmethod
+    def _language_codes_by_name(cls) -> dict[str, str]:
+        return {language.plain_text.lower(): language.iso_code for language in cls._LANGUAGES}
+
+    @classmethod
+    def _normalize_language_tag(cls, value: object) -> str:
+        normalized = str(value or "").strip()
+        if normalized in cls._language_names_by_code():
+            return normalized
+        return cls._language_codes_by_name().get(normalized.lower(), "und")
+
+
+def _basename(value: object) -> str:
+    normalized = str(value or "").replace("\\", "/").rstrip("/")
+    if not normalized:
+        return ""
+    return normalized.rsplit("/", 1)[-1]

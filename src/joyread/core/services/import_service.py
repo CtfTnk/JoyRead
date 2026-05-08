@@ -189,6 +189,7 @@ class ImportService:
                 file_id=file_id,
                 book_id=book_id,
                 original_path=str(source_path),
+                original_file_name=source_path.name,
                 storage_path=str(storage_path),
                 file_format=file_format,
                 file_size=stat.st_size,
@@ -295,6 +296,7 @@ def _insert_imported_book(
     file_id: str,
     book_id: str,
     original_path: str,
+    original_file_name: str,
     storage_path: str,
     file_format: str,
     file_size: int,
@@ -310,14 +312,15 @@ def _insert_imported_book(
         connection.execute(
             """
             INSERT INTO book_files(
-                file_id, original_path, storage_path, file_format, file_size,
+                file_id, original_path, original_file_name, storage_path, file_format, file_size,
                 mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'healthy', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', ?, ?)
             """,
             (
                 file_id,
                 original_path,
+                original_file_name,
                 storage_path,
                 file_format,
                 file_size,
@@ -334,7 +337,7 @@ def _insert_imported_book(
                 book_id, file_id, title, author, language_tag, book_type,
                 cover_path, is_favourite, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'Unknown', 'Unknown', ?, NULL, 0, ?, ?)
+            VALUES (?, ?, ?, 'Unknown', 'und', ?, NULL, 0, ?, ?)
             """,
             (book_id, file_id, title, book_type, now, now),
         )

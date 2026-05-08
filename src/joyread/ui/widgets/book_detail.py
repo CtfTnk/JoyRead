@@ -111,6 +111,7 @@ class BookDetailPanel(QFrame):
     more_thumbnails_requested = QtSignal(str)
     title_change_requested = QtSignal(str, str)
     author_change_requested = QtSignal(str, str)
+    language_menu_requested = QtSignal(str, QPoint)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -164,7 +165,7 @@ class BookDetailPanel(QFrame):
         self._book = book
         self._title_field.set_value(book.title)
         self._author_field.set_value(book.author or "None")
-        self._language_label.setText(f"Language: {book.language_tag or 'Unknown'}")
+        self._language_label.setText(f"Language: {self._language_display_name(book)}")
         self._book_type_label.setText(f"Book Type: {book.file_format.upper()}")
         self._progress.set_progress(book.progress_percent)
         self._progress_percent_label.setText(f"{book.progress_percent}%")
@@ -289,8 +290,12 @@ class BookDetailPanel(QFrame):
         attributes_layout.setContentsMargins(Theme.detail_attribute_padding_horizontal, 0, 0, 0)
         attributes_layout.setSpacing(Theme.detail_attribute_gap)
         attributes_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._language_label = QLabel("Language: Unknown")
-        attributes_layout.addWidget(_attribute_pill(self._language_label))
+        self._language_label = DoubleClickTextLabel("Language: Unknown")
+        self._language_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._language_label.double_clicked.connect(self._emit_language_menu_requested)
+        self._language_pill = _attribute_pill(self._language_label)
+        self._language_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        attributes_layout.addWidget(self._language_pill)
         self._book_type_label = QLabel("Book Type: Unknown")
         attributes_layout.addWidget(_attribute_pill(self._book_type_label))
         attributes_layout.addStretch(1)
@@ -374,6 +379,20 @@ class BookDetailPanel(QFrame):
         if self._book is not None and author != (self._book.author or "None"):
             self.author_change_requested.emit(self._book.uuid, author)
 
+    def _emit_language_menu_requested(self) -> None:
+        if self._book is not None:
+            self.language_menu_requested.emit(
+                self._book.uuid,
+                self._language_pill.mapToGlobal(QPoint(0, self._language_pill.height())),
+            )
+
+    def _language_display_name(self, book: Book) -> str:
+        if book.language_name:
+            return book.language_name
+        if not book.language_tag or book.language_tag == "und":
+            return "Unknown"
+        return book.language_tag
+
 
 class InlineEditableText(QWidget):
     """Label that only commits Figma's inline edit when Return is pressed."""
@@ -442,6 +461,21 @@ class InlineEditableText(QWidget):
 
 class DoubleClickLabel(ElidedLabel):
     double_clicked = QtSignal()
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.double_clicked.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+
+class DoubleClickTextLabel(QLabel):
+    double_clicked = QtSignal()
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

@@ -150,10 +150,72 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON recent_books(last_read_at DESC);
         """,
     ),
+    (
+        3,
+        """
+        CREATE TABLE IF NOT EXISTS languages (
+            iso_code TEXT PRIMARY KEY,
+            plain_text TEXT NOT NULL UNIQUE,
+            sort_order INTEGER NOT NULL
+        );
+
+        INSERT INTO languages(iso_code, plain_text, sort_order)
+        VALUES
+            ('en', 'English', 10),
+            ('zh', 'Chinese', 20),
+            ('ja', 'Japanese', 30),
+            ('und', 'Unknown', 40)
+        ON CONFLICT(iso_code) DO UPDATE SET
+            plain_text = excluded.plain_text,
+            sort_order = excluded.sort_order;
+
+        UPDATE books
+        SET language_tag = CASE lower(trim(coalesce(language_tag, '')))
+            WHEN 'en' THEN 'en'
+            WHEN 'english' THEN 'en'
+            WHEN 'zh' THEN 'zh'
+            WHEN 'zh-cn' THEN 'zh'
+            WHEN 'zh-tw' THEN 'zh'
+            WHEN 'chinese' THEN 'zh'
+            WHEN 'ja' THEN 'ja'
+            WHEN 'japanese' THEN 'ja'
+            ELSE 'und'
+        END;
+
+        UPDATE private_books
+        SET language_tag = CASE lower(trim(coalesce(language_tag, '')))
+            WHEN 'en' THEN 'en'
+            WHEN 'english' THEN 'en'
+            WHEN 'zh' THEN 'zh'
+            WHEN 'zh-cn' THEN 'zh'
+            WHEN 'zh-tw' THEN 'zh'
+            WHEN 'chinese' THEN 'zh'
+            WHEN 'ja' THEN 'ja'
+            WHEN 'japanese' THEN 'ja'
+            ELSE 'und'
+        END;
+
+        CREATE INDEX IF NOT EXISTS idx_books_language_tag
+            ON books(language_tag);
+        CREATE INDEX IF NOT EXISTS idx_private_books_language_tag
+            ON private_books(language_tag);
+        """,
+    ),
+    (
+        4,
+        """
+        ALTER TABLE book_files ADD COLUMN original_file_name TEXT;
+
+        UPDATE book_files
+        SET original_file_name = joyread_basename(original_path)
+        WHERE original_file_name IS NULL OR trim(original_file_name) = '';
+        """,
+    ),
 )
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
+    connection.create_function("joyread_basename", 1, _sqlite_basename)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -184,3 +246,10 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
             except sqlite3.OperationalError:
                 pass
             raise
+
+
+def _sqlite_basename(value: object) -> str:
+    normalized = str(value or "").replace("\\", "/").rstrip("/")
+    if not normalized:
+        return "book"
+    return normalized.rsplit("/", 1)[-1] or "book"

@@ -203,6 +203,14 @@ class Theme:
     menu_item_text_height = 15
     menu_item_height = menu_item_text_height + (menu_item_padding * 2)
     menu_font_size = 12
+    language_menu_width = menu_width
+    language_menu_visual_padding_horizontal = 6
+    language_menu_visual_padding_vertical = 4
+    language_menu_layout_margin_horizontal = language_menu_visual_padding_horizontal - menu_border_width
+    language_menu_layout_margin_vertical = language_menu_visual_padding_vertical - menu_border_width
+    language_menu_indicator_height = 10
+    language_menu_indicator_icon_size = 10
+    language_menu_max_visible_items = 7
 
     # Settings page from Figma node 231:1738.
     settings_panel_width = 860

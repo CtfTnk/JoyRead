@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -160,6 +161,37 @@ def test_grid_resize_keeps_card_widgets_stable(qtbot) -> None:
 
     assert {book_uuid: id(card) for book_uuid, card in grid._cards.items()} == card_ids
     assert len(grid._cards) == len(books)
+
+
+def test_grid_reused_card_updates_metadata_in_real_time(qtbot) -> None:
+    apply_theme()
+    grid = BookGridWidget(ResourceLoader())
+    books = MockBookRepository().list_books()
+    qtbot.addWidget(grid)
+    grid.set_books(books, set())
+    grid.show()
+    QApplication.processEvents()
+
+    target = books[0]
+    card = grid._cards[target.uuid]
+    card_id = id(card)
+    updated_books = [
+        replace(target, title="Updated Card Title", progress=0.99)
+        if book.uuid == target.uuid
+        else book
+        for book in books
+    ]
+
+    grid.set_books(updated_books, set())
+    QApplication.processEvents()
+
+    assert id(grid._cards[target.uuid]) == card_id
+    assert card.book.title == "Updated Card Title"
+    title_label = next(label for label in card.findChildren(ElidedLabel) if label.property("class") == "BookTitle")
+    progress = card.findChild(BookProgressBar)
+    assert title_label.full_text == "Updated Card Title"
+    assert progress is not None
+    assert progress.progress_percent == 99
 
 
 def test_missing_book_card_uses_figma_opacity_without_color_tint(qtbot) -> None:
@@ -413,7 +445,7 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
 
     assert title_labels[0].text() == book.title
     assert author_labels[0].text() == f"Author: {book.author}"
-    assert f"Language: {book.language_tag}" in pill_labels
+    assert f"Language: {book.language_name}" in pill_labels
     assert f"Book Type: {book.file_format}" in pill_labels
     assert cover_panel is not None
     cover_margins = cover_panel.layout().contentsMargins()
@@ -483,6 +515,55 @@ def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
     assert emitted_authors == [(book.uuid, "Edited Author")]
 
 
+def test_book_detail_language_pill_emits_menu_request_on_double_click(qtbot) -> None:
+    apply_theme()
+    book = MockBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    emitted: list[tuple[str, QPoint]] = []
+    panel.language_menu_requested.connect(lambda book_uuid, point: emitted.append((book_uuid, point)))
+    qtbot.addWidget(panel)
+    panel.set_book(book)
+    panel.show()
+    QApplication.processEvents()
+
+    language_label = next(
+        label
+        for label in panel.findChildren(QLabel)
+        if label.property("class") == "BookDetailPillText" and label.text().startswith("Language:")
+    )
+    qtbot.mouseDClick(language_label, Qt.MouseButton.LeftButton)
+
+    assert emitted
+    assert emitted[0][0] == book.uuid
+
+
+def test_book_detail_language_pill_keeps_full_text_across_repeated_changes(qtbot) -> None:
+    apply_theme()
+    book = MockBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.show()
+
+    for language_tag, language_name in (
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("und", "Unknown"),
+        ("en", "English"),
+    ):
+        panel.set_book(replace(book, language_tag=language_tag, language_name=language_name))
+        QApplication.processEvents()
+        language_label = next(
+            label
+            for label in panel.findChildren(QLabel)
+            if label.property("class") == "BookDetailPillText" and label.text().startswith("Language:")
+        )
+        expected = f"Language: {language_name}"
+        assert language_label.text() == expected
+        assert "..." not in language_label.text()
+        assert "…" not in language_label.text()
+        assert language_label.sizeHint().width() >= language_label.fontMetrics().horizontalAdvance(expected)
+
+
 def test_book_detail_panel_cover_can_update_for_current_book(qtbot, tmp_path) -> None:
     apply_theme()
     cover_path = tmp_path / "detail-cover.png"
@@ -540,6 +621,76 @@ def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) ->
     panel._emit_more_thumbnails_if_near_bottom()
 
     assert emitted == [book.uuid]
+
+
+def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.show()
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    view._popup_interaction_depth = 1
+    view._handle_page_thumbnail_ready(book.uuid, 0, make_test_image_bytes())
+
+    assert view.detail_panel._thumbnail_grid._thumbnails == {}
+
+    view._popup_interaction_depth = 0
+    assert view._flush_deferred_detail_thumbnail_updates() is False
+
+    assert 0 in view.detail_panel._thumbnail_grid._thumbnails
+
+
+def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.show()
+    first, second = viewmodel.visible_books[:2]
+    viewmodel.show_detail(first.uuid)
+    QApplication.processEvents()
+
+    view._popup_interaction_depth = 1
+    view._handle_page_thumbnail_ready(first.uuid, 0, make_test_image_bytes())
+    viewmodel.show_detail(second.uuid)
+    QApplication.processEvents()
+
+    view._popup_interaction_depth = 0
+    assert view._flush_deferred_detail_thumbnail_updates() is False
+
+    assert view.detail_panel._thumbnail_grid._thumbnails == {}
+
+
+def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.show()
+    book = viewmodel.visible_books[0]
+    requested: list[str] = []
+    view._request_next_detail_thumbnail_batch = requested.append  # type: ignore[method-assign]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+    requested.clear()
+
+    view._popup_interaction_depth = 1
+    view._handle_detail_thumbnail_batch_finished(book.uuid, 14, True)
+
+    assert requested == []
+
+    view._popup_interaction_depth = 0
+    assert view._flush_deferred_detail_thumbnail_updates() is True
+    QApplication.processEvents()
+
+    assert requested == [book.uuid]
 
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
@@ -664,6 +815,44 @@ def test_shelf_menu_targets_preserve_multi_selection(qtbot) -> None:
 
     assert view._menu_target_ids(third.uuid) == (third.uuid,)
     assert viewmodel.selected_book_ids == {third.uuid}
+
+
+def test_shelf_export_menu_request_uses_selected_targets(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.render()
+    captured_menus: list[QWidget] = []
+    emitted: list[tuple[str, ...]] = []
+    view._exec_interaction_popup = lambda menu, _pos: captured_menus.append(menu)  # type: ignore[method-assign]
+    view.export_books_requested.connect(emitted.append)
+
+    first, second, third = viewmodel.visible_books[:3]
+    viewmodel.select_book(first.uuid)
+    viewmodel.select_book(second.uuid, additive=True)
+
+    view._show_book_menu(second.uuid, QPoint(0, 0))
+    _trigger_menu_row(qtbot, captured_menus.pop(), "Export")
+
+    assert emitted == [(first.uuid, second.uuid)]
+
+    view._show_book_menu(third.uuid, QPoint(0, 0))
+    _trigger_menu_row(qtbot, captured_menus.pop(), "Export")
+
+    assert emitted == [(first.uuid, second.uuid), (third.uuid,)]
+
+
+def _trigger_menu_row(qtbot, menu: QWidget, label_text: str) -> None:  # noqa: ANN001
+    qtbot.addWidget(menu)
+    menu.show()
+    QApplication.processEvents()
+    rows = [widget for widget in menu.findChildren(QFrame) if widget.objectName() == "FigmaMenuItem"]
+    row = next(row for row in rows if row.findChild(QLabel).text() == label_text)
+    qtbot.mousePress(row, Qt.MouseButton.LeftButton)
+    qtbot.mouseRelease(row, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
 
 
 def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:

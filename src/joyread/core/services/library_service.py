@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
 
 
@@ -16,6 +17,9 @@ class LibraryService:
 
     def list_collections(self) -> list[Collection]:
         return self._book_repository.list_collections()
+
+    def list_languages(self) -> list[Language]:
+        return self._book_repository.list_languages()
 
     def set_favourite(self, book_uuid: str, is_favourite: bool) -> None:
         self._book_repository.set_favourite(book_uuid, is_favourite)
@@ -30,8 +34,14 @@ class LibraryService:
         *,
         title: str | None = None,
         author: str | None = None,
+        language_tag: str | None = None,
     ) -> None:
-        self._book_repository.update_book_metadata(book_uuid, title=title, author=author)
+        self._book_repository.update_book_metadata(
+            book_uuid,
+            title=title,
+            author=author,
+            language_tag=language_tag,
+        )
 
     def delete_book(self, book_uuid: str) -> None:
         self._book_repository.delete_book(book_uuid)

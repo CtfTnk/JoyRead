@@ -12,6 +12,8 @@ from uuid import uuid4
 from joyread.core.models.book import Book
 from joyread.core.models.bookmark import Bookmark
 from joyread.core.models.collection import Collection
+from joyread.core.models.export import BookExportRecord
+from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 
@@ -43,6 +45,38 @@ class SqliteBookRepository(BookRepository):
     def list_collections(self) -> list[Collection]:
         return self._database.execute(_list_collections, DatabasePriority.HIGH)
 
+    def list_languages(self) -> list[Language]:
+        return self._database.execute(_list_languages, DatabasePriority.HIGH)
+
+    def get_export_records(self, book_ids: tuple[str, ...]) -> list[BookExportRecord]:
+        target_ids = tuple(dict.fromkeys(book_ids))
+        if not target_ids:
+            return []
+
+        def read(connection: sqlite3.Connection) -> list[BookExportRecord]:
+            placeholders = ", ".join("?" for _book_id in target_ids)
+            rows = connection.execute(
+                f"""
+                SELECT
+                    books.book_id,
+                    books.title,
+                    book_files.storage_path,
+                    book_files.original_path,
+                    book_files.original_file_name,
+                    book_files.hash_algorithm,
+                    book_files.content_hash,
+                    book_files.state
+                FROM books
+                JOIN book_files ON book_files.file_id = books.file_id
+                WHERE books.book_id IN ({placeholders})
+                """,
+                target_ids,
+            ).fetchall()
+            records_by_id = {row["book_id"]: _export_record_from_row(row) for row in rows}
+            return [records_by_id[book_id] for book_id in target_ids if book_id in records_by_id]
+
+        return self._database.execute(read, DatabasePriority.HIGH)
+
     def get_book(self, book_id: str) -> Book | None:
         books = self._database.execute(lambda connection: _list_books(connection, book_id), DatabasePriority.HIGH)
         return books[0] if books else None
@@ -71,11 +105,17 @@ class SqliteBookRepository(BookRepository):
         updates.append("updated_at = ?")
         values.append(_now())
         values.append(book_id)
-        self._database.execute(
-            lambda connection: connection.execute(
+
+        def write(connection: sqlite3.Connection) -> None:
+            if language_tag is not None and not _language_exists(connection, language_tag):
+                raise ValueError(f"Unknown language code: {language_tag}")
+            connection.execute(
                 f"UPDATE books SET {', '.join(updates)} WHERE book_id = ?",
                 tuple(values),
-            ),
+            )
+
+        self._database.execute(
+            write,
             DatabasePriority.NORMAL,
         )
 
@@ -408,12 +448,15 @@ def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> l
             books.title,
             books.author,
             books.language_tag,
+            COALESCE(languages.plain_text, 'Unknown') AS language_name,
             books.book_type,
             books.cover_path,
             books.is_favourite,
             books.created_at,
             books.updated_at,
             book_files.storage_path,
+            book_files.original_path,
+            book_files.original_file_name,
             book_files.file_format,
             book_files.state,
             progress.progress_percent,
@@ -421,6 +464,7 @@ def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> l
             GROUP_CONCAT(collection_books.collection_id) AS collection_ids
         FROM books
         JOIN book_files ON book_files.file_id = books.file_id
+        LEFT JOIN languages ON languages.iso_code = books.language_tag
         LEFT JOIN progress
             ON progress.book_scope = 'public' AND progress.book_id = books.book_id
         LEFT JOIN recent_books ON recent_books.book_id = books.book_id
@@ -454,6 +498,23 @@ def _list_collections(connection: sqlite3.Connection) -> list[Collection]:
     ]
 
 
+def _list_languages(connection: sqlite3.Connection) -> list[Language]:
+    rows = connection.execute(
+        """
+        SELECT iso_code, plain_text
+        FROM languages
+        ORDER BY sort_order ASC, plain_text COLLATE NOCASE ASC
+        """
+    ).fetchall()
+    return [
+        Language(
+            plain_text=row["plain_text"],
+            iso_code=row["iso_code"],
+        )
+        for row in rows
+    ]
+
+
 def _book_from_row(row: sqlite3.Row) -> Book:
     collection_ids = tuple(
         value for value in (row["collection_ids"] or "").split(",") if value
@@ -464,6 +525,7 @@ def _book_from_row(row: sqlite3.Row) -> Book:
         title=row["title"],
         author=row["author"],
         language_tag=row["language_tag"],
+        language_name=row["language_name"],
         book_type=row["book_type"],
         file_format=row["file_format"],
         file_path=row["storage_path"],
@@ -480,7 +542,44 @@ def _book_from_row(row: sqlite3.Row) -> Book:
         is_missing=row["state"] == "missing",
         collection_ids=collection_ids,
         page_count=0,
+        original_file_name=_original_file_name_from_row(row),
     )
+
+
+def _export_record_from_row(row: sqlite3.Row) -> BookExportRecord:
+    return BookExportRecord(
+        book_uuid=row["book_id"],
+        title=row["title"],
+        storage_path=row["storage_path"],
+        original_file_name=_original_file_name_from_row(row),
+        hash_algorithm=row["hash_algorithm"],
+        content_hash=row["content_hash"],
+        is_missing=row["state"] == "missing",
+    )
+
+
+def _original_file_name_from_row(row: sqlite3.Row) -> str:
+    return (
+        str(row["original_file_name"] or "").strip()
+        or _basename(row["original_path"])
+        or _basename(row["storage_path"])
+        or "book"
+    )
+
+
+def _basename(value: object) -> str:
+    normalized = str(value or "").replace("\\", "/").rstrip("/")
+    if not normalized:
+        return ""
+    return normalized.rsplit("/", 1)[-1]
+
+
+def _language_exists(connection: sqlite3.Connection, language_tag: str) -> bool:
+    row = connection.execute(
+        "SELECT 1 FROM languages WHERE iso_code = ?",
+        (language_tag,),
+    ).fetchone()
+    return row is not None
 
 
 def _now() -> str:

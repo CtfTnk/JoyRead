@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 
 from joyread.core.repositories.mock_book_repository import MockBookRepository
@@ -26,6 +27,12 @@ def test_load_books_populates_books_and_collections() -> None:
 
     assert len(vm.books) == 15
     assert vm.collections[0].uuid == "collection-a"
+    assert [(language.iso_code, language.plain_text) for language in vm.languages] == [
+        ("en", "English"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("und", "Unknown"),
+    ]
     assert vm.page_title == "All"
 
 
@@ -108,15 +115,50 @@ def test_update_book_metadata_persists_detail_edits_after_reload() -> None:
 
     vm.update_book_title(book.uuid, "  Edited Detail Title  ")
     vm.update_book_author(book.uuid, "  Edited Author  ")
+    vm.update_book_language(book.uuid, "ja")
 
     updated = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
     assert updated.title == "Edited Detail Title"
     assert updated.author == "Edited Author"
+    assert updated.language_tag == "ja"
+    assert updated.language_name == "Japanese"
 
     vm.load_books()
     reloaded = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
     assert reloaded.title == "Edited Detail Title"
     assert reloaded.author == "Edited Author"
+    assert reloaded.language_tag == "ja"
+    assert reloaded.language_name == "Japanese"
+
+
+def test_update_book_language_rejects_unknown_code() -> None:
+    vm = make_viewmodel()
+    failures: list[str] = []
+    vm.book_metadata_failed.connect(failures.append)
+    vm.load_books()
+    book = vm.visible_books[0]
+
+    vm.update_book_language(book.uuid, "bad")
+
+    updated = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
+    assert updated.language_tag == book.language_tag
+    assert failures == ["Unknown language code: bad"]
+
+
+def test_update_book_language_failure_reloads_books() -> None:
+    repository = FailingLanguageUpdateRepository()
+    vm = ShelfViewModel(LibraryService(repository))
+    failures: list[str] = []
+    vm.book_metadata_failed.connect(failures.append)
+    vm.load_books()
+    book = vm.visible_books[0]
+
+    vm.update_book_language(book.uuid, "zh")
+
+    reloaded = next(candidate for candidate in vm.books if candidate.uuid == book.uuid)
+    assert reloaded.language_tag == "ja"
+    assert reloaded.language_name == "Japanese"
+    assert failures == ["write failed"]
 
 
 def test_collection_commands_validate_and_reload_state() -> None:
@@ -245,6 +287,31 @@ class RecordingTaskService:
         callback = self.success_callbacks[index]
         if callback is not None:
             callback(result)
+
+
+class FailingLanguageUpdateRepository(MockBookRepository):
+    def update_book_metadata(
+        self,
+        book_id: str,
+        *,
+        title: str | None = None,
+        author: str | None = None,
+        language_tag: str | None = None,
+    ) -> None:
+        if language_tag is not None:
+            self._books = [
+                replace(book, language_tag="ja", language_name="Japanese")
+                if book.uuid == book_id
+                else book
+                for book in self._books
+            ]
+            raise RuntimeError("write failed")
+        super().update_book_metadata(
+            book_id,
+            title=title,
+            author=author,
+            language_tag=language_tag,
+        )
 
 
 class FakeThumbnailService:

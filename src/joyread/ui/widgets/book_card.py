@@ -45,6 +45,7 @@ class BookCardWidget(QFrame):
         super().__init__(parent)
         self.book = book
         self._resources = resources
+        self._is_missing = book.is_missing
         self.setProperty("class", "BookCard")
         self.setProperty("selected", "false")
         self.setProperty("missing", "true" if book.is_missing else "false")
@@ -52,16 +53,7 @@ class BookCardWidget(QFrame):
         self.setFixedSize(Theme.book_card_width, Theme.book_card_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        if book.is_missing:
-            opacity = QGraphicsOpacityEffect(self)
-            opacity.setOpacity(Theme.missing_book_opacity)
-            self.setGraphicsEffect(opacity)
-        else:
-            shadow = QGraphicsDropShadowEffect(self)
-            shadow.setBlurRadius(4)
-            shadow.setOffset(0, 4)
-            shadow.setColor(QColor(0, 0, 0, 64))
-            self.setGraphicsEffect(shadow)
+        self._apply_missing_state(book.is_missing, force=True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -75,10 +67,10 @@ class BookCardWidget(QFrame):
         self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
         layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
 
-        title = ElidedLabel(book.title, max_lines=2)
-        title.setProperty("class", "BookTitle")
-        title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        layout.addWidget(title)
+        self._title = ElidedLabel(book.title, max_lines=2)
+        self._title.setProperty("class", "BookTitle")
+        self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(self._title)
 
         control_bar_frame = QWidget()
         control_bar_frame.setObjectName("BookControlBar")
@@ -92,8 +84,8 @@ class BookCardWidget(QFrame):
         )
         control_bar.setSpacing(0)
 
-        progress = BookProgressBar(book.progress_percent)
-        control_bar.addWidget(progress)
+        self._progress = BookProgressBar(book.progress_percent)
+        control_bar.addWidget(self._progress)
         control_bar.addStretch(1)
 
         option_frame = QWidget()
@@ -125,6 +117,12 @@ class BookCardWidget(QFrame):
         control_bar.addWidget(option_frame)
         layout.addWidget(control_bar_frame)
 
+    def set_book(self, book: Book) -> None:
+        self.book = book
+        self._title.set_full_text(book.title)
+        self._progress.set_progress(book.progress_percent)
+        self._apply_missing_state(book.is_missing)
+
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", "true" if selected else "false")
         self.style().unpolish(self)
@@ -152,6 +150,25 @@ class BookCardWidget(QFrame):
 
     def _emit_option_menu(self, button: QToolButton) -> None:
         self.menu_requested.emit(self.book.uuid, button.mapToGlobal(QPoint(0, button.height())))
+
+    def _apply_missing_state(self, is_missing: bool, *, force: bool = False) -> None:
+        if not force and is_missing == self._is_missing:
+            return
+        self._is_missing = is_missing
+        self.setProperty("missing", "true" if is_missing else "false")
+        if is_missing:
+            opacity = QGraphicsOpacityEffect(self)
+            opacity.setOpacity(Theme.missing_book_opacity)
+            self.setGraphicsEffect(opacity)
+        else:
+            shadow = QGraphicsDropShadowEffect(self)
+            shadow.setBlurRadius(4)
+            shadow.setOffset(0, 4)
+            shadow.setColor(QColor(0, 0, 0, 64))
+            self.setGraphicsEffect(shadow)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.update()
 
 
 class BookCoverWidget(QFrame):

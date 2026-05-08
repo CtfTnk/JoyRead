@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self.shelf_view.import_manifest_requested.connect(self._select_import_manifest)
         self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
+        self.shelf_view.export_books_requested.connect(self._select_export_folder)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
@@ -130,6 +131,40 @@ class MainWindow(QMainWindow):
                 f"Failed: {result.failed_count}"
             ),
         )
+
+    def _select_export_folder(self, book_uuids: tuple[str, ...]) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuids))
+        if not target_ids:
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Export Folder",
+            str(Path.home()),
+        )
+        if not directory:
+            return
+        self._context.task_service.submit(
+            "export-books",
+            lambda: self._context.export_service.export_books(target_ids, directory),
+            on_success=self._handle_export_finished,
+            on_failure=lambda error: self.dialog_overlay.show_info("Export Failed", str(error)),
+        )
+
+    def _handle_export_finished(self, result) -> None:  # noqa: ANN001
+        lines = [
+            f"Exported: {result.exported_count}",
+            f"Skipped: {result.skipped_count}",
+            f"Failed: {result.failed_count}",
+        ]
+        failures = [item for item in result.items if item.status == "failed"]
+        if failures:
+            lines.append("")
+            for item in failures[:5]:
+                label = item.original_file_name or item.book_uuid
+                lines.append(f"{label}: {item.message or 'Export failed.'}")
+            if len(failures) > 5:
+                lines.append(f"...and {len(failures) - 5} more.")
+        self.dialog_overlay.show_info("Export Finished", "\n".join(lines))
 
     def _confirm_delete_books(self, book_uuids: tuple[str, ...]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuids))

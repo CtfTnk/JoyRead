@@ -10,6 +10,7 @@ from pathlib import Path
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.language import Language
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
@@ -77,6 +78,7 @@ class ShelfViewModel:
         self._detail_batch_size = 14
         self.books: list[Book] = []
         self.collections: list[Collection] = []
+        self.languages: list[Language] = []
         self.search_query = ""
         self.sort_field = _coerce_sort_field(settings.shelf_sort_field if settings is not None else None)
         self.sort_ascending = bool(settings.shelf_sort_ascending) if settings is not None else False
@@ -129,10 +131,12 @@ class ShelfViewModel:
         try:
             self.books = self._library_service.list_books()
             self.collections = self._library_service.list_collections()
+            self.languages = self._library_service.list_languages()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
             self.error_message = str(exc)
             self.books = []
             self.collections = []
+            self.languages = []
         finally:
             self.is_loading = False
             self._emit_state()
@@ -266,12 +270,16 @@ class ShelfViewModel:
         normalized_author = _normalize_detail_text(author)
         self.update_book_metadata(book_uuid, author=normalized_author)
 
+    def update_book_language(self, book_uuid: str, language_tag: str) -> None:
+        self.update_book_metadata(book_uuid, language_tag=language_tag)
+
     def update_book_metadata(
         self,
         book_uuid: str,
         *,
         title: str | None = None,
         author: str | None = None,
+        language_tag: str | None = None,
     ) -> None:
         book = next((book for book in self.books if book.uuid == book_uuid), None)
         if book is None:
@@ -279,9 +287,18 @@ class ShelfViewModel:
 
         next_title = title if title is not None else book.title
         next_author = author if author is not None else book.author
+        next_language_tag = language_tag if language_tag is not None else book.language_tag
+        next_language_name = book.language_name
+        if language_tag is not None:
+            next_language = self._language_by_tag(language_tag)
+            if next_language is None:
+                self.book_metadata_failed.emit(f"Unknown language code: {language_tag}")
+                return
+            next_language_name = next_language.plain_text
         title_changed = title is not None and title != book.title
         author_changed = author is not None and author != book.author
-        if not title_changed and not author_changed:
+        language_changed = language_tag is not None and language_tag != book.language_tag
+        if not title_changed and not author_changed and not language_changed:
             return
 
         if self._task_service is None:
@@ -290,11 +307,18 @@ class ShelfViewModel:
                     book_uuid,
                     title=title if title_changed else None,
                     author=author if author_changed else None,
+                    language_tag=language_tag if language_changed else None,
                 )
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
-                self.book_metadata_failed.emit(str(exc))
+                self._handle_book_metadata_failure(exc)
                 return
-            self._handle_book_metadata_success(book_uuid, next_title, next_author)
+            self._handle_book_metadata_success(
+                book_uuid,
+                next_title,
+                next_author,
+                next_language_tag,
+                next_language_name,
+            )
             return
 
         self._task_service.submit(
@@ -303,8 +327,15 @@ class ShelfViewModel:
                 book_uuid,
                 title=title if title_changed else None,
                 author=author if author_changed else None,
+                language_tag=language_tag if language_changed else None,
             ),
-            on_success=lambda _result: self._handle_book_metadata_success(book_uuid, next_title, next_author),
+            on_success=lambda _result: self._handle_book_metadata_success(
+                book_uuid,
+                next_title,
+                next_author,
+                next_language_tag,
+                next_language_name,
+            ),
             on_failure=lambda error: self._handle_book_metadata_failure(error),
         )
 
@@ -404,9 +435,25 @@ class ShelfViewModel:
             self.books = next_books
             self._emit_state()
 
-    def _handle_book_metadata_success(self, book_uuid: str, title: str, author: str | None) -> None:
+    def _handle_book_metadata_success(
+        self,
+        book_uuid: str,
+        title: str,
+        author: str | None,
+        language_tag: str | None,
+        language_name: str | None,
+    ) -> None:
         self.books = [
-            replace(book, title=title, author=author, updated_at=datetime.now()) if book.uuid == book_uuid else book
+            replace(
+                book,
+                title=title,
+                author=author,
+                language_tag=language_tag,
+                language_name=language_name,
+                updated_at=datetime.now(),
+            )
+            if book.uuid == book_uuid
+            else book
             for book in self.books
         ]
         self._emit_state()
@@ -637,6 +684,9 @@ class ShelfViewModel:
         if self._detail_batch_handle is not None:
             self._detail_batch_handle.cancel()
         self._detail_batch_handle = None
+
+    def _language_by_tag(self, language_tag: str) -> Language | None:
+        return next((language for language in self.languages if language.iso_code == language_tag), None)
 
 
 def collection_shelf_key(collection_uuid: str) -> str:

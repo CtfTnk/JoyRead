@@ -732,7 +732,17 @@ QWidget#FigmaMenuPopup {
     background: transparent;
 }
 
+QWidget#LanguageDropdownMenuPopup {
+    background: transparent;
+}
+
 QFrame#FigmaMenuPanel {
+    background: __MENU_BACKGROUND__;
+    border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __MENU_RADIUS__;
+}
+
+QFrame#LanguageDropdownMenuPanel {
     background: __MENU_BACKGROUND__;
     border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
     border-radius: __MENU_RADIUS__;
@@ -742,10 +752,26 @@ QWidget#FigmaMenuOptionList {
     background: transparent;
 }
 
+QWidget#LanguageDropdownMenuIndicator,
+QScrollArea#LanguageDropdownMenuScrollArea,
+QScrollArea#LanguageDropdownMenuScrollArea QWidget,
+QWidget#LanguageDropdownMenuOptionList {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#LanguageDropdownMenuScrollArea QScrollBar:vertical {
+    width: 0;
+}
+
 QFrame#FigmaMenuItem {
     background: transparent;
     border: none;
     border-radius: __MENU_ITEM_RADIUS__;
+}
+
+QFrame#FigmaMenuItem[selected="true"] {
+    background: __MENU_ITEM_HOVER__;
 }
 
 QFrame#FigmaMenuItem[menuEnabled="true"]:hover {

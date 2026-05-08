@@ -6,6 +6,8 @@ from typing import Protocol
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.export import BookExportRecord
+from joyread.core.models.language import Language
 
 
 class BookRepository(Protocol):
@@ -13,6 +15,12 @@ class BookRepository(Protocol):
         ...
 
     def list_collections(self) -> list[Collection]:
+        ...
+
+    def list_languages(self) -> list[Language]:
+        ...
+
+    def get_export_records(self, book_ids: tuple[str, ...]) -> list[BookExportRecord]:
         ...
 
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
@@ -24,6 +32,7 @@ class BookRepository(Protocol):
         *,
         title: str | None = None,
         author: str | None = None,
+        language_tag: str | None = None,
     ) -> None:
         ...
 

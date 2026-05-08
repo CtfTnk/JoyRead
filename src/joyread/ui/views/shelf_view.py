@@ -13,7 +13,12 @@ from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, View
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListWidget
 from joyread.ui.widgets.book_detail import BookDetailPanel
-from joyread.ui.widgets.menus import FigmaMenu, build_action_menu, build_book_context_menu
+from joyread.ui.widgets.menus import (
+    FigmaMenu,
+    build_action_menu,
+    build_book_context_menu,
+    build_language_dropdown_menu,
+)
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 
@@ -23,6 +28,7 @@ class ShelfView(QWidget):
     import_manifest_requested = QtSignal()
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
+    export_books_requested = QtSignal(tuple)
 
     def __init__(
         self,
@@ -35,6 +41,10 @@ class ShelfView(QWidget):
         self.setProperty("sidebarVisible", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
+        self._resources = resources
+        self._popup_interaction_depth = 0
+        self._deferred_page_thumbnails: list[tuple[str, int, bytes]] = []
+        self._deferred_detail_batch_finishes: list[tuple[str, int, bool]] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -87,6 +97,7 @@ class ShelfView(QWidget):
         self.detail_panel.more_thumbnails_requested.connect(self._request_next_detail_thumbnail_batch)
         self.detail_panel.title_change_requested.connect(self._viewmodel.update_book_title)
         self.detail_panel.author_change_requested.connect(self._viewmodel.update_book_author)
+        self.detail_panel.language_menu_requested.connect(self._show_language_menu)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -146,11 +157,25 @@ class ShelfView(QWidget):
             on_favourite=lambda _uuid: self._viewmodel.set_favourite(target_ids, next_favourite_state),
             on_detail=self._viewmodel.show_detail,
             on_add_to_collection=lambda _uuid: self.add_to_collection_requested.emit(target_ids),
+            on_export=lambda _uuid: self.export_books_requested.emit(target_ids),
             on_remove=lambda _uuid: self._show_placeholder_for_targets("Remove from Library", target_ids),
             on_delete=lambda _uuid: self.delete_books_requested.emit(target_ids),
             show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,
         )
-        menu.exec(global_pos)
+        self._exec_interaction_popup(menu, global_pos)
+
+    def _show_language_menu(self, book_uuid: str, global_pos: QPoint) -> None:
+        book = self._book_by_uuid(book_uuid)
+        if book is None:
+            return
+        menu = build_language_dropdown_menu(
+            self,
+            self._resources,
+            self._viewmodel.languages,
+            book.language_tag,
+            lambda language_tag: self._viewmodel.update_book_language(book_uuid, language_tag),
+        )
+        self._exec_interaction_popup(menu, global_pos)
 
     def _menu_target_ids(self, book_uuid: str) -> tuple[str, ...]:
         selected_ids = set(self._viewmodel.selected_book_ids)
@@ -236,7 +261,8 @@ class ShelfView(QWidget):
         self._position_detail_panel()
         self.detail_panel.show()
         self.detail_panel.raise_()
-        QTimer.singleShot(0, lambda book_uuid=book.uuid: self._request_next_detail_thumbnail_batch(book_uuid))
+        if not self._is_popup_interaction_active():
+            QTimer.singleShot(0, lambda book_uuid=book.uuid: self._request_next_detail_thumbnail_batch(book_uuid))
 
     def _position_detail_panel(self) -> None:
         if not hasattr(self, "detail_panel"):
@@ -253,9 +279,18 @@ class ShelfView(QWidget):
         self.detail_panel.set_cover_path(book_uuid, path)
 
     def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
+        if self._is_popup_interaction_active():
+            self._deferred_page_thumbnails.append((book_uuid, page_index, image_bytes))
+            return
         self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
 
     def _handle_detail_thumbnail_batch_finished(self, book_uuid: str, _next_index: int, has_more: bool) -> None:
+        if self._is_popup_interaction_active():
+            self._deferred_detail_batch_finishes.append((book_uuid, _next_index, has_more))
+            return
+        self._apply_detail_thumbnail_batch_finished(book_uuid, has_more)
+
+    def _apply_detail_thumbnail_batch_finished(self, book_uuid: str, has_more: bool) -> None:
         if not has_more:
             self.detail_panel.mark_thumbnail_complete(book_uuid)
             return
@@ -263,7 +298,56 @@ class ShelfView(QWidget):
             QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
 
     def _request_next_detail_thumbnail_batch(self, book_uuid: str) -> None:
+        if self._is_popup_interaction_active():
+            return
         self._viewmodel.request_next_detail_thumbnail_batch(
             book_uuid,
             (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
         )
+
+    def _exec_interaction_popup(self, menu: FigmaMenu, global_pos: QPoint) -> None:
+        self._popup_interaction_depth += 1
+        try:
+            menu.exec(global_pos)
+        finally:
+            self._popup_interaction_depth = max(0, self._popup_interaction_depth - 1)
+            if not self._is_popup_interaction_active():
+                applied_deferred_batch_finish = self._flush_deferred_detail_thumbnail_updates()
+                if not applied_deferred_batch_finish:
+                    self._resume_detail_thumbnail_loading_if_needed()
+
+    def _is_popup_interaction_active(self) -> bool:
+        return self._popup_interaction_depth > 0
+
+    def _flush_deferred_detail_thumbnail_updates(self) -> bool:
+        current_book_uuid = self._viewmodel.detail_book_uuid
+        page_updates = self._deferred_page_thumbnails
+        batch_finishes = self._deferred_detail_batch_finishes
+        self._deferred_page_thumbnails = []
+        self._deferred_detail_batch_finishes = []
+        if current_book_uuid is None:
+            return False
+
+        for book_uuid, page_index, image_bytes in page_updates:
+            if book_uuid == current_book_uuid:
+                self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
+
+        current_finishes = [
+            (book_uuid, has_more)
+            for book_uuid, _next_index, has_more in batch_finishes
+            if book_uuid == current_book_uuid
+        ]
+        if not current_finishes:
+            return False
+        _, has_more = current_finishes[-1]
+        self._apply_detail_thumbnail_batch_finished(current_book_uuid, has_more)
+        return True
+
+    def _resume_detail_thumbnail_loading_if_needed(self) -> None:
+        book_uuid = self._viewmodel.detail_book_uuid
+        if (
+            book_uuid is not None
+            and self.detail_panel.isVisible()
+            and self.detail_panel.is_near_thumbnail_bottom()
+        ):
+            QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 from PIL import Image
 
 from joyread.app.app_context import create_app_context
@@ -13,6 +14,7 @@ from joyread.core.services.import_service import ImportService
 from joyread.core.services.storage_migration_service import StorageMigrationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
+from joyread.infrastructure.database.migrations import MIGRATIONS
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
@@ -65,9 +67,100 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
         "private_collections",
         "private_books",
         "recent_books",
+        "languages",
         "import_batches",
         "import_items",
     } <= tables
+    language_rows = database.execute(
+        lambda connection: [
+            (row["iso_code"], row["plain_text"])
+            for row in connection.execute(
+                "SELECT iso_code, plain_text FROM languages ORDER BY sort_order"
+            ).fetchall()
+        ]
+    )
+    assert language_rows == [
+        ("en", "English"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("und", "Unknown"),
+    ]
+    book_file_columns = database.execute(
+        lambda connection: {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+        }
+    )
+    assert "original_file_name" in book_file_columns
+    database.close()
+
+
+def test_language_migration_normalizes_legacy_language_values(tmp_path: Path) -> None:
+    database = DatabaseInterpreter(tmp_path / "legacy-language.sqlite3")
+
+    def seed_legacy(connection) -> None:  # noqa: ANN001 - sqlite connection type is evident from caller.
+        connection.executescript(MIGRATIONS[0][1])
+        connection.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+        connection.executescript(MIGRATIONS[1][1])
+        connection.execute("INSERT INTO schema_migrations(version) VALUES (2)")
+        connection.execute(
+            """
+            INSERT INTO book_files(
+                file_id, original_path, storage_path, file_format, file_size,
+                mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
+            )
+            VALUES (
+                'file-1', '/source/book.cbz', '/managed/book.cbz', 'CBZ', 1,
+                1, 'sha256', 'legacy-hash', 'healthy',
+                '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO books(
+                book_id, file_id, title, author, language_tag, book_type,
+                cover_path, is_favourite, created_at, updated_at
+            )
+            VALUES (
+                'book-1', 'file-1', 'Legacy', 'Unknown', 'English', 'manga',
+                NULL, 0, '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO private_books(
+                private_book_id, file_id, title, author, language_tag, book_type,
+                cover_path, encrypted_cover_path, encryption_status,
+                private_collection_id, created_at, updated_at
+            )
+            VALUES (
+                'private-1', 'file-1', 'Private Legacy', 'Unknown', 'Other', 'manga',
+                NULL, NULL, 'not_encrypted', NULL,
+                '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            )
+            """
+        )
+
+    database.execute(seed_legacy, DatabasePriority.CRITICAL)
+    database.execute(apply_migrations, DatabasePriority.CRITICAL)
+
+    rows = database.execute(
+        lambda connection: {
+            "public": connection.execute(
+                "SELECT language_tag FROM books WHERE book_id = 'book-1'"
+            ).fetchone()["language_tag"],
+            "private": connection.execute(
+                "SELECT language_tag FROM private_books WHERE private_book_id = 'private-1'"
+            ).fetchone()["language_tag"],
+            "original_file_name": connection.execute(
+                "SELECT original_file_name FROM book_files WHERE file_id = 'file-1'"
+            ).fetchone()["original_file_name"],
+        }
+    )
+
+    assert rows == {"public": "en", "private": "und", "original_file_name": "book.cbz"}
     database.close()
 
 
@@ -120,14 +213,23 @@ def test_manifest_import_copies_book_and_repository_lists_it(tmp_path: Path) -> 
             if row["name"] == "page_count"
         ]
     )
+    original_file_name = database.execute(
+        lambda connection: connection.execute(
+            "SELECT original_file_name FROM book_files"
+        ).fetchone()["original_file_name"]
+    )
 
     assert result.imported_count == 1
     assert result.failed_count == 0
     assert books[0].title == "Example Manga"
     assert books[0].author == "Unknown"
+    assert books[0].language_tag == "und"
+    assert books[0].language_name == "Unknown"
+    assert books[0].original_file_name == "Example Manga.cbz"
     assert books[0].book_type == "manga"
     assert Path(books[0].file_path).is_relative_to(paths.paths.books)
     assert Path(books[0].file_path).exists()
+    assert original_file_name == "Example Manga.cbz"
     assert stored_page_count_columns == []
     database.close()
 
@@ -241,7 +343,14 @@ def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(
     repository = SqliteBookRepository(database)
     book = repository.list_books()[0]
 
-    repository.update_book_metadata(book.uuid, title="Edited Title", author="Edited Author")
+    assert [(language.iso_code, language.plain_text) for language in repository.list_languages()] == [
+        ("en", "English"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("und", "Unknown"),
+    ]
+
+    repository.update_book_metadata(book.uuid, title="Edited Title", author="Edited Author", language_tag="ja")
     repository.set_favourite(book.uuid, True)
     bookmark = repository.add_bookmark(book.uuid, "Good page", 7)
     updated = repository.get_book(book.uuid)
@@ -249,8 +358,13 @@ def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(
     assert updated is not None
     assert updated.title == "Edited Title"
     assert updated.author == "Edited Author"
+    assert updated.language_tag == "ja"
+    assert updated.language_name == "Japanese"
     assert updated.is_favourite is True
     assert repository.list_bookmarks(book.uuid) == [bookmark]
+
+    with pytest.raises(ValueError, match="Unknown language code"):
+        repository.update_book_metadata(book.uuid, language_tag="bad")
 
     repository.delete_book(book.uuid)
     assert repository.get_book(book.uuid) is None

@@ -1,12 +1,18 @@
 from datetime import datetime
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea, QWidget
 
 from joyread.core.models.book import Book
+from joyread.core.models.language import Language
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.widgets.menus import FigmaMenu, build_action_menu, build_book_context_menu
+from joyread.ui.widgets.menus import (
+    FigmaMenu,
+    build_action_menu,
+    build_book_context_menu,
+    build_language_dropdown_menu,
+)
 
 
 def make_book() -> Book:
@@ -142,12 +148,13 @@ def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
         on_favourite=lambda _uuid: None,
         on_detail=lambda _uuid: None,
         on_add_to_collection=lambda _uuid: None,
+        on_export=lambda _uuid: None,
         on_remove=lambda _uuid: None,
         on_delete=deleted.append,
     )
     qtbot.addWidget(menu)
 
-    assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Remove", "Delete"])
+    assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Export", "Remove", "Delete"])
     delete_row = menu_rows(menu)[-1]
     assert delete_row.property("destructive") == "true"
     assert delete_row.property("menuEnabled") == "true"
@@ -171,10 +178,82 @@ def test_book_context_menu_can_hide_remove_action(qtbot) -> None:
         on_favourite=lambda _uuid: None,
         on_detail=lambda _uuid: None,
         on_add_to_collection=lambda _uuid: None,
+        on_export=lambda _uuid: None,
         on_remove=lambda _uuid: None,
         on_delete=lambda _uuid: None,
         show_remove=False,
     )
     qtbot.addWidget(menu)
 
-    assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Delete"])
+    assert_figma_menu_layout(menu, ["Read", "Favourite", "Detail", "Add to...", "Export", "Delete"])
+
+
+def test_language_dropdown_menu_matches_figma_structure_and_selection(qtbot) -> None:
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    selected: list[str] = []
+    languages = (
+        Language("English", "en"),
+        Language("Chinese", "zh"),
+        Language("Japanese", "ja"),
+        Language("Unknown", "und"),
+    )
+
+    menu = build_language_dropdown_menu(parent, ResourceLoader(), languages, "en", selected.append)
+    qtbot.addWidget(menu)
+    menu.show()
+    QApplication.processEvents()
+
+    panel = menu.findChild(QFrame, "LanguageDropdownMenuPanel")
+    indicators = menu.findChildren(QWidget, "LanguageDropdownMenuIndicator")
+    scroll_area = menu.findChild(QScrollArea, "LanguageDropdownMenuScrollArea")
+    rows = menu_rows(menu)
+    panel_margins = panel.layout().contentsMargins()
+
+    assert menu.width() == Theme.language_menu_width
+    assert [row.findChild(QLabel).text() for row in rows] == ["English", "Chinese", "Japanese", "Unknown"]
+    assert [indicator.property("direction") for indicator in indicators] == ["up", "down"]
+    assert rows[0].property("selected") == "true"
+    assert rows[1].property("selected") == "false"
+    assert (
+        panel_margins.left(),
+        panel_margins.top(),
+        panel_margins.right(),
+        panel_margins.bottom(),
+    ) == (
+        Theme.language_menu_layout_margin_horizontal,
+        Theme.language_menu_layout_margin_vertical,
+        Theme.language_menu_layout_margin_horizontal,
+        Theme.language_menu_layout_margin_vertical,
+    )
+    assert scroll_area is not None
+    assert scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll_area.height() == (4 * Theme.menu_item_height) + (3 * Theme.menu_option_gap)
+
+    qtbot.mousePress(rows[2], Qt.MouseButton.LeftButton)
+    qtbot.mouseRelease(rows[2], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert selected == ["ja"]
+
+
+def test_language_dropdown_scrolls_after_seven_items_without_scrollbar(qtbot) -> None:
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    languages = tuple(Language(f"Language {index}", f"x{index}") for index in range(8))
+
+    menu = build_language_dropdown_menu(parent, ResourceLoader(), languages, "x0", lambda _code: None)
+    qtbot.addWidget(menu)
+    menu.show()
+    QApplication.processEvents()
+
+    scroll_area = menu.findChild(QScrollArea, "LanguageDropdownMenuScrollArea")
+    option_list = menu.findChild(QWidget, "LanguageDropdownMenuOptionList")
+
+    assert scroll_area is not None
+    assert option_list is not None
+    assert scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll_area.height() == (7 * Theme.menu_item_height) + (6 * Theme.menu_option_gap)
+    assert option_list.height() > scroll_area.height()

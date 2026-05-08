@@ -68,9 +68,11 @@ class BookGridWidget(QScrollArea):
         self._cover_paths = dict(cover_paths or {})
         book_ids = tuple(book.uuid for book in self._books)
         if self._book_ids == book_ids:
-            for card in self._cards.values():
-                card.set_selected(card.book.uuid in self._selected_ids)
-                cover_path = self._cover_paths.get(card.book.uuid)
+            for book in self._books:
+                card = self._cards[book.uuid]
+                card.set_book(book)
+                card.set_selected(book.uuid in self._selected_ids)
+                cover_path = self._cover_paths.get(book.uuid)
                 if cover_path is not None:
                     card.set_cover_path(cover_path)
             return

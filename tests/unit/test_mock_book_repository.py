@@ -11,11 +11,19 @@ def test_mock_repository_returns_stable_varied_books() -> None:
 
     assert len(books) == 15
     assert books[0].uuid == "mock-book-01"
+    assert books[0].language_tag == "en"
+    assert books[0].language_name == "English"
     assert {book.file_format for book in books} >= {"CBZ", "PDF", "EPUB"}
     assert max(book.page_count for book in books) > min(book.page_count for book in books)
     assert any(book.is_favourite for book in books)
     assert any(book.is_missing for book in books)
     assert repository.list_collections()[0].name == "A Collection"
+    assert [(language.iso_code, language.plain_text) for language in repository.list_languages()] == [
+        ("en", "English"),
+        ("zh", "Chinese"),
+        ("ja", "Japanese"),
+        ("und", "Unknown"),
+    ]
 
 
 def test_mock_repository_resolves_test_set_archives() -> None:
