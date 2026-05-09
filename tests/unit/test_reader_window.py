@@ -5,7 +5,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame
 
@@ -166,6 +166,75 @@ def test_reader_settings_panel_closes_on_outside_click_and_ignores_auto_hide(qtb
 
     window.close()
     context.close()
+
+
+def test_reader_auto_hide_uses_direct_visibility_without_graphics_effects(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    controls = (window.header, window.footer, window.left_arrow, window.right_arrow)
+    assert all(control.graphicsEffect() is None for control in controls)
+
+    window.shell._control_interaction_active = lambda: False  # type: ignore[method-assign]
+    window.shell._hide_inactive_controls()
+
+    assert all(control.isHidden() for control in controls)
+
+    window.shell._toggle_settings_panel()
+    window.shell._show_controls((window.footer,), reset_timer=False)
+
+    assert window.footer.isVisible()
+    assert window.settings_panel.isVisible()
+    assert window.header.isHidden()
+    assert window.left_arrow.isHidden()
+    assert window.right_arrow.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_reader_open_hide_reveal_does_not_emit_qpainter_effect_warnings(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    messages: list[str] = []
+    previous_handler = qInstallMessageHandler(lambda _mode, _context, message: messages.append(message))
+    window: ReaderWindow | None = None
+    try:
+        window = ReaderWindow(context, source)
+        qtbot.addWidget(window)
+        window.resize(Theme.reader_width, Theme.reader_height)
+        window.show()
+        qtbot.wait(0)
+
+        window.shell._control_interaction_active = lambda: False  # type: ignore[method-assign]
+        window.shell._hide_inactive_controls()
+        qtbot.wait(0)
+        window.shell._show_controls(reset_timer=False)
+        qtbot.wait(0)
+    finally:
+        qInstallMessageHandler(previous_handler)
+        if window is not None:
+            window.close()
+        context.close()
+
+    blocked_fragments = (
+        "QPainter::begin",
+        "Painter not active",
+        "QWidgetEffectSourcePrivate::pixmap",
+    )
+    assert not [message for message in messages if any(fragment in message for fragment in blocked_fragments)]
 
 
 def test_reader_settings_numeric_controls_clamp_and_revert_invalid_input(qtbot) -> None:

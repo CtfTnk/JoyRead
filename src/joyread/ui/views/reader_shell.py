@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QPropertyAnimation, QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
-from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
@@ -40,8 +40,7 @@ class ReaderShellWidget(QWidget):
         self._source_path = Path(source_path)
         self._drag_position: QPoint | None = None
         self._show_back_button = show_back_button
-        self._control_effects: dict[QWidget, QGraphicsOpacityEffect] = {}
-        self._control_animations: dict[QWidget, QPropertyAnimation] = {}
+        self._control_widgets: tuple[QWidget, ...] = ()
         self._visible_controls: set[QWidget] = set()
         self._settings_event_filter_installed = False
 
@@ -121,20 +120,9 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
 
     def _install_auto_hide(self) -> None:
-        for widget in (self.header, self.footer, self.left_arrow, self.right_arrow):
-            effect = QGraphicsOpacityEffect(widget)
-            effect.setOpacity(1.0)
-            widget.setGraphicsEffect(effect)
-            self._control_effects[widget] = effect
+        self._control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
+        for widget in self._control_widgets:
             self._visible_controls.add(widget)
-            animation = QPropertyAnimation(effect, b"opacity", self)
-            animation.setDuration(Theme.reader_fade_duration_ms)
-            animation.finished.connect(
-                lambda widget=widget, effect=effect: widget.hide()
-                if widget not in self._visible_controls and effect.opacity() <= 0.0
-                else None
-            )
-            self._control_animations[widget] = animation
             widget.installEventFilter(self)
 
         self._hide_timer = QTimer(self)
@@ -205,9 +193,9 @@ class ReaderShellWidget(QWidget):
             self._show_controls((self.right_arrow,), reset_timer=True)
 
     def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        target_widgets = widgets or tuple(self._control_effects)
+        target_widgets = widgets or self._control_widgets
         for widget in target_widgets:
-            self._set_control_opacity(widget, 1.0)
+            self._set_control_visible(widget, True)
         self._raise_settings_panel_if_visible()
         if reset_timer:
             self._start_hide_timer_if_allowed()
@@ -216,25 +204,20 @@ class ReaderShellWidget(QWidget):
         if self._control_interaction_active():
             self._hide_timer.start()
             return
-        for widget in tuple(self._control_effects):
-            self._set_control_opacity(widget, 0.0)
+        for widget in self._control_widgets:
+            self._set_control_visible(widget, False)
 
-    def _set_control_opacity(self, widget: QWidget, opacity: float) -> None:
-        if widget not in self._control_effects:
+    def _set_control_visible(self, widget: QWidget, visible: bool) -> None:
+        if widget not in self._control_widgets:
             return
-        if opacity > 0:
+        if visible:
             self._visible_controls.add(widget)
             widget.show()
             widget.raise_()
             self._raise_settings_panel_if_visible()
         else:
             self._visible_controls.discard(widget)
-        animation = self._control_animations[widget]
-        effect = self._control_effects[widget]
-        animation.stop()
-        animation.setStartValue(effect.opacity())
-        animation.setEndValue(opacity)
-        animation.start()
+            widget.hide()
 
     def _control_interaction_active(self) -> bool:
         if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
@@ -360,7 +343,7 @@ class ReaderShellWidget(QWidget):
             widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
             if not self._is_settings_safe_click(widget):
                 self._hide_settings_panel()
-        if watched in self._control_effects and event.type() in {
+        if watched in self._control_widgets and event.type() in {
             QEvent.Type.Enter,
             QEvent.Type.MouseMove,
         }:

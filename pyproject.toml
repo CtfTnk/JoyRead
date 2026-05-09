@@ -25,7 +25,6 @@ dev = [
 
 [project.scripts]
 joyread = "joyread.app.main:main"
-joyread-button-tester = "joyread.app.button_tester:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

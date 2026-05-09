@@ -177,9 +177,6 @@ class Theme:
     sidebar_lower_padding_bottom = 5
     toolbar_spacer_width = 2
     resize_grip_size = 16
-    tester_reset_width = 96
-    tester_reset_height = 36
-
     # Floating shelf scrollbars
     shelf_scrollbar_width = 10
     shelf_scrollbar_radius = 5
