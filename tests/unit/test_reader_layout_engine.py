@@ -118,3 +118,51 @@ def test_custom_fit_height_changes_single_scale() -> None:
 
     assert result.mode == ReaderDisplayMode.SINGLE
     assert result.scale == pytest.approx(2.0)
+
+
+def test_top_to_down_single_page_uses_fit_height_not_fit_width() -> None:
+    result = SmartLayoutEngine().calculate(
+        SizeF(1000, 800),
+        SizeF(200, 400),
+        settings=ReaderLayoutSettings(direction=ReaderDirection.TOP_TO_BOTTOM),
+    )
+
+    assert result.mode == ReaderDisplayMode.SINGLE
+    assert result.scale == pytest.approx(2.0)
+    assert result.page_draws[0].rect.height == pytest.approx(800)
+
+
+def test_vertical_stack_uses_gap_and_zoom_only_when_custom_enabled() -> None:
+    engine = SmartLayoutEngine()
+    pages = (
+        (0, SizeF(200, 400)),
+        (1, SizeF(200, 400)),
+        (2, SizeF(200, 400)),
+    )
+
+    default = engine.calculate_vertical(
+        SizeF(1000, 800),
+        pages,
+        ReaderLayoutSettings(direction=ReaderDirection.TOP_TO_BOTTOM),
+        anchor_index=1,
+        scroll_y=0,
+    )
+    custom = engine.calculate_vertical(
+        SizeF(1000, 800),
+        pages,
+        ReaderLayoutSettings(
+            direction=ReaderDirection.TOP_TO_BOTTOM,
+            vertical_custom_enabled=True,
+            page_spacing=20,
+            vertical_zoom_percent=150,
+        ),
+        anchor_index=1,
+        scroll_y=-100,
+    )
+
+    assert [draw.page_index for draw in default.page_draws] == [0, 1, 2]
+    assert default.page_draws[1].rect.height == pytest.approx(800)
+    assert default.page_draws[2].rect.y == pytest.approx(800)
+    assert custom.page_draws[1].rect.height == pytest.approx(1200)
+    assert custom.page_draws[1].rect.y == pytest.approx(-100)
+    assert custom.page_draws[2].rect.y == pytest.approx(1120)

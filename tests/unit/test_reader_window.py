@@ -5,14 +5,16 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtWidgets import QFrame
 
 from joyread.app.app_context import create_app_context
-from joyread.core.reader import ReaderDirection
+from joyread.core.reader import ReaderDirection, ReaderSettings
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
+from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:
@@ -51,6 +53,193 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert direction_buttons[ReaderDirection.LEFT_TO_RIGHT].property("iconName") == "icon_read-from-right.svg"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].toolTip() == "Top-to-down"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].property("iconName") == "icon_read-from-top.svg"
+
+    window.close()
+    context.close()
+
+
+def test_reader_settings_panel_matches_figma_side_panel_geometry(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderSettingsPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.resize(Theme.reader_settings_panel_width, Theme.reader_height)
+    panel.set_settings(ReaderSettings())
+
+    margins = panel.layout().contentsMargins()
+    assert panel.width() == Theme.reader_settings_panel_width
+    assert panel.layout().spacing() == Theme.reader_settings_gap
+    assert margins.left() == Theme.reader_settings_panel_layout_margin
+    assert margins.top() == Theme.reader_settings_panel_layout_margin
+    assert margins.right() == Theme.reader_settings_panel_layout_margin
+    assert margins.bottom() == Theme.reader_settings_panel_layout_margin
+
+    sections = [child for child in panel.findChildren(QFrame) if child.property("class") == "ReaderSettingsSection"]
+    rows = [child for child in panel.findChildren(QFrame) if child.property("class") == "ReaderSettingsRow"]
+    switches = [
+        child for child in panel.findChildren(QFrame) if child.property("class") == "ReaderSettingsSmallSwitch"
+    ]
+    controls = [
+        child for child in panel.findChildren(QFrame) if child.property("class") == "ReaderSettingsSmallControl"
+    ]
+
+    assert len(sections) == 2
+    assert {section.height() for section in sections} == {Theme.reader_settings_section_height}
+    assert len(rows) == 6
+    assert {row.height() for row in rows} == {Theme.reader_settings_row_height}
+    assert len(switches) == 3
+    assert {switch.size().width() for switch in switches} == {Theme.settings_switch_width}
+    assert {switch.size().height() for switch in switches} == {Theme.settings_switch_height}
+    assert len(controls) == 3
+    assert {control.size().width() for control in controls} == {Theme.reader_settings_control_width}
+    assert {control.size().height() for control in controls} == {Theme.reader_settings_option_height}
+
+    context.close()
+
+
+def test_reader_settings_panel_opens_as_right_full_height_panel(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_settings_panel()
+
+    assert window.settings_panel.isVisible()
+    assert window.settings_panel.geometry().getRect() == (
+        Theme.reader_width - Theme.reader_settings_panel_width,
+        0,
+        Theme.reader_settings_panel_width,
+        Theme.reader_height,
+    )
+
+    window.close()
+    context.close()
+
+
+def test_reader_settings_panel_closes_on_outside_click_and_ignores_auto_hide(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_settings_panel()
+    window.shell._hide_inactive_controls()
+
+    assert window.settings_panel.isVisible()
+
+    qtbot.mouseClick(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
+
+    assert window.settings_panel.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_reader_settings_numeric_controls_clamp_and_revert_invalid_input(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderSettingsPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_settings(ReaderSettings(vertical_custom_enabled=True))
+
+    panel.spacing_control._field.setText("-5")
+    panel.spacing_control.commit_text()
+    assert panel.spacing_control.value == 0
+    assert panel.spacing_control._field.text() == "0px"
+
+    panel.spacing_control._field.setText("999px")
+    panel.spacing_control.commit_text()
+    assert panel.spacing_control.value == 200
+    assert panel.spacing_control._field.text() == "200px"
+
+    panel.zoom_control._field.setText("2")
+    panel.zoom_control.commit_text()
+    assert panel.zoom_control.value == 25
+    assert panel.zoom_control._field.text() == "25 %"
+
+    panel.zoom_control._field.setText("abc")
+    panel.zoom_control.commit_text()
+    assert panel.zoom_control.value == 25
+    assert panel.zoom_control._field.text() == "25 %"
+
+    context.close()
+
+
+def test_reader_settings_zoom_value_text_fits_three_digits(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderSettingsPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_settings(ReaderSettings(vertical_custom_enabled=True, vertical_zoom_percent=100))
+
+    field = panel.zoom_control._field
+    assert panel.zoom_control.size().width() == Theme.reader_settings_control_width
+    assert panel.zoom_control.size().height() == Theme.reader_settings_option_height
+    assert field.text() == "100 %"
+
+    # The Figma sample uses a two-digit value, but JoyRead allows 200%.
+    # Keep enough text room after Qt/QSS padding so right alignment cannot
+    # clip the leading digit in values like "100 %" or "200 %".
+    field.setText("200 %")
+    available_width = field.width() - 4
+    assert field.textMargins().left() == 0
+    assert field.textMargins().right() == 0
+    assert field.fontMetrics().horizontalAdvance("100 %") <= available_width
+    assert field.fontMetrics().horizontalAdvance("200 %") <= available_width
+
+    context.close()
+
+
+def test_reader_settings_disabled_rows_use_half_opacity(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderSettingsPanel(context.resources)
+    qtbot.addWidget(panel)
+
+    panel.set_settings(ReaderSettings(custom_enabled=False, vertical_custom_enabled=False))
+
+    assert panel.one_page_row.graphicsEffect().opacity() == pytest.approx(0.5)
+    assert panel.fit_row.graphicsEffect().opacity() == pytest.approx(0.5)
+    assert panel.spacing_row.graphicsEffect().opacity() == pytest.approx(0.5)
+    assert panel.zoom_row.graphicsEffect().opacity() == pytest.approx(0.5)
+
+    panel.set_settings(ReaderSettings(custom_enabled=True, vertical_custom_enabled=True))
+
+    assert panel.one_page_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.fit_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.spacing_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.zoom_row.graphicsEffect().opacity() == pytest.approx(1.0)
+
+    context.close()
+
+
+def test_reader_settings_vertical_switch_is_independent_from_reading_direction(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+
+    window.shell._set_reader_direction(ReaderDirection.LEFT_TO_RIGHT)
+    window.viewmodel.set_vertical_custom_enabled(True)
+    assert window.viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
+    assert window.viewmodel.settings.vertical_custom_enabled is True
+
+    window.viewmodel.set_vertical_custom_enabled(False)
+    assert window.viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
+    assert window.viewmodel.settings.vertical_custom_enabled is False
 
     window.close()
     context.close()

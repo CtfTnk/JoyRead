@@ -236,7 +236,8 @@ class ReaderFooter(QWidget):
             self.spread_shift_requested.emit,
         )
         lower_layout.addWidget(self.shift_button)
-        lower_layout.addWidget(reader_button(resources, "icon_setting.svg", "Reader settings", self.settings_requested.emit))
+        self.settings_button = reader_button(resources, "icon_setting.svg", "Reader settings", self.settings_requested.emit)
+        lower_layout.addWidget(self.settings_button)
         layout.addWidget(lower)
 
     def set_page_state(self, current_index: int, page_count: int, direction: ReaderDirection) -> None:

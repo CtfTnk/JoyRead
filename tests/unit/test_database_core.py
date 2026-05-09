@@ -93,7 +93,14 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
             for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
         }
     )
+    reader_settings_columns = database.execute(
+        lambda connection: {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(reader_settings)").fetchall()
+        }
+    )
     assert "original_file_name" in book_file_columns
+    assert "vertical_zoom_percent" in reader_settings_columns
     database.close()
 
 
@@ -301,8 +308,9 @@ def test_reader_settings_persist_per_public_book(tmp_path: Path) -> None:
     book = repository.list_books()[0]
     settings = ReaderSettings(
         direction=ReaderDirection.LEFT_TO_RIGHT,
-        vertical_enabled=False,
+        vertical_custom_enabled=True,
         page_spacing=24,
+        vertical_zoom_percent=135,
         custom_enabled=True,
         always_one_page=True,
         fit_mode=ReaderFitMode.FIT_HEIGHT,

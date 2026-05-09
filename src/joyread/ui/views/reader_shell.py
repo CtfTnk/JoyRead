@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsOpacityEffect, QToolButton,
 
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderPageImage, ReaderProgress, ReaderSettings
+from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
@@ -43,6 +43,7 @@ class ReaderShellWidget(QWidget):
         self._control_effects: dict[QWidget, QGraphicsOpacityEffect] = {}
         self._control_animations: dict[QWidget, QPropertyAnimation] = {}
         self._visible_controls: set[QWidget] = set()
+        self._settings_event_filter_installed = False
 
         self.setObjectName("ReaderRootPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -56,7 +57,7 @@ class ReaderShellWidget(QWidget):
         self.footer = ReaderFooter(context.resources, self)
         self.left_arrow = _side_button(context.resources, "icon_left.svg", self)
         self.right_arrow = _side_button(context.resources, "icon_right.svg", self)
-        self.settings_panel = ReaderSettingsPanel(self)
+        self.settings_panel = ReaderSettingsPanel(context.resources, self)
         self.settings_panel.hide()
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
         self.dialog_overlay.hide()
@@ -96,18 +97,22 @@ class ReaderShellWidget(QWidget):
         self.footer.next_requested.connect(self._activate_right_inner)
         self.footer.end_requested.connect(self._activate_right_outer)
         self.footer.seek_requested.connect(self.viewmodel.seek)
-        self.footer.direction_changed.connect(self.viewmodel.set_direction)
+        self.footer.direction_changed.connect(self._set_reader_direction)
         self.footer.transition_changed.connect(self.viewmodel.set_transition_mode)
         self.footer.spread_shift_requested.connect(self.viewmodel.shift_to_next_index)
         self.footer.settings_requested.connect(self._toggle_settings_panel)
         self.canvas.mouse_moved.connect(self._handle_canvas_mouse_move)
+        self.canvas.left_clicked.connect(self._hide_settings_panel_if_visible)
         self.canvas.right_clicked.connect(lambda: self._show_controls(reset_timer=True))
+        self.canvas.wheel_scrolled.connect(self.viewmodel.handle_vertical_scroll)
         self.left_arrow.clicked.connect(self.viewmodel.activate_left_side)
         self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
         self.settings_panel.custom_enabled_changed.connect(self.viewmodel.set_custom_enabled)
         self.settings_panel.always_one_page_changed.connect(self.viewmodel.set_always_one_page)
         self.settings_panel.fit_mode_changed.connect(self.viewmodel.set_fit_mode)
+        self.settings_panel.vertical_custom_enabled_changed.connect(self.viewmodel.set_vertical_custom_enabled)
         self.settings_panel.page_spacing_changed.connect(self.viewmodel.set_page_spacing)
+        self.settings_panel.zoom_percent_changed.connect(self.viewmodel.set_vertical_zoom_percent)
         self.viewmodel.state_changed.connect(self._sync_state)
         self.viewmodel.layout_changed.connect(self._sync_layout)
         self.viewmodel.page_ready.connect(self._sync_page)
@@ -177,14 +182,13 @@ class ReaderShellWidget(QWidget):
 
     def _toggle_settings_panel(self) -> None:
         if self.settings_panel.isVisible():
-            self.settings_panel.hide()
-            self._start_hide_timer_if_allowed()
+            self._hide_settings_panel()
             return
         self._position_settings_panel()
         self.settings_panel.show()
         self.settings_panel.raise_()
-        self._hide_timer.stop()
-        self._show_controls(reset_timer=False)
+        self._install_settings_event_filter()
+        self._start_hide_timer_if_allowed()
 
     def _handle_canvas_mouse_move(self, position: QPoint) -> None:
         edge = Theme.reader_edge_reveal_distance
@@ -204,6 +208,7 @@ class ReaderShellWidget(QWidget):
         target_widgets = widgets or tuple(self._control_effects)
         for widget in target_widgets:
             self._set_control_opacity(widget, 1.0)
+        self._raise_settings_panel_if_visible()
         if reset_timer:
             self._start_hide_timer_if_allowed()
 
@@ -221,6 +226,7 @@ class ReaderShellWidget(QWidget):
             self._visible_controls.add(widget)
             widget.show()
             widget.raise_()
+            self._raise_settings_panel_if_visible()
         else:
             self._visible_controls.discard(widget)
         animation = self._control_animations[widget]
@@ -231,7 +237,7 @@ class ReaderShellWidget(QWidget):
         animation.start()
 
     def _control_interaction_active(self) -> bool:
-        if self.settings_panel.isVisible() or self.dialog_overlay.isVisible() or self.footer.is_slider_active():
+        if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
             return True
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:
@@ -248,7 +254,7 @@ class ReaderShellWidget(QWidget):
         return False
 
     def _start_hide_timer_if_allowed(self) -> None:
-        if self.settings_panel.isVisible() or self.dialog_overlay.isVisible():
+        if self.dialog_overlay.isVisible():
             return
         self._hide_timer.start()
 
@@ -279,6 +285,9 @@ class ReaderShellWidget(QWidget):
     def _emit_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         self.progress_changed.emit(book_uuid, page_index, progress_percent)
 
+    def _set_reader_direction(self, direction: ReaderDirection) -> None:
+        self.viewmodel.set_direction(direction)
+
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         rect = self.rect()
@@ -304,6 +313,7 @@ class ReaderShellWidget(QWidget):
         )
         self.dialog_overlay.setGeometry(rect)
         self._position_settings_panel()
+        self._raise_settings_panel_if_visible()
         self.viewmodel.set_viewport_size(self.width(), self.height())
 
     def paintEvent(self, event: QPaintEvent) -> None:
@@ -331,7 +341,7 @@ class ReaderShellWidget(QWidget):
             return True
         if event.key() == Qt.Key.Key_Escape:
             if self.settings_panel.isVisible():
-                self.settings_panel.hide()
+                self._hide_settings_panel()
             elif self._show_back_button:
                 self.back_requested.emit()
             else:
@@ -341,6 +351,15 @@ class ReaderShellWidget(QWidget):
         return False
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
+        if (
+            self._settings_event_filter_installed
+            and self.settings_panel.isVisible()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and isinstance(event, QMouseEvent)
+        ):
+            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
+            if not self._is_settings_safe_click(widget):
+                self._hide_settings_panel()
         if watched in self._control_effects and event.type() in {
             QEvent.Type.Enter,
             QEvent.Type.MouseMove,
@@ -363,13 +382,55 @@ class ReaderShellWidget(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.cancel()
+        self._remove_settings_event_filter()
         super().closeEvent(event)
 
     def _position_settings_panel(self) -> None:
-        self.settings_panel.adjustSize()
-        x = max(0, (self.width() - self.settings_panel.width()) // 2)
-        y = max(0, (self.height() - self.settings_panel.height()) // 2)
-        self.settings_panel.move(x, y)
+        self.settings_panel.setFixedHeight(self.height())
+        x = max(0, self.width() - self.settings_panel.width())
+        self.settings_panel.move(x, 0)
+
+    def _hide_settings_panel_if_visible(self) -> None:
+        if self.settings_panel.isVisible():
+            self._hide_settings_panel()
+
+    def _hide_settings_panel(self) -> None:
+        if self.settings_panel.isHidden():
+            return
+        self.settings_panel.hide()
+        self._remove_settings_event_filter()
+        self._start_hide_timer_if_allowed()
+
+    def _raise_settings_panel_if_visible(self) -> None:
+        if self.settings_panel.isVisible():
+            self.settings_panel.raise_()
+            if self.dialog_overlay.isVisible():
+                self.dialog_overlay.raise_()
+
+    def _install_settings_event_filter(self) -> None:
+        if self._settings_event_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self._settings_event_filter_installed = True
+
+    def _remove_settings_event_filter(self) -> None:
+        if not self._settings_event_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.removeEventFilter(self)
+        self._settings_event_filter_installed = False
+
+    def _is_settings_safe_click(self, widget: QWidget | None) -> bool:
+        while widget is not None:
+            if widget in {self.settings_panel, self.footer.settings_button}:
+                return True
+            if widget.window().windowFlags() & Qt.WindowType.Popup:
+                return True
+            widget = widget.parentWidget()
+        return False
 
 def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
     if book is None:

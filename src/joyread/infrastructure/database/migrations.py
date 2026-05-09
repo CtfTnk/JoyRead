@@ -219,7 +219,7 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             book_id TEXT NOT NULL,
             direction TEXT NOT NULL DEFAULT 'right_to_left',
             vertical_enabled INTEGER NOT NULL DEFAULT 0,
-            page_spacing INTEGER NOT NULL DEFAULT 12,
+            page_spacing INTEGER NOT NULL DEFAULT 0,
             custom_enabled INTEGER NOT NULL DEFAULT 0,
             always_one_page INTEGER NOT NULL DEFAULT 0,
             fit_mode TEXT NOT NULL DEFAULT 'auto',
@@ -231,6 +231,13 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
 
         CREATE INDEX IF NOT EXISTS idx_reader_settings_book
             ON reader_settings(book_scope, book_id);
+        """,
+    ),
+    (
+        6,
+        """
+        ALTER TABLE reader_settings
+            ADD COLUMN vertical_zoom_percent INTEGER NOT NULL DEFAULT 100;
         """,
     ),
 )

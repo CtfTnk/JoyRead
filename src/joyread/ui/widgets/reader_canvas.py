@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QWidget
 
 from joyread.core.reader import ReaderLayoutResult, ReaderPageImage
@@ -13,6 +13,8 @@ from joyread.ui.resources.styles.theme import Theme
 class ReaderCanvas(QWidget):
     mouse_moved = QtSignal(QPoint)
     right_clicked = QtSignal()
+    left_clicked = QtSignal()
+    wheel_scrolled = QtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -49,9 +51,18 @@ class ReaderCanvas(QWidget):
             event.accept()
             return
         if event.button() == Qt.MouseButton.LeftButton:
+            self.left_clicked.emit()
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        delta = event.pixelDelta().y() or event.angleDelta().y()
+        if delta:
+            self.wheel_scrolled.emit(delta)
+            event.accept()
+            return
+        super().wheelEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

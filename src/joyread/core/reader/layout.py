@@ -38,13 +38,13 @@ class SmartLayoutEngine:
         if not viewport_size.is_valid or not page1_size.is_valid:
             return ReaderLayoutResult(ReaderDisplayMode.SINGLE, 1.0, (), 0.0)
 
-        if settings.vertical_enabled:
+        if settings.direction == ReaderDirection.TOP_TO_BOTTOM:
             return self._single_result(
                 viewport_size,
                 page1_size,
                 settings,
                 page1_index=page1_index,
-                force_fit=ReaderFitMode.FIT_WIDTH,
+                force_fit=ReaderFitMode.FIT_HEIGHT,
             )
 
         wide = self._wide_pan_result_if_needed(
@@ -74,6 +74,48 @@ class SmartLayoutEngine:
             page2_index=page2_index,
         )
         return double if double.used_area > single.used_area else single
+
+    def calculate_vertical(
+        self,
+        viewport_size: SizeF,
+        pages: tuple[tuple[int, SizeF], ...],
+        settings: ReaderLayoutSettings,
+        *,
+        anchor_index: int,
+        scroll_y: float,
+    ) -> ReaderLayoutResult:
+        if not viewport_size.is_valid or not pages:
+            return ReaderLayoutResult(ReaderDisplayMode.SINGLE, 1.0, (), 0.0)
+
+        page_sizes = {index: size for index, size in pages if size.is_valid}
+        anchor_page = page_sizes.get(anchor_index)
+        if anchor_page is None:
+            return ReaderLayoutResult(ReaderDisplayMode.SINGLE, 1.0, (), 0.0)
+
+        zoom = _vertical_zoom(settings)
+        target_height = viewport_size.height * zoom
+        gap = float(settings.page_spacing if settings.vertical_custom_enabled else 0)
+        step = target_height + gap
+        draws: list[PageDraw] = []
+        used_area = 0.0
+        for page_index in sorted(page_sizes):
+            page = page_sizes[page_index]
+            scale = target_height / page.height
+            width = page.width * scale
+            rect = RectF(
+                x=(viewport_size.width - width) / 2.0,
+                y=scroll_y + ((page_index - anchor_index) * step),
+                width=width,
+                height=target_height,
+            )
+            draws.append(PageDraw(page_index, rect))
+            used_area += width * target_height
+        return ReaderLayoutResult(
+            mode=ReaderDisplayMode.SINGLE,
+            scale=target_height / anchor_page.height,
+            page_draws=tuple(draws),
+            used_area=used_area,
+        )
 
     def _wide_pan_result_if_needed(
         self,
@@ -189,3 +231,9 @@ def _scale_for_mode(viewport: SizeF, content: SizeF, fit_mode: ReaderFitMode) ->
     if fit_mode == ReaderFitMode.FIT_WIDTH:
         return viewport.width / content.width
     return min(viewport.width / content.width, viewport.height / content.height)
+
+
+def _vertical_zoom(settings: ReaderLayoutSettings) -> float:
+    if not settings.vertical_custom_enabled:
+        return 1.0
+    return max(25, min(200, int(settings.vertical_zoom_percent))) / 100.0

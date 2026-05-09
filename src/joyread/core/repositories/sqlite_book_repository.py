@@ -369,6 +369,7 @@ class SqliteBookRepository(BookRepository):
                     direction,
                     vertical_enabled,
                     page_spacing,
+                    vertical_zoom_percent,
                     custom_enabled,
                     always_one_page,
                     fit_mode,
@@ -402,6 +403,7 @@ class SqliteBookRepository(BookRepository):
                     direction,
                     vertical_enabled,
                     page_spacing,
+                    vertical_zoom_percent,
                     custom_enabled,
                     always_one_page,
                     fit_mode,
@@ -409,11 +411,12 @@ class SqliteBookRepository(BookRepository):
                     spread_offset,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(book_scope, book_id) DO UPDATE SET
                     direction = excluded.direction,
                     vertical_enabled = excluded.vertical_enabled,
                     page_spacing = excluded.page_spacing,
+                    vertical_zoom_percent = excluded.vertical_zoom_percent,
                     custom_enabled = excluded.custom_enabled,
                     always_one_page = excluded.always_one_page,
                     fit_mode = excluded.fit_mode,
@@ -425,8 +428,9 @@ class SqliteBookRepository(BookRepository):
                     book_scope,
                     book_id,
                     settings.direction.value,
-                    1 if settings.vertical_enabled else 0,
+                    1 if settings.vertical_custom_enabled else 0,
                     int(settings.page_spacing),
+                    int(settings.vertical_zoom_percent),
                     1 if settings.custom_enabled else 0,
                     1 if settings.always_one_page else 0,
                     settings.fit_mode.value,
@@ -707,8 +711,9 @@ def _trim_recent_books(connection: sqlite3.Connection) -> None:
 def _reader_settings_from_row(row: sqlite3.Row) -> ReaderSettings:
     return ReaderSettings(
         direction=_coerce_direction(row["direction"]),
-        vertical_enabled=bool(row["vertical_enabled"]),
+        vertical_custom_enabled=bool(row["vertical_enabled"]),
         page_spacing=max(0, int(row["page_spacing"])),
+        vertical_zoom_percent=max(25, min(200, int(row["vertical_zoom_percent"] or 100))),
         custom_enabled=bool(row["custom_enabled"]),
         always_one_page=bool(row["always_one_page"]),
         fit_mode=_coerce_fit_mode(row["fit_mode"]),

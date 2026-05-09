@@ -70,6 +70,7 @@ class ReaderViewModel:
         self._primary_index = max(0, progress.page_index if progress is not None else 0)
         self._companion_index: int | None = None
         self._pan_x = 0.0
+        self._vertical_scroll_y = 0.0
 
         self.title = title
         self.settings = settings or ReaderSettings()
@@ -88,6 +89,12 @@ class ReaderViewModel:
     def current_display_indices(self) -> tuple[int, ...]:
         if self._page_count <= 0:
             return ()
+        if self._is_vertical_mode:
+            return tuple(
+                index
+                for index in range(self._primary_index - 1, self._primary_index + 3)
+                if 0 <= index < self._page_count
+            )
         primary = max(0, min(self._primary_index, self._page_count - 1))
         indices = [primary]
         if self._can_use_companion() and self._companion_index is not None:
@@ -107,6 +114,10 @@ class ReaderViewModel:
     @property
     def is_right_to_left(self) -> bool:
         return self.settings.direction == ReaderDirection.RIGHT_TO_LEFT
+
+    @property
+    def _is_vertical_mode(self) -> bool:
+        return self.settings.direction == ReaderDirection.TOP_TO_BOTTOM
 
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
         self.cancel()
@@ -145,6 +156,9 @@ class ReaderViewModel:
         self.recalculate_layout()
 
     def recalculate_layout(self) -> None:
+        if self._is_vertical_mode:
+            self._recalculate_vertical_layout()
+            return
         indices = self.current_display_indices
         if not indices:
             return
@@ -172,6 +186,36 @@ class ReaderViewModel:
         self.layout_changed.emit(result)
         self._preload_nearby_pages()
 
+    def _recalculate_vertical_layout(self) -> None:
+        indices = self.current_display_indices
+        if not indices:
+            return
+        primary = self._pages.get(self._primary_index)
+        if primary is None:
+            self._request_page(self._primary_index)
+            return
+
+        pages: list[tuple[int, SizeF]] = []
+        for page_index in indices:
+            image = self._pages.get(page_index)
+            if image is None:
+                if page_index not in self._unavailable_pages:
+                    self._request_page(page_index)
+                continue
+            pages.append((page_index, SizeF(float(image.dimensions[0]), float(image.dimensions[1]))))
+
+        result = self._layout_engine.calculate_vertical(
+            self._viewport_size,
+            tuple(pages),
+            self.settings.layout_settings(),
+            anchor_index=self._primary_index,
+            scroll_y=self._vertical_scroll_y,
+        )
+        self._layout_result = result
+        self._pan_x = 0.0
+        self.layout_changed.emit(result)
+        self._preload_nearby_pages()
+
     def seek(self, page_index: int) -> None:
         if self._page_count <= 0:
             return
@@ -195,6 +239,9 @@ class ReaderViewModel:
     def go_next(self) -> None:
         if self._page_count <= 0:
             return
+        if self._is_vertical_mode:
+            self.seek(self._primary_index + 1)
+            return
         current_high = max(self._navigation_anchor_indices())
         next_primary = current_high + 1
         if next_primary >= self._page_count:
@@ -205,6 +252,9 @@ class ReaderViewModel:
 
     def go_previous(self) -> None:
         if self._page_count <= 0:
+            return
+        if self._is_vertical_mode:
+            self.seek(self._primary_index - 1)
             return
         current_low = min(self._navigation_anchor_indices())
         if current_low <= 0:
@@ -234,13 +284,11 @@ class ReaderViewModel:
     def set_direction(self, direction: ReaderDirection) -> None:
         if direction == self.settings.direction:
             return
-        self.settings = replace(
-            self.settings,
-            direction=direction,
-            vertical_enabled=direction == ReaderDirection.TOP_TO_BOTTOM,
-        )
+        self.settings = replace(self.settings, direction=direction)
+        self._vertical_scroll_y = 0.0
         self._refresh_companion_for_primary()
         self._persist_settings()
+        self._request_visible_pages()
         self.recalculate_layout()
         self._emit_state()
 
@@ -293,10 +341,56 @@ class ReaderViewModel:
         self.recalculate_layout()
         self._emit_state()
 
+    def set_vertical_custom_enabled(self, enabled: bool) -> None:
+        self.settings = replace(self.settings, vertical_custom_enabled=enabled)
+        self._vertical_scroll_y = 0.0
+        self._persist_settings()
+        self.recalculate_layout()
+        self._emit_state()
+
+    def set_vertical_zoom_percent(self, value: int) -> None:
+        clamped = max(25, min(200, int(value)))
+        self.settings = replace(self.settings, vertical_zoom_percent=clamped)
+        self._vertical_scroll_y = 0.0
+        self._persist_settings()
+        self.recalculate_layout()
+        self._emit_state()
+
+    def handle_vertical_scroll(self, delta_y: int) -> bool:
+        if not self._is_vertical_mode or self._page_count <= 0:
+            return False
+        step = self._vertical_step()
+        if step <= 0:
+            return True
+
+        self._vertical_scroll_y += float(delta_y)
+        changed_page = False
+        while self._vertical_scroll_y <= -step and self._primary_index < self._page_count - 1:
+            self._primary_index += 1
+            self._vertical_scroll_y += step
+            changed_page = True
+        while self._vertical_scroll_y >= step and self._primary_index > 0:
+            self._primary_index -= 1
+            self._vertical_scroll_y -= step
+            changed_page = True
+
+        if self._primary_index <= 0 and self._vertical_scroll_y > 0:
+            self._vertical_scroll_y = 0.0
+        if self._primary_index >= self._page_count - 1 and self._vertical_scroll_y < 0:
+            self._vertical_scroll_y = 0.0
+
+        if changed_page:
+            self._save_progress()
+            self._emit_state()
+        self._request_visible_pages()
+        self.recalculate_layout()
+        return True
+
     def _set_target_spread(self, primary_index: int, companion_index: int | None) -> None:
         self._primary_index = max(0, min(primary_index, max(0, self._page_count - 1)))
         self._companion_index = self._valid_companion(companion_index)
         self._pan_x = 0.0
+        self._vertical_scroll_y = 0.0
         self._request_visible_pages()
         self.recalculate_layout()
 
@@ -444,6 +538,13 @@ class ReaderViewModel:
     def _preload_nearby_pages(self) -> None:
         if self._page_count <= 0:
             return
+        if self._is_vertical_mode:
+            self._request_pages({
+                index
+                for index in range(self._primary_index - 2, self._primary_index + 4)
+                if 0 <= index < self._page_count
+            })
+            return
         self._request_pages({
             max(0, self._primary_index - 1),
             min(self._page_count - 1, self._primary_index + 1),
@@ -456,9 +557,20 @@ class ReaderViewModel:
         return 1
 
     def _navigation_anchor_indices(self) -> tuple[int, ...]:
+        if self._is_vertical_mode:
+            return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
         if self._layout_result is not None and self._layout_result.page_draws:
             return tuple(draw.page_index for draw in self._layout_result.page_draws)
         return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
+
+    def _vertical_step(self) -> float:
+        zoom = (
+            max(25, min(200, int(self.settings.vertical_zoom_percent))) / 100.0
+            if self.settings.vertical_custom_enabled
+            else 1.0
+        )
+        gap = float(self.settings.page_spacing if self.settings.vertical_custom_enabled else 0)
+        return (self._viewport_size.height * zoom) + gap
 
     def _pan_for_side(self, side: str) -> bool:
         result = self._layout_result

@@ -60,8 +60,9 @@ class ReaderLayoutSettings:
     custom_enabled: bool = False
     always_one_page: bool = False
     fit_mode: ReaderFitMode = ReaderFitMode.AUTO
-    vertical_enabled: bool = False
-    page_spacing: int = 12
+    vertical_custom_enabled: bool = False
+    page_spacing: int = 0
+    vertical_zoom_percent: int = 100
     transition_mode: ReaderTransitionMode = ReaderTransitionMode.NONE
     spread_offset: int = 0
 
@@ -83,8 +84,9 @@ class ReaderLayoutResult:
 @dataclass(frozen=True)
 class ReaderSettings:
     direction: ReaderDirection = ReaderDirection.RIGHT_TO_LEFT
-    vertical_enabled: bool = False
-    page_spacing: int = 12
+    vertical_custom_enabled: bool = False
+    page_spacing: int = 0
+    vertical_zoom_percent: int = 100
     custom_enabled: bool = False
     always_one_page: bool = False
     fit_mode: ReaderFitMode = ReaderFitMode.AUTO
@@ -97,8 +99,9 @@ class ReaderSettings:
             custom_enabled=self.custom_enabled,
             always_one_page=self.always_one_page,
             fit_mode=self.fit_mode,
-            vertical_enabled=self.vertical_enabled,
+            vertical_custom_enabled=self.vertical_custom_enabled,
             page_spacing=self.page_spacing,
+            vertical_zoom_percent=self.vertical_zoom_percent,
             transition_mode=self.transition_mode,
             spread_offset=self.spread_offset,
         )

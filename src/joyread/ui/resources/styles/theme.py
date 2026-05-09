@@ -340,13 +340,29 @@ class Theme:
     reader_slider_track_height = 6
     reader_slider_knob_width = 14
     reader_slider_knob_height = 10
-    reader_settings_panel_width = 360
-    reader_settings_panel_border_width = 2
-    reader_settings_panel_visual_padding = 10
-    reader_settings_panel_layout_margin = reader_settings_panel_visual_padding - reader_settings_panel_border_width
-    reader_settings_panel_radius = 10
-    reader_settings_row_height = 32
-    reader_settings_gap = 8
+    # Reader settings side panel from Figma node 315:5888.
+    reader_settings_panel_width = 260
+    reader_settings_panel_visual_padding = 6
+    reader_settings_panel_layout_margin = reader_settings_panel_visual_padding
+    reader_settings_section_height = 34
+    reader_settings_section_padding_left = 15
+    reader_settings_section_padding_right = 10
+    reader_settings_section_padding_top = 10
+    reader_settings_section_padding_bottom = 5
+    reader_settings_section_arrow_size = 20
+    reader_settings_row_height = 28
+    reader_settings_row_padding = 2
+    reader_settings_option_height = 24
+    reader_settings_name_padding = 10
+    reader_settings_switch_option_margin = 6
+    reader_settings_control_width = 121
+    reader_settings_gap = 4
+    reader_settings_step_button_width = 12
+    reader_settings_step_icon_size = 18
+    reader_settings_zoom_label_width = 48
+    reader_settings_zoom_track_height = 4
+    reader_settings_zoom_knob_width = 10
+    reader_settings_zoom_knob_height = 8
     reader_auto_hide_delay_ms = 1600
     reader_fade_duration_ms = 160
     reader_edge_reveal_distance = 78
@@ -387,6 +403,9 @@ class Theme:
     color_reader_slider_empty = "#d7d7d7"
     color_reader_slider_filled = "#9e9e9e"
     color_reader_footer_background_rgba = (255, 255, 255, 188)
+    color_reader_settings_background_rgba = (255, 255, 255, 204)
+    color_reader_settings_control_rgba = (255, 255, 255, 230)
+    color_reader_settings_switch_background_rgba = (185, 185, 185, 230)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -471,8 +490,11 @@ class Theme:
             "__READER_SLIDER_EMPTY__": cls.color_reader_slider_empty,
             "__READER_SLIDER_FILLED__": cls.color_reader_slider_filled,
             "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
-            "__READER_SETTINGS_PANEL_BORDER_WIDTH__": f"{cls.reader_settings_panel_border_width}px",
-            "__READER_SETTINGS_PANEL_RADIUS__": f"{cls.reader_settings_panel_radius}px",
+            "__READER_SETTINGS_SECTION_FONT_SIZE__": f"{cls.sidebar_section_font_size}px",
+            "__READER_SETTINGS_LABEL_FONT_SIZE__": f"{cls.settings_item_font_size}px",
+            "__READER_SETTINGS_CONTROL_FONT_SIZE__": f"{cls.settings_control_font_size}px",
+            "__READER_SETTINGS_CONTROL_BACKGROUND__": cls._rgba_qss(cls.color_reader_settings_control_rgba),
+            "__READER_SETTINGS_SWITCH_BACKGROUND__": cls._rgba_qss(cls.color_reader_settings_switch_background_rgba),
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",

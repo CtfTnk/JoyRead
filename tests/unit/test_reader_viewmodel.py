@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from joyread.core.reader import ReaderDisplayMode, ReaderPageImage
+from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.task_service import TaskHandle, TaskStatus
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
@@ -203,6 +203,38 @@ def test_reader_viewmodel_pans_wide_page_before_turning_page(tmp_path: Path) -> 
 
     assert viewmodel.current_index == before_index
     assert viewmodel.pan_x < before_pan
+
+
+def test_reader_viewmodel_vertical_mode_scrolls_continuously_and_snaps_by_page(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [0, 1, 2]
+    assert viewmodel.layout_result.page_draws[0].rect.height == 800
+
+    assert viewmodel.handle_vertical_scroll(-801) is True
+    assert viewmodel.current_index == 1
+    assert viewmodel.layout_result is not None
+    assert any(draw.page_index == 1 and draw.rect.height == 800 for draw in viewmodel.layout_result.page_draws)
+
+    viewmodel.go_next()
+    assert viewmodel.current_index == 2
+
+
+def test_reader_viewmodel_vertical_custom_settings_do_not_change_direction(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_zoom_percent(500)
+
+    assert viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
+    assert viewmodel.settings.vertical_custom_enabled is True
+    assert viewmodel.settings.vertical_zoom_percent == 200
 
 
 def _viewmodel(

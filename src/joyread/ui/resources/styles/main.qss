@@ -190,24 +190,70 @@ QLabel#ReaderStatusText {
 }
 
 QFrame#ReaderSettingsPanel {
-    background: __MENU_BACKGROUND__;
-    border: __READER_SETTINGS_PANEL_BORDER_WIDTH__ solid __BUTTON_EDGE__;
-    border-radius: __READER_SETTINGS_PANEL_RADIUS__;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+}
+
+QFrame[class="ReaderSettingsSection"],
+QFrame[class="ReaderSettingsRow"] {
+    background: transparent;
+    border: none;
+}
+
+QLabel[class="ReaderSettingsSectionText"] {
+    color: __SIDEBAR_SECTION_COLOR__;
+    font-size: __READER_SETTINGS_SECTION_FONT_SIZE__;
+    font-weight: 700;
 }
 
 QLabel[class="ReaderSettingsLabel"] {
     color: __TEXT_COLOR__;
-    font-size: __SETTINGS_ITEM_FONT_SIZE__;
+    font-size: __READER_SETTINGS_LABEL_FONT_SIZE__;
     font-weight: 500;
 }
 
-QComboBox#ReaderFitModeCombo {
-    background: __WINDOW_COLOR__;
+QLabel[class="ReaderSettingsControlText"] {
+    color: __TEXT_COLOR__;
+    font-size: __READER_SETTINGS_CONTROL_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QFrame[class="ReaderSettingsSmallControl"] {
+    background: __READER_SETTINGS_CONTROL_BACKGROUND__;
     border: 1px solid __BUTTON_INNER_EDGE__;
     border-radius: __SETTINGS_ITEM_RADIUS__;
+}
+
+QLineEdit[class="ReaderSettingsValueField"] {
+    background: transparent;
+    border: none;
     color: __TEXT_COLOR__;
-    font-size: __SETTINGS_CONTROL_FONT_SIZE__;
-    padding: 2px 6px;
+    font-size: __READER_SETTINGS_CONTROL_FONT_SIZE__;
+    font-weight: 500;
+    padding: 0 2px;
+}
+
+QToolButton[class="ReaderSettingsStepButton"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+QToolButton[class="ReaderSettingsStepButton"]:hover {
+    background: __SELECTED_COLOR__;
+}
+
+QFrame[class="ReaderSettingsSmallSwitch"] {
+    background: __READER_SETTINGS_SWITCH_BACKGROUND__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __SETTINGS_SWITCH_RADIUS__;
+}
+
+QFrame[class="ReaderSettingsSmallSwitchKnob"] {
+    background: __SETTINGS_SWITCH_KNOB__;
+    border: none;
+    border-radius: __SETTINGS_SWITCH_KNOB_RADIUS__;
 }
 
 QFrame[class="ActionMenuButton"] {
