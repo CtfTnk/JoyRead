@@ -177,6 +177,16 @@ QToolButton[class="ReaderSideButton"]:hover {
     background: rgba(146, 146, 146, 0.55);
 }
 
+QLabel#ReaderProgressIndicator {
+    background: __READER_CONTROL_NORMAL__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __READER_PROGRESS_INDICATOR_RADIUS__;
+    padding: 0 __READER_PROGRESS_INDICATOR_PADDING_HORIZONTAL__;
+    color: __TEXT_COLOR__;
+    font-size: __READER_PROGRESS_INDICATOR_FONT_SIZE__;
+    font-weight: 400;
+}
+
 QLabel#ReaderTitle {
     color: __TEXT_COLOR__;
     font-size: __BODY_FONT_SIZE__;

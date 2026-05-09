@@ -6,6 +6,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame
 
 from joyread.app.app_context import create_app_context
@@ -53,6 +54,26 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert direction_buttons[ReaderDirection.LEFT_TO_RIGHT].property("iconName") == "icon_read-from-right.svg"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].toolTip() == "Top-to-down"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].property("iconName") == "icon_read-from-top.svg"
+
+    window.close()
+    context.close()
+
+
+def test_reader_header_switch_icons_survive_hover_and_checked_modes(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+
+    for button in (window.header.detail_button, window.header.bookmark_button, window.header.thumbnail_button):
+        icon = button.icon()
+        for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected, QIcon.Mode.Disabled):
+            assert not icon.pixmap(Theme.icon_size, Theme.icon_size, mode, QIcon.State.Off).isNull()
+            assert not icon.pixmap(Theme.icon_size, Theme.icon_size, mode, QIcon.State.On).isNull()
 
     window.close()
     context.close()
@@ -331,10 +352,12 @@ def test_reader_footer_updates_progress_slider_direction(qtbot, tmp_path: Path) 
     window.footer.set_page_state(2, 10, ReaderDirection.LEFT_TO_RIGHT)
     assert window.footer.slider.reading_direction == ReaderDirection.LEFT_TO_RIGHT
     assert not window.footer.slider.invertedAppearance()
+    assert window.footer.page_indicator.text() == "3/10"
 
     window.footer.set_direction(ReaderDirection.RIGHT_TO_LEFT)
     assert window.footer.slider.reading_direction == ReaderDirection.RIGHT_TO_LEFT
     assert window.footer.slider.invertedAppearance()
+    assert window.footer.page_indicator.text() == "3/10"
 
     window.close()
     context.close()

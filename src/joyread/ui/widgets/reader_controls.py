@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QSlider,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -161,9 +162,10 @@ class ReaderFooter(QWidget):
             Theme.reader_footer_padding_horizontal,
             Theme.reader_footer_padding_vertical,
         )
-        layout.setSpacing(0)
+        layout.setSpacing(8)
 
         upper = QWidget()
+        upper.setFixedHeight(Theme.reader_footer_row_height)
         upper_layout = QHBoxLayout(upper)
         upper_layout.setContentsMargins(
             Theme.reader_footer_row_padding_horizontal,
@@ -182,12 +184,24 @@ class ReaderFooter(QWidget):
         left_layout.addWidget(self.left_inner_button)
         upper_layout.addWidget(left)
 
+        progress_part = QWidget()
+        progress_layout = QVBoxLayout(progress_part)
+        progress_layout.setContentsMargins(0, 0, 0, 0)
+        progress_layout.setSpacing(Theme.reader_progress_indicator_gap)
+
         self.slider = ReaderProgressSlider()
         self.slider.setFixedHeight(Theme.reader_slider_height)
         self.slider.setMinimum(0)
         self.slider.setMaximum(0)
         self.slider.sliderReleased.connect(lambda: self.seek_requested.emit(self.slider.value()))
-        upper_layout.addWidget(self.slider, stretch=1)
+        progress_layout.addWidget(self.slider)
+
+        self.page_indicator = QLabel("0/0")
+        self.page_indicator.setObjectName("ReaderProgressIndicator")
+        self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.page_indicator.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        progress_layout.addWidget(self.page_indicator, alignment=Qt.AlignmentFlag.AlignHCenter)
+        upper_layout.addWidget(progress_part, stretch=1)
 
         right = QWidget()
         right_layout = QHBoxLayout(right)
@@ -201,6 +215,7 @@ class ReaderFooter(QWidget):
         layout.addWidget(upper)
 
         lower = QWidget()
+        lower.setFixedHeight(Theme.reader_footer_row_height)
         lower_layout = QHBoxLayout(lower)
         lower_layout.setContentsMargins(
             Theme.reader_footer_row_padding_horizontal,
@@ -241,11 +256,14 @@ class ReaderFooter(QWidget):
         layout.addWidget(lower)
 
     def set_page_state(self, current_index: int, page_count: int, direction: ReaderDirection) -> None:
+        maximum_index = max(0, page_count - 1)
+        safe_index = max(0, min(current_index, maximum_index))
         self.slider.blockSignals(True)
         self.slider.set_reading_direction(direction)
-        self.slider.setMaximum(max(0, page_count - 1))
-        self.slider.setValue(max(0, min(current_index, max(0, page_count - 1))))
+        self.slider.setMaximum(maximum_index)
+        self.slider.setValue(safe_index)
         self.slider.blockSignals(False)
+        self.page_indicator.setText("0/0" if page_count <= 0 else f"{safe_index + 1}/{page_count}")
 
     def set_direction(self, direction: ReaderDirection) -> None:
         self.direction_switch.set_value(direction)
@@ -414,7 +432,7 @@ def reader_button(
     button = QToolButton()
     button.setProperty("class", "ReaderButton")
     button.setProperty("iconName", icon_name)
-    button.setIcon(QIcon(str(resources.icon_path(icon_name))))
+    button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
     button.setToolTip(tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -429,12 +447,24 @@ def switch_option(resources: ResourceLoader, icon_name: str, tooltip: str) -> QT
     button.setProperty("class", "ReaderSwitchOption")
     button.setProperty("iconName", icon_name)
     button.setCheckable(True)
-    button.setIcon(QIcon(str(resources.icon_path(icon_name))))
+    button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
     button.setToolTip(tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_switch_option_size, Theme.reader_switch_option_size)
     return button
+
+
+def _reader_icon(resources: ResourceLoader, icon_name: str) -> QIcon:
+    icon_path = str(resources.icon_path(icon_name))
+    icon = QIcon()
+    # Qt requests different QIcon modes/states while hovering and checking
+    # QToolButtons. Supplying the same SVG for each state avoids transient
+    # empty pixmaps when the cursor leaves a reader switch option.
+    for mode in (QIcon.Mode.Normal, QIcon.Mode.Active, QIcon.Mode.Selected, QIcon.Mode.Disabled):
+        for state in (QIcon.State.Off, QIcon.State.On):
+            icon.addFile(icon_path, QSize(), mode, state)
+    return icon
 
 
 def _spacer(height: int) -> QFrame:

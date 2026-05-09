@@ -336,10 +336,14 @@ class Theme:
     reader_switch_gap = 6
     reader_switch_option_size = 28
     reader_switch_option_radius = 6
-    reader_slider_height = 24
+    reader_slider_height = 12
     reader_slider_track_height = 6
     reader_slider_knob_width = 14
     reader_slider_knob_height = 10
+    reader_progress_indicator_gap = 2
+    reader_progress_indicator_radius = 6
+    reader_progress_indicator_padding_horizontal = 4
+    reader_progress_indicator_font_size = 12
     # Reader settings side panel from Figma node 315:5888.
     reader_settings_panel_width = 260
     reader_settings_panel_visual_padding = 6
@@ -490,6 +494,9 @@ class Theme:
             "__READER_SLIDER_EMPTY__": cls.color_reader_slider_empty,
             "__READER_SLIDER_FILLED__": cls.color_reader_slider_filled,
             "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
+            "__READER_PROGRESS_INDICATOR_RADIUS__": f"{cls.reader_progress_indicator_radius}px",
+            "__READER_PROGRESS_INDICATOR_PADDING_HORIZONTAL__": f"{cls.reader_progress_indicator_padding_horizontal}px",
+            "__READER_PROGRESS_INDICATOR_FONT_SIZE__": f"{cls.reader_progress_indicator_font_size}px",
             "__READER_SETTINGS_SECTION_FONT_SIZE__": f"{cls.sidebar_section_font_size}px",
             "__READER_SETTINGS_LABEL_FONT_SIZE__": f"{cls.settings_item_font_size}px",
             "__READER_SETTINGS_CONTROL_FONT_SIZE__": f"{cls.settings_control_font_size}px",
