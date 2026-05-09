@@ -43,7 +43,7 @@ class Theme:
     cover_width = 170
     cover_height = 241
     cover_radius = 6
-    book_list_row_width = 598
+    book_list_row_width = 400
     book_list_row_height = 120
     book_list_cover_width = 71
     book_list_cover_height = 100
@@ -102,7 +102,7 @@ class Theme:
     detail_thumbnail_row_padding_vertical = 5
     detail_thumbnail_gap = 20
     detail_thumbnail_row_gap = 10
-    detail_thumbnail_min_width = 625
+    detail_thumbnail_min_width = 400
     grid_min_gap = 20
     grid_gap = grid_min_gap
     grid_top_padding = 4
