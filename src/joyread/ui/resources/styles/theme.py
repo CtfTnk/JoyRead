@@ -274,6 +274,7 @@ class Theme:
     dialog_content_padding = 6
     dialog_content_outer_padding = 2
     dialog_content_max_height = 215
+    dialog_content_scrollbar_margin = dialog_radius
     dialog_message_clip_guard = 2
     dialog_input_area_padding = 10
     dialog_input_area_gap = 6
@@ -292,6 +293,7 @@ class Theme:
     dialog_collection_scroll_visual_padding = 10
     dialog_collection_scroll_layout_margin = dialog_collection_scroll_visual_padding - dialog_collection_scroll_border_width
     dialog_collection_scrollbar_margin = dialog_collection_scroll_radius
+    dialog_collection_item_gap = 2
     dialog_option_gap = 10
     dialog_button_width = 100
     dialog_button_height = 28
@@ -379,6 +381,7 @@ class Theme:
     color_menu_background_rgba = (255, 255, 255, 204)
     color_menu_item_hover_rgba = (220, 220, 220, 102)
     color_menu_destructive = "#bf0c0c"
+    color_dialog_panel_background_rgba = (249, 249, 249, 230)
     color_switch_background = "#bfbfbf"
     color_progress_background = "#c9c9c9"
     color_progress_fill = "#8a8a8a"
@@ -462,6 +465,7 @@ class Theme:
             "__SETTINGS_SWITCH_KNOB_RADIUS__": f"{cls.settings_switch_knob_radius}px",
             "__DIALOG_PANEL_BORDER_WIDTH__": f"{cls.dialog_border_width}px",
             "__DIALOG_PANEL_RADIUS__": f"{cls.dialog_radius}px",
+            "__DIALOG_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_dialog_panel_background_rgba),
             "__DIALOG_BUTTON_BORDER_WIDTH__": f"{cls.dialog_button_border_width}px",
             "__DIALOG_BUTTON_RADIUS__": f"{cls.dialog_button_radius}px",
             "__DIALOG_FONT_SIZE__": f"{cls.dialog_font_size}px",
@@ -476,6 +480,7 @@ class Theme:
             "__DIALOG_INPUT_HEADER_COLOR__": cls.color_dialog_input_header,
             "__DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__": f"{cls.dialog_collection_scroll_border_width}px",
             "__DIALOG_COLLECTION_SCROLL_RADIUS__": f"{cls.dialog_collection_scroll_radius}px",
+            "__DIALOG_CONTENT_SCROLLBAR_MARGIN__": f"{cls.dialog_content_scrollbar_margin}px",
             "__DIALOG_COLLECTION_SCROLLBAR_MARGIN__": f"{cls.dialog_collection_scrollbar_margin}px",
             "__TOOLTIP_RADIUS__": f"{cls.tooltip_radius}px",
             "__TOOLTIP_PADDING__": f"{cls.tooltip_padding}px",

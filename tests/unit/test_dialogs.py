@@ -203,6 +203,7 @@ def test_dialog_password_and_collection_select_content_geometry(qtbot) -> None:
     assert scroll_panel.height() == (
         Theme.dialog_collection_scroll_layout_margin * 2
         + len(collections) * Theme.sidebar_item_height
+        + ((len(collections) - 1) * Theme.dialog_collection_item_gap)
     )
     assert inner_scroll.verticalScrollBar().maximum() == 0
     assert select_content.selected_collection_uuid == "collection-0"
@@ -427,6 +428,23 @@ def test_stylesheet_resolves_dialog_tokens() -> None:
     stylesheet = ResourceLoader().load_stylesheet()
 
     assert "__DIALOG_PANEL_BORDER_WIDTH__" not in stylesheet
+    assert "__DIALOG_PANEL_BACKGROUND__" not in stylesheet
+    assert "__DIALOG_CONTENT_SCROLLBAR_MARGIN__" not in stylesheet
     assert "__DIALOG_BUTTON_RADIUS__" not in stylesheet
     assert "__TOOLTIP_RADIUS__" not in stylesheet
     assert "QFrame[class=\"JoyReadDialogPanel\"]" in stylesheet
+    assert "QScrollArea#JoyReadDialogContentScrollArea QWidget" not in stylesheet
+    assert "QWidget#JoyReadDialogContentViewport" in stylesheet
+    assert "QWidget#DialogCollectionSelectContent" in stylesheet
+    assert Theme._rgba_qss(Theme.color_dialog_panel_background_rgba) in stylesheet
+    assert (
+        "QWidget#DialogInputFieldWithHeader {\n"
+        "    background: transparent;\n"
+        "    border: none;\n"
+        "}"
+    ) in stylesheet
+    assert (
+        "margin: "
+        f"{Theme.dialog_content_scrollbar_margin}px 2px "
+        f"{Theme.dialog_content_scrollbar_margin}px 0;"
+    ) in stylesheet

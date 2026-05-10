@@ -421,7 +421,7 @@ class DialogCollectionSelectContent(QWidget):
         row_content.setObjectName("DialogCollectionRowContent")
         row_layout = QVBoxLayout(row_content)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.setSpacing(0)
+        row_layout.setSpacing(Theme.dialog_collection_item_gap)
         row_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         for collection in collections:
@@ -431,7 +431,8 @@ class DialogCollectionSelectContent(QWidget):
             self._rows[collection.uuid] = row
             row_layout.addWidget(row)
 
-        row_content.setFixedHeight(len(collections) * Theme.sidebar_item_height)
+        row_gaps = max(0, len(collections) - 1) * Theme.dialog_collection_item_gap
+        row_content.setFixedHeight((len(collections) * Theme.sidebar_item_height) + row_gaps)
         self._row_scroll.setWidget(row_content)
 
         max_panel_height = (
@@ -519,6 +520,8 @@ class JoyReadDialogPanel(QFrame):
 
         self._content_scroll = QScrollArea()
         self._content_scroll.setObjectName("JoyReadDialogContentScrollArea")
+        self._content_scroll.viewport().setObjectName("JoyReadDialogContentViewport")
+        self._content_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._content_scroll.setWidgetResizable(False)
         self._content_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._content_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)

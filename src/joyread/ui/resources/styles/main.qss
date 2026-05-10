@@ -408,7 +408,7 @@ QWidget#JoyReadDialogOverlay {
 }
 
 QFrame[class="JoyReadDialogPanel"] {
-    background: __WINDOW_COLOR__;
+    background: __DIALOG_PANEL_BACKGROUND__;
     border: __DIALOG_PANEL_BORDER_WIDTH__ solid __BUTTON_EDGE__;
     border-radius: __DIALOG_PANEL_RADIUS__;
 }
@@ -419,13 +419,14 @@ QWidget#JoyReadDialogOptionArea,
 QWidget#DialogMessageContent,
 QWidget#DialogInputContent,
 QWidget#DialogPasswordContent,
+QWidget#DialogCollectionSelectContent,
 QWidget#DialogInputArea {
     background: transparent;
     border: none;
 }
 
 QScrollArea#JoyReadDialogContentScrollArea,
-QScrollArea#JoyReadDialogContentScrollArea QWidget,
+QWidget#JoyReadDialogContentViewport,
 QScrollArea#DialogCollectionInnerScrollArea,
 QWidget#DialogCollectionInnerViewport,
 QWidget#DialogCollectionRowContent {
@@ -452,7 +453,7 @@ QFrame[class="DialogTextButton"]:hover {
 }
 
 QWidget#DialogInputFieldWithHeader {
-    background: __CONTENT_COLOR__;
+    background: transparent;
     border: none;
 }
 
@@ -511,6 +512,7 @@ QLabel#DialogCollectionChoiceIcon {
 QScrollArea#JoyReadDialogContentScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
+    margin: __DIALOG_CONTENT_SCROLLBAR_MARGIN__ 2px __DIALOG_CONTENT_SCROLLBAR_MARGIN__ 0;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
