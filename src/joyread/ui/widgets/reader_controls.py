@@ -329,12 +329,12 @@ class ReaderProgressSlider(QSlider):
         track = self._track_rect()
         track_radius = Theme.reader_slider_track_height / 2
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(Theme.color_reader_slider_empty))
+        painter.setBrush(QColor(*Theme.color_reader_slider_empty_rgba))
         painter.drawRoundedRect(track, track_radius, track_radius)
 
         filled = self._filled_track_rect()
         if filled.width() > 0.5:
-            painter.setBrush(QColor(Theme.color_reader_slider_filled))
+            painter.setBrush(QColor(*Theme.color_reader_slider_filled_rgba))
             painter.drawRoundedRect(filled, track_radius, track_radius)
 
         handle = self._handle_rect()

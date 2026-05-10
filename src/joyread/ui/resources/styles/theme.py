@@ -404,8 +404,8 @@ class Theme:
     color_reader_control_selected_rgba = (255, 255, 255, 255)
     color_reader_panel_rgba = (146, 146, 146, 102)
     color_reader_switch_panel_rgba = (191, 191, 191, 178)
-    color_reader_slider_empty = "#d7d7d7"
-    color_reader_slider_filled = "#9e9e9e"
+    color_reader_slider_empty_rgba = (215, 215, 215, 153)
+    color_reader_slider_filled_rgba = (158, 158, 158, 230)
     color_reader_footer_background_rgba = (255, 255, 255, 188)
     color_reader_settings_background_rgba = (255, 255, 255, 204)
     color_reader_settings_control_rgba = (255, 255, 255, 230)
@@ -493,8 +493,8 @@ class Theme:
             "__READER_SIDE_BUTTON_RADIUS__": f"{cls.reader_side_button_radius}px",
             "__READER_SWITCH_PANEL__": cls._rgba_qss(cls.color_reader_switch_panel_rgba),
             "__READER_SWITCH_OPTION_RADIUS__": f"{cls.reader_switch_option_radius}px",
-            "__READER_SLIDER_EMPTY__": cls.color_reader_slider_empty,
-            "__READER_SLIDER_FILLED__": cls.color_reader_slider_filled,
+            "__READER_SLIDER_EMPTY__": cls._rgba_qss(cls.color_reader_slider_empty_rgba),
+            "__READER_SLIDER_FILLED__": cls._rgba_qss(cls.color_reader_slider_filled_rgba),
             "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
             "__READER_PROGRESS_INDICATOR_RADIUS__": f"{cls.reader_progress_indicator_radius}px",
             "__READER_PROGRESS_INDICATOR_PADDING_HORIZONTAL__": f"{cls.reader_progress_indicator_padding_horizontal}px",

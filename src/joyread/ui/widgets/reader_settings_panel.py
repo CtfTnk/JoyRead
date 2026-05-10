@@ -468,12 +468,12 @@ class _MiniSlider(QSlider):
         )
         radius = Theme.reader_settings_zoom_track_height / 2
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(Theme.color_reader_slider_empty))
+        painter.setBrush(QColor(*Theme.color_reader_slider_empty_rgba))
         painter.drawRoundedRect(track, radius, radius)
 
         x = self._handle_center_x(track)
         filled = QRectF(track.left(), track.top(), max(0, x - track.left()), track.height())
-        painter.setBrush(QColor(Theme.color_reader_slider_filled))
+        painter.setBrush(QColor(*Theme.color_reader_slider_filled_rgba))
         painter.drawRoundedRect(filled, radius, radius)
 
         handle = QRectF(
