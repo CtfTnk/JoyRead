@@ -105,6 +105,7 @@ class DetailReadButton(QFrame):
 
 class BookDetailPanel(QFrame):
     read_requested = QtSignal(str)
+    read_at_index_requested = QtSignal(str, int)
     favourite_requested = QtSignal(str)
     menu_requested = QtSignal(str, QPoint)
     cover_edit_requested = QtSignal(str)
@@ -155,6 +156,7 @@ class BookDetailPanel(QFrame):
         content_layout.addWidget(self._description)
 
         self._thumbnail_grid = DetailThumbnailGrid()
+        self._thumbnail_grid.thumbnail_clicked.connect(self._emit_read_at_index_requested)
         content_layout.addWidget(self._thumbnail_grid)
         content_layout.addStretch(1)
 
@@ -355,6 +357,10 @@ class BookDetailPanel(QFrame):
         if self._book is not None:
             self.read_requested.emit(self._book.uuid)
 
+    def _emit_read_at_index_requested(self, page_index: int) -> None:
+        if self._book is not None:
+            self.read_at_index_requested.emit(self._book.uuid, page_index)
+
     def _emit_favourite_requested(self) -> None:
         if self._book is not None:
             self.favourite_requested.emit(self._book.uuid)
@@ -501,6 +507,8 @@ class DetailCoverWidget(BookCoverWidget):
 
 
 class DetailThumbnailGrid(QWidget):
+    thumbnail_clicked = QtSignal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BookDetailThumbnails")
@@ -551,7 +559,10 @@ class DetailThumbnailGrid(QWidget):
             return
         self._thumbnail_order.append(index)
         self._thumbnail_order.sort()
-        self._thumbnails[index] = DetailThumbnailWidget()
+        thumbnail = DetailThumbnailWidget()
+        thumbnail.set_page_index(index)
+        thumbnail.clicked.connect(self.thumbnail_clicked.emit)
+        self._thumbnails[index] = thumbnail
         self._relayout(force=True)
 
     def set_thumbnail(self, index: int, image_bytes: bytes) -> None:
@@ -615,11 +626,19 @@ class DetailThumbnailGrid(QWidget):
 
 
 class DetailThumbnailWidget(QFrame):
+    clicked = QtSignal(int)
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BookDetailThumbnail")
         self.setFixedSize(Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pixmap: QPixmap | None = None
+        self._page_index: int | None = None
+        self._pressed_inside = False
+
+    def set_page_index(self, page_index: int) -> None:
+        self._page_index = page_index
 
     def set_thumbnail_bytes(self, image_bytes: bytes) -> None:
         pixmap = QPixmap()
@@ -630,6 +649,22 @@ class DetailThumbnailWidget(QFrame):
     def clear_thumbnail(self) -> None:
         self._pixmap = None
         self.update()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            if self.rect().contains(event.position().toPoint()) and self._page_index is not None:
+                self.clicked.emit(self._page_index)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

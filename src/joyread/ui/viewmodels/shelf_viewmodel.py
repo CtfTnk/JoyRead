@@ -59,6 +59,7 @@ class ShelfViewModel:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
         self.book_open_requested: Signal[str] = Signal()
+        self.book_open_at_requested: Signal[tuple[str, int]] = Signal()
         self.cover_ready: Signal[tuple[str, Path]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
         self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()
@@ -238,6 +239,11 @@ class ShelfViewModel:
     def open_book(self, book_uuid: str) -> None:
         if any(book.uuid == book_uuid for book in self.books):
             self.book_open_requested.emit(book_uuid)
+
+    def open_book_at(self, book_uuid: str, page_index: int) -> None:
+        if any(book.uuid == book_uuid for book in self.books):
+            normalized_index = max(0, page_index)
+            self.book_open_at_requested.emit(book_uuid, normalized_index)
 
     def apply_reader_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         del page_index

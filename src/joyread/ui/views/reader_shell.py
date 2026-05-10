@@ -33,6 +33,7 @@ class ReaderShellWidget(QWidget):
         book: Book | None = None,
         title: str | None = None,
         show_back_button: bool = False,
+        start_page_index: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -69,7 +70,7 @@ class ReaderShellWidget(QWidget):
             book_uuid=book.uuid if book is not None else None,
             title=title or (book.title if book is not None else self._source_path.stem),
             settings=_reader_settings_for_book(context, book),
-            progress=_reader_progress_for_book(context, book),
+            progress=_reader_progress_for_book(context, book, start_page_index),
         )
         self._connect_signals()
         self._install_auto_hide()
@@ -424,13 +425,24 @@ def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderS
         return ReaderSettings()
 
 
-def _reader_progress_for_book(context: AppContext, book: Book | None) -> ReaderProgress | None:
-    if book is None:
-        return None
-    try:
-        return context.library_service.get_progress(book.uuid)
-    except Exception:
-        return None
+def _reader_progress_for_book(
+    context: AppContext,
+    book: Book | None,
+    start_page_index: int | None = None,
+) -> ReaderProgress | None:
+    progress: ReaderProgress | None = None
+    if book is not None:
+        try:
+            progress = context.library_service.get_progress(book.uuid)
+        except Exception:
+            progress = None
+
+    if start_page_index is None:
+        return progress
+
+    normalized_index = max(0, start_page_index)
+    percent = progress.progress_percent if progress is not None else 0.0
+    return ReaderProgress(page_index=normalized_index, progress_percent=percent)
 
 
 def _side_button(resources, icon_name: str, parent: QWidget) -> QToolButton:  # noqa: ANN001

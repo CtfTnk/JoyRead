@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
         self.shelf_view.read_book_requested.connect(self.open_reader_for_book)
+        self.shelf_view.read_book_at_requested.connect(self.open_reader_for_book_at)
         self.shelf_view.open_file_requested.connect(self._select_reader_file)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
@@ -110,15 +111,18 @@ class MainWindow(QMainWindow):
         self.sidebar.set_collections(context.shelf_viewmodel.collections)
         self.shelf_view.render()
 
-    def open_reader_for_book(self, book_uuid: str) -> None:
+    def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
             return
         if self._settings_for_reader_launch().individual_read_window:
-            self._show_reader_window(Path(book.file_path), book=book)
+            self._show_reader_window(Path(book.file_path), book=book, start_page_index=page_index)
         else:
-            self._show_embedded_reader(Path(book.file_path), book=book)
+            self._show_embedded_reader(Path(book.file_path), book=book, start_page_index=page_index)
+
+    def open_reader_for_book_at(self, book_uuid: str, page_index: int) -> None:
+        self.open_reader_for_book(book_uuid, page_index)
 
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
@@ -143,15 +147,22 @@ class MainWindow(QMainWindow):
             return
         self.open_reader_for_file(file_path, import_mode=import_mode)
 
-    def _show_reader_window(self, path: Path, *, book=None, title: str | None = None) -> None:  # noqa: ANN001
-        reader = ReaderWindow(self._context, path, book=book, title=title)
+    def _show_reader_window(
+        self,
+        path: Path,
+        *,
+        book=None,
+        title: str | None = None,
+        start_page_index: int | None = None,
+    ) -> None:  # noqa: ANN001
+        reader = ReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
         reader.progress_changed.connect(self._handle_reader_progress_changed)
         reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
         self._reader_windows.append(reader)
         reader.show()
         reader.raise_()
 
-    def _show_embedded_reader(self, path: Path, *, book) -> None:  # noqa: ANN001
+    def _show_embedded_reader(self, path: Path, *, book, start_page_index: int | None = None) -> None:  # noqa: ANN001
         root = self.centralWidget()
         if root is None:
             return
@@ -162,6 +173,7 @@ class MainWindow(QMainWindow):
             path,
             book=book,
             show_back_button=True,
+            start_page_index=start_page_index,
             parent=root,
         )
         self._embedded_reader.back_requested.connect(self._close_embedded_reader)

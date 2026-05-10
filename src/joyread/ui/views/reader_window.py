@@ -26,6 +26,7 @@ class ReaderWindow(QMainWindow):
         *,
         book: Book | None = None,
         title: str | None = None,
+        start_page_index: int | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -43,6 +44,7 @@ class ReaderWindow(QMainWindow):
             book=book,
             title=title,
             show_back_button=False,
+            start_page_index=start_page_index,
         )
         self.shell.progress_changed.connect(self.progress_changed.emit)
         self.setCentralWidget(self.shell)

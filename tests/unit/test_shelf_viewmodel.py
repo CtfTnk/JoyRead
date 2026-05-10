@@ -84,6 +84,19 @@ def test_reader_progress_update_refreshes_visible_state() -> None:
     assert events
 
 
+def test_open_book_at_emits_page_index_for_valid_book() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    target = vm.visible_books[0]
+    emitted: list[tuple[str, int]] = []
+    vm.book_open_at_requested.connect(lambda book_uuid, page_index: emitted.append((book_uuid, page_index)))
+
+    vm.open_book_at(target.uuid, 5)
+    vm.open_book_at("missing", 3)
+
+    assert emitted == [(target.uuid, 5)]
+
+
 def test_recent_shelf_ignores_user_sort_and_uses_latest_read_first() -> None:
     vm = make_viewmodel()
     vm.load_books()

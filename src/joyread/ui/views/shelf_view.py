@@ -30,6 +30,7 @@ class ShelfView(QWidget):
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
     read_book_requested = QtSignal(str)
+    read_book_at_requested = QtSignal(str, int)
     open_file_requested = QtSignal(bool)
 
     def __init__(
@@ -93,6 +94,7 @@ class ShelfView(QWidget):
         self.detail_panel = BookDetailPanel(resources, self)
         self.detail_panel.hide()
         self.detail_panel.read_requested.connect(self._viewmodel.open_book)
+        self.detail_panel.read_at_index_requested.connect(self._viewmodel.open_book_at)
         self.detail_panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
         self.detail_panel.menu_requested.connect(self._show_book_menu)
         self.detail_panel.cover_edit_requested.connect(lambda _uuid: self._show_placeholder("Cover Editor"))
@@ -107,6 +109,7 @@ class ShelfView(QWidget):
 
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.book_open_requested.connect(self.read_book_requested.emit)
+        self._viewmodel.book_open_at_requested.connect(self.read_book_at_requested.emit)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
         self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)
