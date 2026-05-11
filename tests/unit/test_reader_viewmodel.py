@@ -90,10 +90,13 @@ def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path
     assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
     assert viewmodel.current_display_indices == (0, 1)
     viewmodel.handle_horizontal_key("left")
+    # Forward step: smallest displayed index = 2 (matches the new indicator).
     assert viewmodel.current_index == 2
     assert viewmodel.current_display_indices == (2, 3)
     viewmodel.handle_horizontal_key("right")
-    assert viewmodel.current_index == 1
+    # Backward step: layout anchor is `(1, 0)` but the indicator follows the
+    # smallest displayed index = 0.
+    assert viewmodel.current_index == 0
     assert viewmodel.current_display_indices == (1, 0)
 
     viewmodel.seek(2)
@@ -116,7 +119,7 @@ def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None
     assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
 
 
-def test_reader_viewmodel_backward_navigation_uses_previous_page_as_primary(tmp_path: Path) -> None:
+def test_reader_viewmodel_backward_navigation_uses_smallest_as_current_index(tmp_path: Path) -> None:
     viewmodel = _viewmodel(tmp_path)
 
     viewmodel.open_path(tmp_path / "book.cbz")
@@ -124,7 +127,9 @@ def test_reader_viewmodel_backward_navigation_uses_previous_page_as_primary(tmp_
     viewmodel.go_next()
     viewmodel.go_previous()
 
-    assert viewmodel.current_index == 1
+    # Backward step plants the layout anchor on the larger page (`1`) but the
+    # user-facing indicator follows the smallest displayed index (`0`).
+    assert viewmodel.current_index == 0
     assert viewmodel.current_display_indices == (1, 0)
 
 
@@ -152,12 +157,16 @@ def test_reader_viewmodel_previous_does_not_skip_hidden_companion_in_single_mode
     viewmodel.set_viewport_size(700, 900)
     viewmodel.seek(4)
 
+    # Seeking to the last index is treated as an explicit "single page" intent:
+    # only the last page is in the spread, indicator reads `N/N`.
     assert viewmodel.layout_result is not None
     assert viewmodel.layout_result.mode == ReaderDisplayMode.SINGLE
-    assert viewmodel.current_display_indices == (4, 3)
+    assert viewmodel.current_display_indices == (4,)
 
     viewmodel.go_previous()
 
+    # Going back from the single last-page view still steps by exactly one
+    # archive index — it must not skip page 3 to land on page 2.
     assert viewmodel.current_index == 3
     assert viewmodel.layout_result is not None
     assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [3]
@@ -182,10 +191,14 @@ def test_reader_viewmodel_emits_progress_after_persist(tmp_path: Path) -> None:
     viewmodel.progress_changed.connect(lambda book_uuid, page, percent: progress_events.append((book_uuid, page, percent)))
 
     viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
     viewmodel.seek(2)
 
-    assert library.progress_calls[-1] == ("book-1", 2, 50.0)
-    assert progress_events[-1] == ("book-1", 2, 50.0)
+    # The viewport is wide enough that the spread `(2, 3)` is rendered as
+    # DOUBLE. The resume index is the smallest displayed page (2), while the
+    # progress percent uses the largest displayed page (3 of 5 -> 75%).
+    assert library.progress_calls[-1] == ("book-1", 2, 75.0)
+    assert progress_events[-1] == ("book-1", 2, 75.0)
 
 
 def test_reader_viewmodel_pans_wide_page_before_turning_page(tmp_path: Path) -> None:
@@ -235,6 +248,78 @@ def test_reader_viewmodel_vertical_custom_settings_do_not_change_direction(tmp_p
     assert viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
     assert viewmodel.settings.vertical_custom_enabled is True
     assert viewmodel.settings.vertical_zoom_percent == 200
+
+
+def test_reader_viewmodel_progress_uses_largest_for_percent_and_smallest_for_resume(
+    tmp_path: Path,
+) -> None:
+    library = _FakeLibraryService()
+    viewmodel = _viewmodel(tmp_path, library_service=library)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.seek(2)
+
+    # DOUBLE spread `(2, 3)` of 5 pages: resume index = smallest (2),
+    # percent = largest (3) / (5 - 1) * 100 = 75%.
+    assert library.progress_calls[-1] == ("book-1", 2, 75.0)
+
+    # Narrow viewport forces SINGLE layout, so the displayed indices collapse
+    # to one page and smallest == largest -> resume and progress agree.
+    viewmodel.set_viewport_size(700, 900)
+    viewmodel.seek(2)
+    assert library.progress_calls[-1] == ("book-1", 2, 50.0)
+
+
+def test_reader_viewmodel_shift_to_next_index_advances_smallest_after_backward(
+    tmp_path: Path,
+) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.go_next()
+    viewmodel.go_previous()
+
+    # After backward, layout draws are `[1, 0]`, smallest = 0. Shift must
+    # advance the smallest archive index by one, landing on `(1, 2)` rather
+    # than re-running `seek(primary + 1)` which would have produced `(2, 3)`.
+    assert viewmodel.current_index == 0
+    viewmodel.shift_to_next_index()
+    assert viewmodel.current_index == 1
+    assert viewmodel.current_display_indices == (1, 2)
+
+
+def test_reader_viewmodel_jump_to_end_displays_last_page_alone(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    viewmodel = _viewmodel(tmp_path, library_service=library)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.jump_to_end()
+
+    last_index = viewmodel.page_count - 1
+    assert viewmodel.current_index == last_index
+    assert viewmodel.current_display_indices == (last_index,)
+    assert library.progress_calls[-1] == ("book-1", last_index, 100.0)
+
+
+def test_reader_viewmodel_shift_to_next_index_collapses_to_single_at_last_page(
+    tmp_path: Path,
+) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    viewmodel.seek(3)
+
+    # Spread `(3, 4)` with `page_count == 5`. Shifting once pushes the smallest
+    # index to `4` (the last index); the spread collapses to a single-page
+    # display so the indicator can read `5/5` unambiguously.
+    assert viewmodel.current_display_indices == (3, 4)
+    viewmodel.shift_to_next_index()
+    assert viewmodel.current_index == viewmodel.page_count - 1
+    assert viewmodel.current_display_indices == (viewmodel.page_count - 1,)
 
 
 def _viewmodel(

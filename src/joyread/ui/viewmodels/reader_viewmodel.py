@@ -67,10 +67,19 @@ class ReaderViewModel:
         self._pages: dict[int, ReaderPageImage] = {}
         self._unavailable_pages: set[int] = set()
         self._page_count = 0
+        # `_primary_index` is the LAYOUT anchor only. It decides which page's
+        # aspect ratio drives single/double/wide-pan layout. It is intentionally
+        # NOT the user-facing reading position: the indicator, slider value,
+        # resume index, and progress percent are derived from the actually
+        # displayed indices (see `_navigation_anchor_indices`).
         self._primary_index = max(0, progress.page_index if progress is not None else 0)
         self._companion_index: int | None = None
         self._pan_x = 0.0
         self._vertical_scroll_y = 0.0
+        # Last `(page_index, percent)` tuple submitted to persistence. Used to
+        # de-duplicate the new layout-settled progress saves so we do not spam
+        # the task service when nothing changed.
+        self._last_saved_progress: tuple[int, float] | None = None
 
         self.title = title
         self.settings = settings or ReaderSettings()
@@ -83,7 +92,13 @@ class ReaderViewModel:
 
     @property
     def current_index(self) -> int:
-        return self._primary_index
+        # User-facing reading position: smallest of the actually displayed
+        # indices. Drives the footer indicator, the slider value, and the
+        # resume index persisted to the database.
+        if self._page_count <= 0:
+            return 0
+        anchors = self._navigation_anchor_indices()
+        return min(anchors) if anchors else 0
 
     @property
     def current_display_indices(self) -> tuple[int, ...]:
@@ -129,6 +144,7 @@ class ReaderViewModel:
         self._unavailable_pages.clear()
         self._page_count = 0
         self._layout_result = None
+        self._last_saved_progress = None
         self._emit_state()
         self._open_handle = self._task_service.submit(
             "reader-open",
@@ -185,6 +201,12 @@ class ReaderViewModel:
         self._pan_x = max(result.pan_min_x, min(result.pan_max_x, self._pan_x))
         self.layout_changed.emit(result)
         self._preload_nearby_pages()
+        # Re-save once the layout actually settles. Before this point we only
+        # had the planned `(primary, companion)` pair; after layout, page draws
+        # may have collapsed to SINGLE/WIDE_PAN and the largest displayed index
+        # used for progress percent can differ. De-duplication in
+        # `_save_progress` keeps this idempotent.
+        self._save_progress()
 
     def _recalculate_vertical_layout(self) -> None:
         indices = self.current_display_indices
@@ -215,6 +237,9 @@ class ReaderViewModel:
         self._pan_x = 0.0
         self.layout_changed.emit(result)
         self._preload_nearby_pages()
+        # Vertical mode always anchors on `_primary_index`, so the saved values
+        # rarely change here. The call still goes through the de-dup guard.
+        self._save_progress()
 
     def seek(self, page_index: int) -> None:
         if self._page_count <= 0:
@@ -232,7 +257,10 @@ class ReaderViewModel:
 
     def jump_to_end(self) -> None:
         if self._page_count > 0:
-            self._set_target_spread(self._page_count - 1, self._previous_companion(self._page_count - 1))
+            # Jump-to-end is an explicit user intent to land on the last page;
+            # render it as a single-page spread so the indicator reads
+            # `N/N` and progress is unambiguously 100%.
+            self._set_target_spread(self._page_count - 1, None)
             self._save_progress()
             self._emit_state()
 
@@ -314,7 +342,17 @@ class ReaderViewModel:
         self._emit_state()
 
     def shift_to_next_index(self) -> None:
-        self.seek(self._primary_index + 1)
+        # Advance the smallest displayed index by one regardless of which page
+        # is currently the layout anchor. This matches the user-visible mental
+        # model: pressing "shift" walks the spread window one archive index
+        # forward (e.g. `[0, 1]` -> `[1, 2]`, and even after a backward step
+        # such as `(1, 0)` it correctly moves on to `(1, 2)`).
+        if self._page_count <= 0:
+            return
+        anchors = self._navigation_anchor_indices()
+        if not anchors:
+            return
+        self.seek(min(anchors) + 1)
 
     def set_custom_enabled(self, enabled: bool) -> None:
         self.settings = replace(self.settings, custom_enabled=enabled)
@@ -405,7 +443,15 @@ class ReaderViewModel:
         )
 
     def _companion_for_seek(self, primary_index: int) -> int | None:
-        return self._next_companion(primary_index) or self._previous_companion(primary_index)
+        # Only pair with the next page in archive order. Falling back to the
+        # previous page would force `seek(last_index)` (slider drag, resume on
+        # the last page, or `shift_to_next_index` arriving at the end) to
+        # render `[last - 1, last]` again, which is indistinguishable from
+        # the natural forward spread and confuses both the indicator and the
+        # user. Returning `None` here lets `_set_target_spread` collapse to a
+        # single-page display when the user explicitly lands on the last
+        # archive index.
+        return self._next_companion(primary_index)
 
     def _next_companion(self, primary_index: int) -> int | None:
         return self._valid_companion(primary_index + 1, primary_index)
@@ -557,10 +603,37 @@ class ReaderViewModel:
         return 1
 
     def _navigation_anchor_indices(self) -> tuple[int, ...]:
+        """Indices that are actually being displayed.
+
+        Prefers the layout result's page draws (authoritative once a layout has
+        been computed for the current spread) and falls back to the planned
+        `current_display_indices` (or the clamped `_primary_index`) when the
+        result is not yet ready or is stale. This is the single source of
+        truth for three derived values:
+
+        - navigation deltas in `go_next` / `go_previous`,
+        - the smallest displayed index used by `current_index` (indicator,
+          slider value, resume page) and `shift_to_next_index`,
+        - the largest displayed index used by `_save_progress` for the percent.
+
+        Staleness check: every horizontal layout the engine produces includes
+        `_primary_index` in its `page_draws` (SINGLE/DOUBLE/WIDE_PAN all set
+        `page1_index=_primary_index`). If `_primary_index` is missing, the
+        cached layout result belongs to a previous spread whose pages were
+        rendered before navigation advanced — typical between a navigation
+        event and the async page-load that lets `recalculate_layout` finish.
+        Returning those stale draws would desync the indicator from the
+        upcoming canvas, so we fall back to the planned indices instead.
+        """
         if self._is_vertical_mode:
             return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
         if self._layout_result is not None and self._layout_result.page_draws:
-            return tuple(draw.page_index for draw in self._layout_result.page_draws)
+            draws = tuple(draw.page_index for draw in self._layout_result.page_draws)
+            if self._primary_index in draws:
+                return draws
+        planned = self.current_display_indices
+        if planned:
+            return planned
         return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
 
     def _vertical_step(self) -> float:
@@ -587,9 +660,19 @@ class ReaderViewModel:
     def _save_progress(self) -> None:
         if self._library_service is None or self._book_uuid is None or self._page_count <= 0:
             return
-        percent = 0.0 if self._page_count <= 1 else (self._primary_index / (self._page_count - 1)) * 100.0
+        anchors = self._navigation_anchor_indices()
+        if not anchors:
+            return
+        # Resume index = smallest displayed page; progress percent uses the
+        # largest displayed page so a spread like `[N-2, N-1]` is recorded as
+        # 100% complete even though `N-2` is the index we resume on.
+        page_index = min(anchors)
+        largest = max(anchors)
+        percent = 0.0 if self._page_count <= 1 else (largest / (self._page_count - 1)) * 100.0
+        if self._last_saved_progress == (page_index, percent):
+            return
+        self._last_saved_progress = (page_index, percent)
         book_uuid = self._book_uuid
-        page_index = self._primary_index
         self._save_handle = self._task_service.submit(
             "reader-progress",
             lambda: self._library_service.set_progress(book_uuid, page_index, percent),
