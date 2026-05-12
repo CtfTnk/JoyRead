@@ -11,11 +11,15 @@ from pathlib import Path
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
+from joyread.core.services.cache_service import BoundedByteCache
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.signals import Signal
+
+
+_DEFAULT_DETAIL_THUMBNAIL_CACHE_MB = 64
 
 
 class ViewMode(StrEnum):
@@ -55,6 +59,7 @@ class ShelfViewModel:
         cover_size: tuple[int, int] | None = None,
         settings: AppSettings | None = None,
         settings_store: SettingsStore | None = None,
+        detail_thumbnail_cache_mb: int | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
@@ -99,6 +104,17 @@ class ShelfViewModel:
         self._detail_has_more = True
         self._detail_batch_pending = False
         self._detail_batch_handle: TaskHandle[DetailThumbnailBatch] | None = None
+        # Detail thumbnails are scoped to a single open detail panel. Owning
+        # the byte-budgeted cache here means closing the panel deterministic-
+        # ally frees those bytes regardless of LRU pressure on other caches.
+        detail_mb = detail_thumbnail_cache_mb
+        if detail_mb is None and settings is not None:
+            detail_mb = getattr(settings, "detail_thumbnail_cache_mb", None)
+        if detail_mb is None:
+            detail_mb = _DEFAULT_DETAIL_THUMBNAIL_CACHE_MB
+        self._detail_thumbnail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(
+            max_bytes=max(0, int(detail_mb)) * 1024 * 1024,
+        )
 
     @property
     def cover_paths(self) -> dict[str, Path]:
@@ -592,6 +608,7 @@ class ShelfViewModel:
         token = self._detail_load_token
         start_index = self._detail_next_index
         self._detail_batch_pending = True
+        detail_cache = self._detail_thumbnail_cache
         self._detail_batch_handle = self._task_service.submit(
             f"detail-thumbnail-batch-{book_uuid}-{start_index}",
             lambda book=book, start_index=start_index: self._thumbnail_service.generate_detail_thumbnail_batch(
@@ -599,6 +616,7 @@ class ShelfViewModel:
                 start_index=start_index,
                 batch_size=self._detail_batch_size,
                 size=size,
+                detail_cache=detail_cache,
             ),
             on_success=lambda batch, token=token: self._handle_detail_thumbnail_batch_result(token, batch),
             on_failure=lambda _error, token=token: self._handle_detail_thumbnail_batch_failure(token),
@@ -709,11 +727,21 @@ class ShelfViewModel:
         if self.detail_book_uuid == book_uuid:
             return
         self._cancel_detail_thumbnail_batch()
+        # Closing the detail panel (or switching to a different book) frees
+        # the cached PNGs immediately. This is the deterministic counterpart
+        # to the byte budget — the budget caps how high memory can go while
+        # detail is open, this call guarantees zero bytes when it is closed.
+        self._detail_thumbnail_cache.clear()
         self.detail_book_uuid = book_uuid
         self._detail_load_token += 1
         self._detail_next_index = 0
         self._detail_has_more = book_uuid is not None
         self._detail_batch_pending = False
+
+    def resize_detail_thumbnail_cache(self, max_bytes: int) -> None:
+        """Live-resize the detail thumbnail budget from the settings panel."""
+
+        self._detail_thumbnail_cache.resize(max(0, int(max_bytes)))
 
     def _cancel_detail_thumbnail_batch(self) -> None:
         if self._detail_batch_handle is not None:

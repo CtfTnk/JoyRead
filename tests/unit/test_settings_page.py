@@ -95,7 +95,10 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    assert len(setting_items) == 4
+    # Four original General rows (Language, Import switch, Window switch,
+    # Storage Location) plus the new Cache sub-group: three numeric inputs
+    # and one usage/clear row = eight QFrames flagged ``class=SettingsItem``.
+    assert len(setting_items) == 8
 
 
 def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> None:

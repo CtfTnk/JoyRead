@@ -65,12 +65,14 @@ class ReaderShellWidget(QWidget):
         self.viewmodel = ReaderViewModel(
             context.reader_session_service,
             context.task_service,
-            context.cache_service,
+            context.cache_service.issue_reader_namespace(),
             context.library_service if book is not None else None,
             book_uuid=book.uuid if book is not None else None,
             title=title or (book.title if book is not None else self._source_path.stem),
             settings=_reader_settings_for_book(context, book),
             progress=_reader_progress_for_book(context, book, start_page_index),
+            prefetch_before=context.config.page_prefetch_before,
+            prefetch_after=context.config.page_prefetch_after,
         )
         self._connect_signals()
         self._install_auto_hide()

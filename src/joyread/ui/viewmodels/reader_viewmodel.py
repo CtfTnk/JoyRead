@@ -20,7 +20,7 @@ from joyread.core.reader import (
     SizeF,
     SmartLayoutEngine,
 )
-from joyread.core.services.cache_service import CacheService
+from joyread.core.services.cache_service import NamespacedPageCache
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.ui.resources.styles.theme import Theme
@@ -34,13 +34,15 @@ class ReaderViewModel:
         self,
         session_service: ReaderSessionService,
         task_service: TaskService,
-        cache_service: CacheService,
+        page_cache: NamespacedPageCache,
         library_service: LibraryService | None = None,
         *,
         book_uuid: str | None = None,
         title: str = "Reader",
         settings: ReaderSettings | None = None,
         progress: ReaderProgress | None = None,
+        prefetch_before: int = 1,
+        prefetch_after: int = 1,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
@@ -51,13 +53,15 @@ class ReaderViewModel:
 
         self._session_service = session_service
         self._task_service = task_service
-        self._cache_service = cache_service
+        # `_page_cache` namespaces the shared CacheService.reader_page_cache so
+        # each reader window only sees its own pages and `cancel()` purges
+        # just this session's bytes from the global budget.
+        self._page_cache = page_cache
         self._library_service = library_service
         self._layout_engine = SmartLayoutEngine()
         self._session_lock = RLock()
         self._session: ArchiveImageSession | None = None
         self._source_path: Path | None = None
-        self._source_signature = ""
         self._book_uuid = book_uuid
         self._open_handle: TaskHandle[ArchiveImageSession] | None = None
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
@@ -67,6 +71,11 @@ class ReaderViewModel:
         self._pages: dict[int, ReaderPageImage] = {}
         self._unavailable_pages: set[int] = set()
         self._page_count = 0
+        # Prefetch windows come from AppConfig; we hold the raw values and let
+        # `_preload_nearby_pages` apply direction-aware bias so RTL readers
+        # prefetch toward the next page, not the previous one.
+        self._prefetch_before = max(0, int(prefetch_before))
+        self._prefetch_after = max(0, int(prefetch_after))
         # `_primary_index` is the LAYOUT anchor only. It decides which page's
         # aspect ratio drives single/double/wide-pan layout. It is intentionally
         # NOT the user-facing reading position: the indicator, slider value,
@@ -137,7 +146,6 @@ class ReaderViewModel:
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
         self.cancel()
         self._source_path = Path(source_path)
-        self._source_signature = _source_signature(self._source_path)
         self.is_loading = True
         self.error_message = None
         self._pages.clear()
@@ -163,6 +171,10 @@ class ReaderViewModel:
         self._open_handle = None
         self._page_handles.clear()
         self._save_handle = None
+        # Free this session's slice of the shared reader page budget so other
+        # open readers can claim it. The namespace itself stays valid; a
+        # subsequent `open_path` will refill it.
+        self._page_cache.clear()
 
     def set_viewport_size(self, width: int, height: int) -> None:
         size = SizeF(max(1.0, float(width)), max(1.0, float(height)))
@@ -510,7 +522,7 @@ class ReaderViewModel:
                 or page_index in self._page_handles
             ):
                 continue
-            cached = self._cache_service.page_cache.get(self._cache_key(page_index))
+            cached = self._page_cache.get(page_index)
             if cached is None:
                 missing.append(page_index)
                 continue
@@ -550,7 +562,7 @@ class ReaderViewModel:
                 self._mark_page_unavailable(page_index)
                 continue
             self._unavailable_pages.discard(page_index)
-            self._cache_service.page_cache.put(self._cache_key(page_index), image.image_bytes)
+            self._page_cache.put(page_index, image.image_bytes)
             self._pages[image.page_index] = image
             self.page_ready.emit(image)
             loaded = True
@@ -584,18 +596,35 @@ class ReaderViewModel:
     def _preload_nearby_pages(self) -> None:
         if self._page_count <= 0:
             return
+        # `before`/`after` follow archive index order, but RTL users read with
+        # decreasing indices visually, so we swap the bias so prefetch always
+        # tracks the direction the user is moving in.
+        before, after = self._directional_prefetch_window()
         if self._is_vertical_mode:
             self._request_pages({
                 index
-                for index in range(self._primary_index - 2, self._primary_index + 4)
+                for index in range(self._primary_index - before, self._primary_index + after + 1)
                 if 0 <= index < self._page_count
             })
             return
-        self._request_pages({
-            max(0, self._primary_index - 1),
-            min(self._page_count - 1, self._primary_index + 1),
-            min(self._page_count - 1, self._primary_index + self._current_step()),
-        })
+
+        step = self._current_step()
+        targets: set[int] = set()
+        # Pages behind the spread (going back).
+        for offset in range(1, before + 1):
+            targets.add(max(0, self._primary_index - offset))
+        # Pages ahead of the spread. Walk ``after`` indices past the spread
+        # so a forward turn always finds the next pages in the cache.
+        for offset in range(1, after + 1):
+            targets.add(min(self._page_count - 1, self._primary_index + step + offset - 1))
+        self._request_pages(targets)
+
+    def _directional_prefetch_window(self) -> tuple[int, int]:
+        before = self._prefetch_before
+        after = self._prefetch_after
+        if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:
+            return after, before
+        return before, after
 
     def _current_step(self) -> int:
         if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.DOUBLE:
@@ -688,18 +717,5 @@ class ReaderViewModel:
             lambda: self._library_service.save_reader_settings(self._book_uuid or "", settings),
         )
 
-    def _cache_key(self, page_index: int) -> str:
-        return f"{self._source_signature}:{page_index}"
-
     def _emit_state(self) -> None:
         self.state_changed.emit()
-
-
-def _source_signature(path: Path | None) -> str:
-    if path is None:
-        return "unknown"
-    try:
-        stat = path.stat()
-    except OSError:
-        return str(path)
-    return f"{path}:{stat.st_mtime_ns}:{stat.st_size}"

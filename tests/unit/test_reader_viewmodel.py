@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.task_service import TaskHandle, TaskStatus
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
@@ -322,21 +323,132 @@ def test_reader_viewmodel_shift_to_next_index_collapses_to_single_at_last_page(
     assert viewmodel.current_display_indices == (viewmodel.page_count - 1,)
 
 
+def _cache_service(tmp_path: Path) -> CacheService:
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    return CacheService(archive_extraction_pool=pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+
+
 def _viewmodel(
     tmp_path: Path,
     dimensions: tuple[int, int] = (600, 900),
     library_service=None,  # noqa: ANN001
+    *,
+    cache_service: CacheService | None = None,
+    prefetch_before: int = 1,
+    prefetch_after: int = 1,
 ) -> ReaderViewModel:
     source = tmp_path / "book.cbz"
     source.write_bytes(b"fake")
+    cache = cache_service or _cache_service(tmp_path)
     return ReaderViewModel(
         _FakeSessionService(dimensions),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
-        CacheService(16, 16),
+        cache.issue_reader_namespace(),
         library_service,  # type: ignore[arg-type]
         book_uuid="book-1" if library_service is not None else None,
         title="Book",
+        prefetch_before=prefetch_before,
+        prefetch_after=prefetch_after,
     )
+
+
+def test_reader_viewmodel_cancel_clears_only_its_namespace_in_shared_cache(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm_a = _viewmodel(tmp_path, cache_service=cache_service)
+    vm_b = _viewmodel(tmp_path, cache_service=cache_service)
+
+    vm_a.open_path(tmp_path / "a.cbz")
+    vm_b.open_path(tmp_path / "b.cbz")
+    vm_a.set_viewport_size(1600, 900)
+    vm_b.set_viewport_size(1600, 900)
+    bytes_before = cache_service.reader_page_cache.current_bytes
+    assert bytes_before > 0
+
+    vm_a.cancel()
+
+    # Reader B's pages survive — only A's slice of the shared cache is freed.
+    bytes_after = cache_service.reader_page_cache.current_bytes
+    assert bytes_after > 0
+    assert bytes_after < bytes_before
+
+
+def test_reader_viewmodel_multi_open_respects_shared_byte_budget(tmp_path: Path) -> None:
+    # A tight shared budget guarantees that opening two readers can never
+    # multiply memory: the cache evicts oldest pages from idle readers first.
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=1024)
+    cache_service = CacheService(archive_extraction_pool=pool, reader_page_cache_max_bytes=2048)
+    vm_a = _viewmodel(tmp_path, cache_service=cache_service)
+    vm_b = _viewmodel(tmp_path, cache_service=cache_service)
+
+    vm_a.open_path(tmp_path / "a.cbz")
+    vm_a.set_viewport_size(1600, 900)
+    vm_b.open_path(tmp_path / "b.cbz")
+    vm_b.set_viewport_size(1600, 900)
+
+    # Walk through both books to load several pages and exercise eviction.
+    for _ in range(3):
+        vm_a.go_next()
+        vm_b.go_next()
+
+    assert cache_service.reader_page_cache.current_bytes <= 2048
+
+
+def test_reader_viewmodel_prefetch_window_uses_configured_after_count(tmp_path: Path) -> None:
+    cache_service_low = _cache_service(tmp_path)
+    vm_low = _viewmodel(
+        tmp_path,
+        cache_service=cache_service_low,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    vm_low.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm_low.open_path(tmp_path / "low.cbz")
+    vm_low.set_viewport_size(700, 900)
+
+    cache_service_high = _cache_service(tmp_path)
+    vm_high = _viewmodel(
+        tmp_path,
+        cache_service=cache_service_high,
+        prefetch_before=0,
+        prefetch_after=3,
+    )
+    vm_high.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm_high.open_path(tmp_path / "high.cbz")
+    vm_high.set_viewport_size(700, 900)
+
+    # AppConfig.page_prefetch_after must translate into how many pages the
+    # reader has on hand ahead of the current spread. With the same starting
+    # state, a higher ``after`` value must keep strictly more pages cached.
+    low_namespace = vm_low._page_cache
+    high_namespace = vm_high._page_cache
+    low_cached = [i for i in range(vm_low.page_count) if low_namespace.get(i) is not None]
+    high_cached = [i for i in range(vm_high.page_count) if high_namespace.get(i) is not None]
+    assert len(high_cached) > len(low_cached)
+    # And in LTR the prefetched pages live ahead of the current index.
+    assert all(index >= vm_high.current_index for index in high_cached)
+
+
+def test_reader_viewmodel_rtl_swaps_prefetch_window(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm = _viewmodel(
+        tmp_path,
+        cache_service=cache_service,
+        prefetch_before=0,
+        prefetch_after=3,
+    )
+    # Default direction is RTL but be explicit so the intent is obvious.
+    vm.set_direction(ReaderDirection.RIGHT_TO_LEFT)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+    vm.seek(3)
+
+    namespace = vm._page_cache
+    # RTL swaps the window so the user-facing "forward" prefetch (decreasing
+    # archive indices) is covered by the configured ``after`` count. With
+    # prefetch_after=3 the cache should hold pages 0..3 (page 3 from the
+    # spread, pages 0..2 from the prefetch).
+    for index in range(0, 4):
+        assert namespace.get(index) is not None, f"page {index} should be prefetched"
 
 
 def _png_bytes() -> bytes:

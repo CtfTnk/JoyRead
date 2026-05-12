@@ -392,12 +392,15 @@ class FakeThumbnailService:
         del size
         return Path(f"/tmp/{book.uuid}.png")
 
-    def generate_detail_thumbnail_batch(self, book, start_index, batch_size, size):  # noqa: ANN001
+    def generate_detail_thumbnail_batch(self, book, start_index, batch_size, size, *, detail_cache=None):  # noqa: ANN001
         del size
         items = tuple(
             DetailThumbnailItem(page_index=index, image_bytes=f"page-{index}".encode())
             for index in range(start_index, start_index + batch_size)
         )
+        if detail_cache is not None:
+            for item in items:
+                detail_cache.put((item.page_index, 100, 142), item.image_bytes)
         return DetailThumbnailBatch(
             book_uuid=book.uuid,
             start_index=start_index,
@@ -473,6 +476,30 @@ def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
         f"detail-thumbnail-batch-{book.uuid}-0",
         f"detail-thumbnail-batch-{book.uuid}-14",
     ]
+
+
+def test_detail_thumbnail_cache_is_cleared_when_detail_panel_closes() -> None:
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(MockBookRepository()),
+        FakeThumbnailService(),  # type: ignore[arg-type]
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+    vm.load_books()
+    book = next(book for book in vm.books if book.uuid == "mock-book-15")
+    vm.show_detail(book.uuid)
+    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    task_service.complete()
+
+    cache = vm._detail_thumbnail_cache
+    assert cache.current_bytes > 0
+
+    vm.hide_detail()
+
+    # Closing the detail panel must release the bytes deterministically, not
+    # wait for LRU pressure on some other cache to age them out.
+    assert cache.current_bytes == 0
 
 
 def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:

@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
+    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -20,9 +21,19 @@ from PySide6.QtWidgets import (
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
+from joyread.ui.viewmodels.settings_viewmodel import (
+    ARCHIVE_POOL_MAX_MB,
+    ARCHIVE_POOL_MIN_MB,
+    DETAIL_THUMBNAIL_CACHE_MAX_MB,
+    DETAIL_THUMBNAIL_CACHE_MIN_MB,
+    READER_PAGE_CACHE_MAX_MB,
+    READER_PAGE_CACHE_MIN_MB,
+    SettingsSectionKey,
+    SettingsViewModel,
+)
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.menus import FigmaMenu
+from joyread.ui.widgets.section_banner import SectionBanner
 
 
 class SettingsPageWidget(QFrame):
@@ -79,6 +90,11 @@ class SettingsPageWidget(QFrame):
         return []
 
     def _general_items(self) -> list[QWidget]:
+        # General sub-group: existing settings, headed by the same banner
+        # widget the sidebar uses for "Book Shelf" / "Collections" so the
+        # grouping vocabulary is consistent across the app.
+        general_banner = SectionBanner("General", self._resources)
+
         language = SettingsDropdownItem(
             "Language",
             self._viewmodel.language,
@@ -102,7 +118,57 @@ class SettingsPageWidget(QFrame):
         storage = SettingsAddressItem("Storage Location", self._viewmodel.storage_location)
         storage.change_requested.connect(self.storage_change_requested.emit)
 
-        return [language, import_switch, window_switch, storage]
+        # Cache sub-group: user-tunable cache budgets and a one-shot purge for
+        # the disk pool. Live in General per design — there is no separate
+        # "Performance" section.
+        cache_banner = SectionBanner("Cache", self._resources)
+
+        reader_cache_item = SettingsNumericItem(
+            "Reader page cache (in-memory)",
+            self._viewmodel.reader_page_cache_mb,
+            READER_PAGE_CACHE_MIN_MB,
+            READER_PAGE_CACHE_MAX_MB,
+            "MB",
+        )
+        reader_cache_item.value_changed.connect(self._viewmodel.set_reader_page_cache_mb)
+
+        detail_cache_item = SettingsNumericItem(
+            "Detail thumbnail cache (in-memory)",
+            self._viewmodel.detail_thumbnail_cache_mb,
+            DETAIL_THUMBNAIL_CACHE_MIN_MB,
+            DETAIL_THUMBNAIL_CACHE_MAX_MB,
+            "MB",
+        )
+        detail_cache_item.value_changed.connect(self._viewmodel.set_detail_thumbnail_cache_mb)
+
+        archive_pool_item = SettingsNumericItem(
+            "Archive extraction pool (disk)",
+            self._viewmodel.archive_extraction_pool_mb,
+            ARCHIVE_POOL_MIN_MB,
+            ARCHIVE_POOL_MAX_MB,
+            "MB",
+        )
+        archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_mb)
+
+        archive_pool_usage = SettingsCacheStatusItem(
+            "Archive pool usage",
+            current_bytes=self._viewmodel.archive_pool_current_bytes,
+            budget_mb=self._viewmodel.archive_extraction_pool_mb,
+        )
+        archive_pool_usage.clear_requested.connect(self._viewmodel.request_clear_archive_pool)
+
+        return [
+            general_banner,
+            language,
+            import_switch,
+            window_switch,
+            storage,
+            cache_banner,
+            reader_cache_item,
+            detail_cache_item,
+            archive_pool_item,
+            archive_pool_usage,
+        ]
 
 
 class SettingsSidebarWidget(QFrame):
@@ -521,3 +587,89 @@ class _SettingsNameCell(QWidget):
         label.setProperty("class", "SettingsItemNameText")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
+
+
+class SettingsNumericItem(SettingsOptionItem):
+    """Label + numeric spinbox row, sized to match SettingsDropdownItem."""
+
+    value_changed = QtSignal(int)
+
+    def __init__(
+        self,
+        name: str,
+        value: int,
+        minimum: int,
+        maximum: int,
+        suffix: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        spinbox = QSpinBox()
+        spinbox.setProperty("class", "SettingsNumericSpinBox")
+        spinbox.setRange(minimum, maximum)
+        spinbox.setValue(value)
+        if suffix:
+            spinbox.setSuffix(f" {suffix}")
+        spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        spinbox.setFixedSize(Theme.settings_dropdown_width, Theme.settings_dropdown_height)
+        spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
+        super().__init__(name, spinbox, parent)
+        self.spinbox = spinbox
+        # ``valueChanged`` fires on every keystroke; the viewmodel clamps and
+        # persists, so de-bouncing here is unnecessary.
+        self.spinbox.valueChanged.connect(self.value_changed.emit)
+
+
+class SettingsCacheStatusItem(QFrame):
+    """Row that displays current pool usage alongside a small ``Clear`` action."""
+
+    clear_requested = QtSignal()
+
+    def __init__(
+        self,
+        name: str,
+        current_bytes: int,
+        budget_mb: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setProperty("class", "SettingsItem")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(Theme.settings_item_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+        )
+        layout.setSpacing(0)
+
+        layout.addWidget(_SettingsNameCell(name), stretch=1)
+
+        option = QWidget()
+        option.setObjectName("SettingsItemOption")
+        option.setFixedHeight(Theme.settings_item_name_height)
+        option_layout = QHBoxLayout(option)
+        option_layout.setContentsMargins(0, 0, Theme.settings_address_option_padding_right, 0)
+        option_layout.setSpacing(Theme.settings_address_option_gap)
+
+        self._usage_label = QLabel(_format_usage_label(current_bytes, budget_mb))
+        self._usage_label.setObjectName("SettingsCacheUsageLabel")
+        self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        option_layout.addWidget(self._usage_label, stretch=1)
+
+        clear_button = SettingsPushButton("Clear")
+        clear_button.clicked.connect(self.clear_requested.emit)
+        option_layout.addWidget(clear_button)
+
+        layout.addWidget(option)
+
+    def set_usage(self, current_bytes: int, budget_mb: int) -> None:
+        self._usage_label.setText(_format_usage_label(current_bytes, budget_mb))
+
+
+def _format_usage_label(current_bytes: int, budget_mb: int) -> str:
+    used_mb = max(0, current_bytes) / (1024 * 1024)
+    return f"{used_mb:.1f} / {budget_mb} MB"

@@ -10,7 +10,6 @@ from __future__ import annotations
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-import hashlib
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 import re
@@ -40,6 +39,7 @@ from joyread.core.archive.models import (
     ArchiveValidationResult,
     PasswordProvider,
 )
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 
 try:  # pragma: no cover - exercised through dependency-missing branches.
     import py7zr
@@ -105,45 +105,6 @@ class _PageRecord:
     name: str
     password: str | None
     _page: ArchivePage | None = None
-
-
-class _ArchivePageCache:
-    """Small disk cache for extracted bytes from slow random-access formats."""
-
-    def __init__(self, cache_dir: Path | None) -> None:
-        self._cache_dir = cache_dir
-
-    def get(self, source: _ArchiveSource, name: str) -> bytes | None:
-        path = self._cache_path(source, name)
-        if path is None or not path.exists():
-            return None
-        try:
-            return path.read_bytes()
-        except OSError:
-            return None
-
-    def put(self, source: _ArchiveSource, name: str, data: bytes) -> None:
-        path = self._cache_path(source, name)
-        if path is None:
-            return
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(data)
-        except OSError:
-            return
-
-    def _cache_path(self, source: _ArchiveSource, name: str) -> Path | None:
-        if self._cache_dir is None or source.path is None:
-            return None
-        try:
-            stat = source.path.stat()
-        except OSError:
-            return None
-        digest = hashlib.sha256(
-            f"{source.path.resolve()}:{stat.st_mtime_ns}:{stat.st_size}:{name}".encode("utf-8")
-        ).hexdigest()
-        suffix = PurePosixPath(name).suffix.lower() or ".bin"
-        return self._cache_dir / f"{digest}{suffix}"
 
 
 class ArchiveImageSession:
@@ -278,10 +239,32 @@ class ArchiveImageSession:
 
 
 class ArchiveImageService:
-    """Create image sessions from supported comic archive files."""
+    """Create image sessions from supported comic archive files.
 
-    def __init__(self, page_cache_dir: str | Path | None = None) -> None:
-        self._page_cache = _ArchivePageCache(Path(page_cache_dir) if page_cache_dir is not None else None)
+    For 7z and RAR families the service consults an
+    :class:`ArchiveExtractionPool` instead of re-decompressing pages on every
+    access. The pool is supplied by the application (so it is shared with the
+    settings UI for "Clear cache" and live resizing) but tests can pass a
+    ``page_cache_dir`` to keep the legacy behaviour without standing up the
+    pool plumbing.
+    """
+
+    def __init__(
+        self,
+        page_cache_dir: str | Path | None = None,
+        *,
+        extraction_pool: ArchiveExtractionPool | None = None,
+    ) -> None:
+        if extraction_pool is not None and page_cache_dir is not None:
+            raise ValueError("Pass either extraction_pool or page_cache_dir, not both.")
+        if extraction_pool is not None:
+            self._page_cache = extraction_pool
+        elif page_cache_dir is not None:
+            # Default budget keeps existing tests behaving as if the cache is
+            # unbounded; production callers always inject a configured pool.
+            self._page_cache = ArchiveExtractionPool(Path(page_cache_dir), max_bytes=1 << 40)
+        else:
+            self._page_cache = ArchiveExtractionPool(None, max_bytes=0)
 
     def validate_archive(
         self,
@@ -507,10 +490,11 @@ class ArchiveImageService:
             return {}
 
         if self._should_cache_extracted_entries(source, entries):
+            assert source.path is not None  # narrowed by _should_cache_extracted_entries
             cached: dict[str, bytes] = {}
             missing: list[tuple[str, str | None]] = []
             for name, password in entries:
-                page = self._page_cache.get(source, name)
+                page = self._page_cache.get(source.path, name)
                 if page is None:
                     missing.append((name, password))
                 else:
@@ -518,7 +502,7 @@ class ArchiveImageService:
             if missing:
                 extracted = self._read_entries_uncached(source, missing)
                 for name, payload in extracted.items():
-                    self._page_cache.put(source, name, payload)
+                    self._page_cache.put(source.path, name, payload)
                 cached.update(extracted)
             return cached
 
