@@ -30,6 +30,48 @@ class _SyncTaskService:
         return handle
 
 
+class _ManualPageTaskService:
+    def __init__(self) -> None:
+        self.page_tasks = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None):  # noqa: ANN001
+        handle = TaskHandle(task_id=name)
+        handle.status = TaskStatus.RUNNING
+        if name.startswith("reader-pages"):
+            self.page_tasks.append((handle, callback, on_success, on_failure))
+            return handle
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return handle
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
+        return handle
+
+    def run_next_page_task(self) -> None:
+        handle, callback, on_success, on_failure = self.page_tasks.pop(0)
+        if handle.status == TaskStatus.CANCELLED:
+            return
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
+
+
 class _FakeSession:
     page_count = 5
 
@@ -118,6 +160,63 @@ def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None
     assert layout_modes
     assert ReaderDisplayMode.SINGLE not in layout_modes
     assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
+
+
+def test_reader_viewmodel_clears_stale_layout_while_step_navigation_target_loads(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    viewmodel = _viewmodel(tmp_path, task_service=task_service, prefetch_before=0, prefetch_after=0)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    task_service.run_next_page_task()
+
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [1, 0]
+
+    viewmodel.go_next()
+
+    assert viewmodel.current_index == 2
+    assert viewmodel.current_display_indices == (2, 3)
+    assert viewmodel.layout_result is None
+    assert viewmodel.loading_page_index == 2
+
+    viewmodel.go_next()
+
+    # Step navigation is ignored while the target spread is still unresolved.
+    assert viewmodel.current_display_indices == (2, 3)
+    assert viewmodel.loading_page_index == 2
+
+    task_service.run_next_page_task()
+
+    assert viewmodel.loading_page_index is None
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [3, 2]
+
+
+def test_reader_viewmodel_progress_seek_overrides_pending_step_navigation(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    viewmodel = _viewmodel(tmp_path, task_service=task_service, prefetch_before=0, prefetch_after=0)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    task_service.run_next_page_task()
+    viewmodel.go_next()
+
+    assert viewmodel.loading_page_index == 2
+
+    viewmodel.seek(4)
+
+    assert viewmodel.current_display_indices == (4,)
+    assert viewmodel.loading_page_index == 4
+
+    task_service.run_next_page_task()
+    assert viewmodel.loading_page_index == 4
+    assert viewmodel.layout_result is None
+
+    task_service.run_next_page_task()
+    assert viewmodel.loading_page_index is None
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [4]
 
 
 def test_reader_viewmodel_backward_navigation_uses_smallest_as_current_index(tmp_path: Path) -> None:
@@ -334,6 +433,7 @@ def _viewmodel(
     library_service=None,  # noqa: ANN001
     *,
     cache_service: CacheService | None = None,
+    task_service=None,  # noqa: ANN001
     prefetch_before: int = 1,
     prefetch_after: int = 1,
 ) -> ReaderViewModel:
@@ -342,7 +442,7 @@ def _viewmodel(
     cache = cache_service or _cache_service(tmp_path)
     return ReaderViewModel(
         _FakeSessionService(dimensions),  # type: ignore[arg-type]
-        _SyncTaskService(),  # type: ignore[arg-type]
+        task_service or _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         library_service,  # type: ignore[arg-type]
         book_uuid="book-1" if library_service is not None else None,

@@ -39,7 +39,7 @@ from joyread.core.archive.models import (
     ArchiveValidationResult,
     PasswordProvider,
 )
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache, ArchiveExtractionPool
 
 try:  # pragma: no cover - exercised through dependency-missing branches.
     import py7zr
@@ -68,6 +68,7 @@ _NATURAL_PART_RE = re.compile(r"(\d+)")
 _SEVEN_ZIP_READ_LIMIT = 512 * 1024 * 1024
 _ZIP_BAD_FILE_ERRORS = (BadZipFile,)
 _EXPENSIVE_CACHE_EXTENSIONS = _SEVEN_ZIP_EXTENSIONS | _RAR_EXTENSIONS
+EXPENSIVE_ARCHIVE_EXTENSIONS = _EXPENSIVE_CACHE_EXTENSIONS
 if pyzipper is not None:  # pyzipper uses its own BadZipFile class.
     _ZIP_BAD_FILE_ERRORS = (BadZipFile, pyzipper.zipfile.BadZipFile)
 
@@ -253,7 +254,7 @@ class ArchiveImageService:
         self,
         page_cache_dir: str | Path | None = None,
         *,
-        extraction_pool: ArchiveExtractionPool | None = None,
+        extraction_pool: ArchiveExtractionCache | None = None,
     ) -> None:
         if extraction_pool is not None and page_cache_dir is not None:
             raise ValueError("Pass either extraction_pool or page_cache_dir, not both.")
@@ -501,8 +502,7 @@ class ArchiveImageService:
                     cached[name] = page
             if missing:
                 extracted = self._read_entries_uncached(source, missing)
-                for name, payload in extracted.items():
-                    self._page_cache.put(source.path, name, payload)
+                self._page_cache.put_many(source.path, extracted)
                 cached.update(extracted)
             return cached
 

@@ -1,7 +1,8 @@
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.app.app_context import create_app_context
+from joyread.core.models.cache import ArchiveCacheStrategy
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
@@ -12,6 +13,7 @@ from joyread.ui.widgets.settings_page import (
     SettingsContentPanel,
     SettingsPageWidget,
     SettingsSidebarItem,
+    SettingsSpinButtonSmall,
     SettingsSwitchControl,
     SettingsSwitchItem,
 )
@@ -33,12 +35,15 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_individual_read_window(True)
     viewmodel.set_language("English")
     viewmodel.set_storage_location("~/Documents/JoyRead Library")
+    viewmodel.set_archive_cache_strategy("Hidden image files")
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
     assert viewmodel.individual_read_window is True
     assert viewmodel.storage_location == "~/Documents/JoyRead Library"
-    assert len(changes) == 4
+    assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
+    assert viewmodel.archive_cache_strategy_label == "Hidden image files"
+    assert len(changes) == 5
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -96,9 +101,13 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
     # Four original General rows (Language, Import switch, Window switch,
-    # Storage Location) plus the new Cache sub-group: three numeric inputs
-    # and one usage/clear row = eight QFrames flagged ``class=SettingsItem``.
-    assert len(setting_items) == 8
+    # Storage Location) plus the Cache sub-group: three numeric inputs, one
+    # strategy dropdown, and one usage/clear row = nine SettingsItem frames.
+    assert len(setting_items) == 9
+    spin_buttons = page.findChildren(SettingsSpinButtonSmall)
+    assert len(spin_buttons) == 3
+    assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
+    assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
 
 
 def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> None:
@@ -162,6 +171,85 @@ def test_settings_switch_control_toggles_and_keeps_figma_knob_size(qtbot) -> Non
     assert switch.checked is True
     assert emitted == [True]
     assert knob.x() == switch.width() - Theme.settings_switch_layout_margin - Theme.settings_switch_knob_size
+
+
+def test_settings_spin_button_small_matches_figma_geometry_and_steps(qtbot) -> None:
+    apply_theme()
+    spin = SettingsSpinButtonSmall(42, 8, 64, "%", ResourceLoader())
+    qtbot.addWidget(spin)
+    emitted: list[int] = []
+    spin.value_changed.connect(emitted.append)
+
+    spin.show()
+    QApplication.processEvents()
+
+    buttons = spin.findChildren(QToolButton)
+    labels = spin.findChildren(QLabel)
+    editor = spin.findChild(QLineEdit, "SettingsSpinValueEditor")
+
+    assert spin.size().width() == Theme.settings_spin_width
+    assert spin.size().height() == Theme.settings_spin_height
+    assert editor is not None
+    assert editor.width() == Theme.settings_spin_editor_width
+    assert editor.text() == "42"
+    assert len(buttons) == 2
+    assert [button.property("iconName") for button in buttons] == ["icon_left.svg", "icon_right.svg"]
+    assert {button.size().width() for button in buttons} == {Theme.settings_spin_step_button_width}
+    assert {button.size().height() for button in buttons} == {Theme.settings_spin_height}
+    assert [label.text() for label in labels] == ["%"]
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    assert spin.value == 43
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    assert spin.value == 42
+
+    spin.set_value(999)
+    assert spin.value == 64
+    spin.set_value(-1)
+    assert spin.value == 8
+    assert emitted == [43, 42, 64, 8]
+
+
+def test_settings_spin_button_small_commits_editor_value_on_return(qtbot) -> None:
+    apply_theme()
+    spin = SettingsSpinButtonSmall(42, 8, 64, "%", ResourceLoader())
+    qtbot.addWidget(spin)
+    emitted: list[int] = []
+    spin.value_changed.connect(emitted.append)
+
+    spin.show()
+    QApplication.processEvents()
+
+    editor = spin.findChild(QLineEdit, "SettingsSpinValueEditor")
+    assert editor is not None
+    editor.setFocus()
+    editor.selectAll()
+    qtbot.keyClicks(editor, "55")
+
+    assert spin.value == 42
+    assert emitted == []
+
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+
+    assert spin.value == 55
+    assert editor.text() == "55"
+    assert emitted == [55]
+
+    editor.selectAll()
+    qtbot.keyClicks(editor, "99")
+    assert spin.value == 55
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+
+    assert spin.value == 64
+    assert editor.text() == "64"
+    assert emitted == [55, 64]
+
+    editor.clear()
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+
+    assert spin.value == 64
+    assert editor.text() == "64"
+    assert emitted == [55, 64]
 
 
 def test_main_window_opens_centered_floating_settings_overlay_and_restores_sidebar(qtbot) -> None:

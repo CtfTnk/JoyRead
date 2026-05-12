@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+
 try:
     from platformdirs import user_config_path, user_data_path
 except ImportError:  # pragma: no cover - platformdirs is a project dependency.
@@ -31,6 +33,7 @@ class AppSettings:
     reader_page_cache_mb: int = 512
     detail_thumbnail_cache_mb: int = 64
     archive_extraction_pool_mb: int = 1024
+    archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
 
 
 class SettingsStore:
@@ -89,6 +92,7 @@ class SettingsStore:
             reader_page_cache_mb=_coerce_positive_int(raw.get("reader_page_cache_mb"), default=512),
             detail_thumbnail_cache_mb=_coerce_positive_int(raw.get("detail_thumbnail_cache_mb"), default=64),
             archive_extraction_pool_mb=_coerce_positive_int(raw.get("archive_extraction_pool_mb"), default=1024),
+            archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
         )
 
     def save(self, settings: AppSettings) -> None:

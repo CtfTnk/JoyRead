@@ -7,11 +7,16 @@ from os import environ
 from pathlib import Path
 
 from joyread.core.archive import ArchiveImageService
+from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderSessionService
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionCache,
+    ArchiveExtractionPool,
+    HiddenImageExtractionPool,
+)
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
@@ -40,7 +45,7 @@ class AppContext:
     resources: ResourceLoader
     database_interpreter: DatabaseInterpreter
     book_repository: BookRepository
-    archive_extraction_pool: ArchiveExtractionPool
+    archive_extraction_pool: ArchiveExtractionCache
     archive_image_service: ArchiveImageService
     reader_session_service: ReaderSessionService
     library_service: LibraryService
@@ -72,16 +77,11 @@ class AppContext:
         # rebuilds the pool against the new location. Bytes left behind under
         # the old root are harmless: they sit inside the old extraction
         # directory and will simply not be referenced again.
-        self.archive_extraction_pool = ArchiveExtractionPool(
-            self.paths.paths.cache / "archive_pages",
-            max_bytes=self.settings.archive_extraction_pool_mb * 1024 * 1024,
-        )
-        self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
-        self.reader_session_service = ReaderSessionService(self.archive_image_service)
+        self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
+        self._rebuild_archive_reading_services()
         self.database_interpreter = _create_database_interpreter(self.paths)
         self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
         self.library_service = LibraryService(self.book_repository)
-        self.cache_service.archive_extraction_pool = self.archive_extraction_pool
         self.thumbnail_service = ThumbnailService(self.paths, self.archive_image_service, self.cache_service)
         self.import_service = ImportService(
             self.paths,
@@ -93,6 +93,7 @@ class AppContext:
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
         self.settings_viewmodel.set_storage_location(self.settings.storage_location)
+        self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
         self._refresh_settings_pool_usage()
 
     def apply_cache_settings(self) -> None:
@@ -104,11 +105,31 @@ class AppContext:
         on ``ShelfViewModel`` so we resize it explicitly here.
         """
 
+        previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         self.settings = self.settings_store.load()
-        self.cache_service.apply_cache_budgets(
-            reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
-            archive_extraction_pool_bytes=self.settings.archive_extraction_pool_mb * 1024 * 1024,
-        )
+        next_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
+        if next_strategy != previous_strategy:
+            self.archive_extraction_pool.clear()
+            self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
+            self._rebuild_archive_reading_services()
+            self.thumbnail_service = ThumbnailService(self.paths, self.archive_image_service, self.cache_service)
+            self.import_service = ImportService(
+                self.paths,
+                self.database_interpreter,
+                self.archive_image_service,
+                self.hash_service,
+                self.settings.hash_algorithm,
+            )
+            self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
+            self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
+            self.cache_service.apply_cache_budgets(
+                reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
+            )
+        else:
+            self.cache_service.apply_cache_budgets(
+                reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
+                archive_extraction_pool_bytes=self.settings.archive_extraction_pool_mb * 1024 * 1024,
+            )
         self.shelf_viewmodel.resize_detail_thumbnail_cache(
             self.settings.detail_thumbnail_cache_mb * 1024 * 1024,
         )
@@ -122,6 +143,11 @@ class AppContext:
 
     def _refresh_settings_pool_usage(self) -> None:
         self.settings_viewmodel.refresh_archive_pool_usage()
+
+    def _rebuild_archive_reading_services(self) -> None:
+        self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
+        self.reader_session_service = ReaderSessionService(self.archive_image_service)
+        self.cache_service.archive_extraction_pool = self.archive_extraction_pool
 
 
 def create_app_context() -> AppContext:
@@ -144,10 +170,7 @@ def create_app_context() -> AppContext:
     book_repository: BookRepository = (
         MockBookRepository() if use_mock else _create_sqlite_book_repository(database_interpreter, paths)
     )
-    archive_extraction_pool = ArchiveExtractionPool(
-        paths.paths.cache / "archive_pages",
-        max_bytes=settings.archive_extraction_pool_mb * 1024 * 1024,
-    )
+    archive_extraction_pool = _create_archive_extraction_cache(paths, settings)
     archive_image_service = ArchiveImageService(extraction_pool=archive_extraction_pool)
     reader_session_service = ReaderSessionService(archive_image_service)
     library_service = LibraryService(book_repository)
@@ -178,10 +201,6 @@ def create_app_context() -> AppContext:
         settings_store=settings_store,
     )
     settings_viewmodel = SettingsViewModel(settings, settings_store)
-    # The settings panel renders a live "used / budget" label for the disk
-    # pool; provide it a thin lambda so the viewmodel can poll the live
-    # number without depending on ArchiveExtractionPool directly.
-    settings_viewmodel.set_archive_pool_bytes_provider(lambda: archive_extraction_pool.current_bytes)
 
     context = AppContext(
         config=config,
@@ -206,6 +225,10 @@ def create_app_context() -> AppContext:
         shelf_viewmodel=shelf_viewmodel,
         settings_viewmodel=settings_viewmodel,
     )
+    # The settings panel renders a live "used / budget" label for the disk
+    # pool; provide it a thin lambda so the viewmodel can poll the current
+    # strategy object even after a runtime cache-strategy switch.
+    settings_viewmodel.set_archive_pool_bytes_provider(lambda: context.archive_extraction_pool.current_bytes)
     # Hook user-driven cache actions back into the live services. Owning the
     # connection in AppContext keeps the viewmodel UI-only and makes the side
     # effects (resize/clear) easy to find from one place.
@@ -221,6 +244,14 @@ def _create_path_service(config: AppConfig, settings_store: SettingsStore, setti
         storage_root=Path(settings.storage_location),
         support_root=settings_store.support_root,
     )
+
+
+def _create_archive_extraction_cache(paths: PathService, settings: AppSettings) -> ArchiveExtractionCache:
+    strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
+    max_bytes = settings.archive_extraction_pool_mb * 1024 * 1024
+    if strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES:
+        return HiddenImageExtractionPool(paths.paths.cache / ".archive_image_pages", max_bytes=max_bytes)
+    return ArchiveExtractionPool(paths.paths.cache / ".archive_zip_bundles", max_bytes=max_bytes)
 
 
 def _create_database_interpreter(paths: PathService) -> DatabaseInterpreter:

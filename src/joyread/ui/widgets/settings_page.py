@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
-    QSpinBox,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -24,6 +23,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import (
     ARCHIVE_POOL_MAX_MB,
     ARCHIVE_POOL_MIN_MB,
+    ARCHIVE_CACHE_STRATEGY_OPTIONS,
     DETAIL_THUMBNAIL_CACHE_MAX_MB,
     DETAIL_THUMBNAIL_CACHE_MIN_MB,
     READER_PAGE_CACHE_MAX_MB,
@@ -128,6 +128,7 @@ class SettingsPageWidget(QFrame):
             self._viewmodel.reader_page_cache_mb,
             READER_PAGE_CACHE_MIN_MB,
             READER_PAGE_CACHE_MAX_MB,
+            self._resources,
             "MB",
         )
         reader_cache_item.value_changed.connect(self._viewmodel.set_reader_page_cache_mb)
@@ -137,6 +138,7 @@ class SettingsPageWidget(QFrame):
             self._viewmodel.detail_thumbnail_cache_mb,
             DETAIL_THUMBNAIL_CACHE_MIN_MB,
             DETAIL_THUMBNAIL_CACHE_MAX_MB,
+            self._resources,
             "MB",
         )
         detail_cache_item.value_changed.connect(self._viewmodel.set_detail_thumbnail_cache_mb)
@@ -146,9 +148,18 @@ class SettingsPageWidget(QFrame):
             self._viewmodel.archive_extraction_pool_mb,
             ARCHIVE_POOL_MIN_MB,
             ARCHIVE_POOL_MAX_MB,
+            self._resources,
             "MB",
         )
         archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_mb)
+
+        archive_strategy_item = SettingsDropdownItem(
+            "Archive cache strategy",
+            self._viewmodel.archive_cache_strategy_label,
+            ARCHIVE_CACHE_STRATEGY_OPTIONS,
+            self._resources,
+        )
+        archive_strategy_item.value_changed.connect(self._viewmodel.set_archive_cache_strategy)
 
         archive_pool_usage = SettingsCacheStatusItem(
             "Archive pool usage",
@@ -167,6 +178,7 @@ class SettingsPageWidget(QFrame):
             reader_cache_item,
             detail_cache_item,
             archive_pool_item,
+            archive_strategy_item,
             archive_pool_usage,
         ]
 
@@ -590,7 +602,7 @@ class _SettingsNameCell(QWidget):
 
 
 class SettingsNumericItem(SettingsOptionItem):
-    """Label + numeric spinbox row, sized to match SettingsDropdownItem."""
+    """Label + Figma spin button row for cache numeric settings."""
 
     value_changed = QtSignal(int)
 
@@ -600,23 +612,128 @@ class SettingsNumericItem(SettingsOptionItem):
         value: int,
         minimum: int,
         maximum: int,
+        resources: ResourceLoader,
         suffix: str = "",
         parent: QWidget | None = None,
     ) -> None:
-        spinbox = QSpinBox()
-        spinbox.setProperty("class", "SettingsNumericSpinBox")
-        spinbox.setRange(minimum, maximum)
-        spinbox.setValue(value)
-        if suffix:
-            spinbox.setSuffix(f" {suffix}")
-        spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        spinbox.setFixedSize(Theme.settings_dropdown_width, Theme.settings_dropdown_height)
-        spinbox.setButtonSymbols(QSpinBox.ButtonSymbols.UpDownArrows)
-        super().__init__(name, spinbox, parent)
-        self.spinbox = spinbox
-        # ``valueChanged`` fires on every keystroke; the viewmodel clamps and
-        # persists, so de-bouncing here is unnecessary.
-        self.spinbox.valueChanged.connect(self.value_changed.emit)
+        self.spin_button = SettingsSpinButtonSmall(value, minimum, maximum, suffix, resources)
+        super().__init__(name, self.spin_button, parent)
+        self.spinbox = self.spin_button
+        self.spin_button.value_changed.connect(self.value_changed.emit)
+
+
+class SettingsSpinButtonSmall(QFrame):
+    """Small numeric stepper adapted from Figma node 229:3566."""
+
+    value_changed = QtSignal(int)
+
+    def __init__(
+        self,
+        value: int,
+        minimum: int,
+        maximum: int,
+        unit: str,
+        resources: ResourceLoader,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._minimum = int(minimum)
+        self._maximum = int(maximum)
+        self._unit = unit
+        self._value = max(self._minimum, min(self._maximum, int(value)))
+        self.setProperty("class", "SettingsSpinButtonSmall")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedSize(Theme.settings_spin_width, Theme.settings_spin_height)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.settings_spin_outer_padding,
+            0,
+            Theme.settings_spin_outer_padding,
+            0,
+        )
+        layout.setSpacing(0)
+
+        text = QWidget()
+        text.setObjectName("SettingsSpinText")
+        text_layout = QHBoxLayout(text)
+        text_layout.setContentsMargins(
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+        )
+        text_layout.setSpacing(Theme.settings_spin_text_gap)
+        self._value_editor = QLineEdit()
+        self._value_editor.setObjectName("SettingsSpinValueEditor")
+        self._value_editor.setProperty("class", "SettingsSpinValueText")
+        self._value_editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._value_editor.setFrame(False)
+        self._value_editor.setMaxLength(max(len(str(self._minimum)), len(str(self._maximum))))
+        self._value_editor.setFixedWidth(Theme.settings_spin_editor_width)
+        self._value_editor.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
+        self._value_editor.returnPressed.connect(self._commit_editor_value)
+        self._value_editor.editingFinished.connect(self._refresh_label)
+        self._unit_label = QLabel(unit)
+        self._unit_label.setProperty("class", "SettingsSpinValueText")
+        self._unit_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        text_layout.addWidget(self._value_editor)
+        if unit:
+            text_layout.addWidget(self._unit_label)
+        text_layout.addStretch(1)
+        layout.addWidget(text, stretch=1)
+
+        button_area = QWidget()
+        button_area.setObjectName("SettingsSpinButtonArea")
+        button_area.setFixedWidth(Theme.settings_spin_button_area_width)
+        button_layout = QHBoxLayout(button_area)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(Theme.settings_spin_button_gap)
+        button_layout.addWidget(self._step_button(resources, "icon_left.svg", -1))
+        button_layout.addWidget(self._step_button(resources, "icon_right.svg", 1))
+        layout.addWidget(button_area)
+        self._refresh_label()
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    def set_value(self, value: int, *, emit: bool = True) -> None:
+        clamped = max(self._minimum, min(self._maximum, int(value)))
+        if clamped == self._value:
+            self._refresh_label()
+            return
+        self._value = clamped
+        self._refresh_label()
+        if emit:
+            self.value_changed.emit(clamped)
+
+    def step_by(self, delta: int) -> None:
+        self.set_value(self._value + delta)
+
+    def _step_button(self, resources: ResourceLoader, icon_name: str, delta: int) -> QToolButton:
+        button = QToolButton()
+        button.setProperty("class", "SettingsSpinStepButton")
+        button.setProperty("iconName", icon_name)
+        button.setIcon(QIcon(str(resources.icon_path(icon_name))))
+        button.setIconSize(QSize(Theme.settings_spin_icon_size, Theme.settings_spin_icon_size))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(Theme.settings_spin_step_button_width, Theme.settings_spin_height)
+        button.setAutoRepeat(True)
+        button.clicked.connect(lambda _checked=False, step=delta: self.step_by(step))
+        return button
+
+    def _refresh_label(self) -> None:
+        self._value_editor.setText(str(self._value))
+
+    def _commit_editor_value(self) -> None:
+        try:
+            value = int(self._value_editor.text())
+        except ValueError:
+            self._refresh_label()
+            return
+        self.set_value(value)
 
 
 class SettingsCacheStatusItem(QFrame):

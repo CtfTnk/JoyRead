@@ -720,6 +720,13 @@ QWidget#SettingsDropdownIndicator {
     border: none;
 }
 
+QWidget#SettingsSpinText,
+QWidget#SettingsSpinButtonArea,
+QLineEdit#SettingsSpinValueEditor {
+    background: transparent;
+    border: none;
+}
+
 QFrame[class="SettingsSidebarItem"] {
     background: transparent;
     border: none;
@@ -748,6 +755,7 @@ QFrame[class="SettingsItem"] {
 }
 
 QFrame[class="SettingsDropdownButton"],
+QFrame[class="SettingsSpinButtonSmall"],
 QToolButton[class="SettingsPushButton"] {
     background: __WINDOW_COLOR__;
     border: 1px solid __BUTTON_INNER_EDGE__;
@@ -760,6 +768,8 @@ QToolButton[class="SettingsPushButton"]:hover {
 }
 
 QLabel[class="SettingsControlText"],
+QLabel[class="SettingsSpinValueText"],
+QLineEdit[class="SettingsSpinValueText"],
 QToolButton[class="SettingsPushButton"],
 QLineEdit[class="SettingsPathField"] {
     color: __TEXT_COLOR__;
@@ -767,8 +777,22 @@ QLineEdit[class="SettingsPathField"] {
     font-weight: 500;
 }
 
+QLineEdit[class="SettingsSpinValueText"] {
+    padding: 0;
+}
+
 QToolButton[class="SettingsPushButton"] {
     padding: 0;
+}
+
+QToolButton[class="SettingsSpinStepButton"] {
+    background: transparent;
+    border: none;
+    padding: 0;
+}
+
+QToolButton[class="SettingsSpinStepButton"]:hover {
+    background: __SELECTED_COLOR__;
 }
 
 QLineEdit[class="SettingsPathField"] {

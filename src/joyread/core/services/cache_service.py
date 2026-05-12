@@ -26,7 +26,7 @@ from threading import RLock
 from typing import Callable, Generic, TypeVar
 from uuid import uuid4
 
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 
 
 K = TypeVar("K")
@@ -190,7 +190,7 @@ class CacheService:
 
     def __init__(
         self,
-        archive_extraction_pool: ArchiveExtractionPool,
+        archive_extraction_pool: ArchiveExtractionCache,
         reader_page_cache_max_bytes: int,
         cover_index_max_items: int = 1024,
     ) -> None:

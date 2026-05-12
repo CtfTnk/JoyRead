@@ -6,6 +6,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable
 
+from joyread.core.models.cache import (
+    ARCHIVE_CACHE_STRATEGY_LABELS,
+    ArchiveCacheStrategy,
+    normalize_archive_cache_strategy,
+)
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.signals import Signal
 
@@ -32,6 +37,7 @@ DETAIL_THUMBNAIL_CACHE_MIN_MB = 8
 DETAIL_THUMBNAIL_CACHE_MAX_MB = 512
 ARCHIVE_POOL_MIN_MB = 128
 ARCHIVE_POOL_MAX_MB = 8192
+ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
 
 class SettingsViewModel:
@@ -73,7 +79,14 @@ class SettingsViewModel:
             ARCHIVE_POOL_MIN_MB,
             ARCHIVE_POOL_MAX_MB,
         )
+        self.archive_cache_strategy = normalize_archive_cache_strategy(
+            getattr(settings, "archive_cache_strategy", ArchiveCacheStrategy.ZIP_BUNDLE.value)
+        )
         self.archive_pool_current_bytes = 0
+
+    @property
+    def archive_cache_strategy_label(self) -> str:
+        return ARCHIVE_CACHE_STRATEGY_LABELS[self.archive_cache_strategy]
 
     def set_section(self, section: SettingsSectionKey | str) -> None:
         normalized = SettingsSectionKey(section)
@@ -134,6 +147,15 @@ class SettingsViewModel:
             return
         self.archive_extraction_pool_mb = clamped
         self._persist(archive_extraction_pool_mb=clamped)
+        self.cache_budgets_changed.emit()
+        self.state_changed.emit()
+
+    def set_archive_cache_strategy(self, value: str) -> None:
+        strategy = normalize_archive_cache_strategy(value)
+        if strategy == self.archive_cache_strategy:
+            return
+        self.archive_cache_strategy = strategy
+        self._persist(archive_cache_strategy=strategy.value)
         self.cache_budgets_changed.emit()
         self.state_changed.emit()
 

@@ -148,6 +148,8 @@ class ReaderShellWidget(QWidget):
             self.canvas.set_status_text(self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
             self.canvas.set_status_text("Loading...")
+        elif self.viewmodel.loading_page_index is not None:
+            self.canvas.set_status_text(f"Loading page {self.viewmodel.loading_page_index + 1}...")
         elif self.viewmodel.page_count <= 0:
             self.canvas.set_status_text("No readable pages.")
 

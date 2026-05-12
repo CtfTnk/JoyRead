@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 from zipfile import ZipFile
 
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool, HiddenImageExtractionPool
 
 
 def _write_source(tmp_path: Path, name: str = "book.7z", body: bytes = b"fake-archive") -> Path:
@@ -216,3 +216,43 @@ def test_source_file_edit_invalidates_cached_bundle(tmp_path: Path) -> None:
     # Editing the source produces a different book_key, so the previous
     # bundle is no longer reachable for the new source identity.
     assert pool.get(source, "001.png") is None
+
+
+def test_zip_pool_put_many_writes_one_bundle_with_multiple_entries(tmp_path: Path) -> None:
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=4096)
+    source = _write_source(tmp_path)
+
+    pool.put_many(source, {"001.png": b"one", "002.png": b"two"})
+
+    bundles = list(directory.glob("*.zip"))
+    assert len(bundles) == 1
+    with ZipFile(bundles[0]) as archive:
+        assert sorted(archive.namelist()) == ["001.png", "002.png"]
+
+
+def test_hidden_image_pool_uses_hidden_folder_and_non_image_extension(tmp_path: Path) -> None:
+    directory = tmp_path / ".archive_image_pages"
+    pool = HiddenImageExtractionPool(directory, max_bytes=4096)
+    source = _write_source(tmp_path)
+
+    pool.put(source, "chapter/001.png", b"PNG-PAYLOAD")
+
+    assert pool.get(source, "chapter/001.png") == b"PNG-PAYLOAD"
+    files = [path for path in directory.rglob("*") if path.is_file()]
+    assert files
+    assert all(path.suffix == ".jrcache" for path in files)
+    assert all("001" not in path.name and ".png" not in path.name for path in files)
+    assert directory.name.startswith(".")
+
+
+def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> None:
+    directory = tmp_path / ".archive_image_pages"
+    pool = HiddenImageExtractionPool(directory, max_bytes=4096)
+    source = _write_source(tmp_path)
+    pool.put_many(source, {"001.png": b"one", "002.png": b"two"})
+
+    pool.clear()
+
+    assert pool.current_bytes == 0
+    assert not directory.exists()

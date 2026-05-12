@@ -23,12 +23,35 @@ JPEG/PNG bytes — the zip is purely a grouping container.
 from __future__ import annotations
 
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
 import os
 from pathlib import Path, PurePosixPath
+import shutil
 from threading import RLock
+from typing import Protocol
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
+
+class ArchiveExtractionCache(Protocol):
+    @property
+    def directory(self) -> Path | None: ...
+
+    @property
+    def max_bytes(self) -> int: ...
+
+    @property
+    def current_bytes(self) -> int: ...
+
+    def get(self, source_path: Path | str, entry_name: str) -> bytes | None: ...
+
+    def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None: ...
+
+    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None: ...
+
+    def resize(self, max_bytes: int) -> None: ...
+
+    def clear(self) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -163,6 +186,49 @@ class ArchiveExtractionPool:
             self._current_bytes += entry.size
             self._evict_locked(protect_key=book_key)
 
+    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None:
+        """Persist several entries with one zip rewrite.
+
+        Reader cache warm-up extracts pages in descending chunks. Rewriting the
+        zip bundle once per chunk avoids the pathological "rewrite the whole
+        cache for every page" behavior while still keeping writes atomic.
+        """
+
+        if self._directory is None or not payloads:
+            return
+        self._ensure_reconciled()
+        source = Path(source_path)
+        book_key = self._book_key_for(source)
+        if book_key is None:
+            return
+        safe_payloads = {
+            self._safe_entry_name(entry_name): data
+            for entry_name, data in payloads.items()
+            if entry_name
+        }
+        if not safe_payloads:
+            return
+        bundle_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
+        tmp_path = bundle_path.with_suffix(f"{self._ZIP_SUFFIX}.tmp")
+        try:
+            bundle_path.parent.mkdir(parents=True, exist_ok=True)
+            self._write_bundle_many_locked(bundle_path, tmp_path, safe_payloads)
+            stat = bundle_path.stat()
+        except OSError:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
+        with self._lock:
+            previous = self._index.pop(book_key, None)
+            if previous is not None:
+                self._current_bytes -= previous.size
+            self._index[book_key] = entry
+            self._current_bytes += entry.size
+            self._evict_locked(protect_key=book_key)
+
     def resize(self, max_bytes: int) -> None:
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
@@ -276,12 +342,20 @@ class ArchiveExtractionPool:
         per-bundle lock file.
         """
 
+        self._write_bundle_many_locked(bundle_path, tmp_path, {entry_name: data})
+
+    def _write_bundle_many_locked(
+        self,
+        bundle_path: Path,
+        tmp_path: Path,
+        payloads: Mapping[str, bytes],
+    ) -> None:
         existing: dict[str, bytes] = {}
         if bundle_path.exists():
             try:
                 with ZipFile(bundle_path, "r") as archive:
                     for info in archive.infolist():
-                        if info.filename == entry_name:
+                        if info.filename in payloads:
                             continue
                         existing[info.filename] = archive.read(info)
             except (BadZipFile, OSError):
@@ -293,7 +367,8 @@ class ArchiveExtractionPool:
             with ZipFile(tmp_path, "w", compression=ZIP_STORED) as archive:
                 for name, payload in existing.items():
                     archive.writestr(name, payload)
-                archive.writestr(entry_name, data)
+                for name, payload in payloads.items():
+                    archive.writestr(name, payload)
         except OSError:
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -320,3 +395,210 @@ class ArchiveExtractionPool:
                 # (the caller asked for it) but evict it on the next put.
                 return
             self._forget_locked(oldest_key)
+
+
+class HiddenImageExtractionPool:
+    """Disk LRU that stores extracted page bytes as hidden app cache files.
+
+    The payload files deliberately use opaque hashed names and a non-image
+    extension under a hidden folder. This is only cache hygiene: it discourages
+    casual media indexing and accidental opening by other software, but it is
+    not encryption or access control.
+    """
+
+    _PAGE_SUFFIX = ".jrcache"
+
+    def __init__(self, directory: Path | None, max_bytes: int) -> None:
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        self._directory = Path(directory) if directory is not None else None
+        self._max_bytes = int(max_bytes)
+        self._index: "OrderedDict[tuple[str, str], _PoolEntry]" = OrderedDict()
+        self._current_bytes = 0
+        self._lock = RLock()
+        self._reconciled = False
+
+    @property
+    def directory(self) -> Path | None:
+        return self._directory
+
+    @property
+    def max_bytes(self) -> int:
+        with self._lock:
+            return self._max_bytes
+
+    @property
+    def current_bytes(self) -> int:
+        self._ensure_reconciled()
+        with self._lock:
+            return self._current_bytes
+
+    def get(self, source_path: Path | str, entry_name: str) -> bytes | None:
+        self._ensure_reconciled()
+        if self._directory is None or not entry_name:
+            return None
+        source = Path(source_path)
+        book_key = _book_key_for_source(source)
+        if book_key is None:
+            return None
+        entry_key = self._entry_key_for(entry_name)
+        with self._lock:
+            entry = self._index.get((book_key, entry_key))
+            if entry is None or not entry.path.exists():
+                if entry is not None:
+                    self._forget_locked((book_key, entry_key))
+                return None
+            try:
+                payload = entry.path.read_bytes()
+                os.utime(entry.path, None)
+                stat = entry.path.stat()
+            except OSError:
+                self._forget_locked((book_key, entry_key))
+                return None
+            refreshed = _PoolEntry(entry.path, stat.st_size, stat.st_mtime)
+            self._index.pop((book_key, entry_key), None)
+            self._index[(book_key, entry_key)] = refreshed
+            self._current_bytes += refreshed.size - entry.size
+            return payload
+
+    def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None:
+        self.put_many(source_path, {entry_name: data})
+
+    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None:
+        if self._directory is None or not payloads:
+            return
+        self._ensure_reconciled()
+        source = Path(source_path)
+        book_key = _book_key_for_source(source)
+        if book_key is None:
+            return
+        written: list[tuple[tuple[str, str], _PoolEntry]] = []
+        for entry_name, data in payloads.items():
+            if not entry_name:
+                continue
+            entry_key = self._entry_key_for(entry_name)
+            final_path = self._entry_path(book_key, entry_key)
+            tmp_path = final_path.with_suffix(f"{self._PAGE_SUFFIX}.tmp")
+            try:
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path.write_bytes(data)
+                os.replace(tmp_path, final_path)
+                stat = final_path.stat()
+            except OSError:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
+            written.append(((book_key, entry_key), _PoolEntry(final_path, stat.st_size, stat.st_mtime)))
+        if not written:
+            return
+        protect_key = written[-1][0]
+        with self._lock:
+            for key, entry in written:
+                previous = self._index.pop(key, None)
+                if previous is not None:
+                    self._current_bytes -= previous.size
+                self._index[key] = entry
+                self._current_bytes += entry.size
+            self._evict_locked(protect_key=protect_key)
+
+    def resize(self, max_bytes: int) -> None:
+        if max_bytes < 0:
+            raise ValueError("max_bytes must be non-negative")
+        self._ensure_reconciled()
+        with self._lock:
+            self._max_bytes = int(max_bytes)
+            self._evict_locked()
+
+    def clear(self) -> None:
+        self._ensure_reconciled()
+        with self._lock:
+            for entry in list(self._index.values()):
+                try:
+                    entry.path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            self._index.clear()
+            self._current_bytes = 0
+        if self._directory is not None:
+            try:
+                shutil.rmtree(self._directory, ignore_errors=True)
+            except OSError:
+                pass
+
+    def _ensure_reconciled(self) -> None:
+        with self._lock:
+            if self._reconciled:
+                return
+            self._reconciled = True
+            if self._directory is None or not self._directory.exists():
+                return
+            scanned: list[tuple[tuple[str, str], _PoolEntry]] = []
+            try:
+                book_dirs = list(self._directory.iterdir())
+            except OSError:
+                return
+            for book_dir in book_dirs:
+                if not book_dir.is_dir():
+                    try:
+                        book_dir.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                    continue
+                try:
+                    entries = list(book_dir.iterdir())
+                except OSError:
+                    continue
+                for path in entries:
+                    if path.name.endswith(".tmp") or path.suffix != self._PAGE_SUFFIX:
+                        try:
+                            path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                        continue
+                    try:
+                        stat = path.stat()
+                    except OSError:
+                        continue
+                    scanned.append(((book_dir.name, path.stem), _PoolEntry(path, stat.st_size, stat.st_mtime)))
+            scanned.sort(key=lambda item: item[1].mtime)
+            for key, entry in scanned:
+                self._index[key] = entry
+                self._current_bytes += entry.size
+            self._evict_locked()
+
+    def _entry_path(self, book_key: str, entry_key: str) -> Path:
+        assert self._directory is not None
+        return self._directory / book_key / f"{entry_key}{self._PAGE_SUFFIX}"
+
+    @staticmethod
+    def _entry_key_for(entry_name: str) -> str:
+        safe_name = PurePosixPath(entry_name.replace("\\", "/")).as_posix().lstrip("/")
+        return hashlib.sha256(safe_name.encode("utf-8")).hexdigest()
+
+    def _forget_locked(self, key: tuple[str, str]) -> None:
+        entry = self._index.pop(key, None)
+        if entry is None:
+            return
+        self._current_bytes -= entry.size
+        try:
+            entry.path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    def _evict_locked(self, *, protect_key: tuple[str, str] | None = None) -> None:
+        while self._current_bytes > self._max_bytes and self._index:
+            oldest_key = next(iter(self._index))
+            if oldest_key == protect_key and len(self._index) == 1:
+                return
+            self._forget_locked(oldest_key)
+
+
+def _book_key_for_source(source: Path) -> str | None:
+    try:
+        stat = source.stat()
+    except OSError:
+        return None
+    digest_source = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
+    return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
