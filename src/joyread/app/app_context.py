@@ -61,6 +61,7 @@ class AppContext:
     settings_viewmodel: SettingsViewModel
 
     def close(self) -> None:
+        self.task_service.shutdown()
         self.database_interpreter.close()
 
     def reconfigure_storage(self, new_root: Path) -> None:

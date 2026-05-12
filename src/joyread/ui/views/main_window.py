@@ -137,6 +137,9 @@ class MainWindow(QMainWindow):
 
     def _select_reader_file(self, import_mode: bool) -> None:
         extensions = " ".join(f"*{suffix}" for suffix in sorted(ARCHIVE_EXTENSIONS))
+        # Keep the platform-native picker. On macOS this can briefly involve
+        # Open/Save Panel, QuickLook, and AutoFill helper processes owned by
+        # the OS; JoyRead does not spawn or manage those helpers directly.
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Open Book",
