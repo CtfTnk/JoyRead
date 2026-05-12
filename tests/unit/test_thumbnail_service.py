@@ -5,10 +5,11 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
+from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.core.archive import ArchiveImageService
 from joyread.core.models.book import Book
-from joyread.core.repositories.mock_book_repository import MockBookRepository
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import BoundedByteCache, CacheService
 from joyread.core.services.thumbnail_service import ThumbnailService, render_contain_blur_thumbnail
@@ -27,7 +28,7 @@ def _thumbnail_service(tmp_path: Path) -> ThumbnailService:
 
 
 def _sample_book() -> Book:
-    return next(book for book in MockBookRepository().list_books() if book.uuid == "mock-book-15")
+    return next(book for book in InMemoryBookRepository().list_books() if book.uuid == "mock-book-15")
 
 
 def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
@@ -35,6 +36,13 @@ def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
     buffer = BytesIO()
     image.save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def _write_pdf(path: Path) -> None:
+    writer = QPdfWriter(str(path))
+    painter = QPainter(writer)
+    painter.drawText(40, 80, "JoyRead PDF")
+    painter.end()
 
 
 def test_thumbnail_service_generates_and_reuses_cover(tmp_path: Path) -> None:
@@ -56,8 +64,8 @@ def test_thumbnail_service_returns_none_for_missing_unsupported_and_empty_archiv
     service = _thumbnail_service(tmp_path)
     book = _sample_book()
     missing = Book(**{**book.__dict__, "uuid": "missing", "file_path": str(tmp_path / "missing.cbz")})
-    unsupported_path = tmp_path / "sample.pdf"
-    unsupported_path.write_bytes(b"%PDF")
+    unsupported_path = tmp_path / "sample.epub"
+    unsupported_path.write_bytes(b"not supported yet")
     unsupported = Book(**{**book.__dict__, "uuid": "unsupported", "file_path": str(unsupported_path)})
     empty_path = tmp_path / "empty.cbz"
     with ZipFile(empty_path, "w", compression=ZIP_DEFLATED) as archive:
@@ -67,6 +75,24 @@ def test_thumbnail_service_returns_none_for_missing_unsupported_and_empty_archiv
     assert service.generate_cover(missing, (200, 284)) is None
     assert service.generate_cover(unsupported, (200, 284)) is None
     assert service.generate_cover(empty, (200, 284)) is None
+
+
+def test_thumbnail_service_generates_pdf_cover_and_detail_thumbnail(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
+    service = _thumbnail_service(tmp_path)
+    pdf_path = tmp_path / "sample.pdf"
+    _write_pdf(pdf_path)
+    book = Book(**{**_sample_book().__dict__, "uuid": "pdf", "file_path": str(pdf_path), "file_format": "PDF"})
+
+    cover = service.generate_cover(book, (200, 284))
+    detail = service.generate_page_thumbnail(book, 0, (100, 142))
+
+    assert cover is not None
+    assert cover.exists()
+    assert detail is not None
+    with Image.open(cover) as image:
+        assert image.size == (200, 284)
+    with Image.open(BytesIO(detail)) as image:
+        assert image.size == (100, 142)
 
 
 def test_thumbnail_service_generates_detail_page_thumbnail_bytes(tmp_path: Path) -> None:

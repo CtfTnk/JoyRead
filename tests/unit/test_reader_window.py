@@ -336,9 +336,7 @@ def test_reader_settings_vertical_switch_is_independent_from_reading_direction(q
 
 
 def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
-    context = create_app_context()
+    context = _context_with_imported_book(tmp_path, monkeypatch)
     window = MainWindow(context)
     qtbot.addWidget(window)
     book = context.shelf_viewmodel.books[0]
@@ -354,9 +352,7 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 
 
 def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
-    context = create_app_context()
+    context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
     window = MainWindow(context)
     qtbot.addWidget(window)
@@ -378,9 +374,7 @@ def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path
 
 
 def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
-    context = create_app_context()
+    context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
     window = MainWindow(context)
     qtbot.addWidget(window)
@@ -394,6 +388,18 @@ def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, mon
 
     assert window._reader_windows == []
     context.close()
+
+
+def _context_with_imported_book(tmp_path: Path, monkeypatch) -> object:  # noqa: ANN001 - test helper returns AppContext.
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    source = tmp_path / "library-book.cbz"
+    image = tmp_path / "library-page.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    context.import_service.import_files([source])
+    return context
 
 
 def test_reader_panel_paths_fill_body_without_overlapping_holes() -> None:

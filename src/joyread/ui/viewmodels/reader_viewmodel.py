@@ -6,11 +6,12 @@ from dataclasses import replace
 from pathlib import Path
 from threading import RLock
 
-from joyread.core.archive import ArchiveError, ArchiveImageSession, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.archive import ArchiveError, ArchivePasswordRejected, ArchivePasswordRequired
 from joyread.core.reader import (
     ReaderDirection,
     ReaderDisplayMode,
     ReaderFitMode,
+    ReaderImageSession,
     ReaderLayoutResult,
     ReaderPageImage,
     ReaderProgress,
@@ -43,6 +44,7 @@ class ReaderViewModel:
         progress: ReaderProgress | None = None,
         prefetch_before: int = 1,
         prefetch_after: int = 1,
+        archive_internal_max_depth: int = 2,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
@@ -60,10 +62,10 @@ class ReaderViewModel:
         self._library_service = library_service
         self._layout_engine = SmartLayoutEngine()
         self._session_lock = RLock()
-        self._session: ArchiveImageSession | None = None
+        self._session: ReaderImageSession | None = None
         self._source_path: Path | None = None
         self._book_uuid = book_uuid
-        self._open_handle: TaskHandle[ArchiveImageSession] | None = None
+        self._open_handle: TaskHandle[ReaderImageSession] | None = None
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
         self._warm_handle: TaskHandle[None] | None = None
         self._save_handle: TaskHandle[None] | None = None
@@ -78,6 +80,7 @@ class ReaderViewModel:
         # prefetch toward the next page, not the previous one.
         self._prefetch_before = max(0, int(prefetch_before))
         self._prefetch_after = max(0, int(prefetch_after))
+        self._archive_internal_max_depth = max(1, min(5, int(archive_internal_max_depth)))
         # `_primary_index` is the LAYOUT anchor only. It decides which page's
         # aspect ratio drives single/double/wide-pan layout. It is intentionally
         # NOT the user-facing reading position: the indicator, slider value,
@@ -86,6 +89,8 @@ class ReaderViewModel:
         self._primary_index = max(0, progress.page_index if progress is not None else 0)
         self._companion_index: int | None = None
         self._pan_x = 0.0
+        self._wide_pan_anchor: tuple[int, ReaderDirection] | None = None
+        self._wide_pan_user_panned = False
         self._vertical_scroll_y = 0.0
         # Last `(page_index, percent)` tuple submitted to persistence. Used to
         # de-duplicate the new layout-settled progress saves so we do not spam
@@ -163,7 +168,11 @@ class ReaderViewModel:
         generation = self._task_generation
         self._open_handle = self._task_service.submit(
             "reader-open",
-            lambda: self._session_service.open_archive(self._source_path or source_path, password=password),
+            lambda: self._session_service.open_document(
+                self._source_path or source_path,
+                password=password,
+                archive_internal_max_depth=self._archive_internal_max_depth,
+            ),
             on_success=lambda session, generation=generation: self._handle_open_success(generation, session),
             on_failure=lambda error, generation=generation: self._handle_open_failure(generation, error),
         )
@@ -192,10 +201,21 @@ class ReaderViewModel:
         self._page_count = 0
         self._layout_result = None
         self._source_path = None
+        self._wide_pan_anchor = None
+        self._wide_pan_user_panned = False
         # Free this session's slice of the shared reader page budget so other
         # open readers can claim it. The namespace itself stays valid; a
         # subsequent `open_path` will refill it.
         self._page_cache.clear()
+
+    def cancel_password_request(self) -> None:
+        self.is_loading = False
+        self.loading_page_index = None
+        self._layout_waiting_for_pages = ()
+        self._layout_result = None
+        self.error_message = "Could not load images because the archive is encrypted and no password was provided."
+        self.error_changed.emit(self.error_message)
+        self._emit_state()
 
     def set_viewport_size(self, width: int, height: int) -> None:
         size = SizeF(max(1.0, float(width)), max(1.0, float(height)))
@@ -234,7 +254,7 @@ class ReaderViewModel:
         )
         self._finish_layout_loading()
         self._layout_result = result
-        self._pan_x = max(result.pan_min_x, min(result.pan_max_x, self._pan_x))
+        self._sync_wide_pan_for_layout(result)
         self._prune_resident_pages()
         self.layout_changed.emit(result)
         self._emit_ready_pages_for_layout(result)
@@ -283,6 +303,8 @@ class ReaderViewModel:
         self._finish_layout_loading()
         self._layout_result = result
         self._pan_x = 0.0
+        self._wide_pan_anchor = None
+        self._wide_pan_user_panned = False
         self._prune_resident_pages()
         self.layout_changed.emit(result)
         self._emit_ready_pages_for_layout(result)
@@ -348,20 +370,21 @@ class ReaderViewModel:
         self._emit_state()
 
     def handle_horizontal_key(self, side: str) -> None:
-        if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.WIDE_PAN:
-            if self._pan_for_side(side):
-                self.layout_changed.emit(self._layout_result)
-                self._emit_state()
-                return
+        if self._pan_visible_wide_page(side):
+            return
         if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:
             self.go_next() if side == "left" else self.go_previous()
         else:
             self.go_previous() if side == "left" else self.go_next()
 
     def activate_left_side(self) -> None:
+        if self._pan_visible_wide_page("left"):
+            return
         self.go_next() if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT else self.go_previous()
 
     def activate_right_side(self) -> None:
+        if self._pan_visible_wide_page("right"):
+            return
         self.go_previous() if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT else self.go_next()
 
     def set_direction(self, direction: ReaderDirection) -> None:
@@ -483,12 +506,16 @@ class ReaderViewModel:
         self._primary_index = max(0, min(primary_index, max(0, self._page_count - 1)))
         self._companion_index = self._valid_companion(companion_index)
         self._pan_x = 0.0
+        self._wide_pan_anchor = None
+        self._wide_pan_user_panned = False
         self._vertical_scroll_y = 0.0
         self._request_visible_pages()
         self.recalculate_layout()
 
     def _refresh_companion_for_primary(self) -> None:
         self._companion_index = self._companion_for_seek(self._primary_index)
+        self._wide_pan_anchor = None
+        self._wide_pan_user_panned = False
 
     def _can_use_companion(self) -> bool:
         return (
@@ -524,7 +551,7 @@ class ReaderViewModel:
             return None
         return companion_index
 
-    def _handle_open_success(self, generation: int, session: ArchiveImageSession) -> None:
+    def _handle_open_success(self, generation: int, session: ReaderImageSession) -> None:
         if generation != self._task_generation:
             return
         self._session = session
@@ -701,6 +728,8 @@ class ReaderViewModel:
             return
         self._layout_result = None
         self._pan_x = 0.0
+        self._wide_pan_anchor = None
+        self._wide_pan_user_panned = False
         self.loading_page_index = status_index
         self._layout_waiting_for_pages = waiting
         self._prune_resident_pages()
@@ -735,7 +764,11 @@ class ReaderViewModel:
 
         handle = self._task_service.submit(
             "reader-cache-warm",
-            lambda: warm_disk_cache(source_path, is_cancelled=is_cancelled),
+            lambda: warm_disk_cache(
+                source_path,
+                archive_internal_max_depth=self._archive_internal_max_depth,
+                is_cancelled=is_cancelled,
+            ),
         )
         handle_ref[0] = handle
         self._warm_handle = handle
@@ -821,16 +854,48 @@ class ReaderViewModel:
         gap = float(self.settings.page_spacing if self.settings.vertical_custom_enabled else 0)
         return (self._viewport_size.height * zoom) + gap
 
+    def _sync_wide_pan_for_layout(self, result: ReaderLayoutResult) -> None:
+        if not result.supports_horizontal_pan:
+            self._pan_x = 0.0
+            self._wide_pan_anchor = None
+            self._wide_pan_user_panned = False
+            return
+
+        anchor = (self._primary_index, self.settings.direction)
+        if self._wide_pan_anchor != anchor or not self._wide_pan_user_panned:
+            self._pan_x = self._wide_pan_start(result)
+            self._wide_pan_anchor = anchor
+            return
+        self._pan_x = max(result.pan_min_x, min(result.pan_max_x, self._pan_x))
+
+    def _wide_pan_start(self, result: ReaderLayoutResult) -> float:
+        if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:
+            return result.pan_min_x
+        return result.pan_max_x
+
+    def _pan_visible_wide_page(self, side: str) -> bool:
+        if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.WIDE_PAN:
+            if self._pan_for_side(side):
+                self.layout_changed.emit(self._layout_result)
+                self._emit_state()
+                return True
+        return False
+
     def _pan_for_side(self, side: str) -> bool:
         result = self._layout_result
         if result is None or not result.supports_horizontal_pan:
             return False
         step = max(Theme.reader_pan_min_step, self._viewport_size.width * Theme.reader_pan_step_ratio)
-        next_pan = self._pan_x + (-step if side == "left" else step)
+        if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:
+            delta = step if side == "left" else -step
+        else:
+            delta = -step if side == "right" else step
+        next_pan = self._pan_x + delta
         next_pan = max(result.pan_min_x, min(result.pan_max_x, next_pan))
         if next_pan == self._pan_x:
             return False
         self._pan_x = next_pan
+        self._wide_pan_user_panned = True
         return True
 
     def _save_progress(self) -> None:

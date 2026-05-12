@@ -15,7 +15,8 @@ from joyread.core.reader.models import (
     RectF,
     SizeF,
 )
-from joyread.core.reader.session_service import ReaderSessionService
+from joyread.core.reader.pdf_session import PdfImageService, PdfImageSession
+from joyread.core.reader.session_service import ReaderImageSession, ReaderSessionService, SUPPORTED_READER_EXTENSIONS
 
 __all__ = [
     "PageDraw",
@@ -27,9 +28,13 @@ __all__ = [
     "ReaderPageImage",
     "ReaderProgress",
     "ReaderSettings",
+    "ReaderImageSession",
     "ReaderSessionService",
     "ReaderTransitionMode",
+    "PdfImageService",
+    "PdfImageSession",
     "RectF",
     "SizeF",
     "SmartLayoutEngine",
+    "SUPPORTED_READER_EXTENSIONS",
 ]

@@ -10,9 +10,10 @@ from threading import Lock
 
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
-from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveImageSession
-from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.archive import ArchiveError, ArchiveImageService
 from joyread.core.models.book import Book
+from joyread.core.reader import ReaderImageSession, ReaderSessionService, SUPPORTED_READER_EXTENSIONS
+from joyread.core.reader.pdf_session import PdfError
 from joyread.core.services.cache_service import BoundedByteCache, CacheService
 from joyread.infrastructure.filesystem.path_service import PathService
 
@@ -46,20 +47,22 @@ class ThumbnailService:
         paths: PathService,
         archive_service: ArchiveImageService,
         cache_service: CacheService,
+        reader_session_service: ReaderSessionService | None = None,
     ) -> None:
         self._paths = paths
         self._archive_service = archive_service
+        self._reader_session_service = reader_session_service or ReaderSessionService(archive_service)
         self._cache_service = cache_service
-        # The session cache keeps an open `ArchiveImageSession` per book so
-        # grid covers and detail-thumbnail batches do not re-scan the archive
-        # for the same book. Bounded implicitly by how many books are being
+        # The session cache keeps an open reader session per book so grid
+        # covers and detail-thumbnail batches do not re-scan the source for
+        # the same book. Bounded implicitly by how many books are being
         # interacted with concurrently.
-        self._session_cache: dict[str, ArchiveImageSession] = {}
+        self._session_cache: dict[str, ReaderImageSession] = {}
         self._session_cache_lock = Lock()
 
     def can_generate_from(self, book: Book) -> bool:
         source = Path(book.file_path)
-        return source.exists() and source.is_file() and source.suffix.lower() in ARCHIVE_EXTENSIONS
+        return source.exists() and source.is_file() and source.suffix.lower() in SUPPORTED_READER_EXTENSIONS
 
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         signature = self._source_signature(book)
@@ -96,7 +99,7 @@ class ThumbnailService:
             if first_page is None:
                 return None
             rendered = render_contain_blur_thumbnail(first_page.image_bytes, size)
-        except (ArchiveError, OSError, UnidentifiedImageError):
+        except (ArchiveError, PdfError, OSError, UnidentifiedImageError):
             return None
 
         cover_path = self._cover_path(book, signature, size)
@@ -133,7 +136,7 @@ class ThumbnailService:
             if page is None:
                 return None
             rendered = render_contain_blur_thumbnail(page.image_bytes, size)
-        except (ArchiveError, OSError, UnidentifiedImageError):
+        except (ArchiveError, PdfError, OSError, UnidentifiedImageError):
             return None
 
         if detail_cache is not None:
@@ -167,7 +170,7 @@ class ThumbnailService:
 
         try:
             session = self._session_for(book, signature)
-        except (ArchiveError, OSError):
+        except (ArchiveError, PdfError, OSError):
             return empty
 
         if start_index >= session.page_count:
@@ -181,9 +184,10 @@ class ThumbnailService:
             if page is None:
                 page_index += 1
                 continue
-            rendered = self._render_detail_thumbnail(page.index, page.image_bytes, size, detail_cache)
+            rendered_index = int(getattr(page, "index", getattr(page, "page_index", page_index)))
+            rendered = self._render_detail_thumbnail(rendered_index, page.image_bytes, size, detail_cache)
             if rendered is not None:
-                items.append(DetailThumbnailItem(page_index=page.index, image_bytes=rendered))
+                items.append(DetailThumbnailItem(page_index=rendered_index, image_bytes=rendered))
             page_index += 1
 
         return DetailThumbnailBatch(
@@ -224,16 +228,16 @@ class ThumbnailService:
             return None
         return f"{stat.st_mtime_ns}-{stat.st_size}"
 
-    def _session_for(self, book: Book, signature: str) -> ArchiveImageSession:
+    def _session_for(self, book: Book, signature: str) -> ReaderImageSession:
         cache_key = f"session:{book.uuid}:{signature}"
         with self._session_cache_lock:
             session = self._session_cache.get(cache_key)
         if session is not None:
             return session
 
-        # Archive scanning is expensive for large books, so keep a source-stable
+        # Source scanning is expensive for large books, so keep a source-stable
         # session around for cover and detail thumbnail batches.
-        session = self._archive_service.open(book.file_path)
+        session = self._reader_session_service.open_document(book.file_path)
         with self._session_cache_lock:
             self._session_cache[cache_key] = session
         return session

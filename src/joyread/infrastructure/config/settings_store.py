@@ -34,6 +34,8 @@ class AppSettings:
     detail_thumbnail_cache_mb: int = 64
     archive_extraction_pool_mb: int = 1024
     archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
+    import_folder_max_depth: int = 1
+    archive_internal_max_depth: int = 2
 
 
 class SettingsStore:
@@ -93,6 +95,18 @@ class SettingsStore:
             detail_thumbnail_cache_mb=_coerce_positive_int(raw.get("detail_thumbnail_cache_mb"), default=64),
             archive_extraction_pool_mb=_coerce_positive_int(raw.get("archive_extraction_pool_mb"), default=1024),
             archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
+            import_folder_max_depth=_coerce_int_in_range(
+                raw.get("import_folder_max_depth"),
+                default=1,
+                minimum=1,
+                maximum=5,
+            ),
+            archive_internal_max_depth=_coerce_int_in_range(
+                raw.get("archive_internal_max_depth"),
+                default=2,
+                minimum=1,
+                maximum=5,
+            ),
         )
 
     def save(self, settings: AppSettings) -> None:
@@ -145,3 +159,13 @@ def _coerce_positive_int(value: object, *, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return coerced if coerced > 0 else default
+
+
+def _coerce_int_in_range(value: object, *, default: int, minimum: int, maximum: int) -> int:
+    if value is None:
+        return default
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, coerced))

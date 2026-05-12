@@ -2,7 +2,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from joyread.core.repositories.mock_book_repository import MockBookRepository
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
@@ -18,7 +18,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import (
 
 
 def make_viewmodel() -> ShelfViewModel:
-    return ShelfViewModel(LibraryService(MockBookRepository()))
+    return ShelfViewModel(LibraryService(InMemoryBookRepository()))
 
 
 def test_load_books_populates_books_and_collections() -> None:
@@ -287,7 +287,7 @@ def test_shelf_preferences_round_trip_through_settings_store(tmp_path: Path) -> 
     )
     store.save(settings)
 
-    vm = ShelfViewModel(LibraryService(MockBookRepository()), settings=store.load(), settings_store=store)
+    vm = ShelfViewModel(LibraryService(InMemoryBookRepository()), settings=store.load(), settings_store=store)
 
     assert vm.sort_field == SortField.AUTHOR
     assert vm.sort_ascending is True
@@ -313,7 +313,7 @@ def test_shelf_preferences_fall_back_when_settings_are_stale(tmp_path: Path) -> 
         shelf_view_mode="bad",
     )
 
-    vm = ShelfViewModel(LibraryService(MockBookRepository()), settings=settings)
+    vm = ShelfViewModel(LibraryService(InMemoryBookRepository()), settings=settings)
 
     assert vm.sort_field == SortField.ADD_TIME
     assert vm.file_filter == FileFilter.ALL
@@ -352,7 +352,7 @@ class RecordingTaskService:
             callback(result)
 
 
-class FailingLanguageUpdateRepository(MockBookRepository):
+class FailingLanguageUpdateRepository(InMemoryBookRepository):
     def update_book_metadata(
         self,
         book_id: str,
@@ -413,7 +413,7 @@ class FakeThumbnailService:
 def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
-        LibraryService(MockBookRepository()),
+        LibraryService(InMemoryBookRepository()),
         FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
@@ -430,7 +430,7 @@ def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books(
 def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
-        LibraryService(MockBookRepository()),
+        LibraryService(InMemoryBookRepository()),
         FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
@@ -450,7 +450,7 @@ def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> N
 def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
-        LibraryService(MockBookRepository()),
+        LibraryService(InMemoryBookRepository()),
         FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
@@ -481,7 +481,7 @@ def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
 def test_detail_thumbnail_cache_is_cleared_when_detail_panel_closes() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
-        LibraryService(MockBookRepository()),
+        LibraryService(InMemoryBookRepository()),
         FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
@@ -505,7 +505,7 @@ def test_detail_thumbnail_cache_is_cleared_when_detail_panel_closes() -> None:
 def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
-        LibraryService(MockBookRepository()),
+        LibraryService(InMemoryBookRepository()),
         FakeThumbnailService(),  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),

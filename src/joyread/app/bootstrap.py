@@ -9,7 +9,7 @@ from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from joyread.app.app_context import AppContext, create_app_context
-from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.infrastructure.logging.logging_service import configure_logging
 from joyread.ui.views.main_window import MainWindow
@@ -57,6 +57,6 @@ def _load_application_fonts(resources: ResourceLoader) -> None:
 def _direct_reader_path(arguments: list[str]) -> Path | None:
     for argument in arguments:
         path = Path(argument).expanduser()
-        if path.suffix.lower() in ARCHIVE_EXTENSIONS:
+        if path.suffix.lower() in SUPPORTED_READER_EXTENSIONS:
             return path
     return None

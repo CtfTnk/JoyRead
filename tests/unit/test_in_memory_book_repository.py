@@ -1,11 +1,11 @@
 from pathlib import Path
 
 from joyread.core.archive import ArchiveImageService
-from joyread.core.repositories.mock_book_repository import MockBookRepository
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 
 
-def test_mock_repository_returns_stable_varied_books() -> None:
-    repository = MockBookRepository()
+def test_in_memory_repository_returns_stable_varied_books() -> None:
+    repository = InMemoryBookRepository()
 
     books = repository.list_books()
 
@@ -26,8 +26,8 @@ def test_mock_repository_returns_stable_varied_books() -> None:
     ]
 
 
-def test_mock_repository_resolves_test_set_archives() -> None:
-    repository = MockBookRepository()
+def test_in_memory_repository_resolves_test_set_archives() -> None:
+    repository = InMemoryBookRepository()
 
     akane_book = next(book for book in repository.list_books() if book.uuid == "mock-book-01")
     pressure_book = next(book for book in repository.list_books() if book.uuid == "mock-book-15")

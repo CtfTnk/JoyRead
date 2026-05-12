@@ -37,6 +37,10 @@ DETAIL_THUMBNAIL_CACHE_MIN_MB = 8
 DETAIL_THUMBNAIL_CACHE_MAX_MB = 512
 ARCHIVE_POOL_MIN_MB = 128
 ARCHIVE_POOL_MAX_MB = 8192
+IMPORT_FOLDER_DEPTH_MIN = 1
+IMPORT_FOLDER_DEPTH_MAX = 5
+ARCHIVE_INTERNAL_DEPTH_MIN = 1
+ARCHIVE_INTERNAL_DEPTH_MAX = 5
 ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
 
@@ -81,6 +85,16 @@ class SettingsViewModel:
         )
         self.archive_cache_strategy = normalize_archive_cache_strategy(
             getattr(settings, "archive_cache_strategy", ArchiveCacheStrategy.ZIP_BUNDLE.value)
+        )
+        self.import_folder_max_depth = _clamp_int(
+            getattr(settings, "import_folder_max_depth", 1),
+            IMPORT_FOLDER_DEPTH_MIN,
+            IMPORT_FOLDER_DEPTH_MAX,
+        )
+        self.archive_internal_max_depth = _clamp_int(
+            getattr(settings, "archive_internal_max_depth", 2),
+            ARCHIVE_INTERNAL_DEPTH_MIN,
+            ARCHIVE_INTERNAL_DEPTH_MAX,
         )
         self.archive_pool_current_bytes = 0
 
@@ -157,6 +171,22 @@ class SettingsViewModel:
         self.archive_cache_strategy = strategy
         self._persist(archive_cache_strategy=strategy.value)
         self.cache_budgets_changed.emit()
+        self.state_changed.emit()
+
+    def set_import_folder_max_depth(self, value: int) -> None:
+        clamped = _clamp_int(value, IMPORT_FOLDER_DEPTH_MIN, IMPORT_FOLDER_DEPTH_MAX)
+        if clamped == self.import_folder_max_depth:
+            return
+        self.import_folder_max_depth = clamped
+        self._persist(import_folder_max_depth=clamped)
+        self.state_changed.emit()
+
+    def set_archive_internal_max_depth(self, value: int) -> None:
+        clamped = _clamp_int(value, ARCHIVE_INTERNAL_DEPTH_MIN, ARCHIVE_INTERNAL_DEPTH_MAX)
+        if clamped == self.archive_internal_max_depth:
+            return
+        self.archive_internal_max_depth = clamped
+        self._persist(archive_internal_max_depth=clamped)
         self.state_changed.emit()
 
     def request_clear_archive_pool(self) -> None:

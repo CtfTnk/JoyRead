@@ -18,6 +18,7 @@ from joyread.core.archive.models import (
     ArchiveValidationResult,
     PasswordProvider,
 )
+from joyread.core.archive.backends import ExtractionBackend, ExtractionBackendResolver
 from joyread.core.archive.service import ArchiveImageService, ArchiveImageSession
 
 __all__ = [
@@ -36,5 +37,7 @@ __all__ = [
     "ArchiveUnsupportedFormat",
     "ArchiveValidationCode",
     "ArchiveValidationResult",
+    "ExtractionBackend",
+    "ExtractionBackendResolver",
     "PasswordProvider",
 ]

@@ -5,6 +5,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 from PIL import Image
+from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import create_app_context
 from joyread.core.archive import ArchiveImageService
@@ -35,6 +36,13 @@ def _write_cbz(path: Path, color: str = "#336699") -> None:
     _png_bytes(image, color)
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
         archive.write(image, "001.png")
+
+
+def _write_pdf(path: Path) -> None:
+    writer = QPdfWriter(str(path))
+    painter = QPainter(writer)
+    painter.drawText(40, 80, "JoyRead PDF")
+    painter.end()
 
 
 def _import_service(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter, PathService]:
@@ -256,6 +264,44 @@ def test_duplicate_manifest_import_reuses_existing_book(tmp_path: Path) -> None:
     assert first.imported_count == 1
     assert second.duplicate_count == 1
     assert len(books) == 1
+    database.close()
+
+
+def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
+    source = tmp_path / "Readable PDF.pdf"
+    _write_pdf(source)
+    service, database, _paths = _import_service(tmp_path)
+
+    result = service.import_files([source])
+    books = SqliteBookRepository(database).list_books()
+
+    assert result.imported_count == 1
+    assert result.failed_count == 0
+    assert books[0].file_format == "PDF"
+    assert books[0].book_type == "manga"
+    database.close()
+
+
+def test_import_folder_respects_filesystem_depth(tmp_path: Path) -> None:
+    root_file = tmp_path / "folder" / "root.cbz"
+    child_file = tmp_path / "folder" / "child" / "nested.cbz"
+    child_file.parent.mkdir(parents=True)
+    _write_cbz(root_file)
+    _write_cbz(child_file, color="#cc4422")
+    service, database, _paths = _import_service(tmp_path)
+
+    depth_one = service.import_folder(root_file.parent, max_depth=1)
+    books = SqliteBookRepository(database).list_books()
+
+    assert depth_one.imported_count == 1
+    assert [book.title for book in books] == ["root"]
+
+    depth_two = service.import_folder(root_file.parent, max_depth=2)
+    books = sorted(SqliteBookRepository(database).list_books(), key=lambda book: book.title)
+
+    assert depth_two.imported_count == 1
+    assert depth_two.duplicate_count == 1
+    assert [book.title for book in books] == ["nested", "root"]
     database.close()
 
 
@@ -548,7 +594,6 @@ def test_storage_migration_moves_storage_and_updates_config(tmp_path: Path) -> N
 
 def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.delenv("JOYREAD_USE_MOCK_REPOSITORY", raising=False)
 
     context = create_app_context()
 

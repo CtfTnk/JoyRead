@@ -31,10 +31,11 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 joyread = [
-    "core/repositories/*.json",
     "ui/resources/styles/*.qss",
     "ui/resources/icons/*",
     "ui/resources/fonts/*",
+    "resources/extractors/7zip/*",
+    "resources/extractors/7zip/*/*",
 ]
 
 [tool.pytest.ini_options]

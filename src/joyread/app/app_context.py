@@ -9,7 +9,6 @@ from pathlib import Path
 from joyread.core.archive import ArchiveImageService
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.repositories.book_repository import BookRepository
-from joyread.core.repositories.mock_book_repository import MockBookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderSessionService
 from joyread.core.services.archive_extraction_pool import (
@@ -83,7 +82,12 @@ class AppContext:
         self.database_interpreter = _create_database_interpreter(self.paths)
         self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
         self.library_service = LibraryService(self.book_repository)
-        self.thumbnail_service = ThumbnailService(self.paths, self.archive_image_service, self.cache_service)
+        self.thumbnail_service = ThumbnailService(
+            self.paths,
+            self.archive_image_service,
+            self.cache_service,
+            self.reader_session_service,
+        )
         self.import_service = ImportService(
             self.paths,
             self.database_interpreter,
@@ -113,7 +117,12 @@ class AppContext:
             self.archive_extraction_pool.clear()
             self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
             self._rebuild_archive_reading_services()
-            self.thumbnail_service = ThumbnailService(self.paths, self.archive_image_service, self.cache_service)
+            self.thumbnail_service = ThumbnailService(
+                self.paths,
+                self.archive_image_service,
+                self.cache_service,
+                self.reader_session_service,
+            )
             self.import_service = ImportService(
                 self.paths,
                 self.database_interpreter,
@@ -167,10 +176,7 @@ def create_app_context() -> AppContext:
     paths.ensure_directories()
     resources = ResourceLoader()
     database_interpreter = _create_database_interpreter(paths)
-    use_mock = environ.get("JOYREAD_USE_MOCK_REPOSITORY") == "1"
-    book_repository: BookRepository = (
-        MockBookRepository() if use_mock else _create_sqlite_book_repository(database_interpreter, paths)
-    )
+    book_repository: BookRepository = _create_sqlite_book_repository(database_interpreter, paths)
     archive_extraction_pool = _create_archive_extraction_cache(paths, settings)
     archive_image_service = ArchiveImageService(extraction_pool=archive_extraction_pool)
     reader_session_service = ReaderSessionService(archive_image_service)
@@ -191,7 +197,7 @@ def create_app_context() -> AppContext:
     )
     export_service = ExportService(book_repository, hash_service)
     storage_migration_service = StorageMigrationService(settings_store)
-    thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service)
+    thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service, reader_session_service)
     main_window_viewmodel = MainWindowViewModel()
     shelf_viewmodel = ShelfViewModel(
         library_service,

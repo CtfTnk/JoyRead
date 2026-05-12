@@ -5,11 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
-from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
+from joyread.core.services.import_service import BOOK_EXTENSIONS
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.reader_shell import ReaderShellWidget
@@ -18,7 +19,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
-from joyread.ui.widgets.menus import build_collection_context_menu
+from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import WindowChromeWidget
 
@@ -82,7 +83,7 @@ class MainWindow(QMainWindow):
         self.sidebar.navigation_requested.connect(self._handle_navigation)
         self.sidebar.collection_menu_requested.connect(self._show_collection_menu)
         self.shelf_view.info_requested.connect(self.dialog_overlay.show_info)
-        self.shelf_view.import_manifest_requested.connect(self._select_import_manifest)
+        self.shelf_view.import_requested.connect(self._show_import_menu)
         self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
@@ -128,15 +129,19 @@ class MainWindow(QMainWindow):
         source_path = Path(path)
         self._show_reader_window(source_path, title=source_path.stem)
         if import_mode:
+            settings = self._settings_for_reader_launch()
             self._context.task_service.submit(
                 "open-and-import-file",
-                lambda: self._context.import_service.import_files([source_path]),
+                lambda: self._context.import_service.import_files(
+                    [source_path],
+                    archive_internal_max_depth=settings.archive_internal_max_depth,
+                ),
                 on_success=lambda _result: self._reload_after_background_import(),
                 on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
             )
 
     def _select_reader_file(self, import_mode: bool) -> None:
-        extensions = " ".join(f"*{suffix}" for suffix in sorted(ARCHIVE_EXTENSIONS))
+        extensions = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_READER_EXTENSIONS))
         # Keep the platform-native picker. On macOS this can briefly involve
         # Open/Save Panel, QuickLook, and AutoFill helper processes owned by
         # the OS; JoyRead does not spawn or manage those helpers directly.
@@ -144,11 +149,59 @@ class MainWindow(QMainWindow):
             self,
             "Open Book",
             "",
-            f"Comic Archives ({extensions})",
+            f"Readable Books ({extensions})",
         )
         if not file_path:
             return
         self.open_reader_for_file(file_path, import_mode=import_mode)
+
+    def _show_import_menu(self) -> None:
+        menu = FigmaMenu(self.shelf_view, width=240)
+        menu.add_item("Import Files...", self._select_import_files)
+        menu.add_item("Import Folder...", self._select_import_folder)
+        menu.add_item("Import JSON Manifest (Dev)...", self._select_import_manifest)
+        menu.exec(QCursor.pos())
+
+    def _select_import_files(self) -> None:
+        extensions = " ".join(f"*{suffix}" for suffix in sorted(BOOK_EXTENSIONS))
+        file_paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "Import Books",
+            "",
+            f"Supported Books ({extensions})",
+        )
+        if not file_paths:
+            return
+        settings = self._settings_for_import()
+        self._context.task_service.submit(
+            "import-files",
+            lambda: self._context.import_service.import_files(
+                [Path(path) for path in file_paths],
+                archive_internal_max_depth=settings.archive_internal_max_depth,
+            ),
+            on_success=self._handle_import_finished,
+            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+        )
+
+    def _select_import_folder(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Import Folder",
+            str(Path.home()),
+        )
+        if not directory:
+            return
+        settings = self._settings_for_import()
+        self._context.task_service.submit(
+            "import-folder",
+            lambda: self._context.import_service.import_folder(
+                directory,
+                max_depth=settings.import_folder_max_depth,
+                archive_internal_max_depth=settings.archive_internal_max_depth,
+            ),
+            on_success=self._handle_import_finished,
+            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+        )
 
     def _show_reader_window(
         self,
@@ -218,6 +271,10 @@ class MainWindow(QMainWindow):
         self._context.settings = self._context.settings_store.load()
         return self._context.settings
 
+    def _settings_for_import(self):
+        self._context.settings = self._context.settings_store.load()
+        return self._context.settings
+
     def _reload_after_background_import(self) -> None:
         self._context.shelf_viewmodel.load_books()
         self.sidebar.set_collections(self._context.shelf_viewmodel.collections)
@@ -232,9 +289,13 @@ class MainWindow(QMainWindow):
         )
         if not manifest_path:
             return
+        settings = self._settings_for_import()
         self._context.task_service.submit(
             "import-manifest",
-            lambda: self._context.import_service.import_manifest(manifest_path),
+            lambda: self._context.import_service.import_manifest(
+                manifest_path,
+                archive_internal_max_depth=settings.archive_internal_max_depth,
+            ),
             on_success=self._handle_import_finished,
             on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
         )

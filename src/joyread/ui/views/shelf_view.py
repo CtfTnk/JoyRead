@@ -25,7 +25,7 @@ from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 
 class ShelfView(QWidget):
     info_requested = QtSignal(str, str)
-    import_manifest_requested = QtSignal()
+    import_requested = QtSignal()
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
@@ -70,7 +70,7 @@ class ShelfView(QWidget):
         self.list_view = BookListWidget(resources)
         self.empty_state = StateView("No books yet", "Import actions are placeholders in this phase.")
         self.loading_state = StateView("Loading library", "Preparing the mock bookshelf.")
-        self.error_state = StateView("Could not load library", "The mock repository returned an error.")
+        self.error_state = StateView("Could not load library", "The library service returned an error.")
         self.importing_state = StateView("Importing", "Import progress UI is reserved for a future phase.")
 
         for book_view in (self.grid, self.list_view):
@@ -207,7 +207,7 @@ class ShelfView(QWidget):
             self,
             on_open_book=lambda: self.open_file_requested.emit(False),
             on_open_and_import=lambda: self.open_file_requested.emit(True),
-            on_import=self.import_manifest_requested.emit,
+            on_import=self.import_requested.emit,
         )
 
     def set_sidebar_visible(self, visible: bool) -> None:

@@ -24,8 +24,12 @@ from joyread.ui.viewmodels.settings_viewmodel import (
     ARCHIVE_POOL_MAX_MB,
     ARCHIVE_POOL_MIN_MB,
     ARCHIVE_CACHE_STRATEGY_OPTIONS,
+    ARCHIVE_INTERNAL_DEPTH_MAX,
+    ARCHIVE_INTERNAL_DEPTH_MIN,
     DETAIL_THUMBNAIL_CACHE_MAX_MB,
     DETAIL_THUMBNAIL_CACHE_MIN_MB,
+    IMPORT_FOLDER_DEPTH_MAX,
+    IMPORT_FOLDER_DEPTH_MIN,
     READER_PAGE_CACHE_MAX_MB,
     READER_PAGE_CACHE_MIN_MB,
     SettingsSectionKey,
@@ -118,6 +122,26 @@ class SettingsPageWidget(QFrame):
         storage = SettingsAddressItem("Storage Location", self._viewmodel.storage_location)
         storage.change_requested.connect(self.storage_change_requested.emit)
 
+        import_banner = SectionBanner("Import", self._resources)
+
+        import_folder_depth_item = SettingsNumericItem(
+            "Import folder depth",
+            self._viewmodel.import_folder_max_depth,
+            IMPORT_FOLDER_DEPTH_MIN,
+            IMPORT_FOLDER_DEPTH_MAX,
+            self._resources,
+        )
+        import_folder_depth_item.value_changed.connect(self._viewmodel.set_import_folder_max_depth)
+
+        archive_depth_item = SettingsNumericItem(
+            "Archive internal depth",
+            self._viewmodel.archive_internal_max_depth,
+            ARCHIVE_INTERNAL_DEPTH_MIN,
+            ARCHIVE_INTERNAL_DEPTH_MAX,
+            self._resources,
+        )
+        archive_depth_item.value_changed.connect(self._viewmodel.set_archive_internal_max_depth)
+
         # Cache sub-group: user-tunable cache budgets and a one-shot purge for
         # the disk pool. Live in General per design — there is no separate
         # "Performance" section.
@@ -174,6 +198,9 @@ class SettingsPageWidget(QFrame):
             import_switch,
             window_switch,
             storage,
+            import_banner,
+            import_folder_depth_item,
+            archive_depth_item,
             cache_banner,
             reader_cache_item,
             detail_cache_item,

@@ -4,6 +4,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWidget
 
 from joyread.app.app_context import create_app_context
+from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -368,6 +369,33 @@ def test_dialog_confirm_cancel_callbacks_close_overlay(qtbot) -> None:
     assert result == ["cancel", "confirm"]
 
 
+def test_dialog_password_input_cancel_callback_and_unicode_text(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    result: list[str] = []
+    overlay.show_password_input(
+        "Archive Password",
+        "Password",
+        on_confirm=lambda value: result.append(value),
+        on_cancel=lambda: result.append("cancel"),
+    )
+    QApplication.processEvents()
+    line_edit = overlay.panel.findChild(QLineEdit)
+    assert line_edit is not None
+    line_edit.setText("秘密")
+    qtbot.mouseClick(overlay.panel.findChildren(DialogTextButton)[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert result == ["cancel"]
+
+
 def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     apply_theme()
     context = create_app_context()
@@ -397,9 +425,8 @@ def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     context.close()
 
 
-def test_main_window_uses_global_confirm_dialog_for_delete(qtbot, monkeypatch) -> None:
+def test_main_window_uses_global_confirm_dialog_for_delete(qtbot) -> None:
     apply_theme()
-    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
     context = create_app_context()
     window = MainWindow(context)
     qtbot.addWidget(window)
@@ -407,7 +434,22 @@ def test_main_window_uses_global_confirm_dialog_for_delete(qtbot, monkeypatch) -
     window.show()
     QApplication.processEvents()
 
-    book = context.shelf_viewmodel.books[0]
+    book = Book(
+        uuid="book-1",
+        title="Delete Me",
+        author=None,
+        language_tag="en",
+        book_type="Comic",
+        file_format="CBZ",
+        file_path="/tmp/delete-me.cbz",
+        progress=0.0,
+        cover_thumbnail_path=None,
+        added_at=datetime(2026, 1, 1),
+        updated_at=datetime(2026, 1, 1),
+        last_read_at=None,
+        is_favourite=False,
+    )
+    context.shelf_viewmodel.books = [book]
     window._confirm_delete_books((book.uuid,))
     QApplication.processEvents()
 

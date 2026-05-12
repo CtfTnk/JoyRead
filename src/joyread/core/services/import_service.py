@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from joyread.core.archive import ArchiveImageService, ArchiveValidationCode
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 from joyread.core.services.hash_service import HashService
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
@@ -46,14 +47,21 @@ class ImportService:
         archive_service: ArchiveImageService,
         hash_service: HashService,
         hash_algorithm: str = "sha256",
+        pdf_service: PdfImageService | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
         self._archive_service = archive_service
+        self._pdf_service = pdf_service or PdfImageService()
         self._hash_service = hash_service
         self._hash_algorithm = hash_algorithm
 
-    def import_manifest(self, manifest_path: str | Path) -> ImportBatchResult:
+    def import_manifest(
+        self,
+        manifest_path: str | Path,
+        *,
+        archive_internal_max_depth: int | None = None,
+    ) -> ImportBatchResult:
         path = Path(manifest_path).expanduser()
         raw = json.loads(path.read_text(encoding="utf-8"))
         if int(raw.get("version", 0)) != 1:
@@ -61,21 +69,41 @@ class ImportService:
         items = raw.get("items")
         if not isinstance(items, list):
             raise ValueError("Import manifest must contain an items list.")
-        return self.import_items(items, manifest_path=path)
+        return self.import_items(
+            items,
+            manifest_path=path,
+            archive_internal_max_depth=archive_internal_max_depth,
+        )
 
-    def import_files(self, paths: list[str | Path]) -> ImportBatchResult:
-        return self.import_items([{"source_path": str(path)} for path in paths], manifest_path=None)
+    def import_files(
+        self,
+        paths: list[str | Path],
+        *,
+        archive_internal_max_depth: int | None = None,
+    ) -> ImportBatchResult:
+        return self.import_items(
+            [{"source_path": str(path)} for path in paths],
+            manifest_path=None,
+            archive_internal_max_depth=archive_internal_max_depth,
+        )
 
-    def import_folder(self, path: str | Path) -> ImportBatchResult:
+    def import_folder(
+        self,
+        path: str | Path,
+        *,
+        max_depth: int = 1,
+        archive_internal_max_depth: int | None = None,
+    ) -> ImportBatchResult:
         folder = Path(path).expanduser()
-        files = [candidate for candidate in folder.rglob("*") if candidate.is_file()]
-        return self.import_files(files)
+        files = _supported_files_within_depth(folder, max_depth=max_depth)
+        return self.import_files(files, archive_internal_max_depth=archive_internal_max_depth)
 
     def import_items(
         self,
         items: list[dict[str, object]],
         *,
         manifest_path: Path | None,
+        archive_internal_max_depth: int | None = None,
     ) -> ImportBatchResult:
         batch_id = str(uuid4())
         started_at = _now()
@@ -102,6 +130,7 @@ class ImportService:
                     source_path=_resolve_source_path(source_value, manifest_dir),
                     source_display=source_value,
                     external_id=str(external_id) if external_id is not None else None,
+                    archive_internal_max_depth=archive_internal_max_depth,
                 )
             except Exception as exc:
                 result = self._record_item(
@@ -141,8 +170,9 @@ class ImportService:
         source_path: Path,
         source_display: str,
         external_id: str | None,
+        archive_internal_max_depth: int | None,
     ) -> ImportItemResult:
-        failure = self._validate_source(source_path)
+        failure = self._validate_source(source_path, archive_internal_max_depth)
         if failure is not None:
             return self._record_item(
                 batch_id,
@@ -212,7 +242,7 @@ class ImportService:
             message="Imported.",
         )
 
-    def _validate_source(self, source_path: Path) -> str | None:
+    def _validate_source(self, source_path: Path, archive_internal_max_depth: int | None) -> str | None:
         if not source_path.exists():
             return f"Source file does not exist: {source_path}"
         if not source_path.is_file():
@@ -221,8 +251,15 @@ class ImportService:
         if suffix not in BOOK_EXTENSIONS:
             return f"Unsupported book format: {suffix or source_path.name}"
         if suffix in ARCHIVE_EXTENSIONS:
-            validation = self._archive_service.validate_archive(source_path)
+            validation = self._archive_service.validate_archive(
+                source_path,
+                max_depth=archive_internal_max_depth if archive_internal_max_depth is not None else 2,
+            )
             if validation.code != ArchiveValidationCode.OK:
+                return validation.message
+        if suffix in PDF_EXTENSIONS:
+            validation = self._pdf_service.validate_pdf(source_path)
+            if not validation.is_valid:
                 return validation.message
         return None
 
@@ -355,6 +392,24 @@ def _resolve_source_path(source_path: str, manifest_dir: Path | None) -> Path:
     if manifest_dir is not None and (manifest_dir / path).exists():
         return (manifest_dir / path).resolve()
     return (Path.cwd() / path).resolve()
+
+
+def _supported_files_within_depth(folder: Path, *, max_depth: int) -> list[Path]:
+    if not folder.exists() or not folder.is_dir():
+        return []
+    limit = max(1, int(max_depth))
+    files: list[Path] = []
+    for candidate in folder.rglob("*"):
+        if not candidate.is_file():
+            continue
+        try:
+            relative = candidate.relative_to(folder)
+        except ValueError:
+            continue
+        depth = len(relative.parts)
+        if depth <= limit and candidate.suffix.lower() in BOOK_EXTENSIONS:
+            files.append(candidate)
+    return sorted(files, key=lambda path: str(path).casefold())
 
 
 def _book_type_for_suffix(suffix: str) -> str:

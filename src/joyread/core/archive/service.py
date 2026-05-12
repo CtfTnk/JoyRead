@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 import re
-import shutil
 import subprocess
 from tempfile import TemporaryDirectory
 from typing import Iterable, Sequence
@@ -39,6 +38,7 @@ from joyread.core.archive.models import (
     ArchiveValidationResult,
     PasswordProvider,
 )
+from joyread.core.archive.backends import ExtractionBackendResolver
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache, ArchiveExtractionPool
 
 try:  # pragma: no cover - exercised through dependency-missing branches.
@@ -260,6 +260,7 @@ class ArchiveImageService:
         page_cache_dir: str | Path | None = None,
         *,
         extraction_pool: ArchiveExtractionCache | None = None,
+        backend_resolver: ExtractionBackendResolver | None = None,
     ) -> None:
         if extraction_pool is not None and page_cache_dir is not None:
             raise ValueError("Pass either extraction_pool or page_cache_dir, not both.")
@@ -271,12 +272,14 @@ class ArchiveImageService:
             self._page_cache = ArchiveExtractionPool(Path(page_cache_dir), max_bytes=1 << 40)
         else:
             self._page_cache = ArchiveExtractionPool(None, max_bytes=0)
+        self._backend_resolver = backend_resolver or ExtractionBackendResolver()
 
     def validate_archive(
         self,
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
-        max_nested_depth: int = 5,
+        max_depth: int = 2,
+        max_nested_depth: int | None = None,
     ) -> ArchiveValidationResult:
         """Return structured feedback without raising controlled archive errors.
 
@@ -287,6 +290,7 @@ class ArchiveImageService:
         path = Path(archive_path)
         suffix = path.suffix.lower()
         archive_format = suffix.lstrip(".").upper() or None
+        effective_max_depth = _coerce_depth(max_nested_depth if max_nested_depth is not None else max_depth)
 
         if not path.exists():
             return self._validation_result(
@@ -317,7 +321,7 @@ class ArchiveImageService:
             session = self.open(
                 path,
                 password_provider=password_provider,
-                max_nested_depth=max_nested_depth,
+                max_depth=effective_max_depth,
             )
             first_page = session.get_page(0)
         except ArchiveError as exc:
@@ -353,8 +357,10 @@ class ArchiveImageService:
         self,
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
-        max_nested_depth: int = 5,
+        max_depth: int = 2,
+        max_nested_depth: int | None = None,
     ) -> ArchiveImageSession:
+        effective_max_depth = _coerce_depth(max_nested_depth if max_nested_depth is not None else max_depth)
         path = Path(archive_path)
         suffix = path.suffix.lower()
         if not path.exists():
@@ -365,9 +371,16 @@ class ArchiveImageService:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
 
         source = _ArchiveSource(label=path.name, suffix=suffix, path=path)
-        pages = self._scan_archive(source, password_provider, depth=0, max_nested_depth=max_nested_depth)
+        pages = self._scan_archive(
+            source,
+            password_provider,
+            max_depth=effective_max_depth,
+            archive_level=0,
+        )
         if not pages:
-            raise ArchiveEmptyError(f"No supported image pages found in archive: {path}")
+            raise ArchiveEmptyError(
+                f"No supported image pages found in archive within archive depth {effective_max_depth}: {path}"
+            )
         return ArchiveImageSession(pages, self._read_entries)
 
     def _validation_result(
@@ -408,23 +421,30 @@ class ArchiveImageService:
         self,
         source: _ArchiveSource,
         password_provider: PasswordProvider | None,
-        depth: int,
-        max_nested_depth: int,
+        max_depth: int,
+        archive_level: int,
     ) -> list[_PageRecord]:
         entries = self._list_entries(source, password_provider)
+        entry_prefix = _transparent_single_root_prefix(entries)
         root_group: list[_PageRecord] = []
         group_by_parent: OrderedDict[str, list[_PageRecord]] = OrderedDict({"": root_group})
         segments: list[tuple[str, list[_PageRecord]]] = []
 
         for entry in entries:
             safe_name = _safe_entry_name(entry.name)
-            if safe_name is None:
+            if safe_name is None or _is_metadata_entry(safe_name):
                 continue
 
-            suffix = PurePosixPath(safe_name).suffix.lower()
+            logical_name = _strip_transparent_prefix(safe_name, entry_prefix)
+            if logical_name is None:
+                continue
+            suffix = PurePosixPath(logical_name).suffix.lower()
+            entry_depth = _entry_depth(logical_name)
+            if entry_depth > max_depth:
+                continue
             if suffix in IMAGE_EXTENSIONS:
-                page = self._page_record(source, safe_name, entry.password)
-                parent = _parent_group(safe_name)
+                page = self._page_record(source, safe_name, logical_name, entry.password)
+                parent = _parent_group(logical_name)
                 if parent == "":
                     root_group.append(page)
                     continue
@@ -435,18 +455,18 @@ class ArchiveImageService:
                 group_by_parent[parent].append(page)
                 continue
 
-            if suffix in ARCHIVE_EXTENSIONS and depth < max_nested_depth:
+            if suffix in ARCHIVE_EXTENSIONS and archive_level < max_depth:
                 nested_data = self._read_entry(source, safe_name, entry.password)
                 nested_source = _ArchiveSource(
-                    label=f"{source.label}::{safe_name}",
+                    label=f"{source.label}::{logical_name}",
                     suffix=suffix,
                     data=nested_data,
                 )
                 nested_pages = self._scan_archive(
                     nested_source,
                     password_provider,
-                    depth=depth + 1,
-                    max_nested_depth=max_nested_depth,
+                    max_depth=max_depth,
+                    archive_level=archive_level + 1,
                 )
                 if nested_pages:
                     segments.append(("nested", nested_pages))
@@ -459,8 +479,8 @@ class ArchiveImageService:
                 ordered_pages.extend(segment_pages)
         return ordered_pages
 
-    def _page_record(self, source: _ArchiveSource, name: str, password: str | None) -> _PageRecord:
-        display_path = f"{source.label}/{name}"
+    def _page_record(self, source: _ArchiveSource, name: str, logical_name: str, password: str | None) -> _PageRecord:
+        display_path = f"{source.label}/{logical_name}"
         return _PageRecord(
             display_path=display_path,
             source=source,
@@ -478,6 +498,7 @@ class ArchiveImageService:
         if source.suffix in _SEVEN_ZIP_EXTENSIONS:
             return self._list_7z_entries(source, password_provider)
         if source.suffix in _RAR_EXTENSIONS:
+            self._configure_rarfile_tools()
             return self._list_rar_entries(source, password_provider)
         raise ArchiveUnsupportedFormat(f"Unsupported nested archive format: {source.suffix}")
 
@@ -695,7 +716,7 @@ class ArchiveImageService:
                     if not info.isdir()
                 ]
         except rarfile.RarCannotExec as exc:
-            raise ArchiveDependencyMissing("RAR/CBR requires an installed unar, unrar, bsdtar, or 7z backend.") from exc
+            raise ArchiveDependencyMissing(self._backend_resolver.missing_message(encrypted=password is not None)) from exc
         except rarfile.NeedFirstVolume as exc:
             raise ArchiveUnsupportedFormat("Multi-volume RAR archives are not supported yet.") from exc
         except rarfile.BadRarFile as exc:
@@ -707,6 +728,7 @@ class ArchiveImageService:
         rar_failure: Exception | None = None
         try:
             if rarfile is not None:
+                self._configure_rarfile_tools()
                 self._ensure_rar_backend()
                 with rarfile.RarFile(source.open_arg(), "r") as archive:
                     return archive.read(name, pwd=password)
@@ -722,7 +744,7 @@ class ArchiveImageService:
         except ArchiveDependencyMissing:
             if rar_failure is not None:
                 raise ArchiveDependencyMissing(
-                    "RAR/CBR requires a working extraction backend such as bsdtar, 7zz/7z, or unar."
+                    self._backend_resolver.missing_message(encrypted=password is not None)
                 ) from rar_failure
             raise
         except ArchiveReadError as exc:
@@ -733,18 +755,35 @@ class ArchiveImageService:
     def _ensure_rar_backend(self) -> None:
         if rarfile is None:
             raise ArchiveDependencyMissing("rarfile is required for RAR/CBR archives.")
+        self._configure_rarfile_tools()
         try:
             rarfile.tool_setup()
         except rarfile.RarCannotExec as exc:
-            raise ArchiveDependencyMissing("RAR/CBR requires an installed unar, unrar, bsdtar, or 7z backend.") from exc
+            raise ArchiveDependencyMissing(self._backend_resolver.missing_message()) from exc
+
+    def _configure_rarfile_tools(self) -> None:
+        if rarfile is None:
+            return
+        seven_zip = self._backend_resolver.seven_zip()
+        if seven_zip is not None:
+            if hasattr(rarfile, "SEVENZIP_TOOL"):
+                rarfile.SEVENZIP_TOOL = seven_zip.executable
+            if hasattr(rarfile, "SEVENZIP2_TOOL"):
+                rarfile.SEVENZIP2_TOOL = seven_zip.executable
+        unar = self._backend_resolver.unar()
+        if unar is not None and hasattr(rarfile, "UNAR_TOOL"):
+            rarfile.UNAR_TOOL = unar.executable
+        bsdtar = self._backend_resolver.bsdtar()
+        if bsdtar is not None and hasattr(rarfile, "BSDTAR_TOOL"):
+            rarfile.BSDTAR_TOOL = bsdtar.executable
 
     def _read_rar_entry_external(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         dependency_errors: list[str] = []
         read_errors: list[str] = []
         for reader in (
-            self._read_rar_with_bsdtar,
             self._read_rar_with_7zip,
             self._read_rar_with_unar,
+            self._read_rar_with_bsdtar,
         ):
             try:
                 return reader(source, name, password)
@@ -756,25 +795,28 @@ class ArchiveImageService:
                 continue
         if read_errors:
             raise ArchiveReadError("; ".join(read_errors))
-        raise ArchiveDependencyMissing("; ".join(dependency_errors) or "No RAR/CBR extraction backend is available.")
+        message = "; ".join(dependency_errors)
+        raise ArchiveDependencyMissing(
+            message or self._backend_resolver.missing_message(encrypted=password is not None)
+        )
 
     def _read_rar_with_bsdtar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         if source.path is None:
             raise ArchiveDependencyMissing("bsdtar fallback requires a filesystem archive path.")
         if password is not None:
             raise ArchiveDependencyMissing("bsdtar password-protected RAR fallback is not enabled.")
-        tool = shutil.which("bsdtar")
-        if tool is None:
+        backend = self._backend_resolver.bsdtar()
+        if backend is None:
             raise ArchiveDependencyMissing("bsdtar is not installed.")
-        return _run_archive_stdout_command([tool, "-xOf", str(source.path), name], name)
+        return _run_archive_stdout_command([backend.executable, "-xOf", str(source.path), name], name)
 
     def _read_rar_with_7zip(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         if source.path is None:
             raise ArchiveDependencyMissing("7z fallback requires a filesystem archive path.")
-        tool = shutil.which("7zz") or shutil.which("7z")
-        if tool is None:
+        backend = self._backend_resolver.seven_zip()
+        if backend is None:
             raise ArchiveDependencyMissing("7zz/7z is not installed.")
-        command = [tool, "x", "-so", "-y"]
+        command = [backend.executable, "x", "-so", "-y"]
         if password is not None:
             command.append(f"-p{password}")
         command.extend([str(source.path), name])
@@ -783,11 +825,11 @@ class ArchiveImageService:
     def _read_rar_with_unar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         if source.path is None:
             raise ArchiveDependencyMissing("unar fallback requires a filesystem archive path.")
-        tool = shutil.which("unar")
-        if tool is None:
+        backend = self._backend_resolver.unar()
+        if backend is None:
             raise ArchiveDependencyMissing("unar is not installed.")
         with TemporaryDirectory(prefix="joyread-rar-") as temp_dir:
-            command = [tool, "-quiet", "-force-overwrite", "-output-directory", temp_dir]
+            command = [backend.executable, "-quiet", "-force-overwrite", "-output-directory", temp_dir]
             if password is not None:
                 command.extend(["-password", password])
             command.extend([str(source.path), name])
@@ -836,6 +878,46 @@ def _safe_entry_name(name: str) -> str | None:
     return path.as_posix()
 
 
+def _is_metadata_entry(name: str) -> bool:
+    parts = PurePosixPath(name).parts
+    if not parts:
+        return True
+    if parts[0] == "__MACOSX":
+        return True
+    return any(part == ".DS_Store" or part.startswith("._") for part in parts)
+
+
+def _transparent_single_root_prefix(entries: Iterable[_ArchiveEntry]) -> str | None:
+    roots: set[str] = set()
+    for entry in entries:
+        safe_name = _safe_entry_name(entry.name)
+        if safe_name is None or _is_metadata_entry(safe_name):
+            continue
+        parts = PurePosixPath(safe_name).parts
+        if len(parts) <= 1:
+            return None
+        roots.add(parts[0])
+        if len(roots) > 1:
+            return None
+    if len(roots) == 1:
+        return next(iter(roots))
+    return None
+
+
+def _strip_transparent_prefix(name: str, prefix: str | None) -> str | None:
+    if prefix is None:
+        return name
+    parts = PurePosixPath(name).parts
+    if len(parts) <= 1 or parts[0] != prefix:
+        return name
+    stripped = PurePosixPath(*parts[1:]).as_posix()
+    return stripped or None
+
+
+def _entry_depth(name: str) -> int:
+    return len(PurePosixPath(name).parts)
+
+
 def _parent_group(name: str) -> str:
     parent = PurePosixPath(name).parent
     if parent == PurePosixPath("."):
@@ -853,13 +935,21 @@ def _sort_group(pages: list[_PageRecord]) -> list[_PageRecord]:
 
 
 def _natural_key(value: str) -> tuple[object, ...]:
-    parts: list[object] = []
+    parts: list[tuple[int, object]] = []
     for part in _NATURAL_PART_RE.split(value.lower()):
         if part.isdigit():
-            parts.append(int(part))
+            parts.append((0, int(part)))
         elif part:
-            parts.append(part)
+            parts.append((1, part))
     return tuple(parts)
+
+
+def _coerce_depth(value: object) -> int:
+    try:
+        depth = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 2
+    return max(1, min(5, depth))
 
 
 def _looks_like_password_error(exc: Exception) -> bool:

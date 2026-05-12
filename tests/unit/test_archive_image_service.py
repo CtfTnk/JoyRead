@@ -18,7 +18,9 @@ from joyread.core.archive import (
     ArchivePasswordRequired,
     ArchiveUnsupportedFormat,
     ArchiveValidationCode,
+    ExtractionBackendResolver,
 )
+from joyread.core.archive.backends import SEVEN_ZIP_ENV_VAR
 
 
 def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
@@ -34,7 +36,7 @@ def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
             archive.writestr(name, data)
 
 
-def test_cbz_discovers_images_sorts_groups_and_keeps_deep_paths(tmp_path: Path) -> None:
+def test_cbz_discovers_images_sorts_groups_and_respects_default_depth(tmp_path: Path) -> None:
     archive_path = tmp_path / "sample.cbz"
     _write_zip(
         archive_path,
@@ -52,15 +54,15 @@ def test_cbz_discovers_images_sorts_groups_and_keeps_deep_paths(tmp_path: Path) 
 
     session = ArchiveImageService().open(archive_path)
 
-    assert session.page_count == 6
+    assert session.page_count == 5
     assert [session.get_dimensions(index) for index in session.index_range] == [
         (20, 10),
         (30, 10),
         (101, 10),
         (102, 10),
         (110, 10),
-        (201, 10),
     ]
+
 
 
 def test_session_bounds_ranged_reads_dimensions_and_navigation(tmp_path: Path) -> None:
@@ -130,6 +132,78 @@ def test_nested_cbz_pages_are_appended_in_discovery_order(tmp_path: Path) -> Non
     assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (40, 10)]
 
 
+def test_archive_internal_depth_counts_from_archive_root(tmp_path: Path) -> None:
+    archive_path = tmp_path / "depth.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "001.png": _png_bytes((10, 10)),
+            "chapter/002.png": _png_bytes((20, 10)),
+            "chapter/deep/003.png": _png_bytes((30, 10)),
+        },
+    )
+
+    default_session = ArchiveImageService().open(archive_path)
+    deep_session = ArchiveImageService().open(archive_path, max_depth=3)
+
+    assert [default_session.get_dimensions(index) for index in default_session.index_range] == [(10, 10), (20, 10)]
+    assert [deep_session.get_dimensions(index) for index in deep_session.index_range] == [
+        (10, 10),
+        (20, 10),
+        (30, 10),
+    ]
+
+
+def test_archive_single_root_folder_is_transparent_for_default_depth(tmp_path: Path) -> None:
+    archive_path = tmp_path / "wrapped.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "Book/001.png": _png_bytes((10, 10)),
+            "Book/chapter/002.png": _png_bytes((20, 10)),
+            "Book/chapter/deep/003.png": _png_bytes((30, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [session.get_dimensions(index) for index in session.index_range] == [(10, 10), (20, 10)]
+
+
+def test_archive_skips_macos_metadata_entries(tmp_path: Path) -> None:
+    archive_path = tmp_path / "metadata.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "__MACOSX/._001.png": b"not an image",
+            "._002.png": b"not an image",
+            ".DS_Store": b"ignored",
+            "001.png": _png_bytes((10, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert session.page_count == 1
+    assert session.get_dimensions(0) == (10, 10)
+
+
+def test_archive_natural_sort_handles_mixed_chinese_and_numeric_names(tmp_path: Path) -> None:
+    archive_path = tmp_path / "10 十级中坦战车娘.zip"
+    _write_zip(
+        archive_path,
+        {
+            "10 十级中坦战车娘/0封面2.jpg": _png_bytes((20, 10)),
+            "10 十级中坦战车娘/0封面1.jpg": _png_bytes((10, 10)),
+            "10 十级中坦战车娘/STB-1.jpg": _png_bytes((30, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [session.get_dimensions(index) for index in session.index_range] == [(10, 10), (20, 10), (30, 10)]
+
+
 def test_7z_archive_reads_images(tmp_path: Path) -> None:
     archive_path = tmp_path / "sample.cb7"
     with py7zr.SevenZipFile(archive_path, "w") as archive:
@@ -181,6 +255,23 @@ def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
         archive.writestr("001.png", _png_bytes((32, 16)))
 
     session = ArchiveImageService().open(archive_path, password_provider=lambda _request: "secret")
+
+    assert session.page_count == 1
+    assert session.get_dimensions(0) == (32, 16)
+
+
+def test_encrypted_zip_accepts_unicode_password(tmp_path: Path) -> None:
+    archive_path = tmp_path / "encrypted-unicode.cbz"
+    with pyzipper.AESZipFile(
+        archive_path,
+        "w",
+        compression=ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword("秘密".encode("utf-8"))
+        archive.writestr("001.png", _png_bytes((32, 16)))
+
+    session = ArchiveImageService().open(archive_path, password_provider=lambda _request: "秘密")
 
     assert session.page_count == 1
     assert session.get_dimensions(0) == (32, 16)
@@ -310,6 +401,16 @@ def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.M
         class RarCannotExec(Exception):
             pass
 
+        class NeedFirstVolume(Exception):
+            pass
+
+        class BadRarFile(Exception):
+            pass
+
+        class RarFile:
+            def __init__(self, *_args, **_kwargs) -> None:
+                raise MissingRarBackend.RarCannotExec("missing backend")
+
         def tool_setup(self) -> None:
             raise self.RarCannotExec("missing backend")
 
@@ -323,6 +424,37 @@ def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.M
     result = ArchiveImageService().validate_archive(archive_path)
     assert result.code == ArchiveValidationCode.DEPENDENCY_MISSING
     assert result.error_type == "ArchiveDependencyMissing"
+    assert "Tried:" in result.message
+
+
+def test_extraction_backend_resolver_prefers_bundled_7zip(tmp_path: Path) -> None:
+    resolver = ExtractionBackendResolver(tmp_path)
+    bundled, _description = resolver._seven_zip_candidates()[0]
+    bundled.parent.mkdir(parents=True)
+    bundled.write_text("#!/bin/sh\n", encoding="utf-8")
+    bundled.chmod(0o755)
+
+    backend = resolver.seven_zip()
+
+    assert backend is not None
+    assert backend.executable == str(bundled)
+    assert backend.source.startswith("bundled:")
+
+
+def test_extraction_backend_resolver_uses_env_before_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    override = tmp_path / "custom-7zz"
+    override.write_text("#!/bin/sh\n", encoding="utf-8")
+    override.chmod(0o755)
+    monkeypatch.setenv(SEVEN_ZIP_ENV_VAR, str(override))
+
+    resolver = ExtractionBackendResolver(tmp_path)
+    backend = resolver.seven_zip()
+
+    assert backend is not None
+    assert backend.executable == str(override)
 
 
 def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -387,7 +519,9 @@ def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pyt
         return archive_service.subprocess.CompletedProcess(command, 0, stdout=page_bytes, stderr=b"")
 
     monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
-    monkeypatch.setattr(archive_service.shutil, "which", fake_which)
+    from joyread.core.archive import backends
+
+    monkeypatch.setattr(backends.shutil, "which", fake_which)
     monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
 
     session = ArchiveImageService().open(archive_path)
@@ -395,3 +529,82 @@ def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pyt
 
     assert page is not None
     assert page.dimensions == (32, 16)
+
+
+def test_encrypted_rar_read_prefers_7zip_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from joyread.core.archive import backends
+    from joyread.core.archive import service as archive_service
+
+    archive_path = tmp_path / "encrypted.cbr"
+    archive_path.write_bytes(b"fake-rar")
+    page_bytes = _png_bytes((40, 20))
+
+    class FakeInfo:
+        filename = "001.jpg"
+        file_size = len(page_bytes)
+
+        def isdir(self) -> bool:
+            return False
+
+    class FakeRarFile:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN001
+            return None
+
+        def needs_password(self) -> bool:
+            return True
+
+        def infolist(self):
+            return [FakeInfo()]
+
+        def read(self, *_args, **_kwargs) -> bytes:
+            raise FakeRarModule.BadRarFile("rarfile backend failed")
+
+    class FakeRarModule:
+        class RarCannotExec(Exception):
+            pass
+
+        class NeedFirstVolume(Exception):
+            pass
+
+        class BadRarFile(Exception):
+            pass
+
+        class PasswordRequired(Exception):
+            pass
+
+        class RarWrongPassword(Exception):
+            pass
+
+        RarFile = FakeRarFile
+        SEVENZIP_TOOL = "7z"
+        SEVENZIP2_TOOL = "7z"
+        UNAR_TOOL = "unar"
+        BSDTAR_TOOL = "bsdtar"
+
+        def tool_setup(self) -> None:
+            return None
+
+    def fake_which(name: str) -> str | None:
+        return { "7zz": "/opt/joyread/7zz", "bsdtar": "/usr/bin/bsdtar" }.get(name)
+
+    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+        assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
+        assert "-psecret" in command
+        assert "/usr/bin/bsdtar" not in command
+        return archive_service.subprocess.CompletedProcess(command, 0, stdout=page_bytes, stderr=b"")
+
+    monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
+    monkeypatch.setattr(backends.shutil, "which", fake_which)
+    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+
+    session = ArchiveImageService().open(archive_path, password_provider=lambda _request: "secret")
+    page = session.get_page(0)
+
+    assert page is not None
+    assert page.dimensions == (40, 20)

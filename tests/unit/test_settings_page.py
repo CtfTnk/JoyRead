@@ -36,6 +36,8 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_language("English")
     viewmodel.set_storage_location("~/Documents/JoyRead Library")
     viewmodel.set_archive_cache_strategy("Hidden image files")
+    viewmodel.set_import_folder_max_depth(3)
+    viewmodel.set_archive_internal_max_depth(4)
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
@@ -43,7 +45,9 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.storage_location == "~/Documents/JoyRead Library"
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
     assert viewmodel.archive_cache_strategy_label == "Hidden image files"
-    assert len(changes) == 5
+    assert viewmodel.import_folder_max_depth == 3
+    assert viewmodel.archive_internal_max_depth == 4
+    assert len(changes) == 7
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -100,12 +104,10 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four original General rows (Language, Import switch, Window switch,
-    # Storage Location) plus the Cache sub-group: three numeric inputs, one
-    # strategy dropdown, and one usage/clear row = nine SettingsItem frames.
-    assert len(setting_items) == 9
+    # Four original General rows, two Import depth rows, and five Cache rows.
+    assert len(setting_items) == 11
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 3
+    assert len(spin_buttons) == 5
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
 

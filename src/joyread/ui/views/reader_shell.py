@@ -62,6 +62,8 @@ class ReaderShellWidget(QWidget):
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
         self.dialog_overlay.hide()
 
+        app_settings = context.settings_store.load()
+        context.settings = app_settings
         self.viewmodel = ReaderViewModel(
             context.reader_session_service,
             context.task_service,
@@ -73,6 +75,7 @@ class ReaderShellWidget(QWidget):
             progress=_reader_progress_for_book(context, book, start_page_index),
             prefetch_before=context.config.page_prefetch_before,
             prefetch_after=context.config.page_prefetch_after,
+            archive_internal_max_depth=app_settings.archive_internal_max_depth,
         )
         self._connect_signals()
         self._install_auto_hide()
@@ -172,6 +175,7 @@ class ReaderShellWidget(QWidget):
             confirm_text="Open",
             cancel_text="Cancel",
             validator=lambda value: None if value else "Password cannot be empty.",
+            on_cancel=self.viewmodel.cancel_password_request,
         )
 
     def _toggle_settings_panel(self) -> None:

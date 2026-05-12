@@ -160,6 +160,8 @@ class DialogInputFieldWithHeader(QWidget):
         self.line_edit = QLineEdit(initial_text)
         self.line_edit.setProperty("class", "DialogInputField")
         self.line_edit.setEchoMode(echo_mode)
+        if echo_mode != QLineEdit.EchoMode.Normal:
+            self.line_edit.setInputMethodHints(Qt.InputMethodHint.ImhNone)
         self.line_edit.setFixedHeight(Theme.dialog_input_field_height)
         layout.addWidget(self.line_edit)
 
@@ -740,8 +742,9 @@ class JoyReadDialogOverlay(QWidget):
         confirm_text: str = "Confirm",
         cancel_text: str = "Cancel",
         validator: Callable[[str], str | None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
     ) -> None:
-        content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.Password)
+        content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit)
 
         def before_accept() -> bool:
             if validator is None:
@@ -756,7 +759,7 @@ class JoyReadDialogOverlay(QWidget):
 
         self._before_accept = before_accept
         self._on_accept = lambda: on_confirm(content.value)
-        self._on_reject = None
+        self._on_reject = on_cancel
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()

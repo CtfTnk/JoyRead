@@ -93,7 +93,11 @@ class _FakeSessionService:
     def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
         self._session = _FakeSession(dimensions)
 
-    def open_archive(self, _path: Path, password=None):  # noqa: ANN001
+    def open_document(self, path: Path, password=None, *, archive_internal_max_depth=2):  # noqa: ANN001
+        return self.open_archive(path, password=password, archive_internal_max_depth=archive_internal_max_depth)
+
+    def open_archive(self, _path: Path, password=None, *, archive_internal_max_depth=2):  # noqa: ANN001
+        del archive_internal_max_depth
         return self._session
 
     def load_page(self, session: _FakeSession, page_index: int) -> ReaderPageImage | None:
@@ -312,10 +316,45 @@ def test_reader_viewmodel_pans_wide_page_before_turning_page(tmp_path: Path) -> 
     assert viewmodel.layout_result is not None
     assert viewmodel.layout_result.mode == ReaderDisplayMode.WIDE_PAN
 
+    assert viewmodel.pan_x == viewmodel.layout_result.pan_min_x
+
     viewmodel.handle_horizontal_key("left")
 
     assert viewmodel.current_index == before_index
+    assert viewmodel.pan_x > before_pan
+
+
+def test_reader_viewmodel_ltr_wide_page_starts_left_and_pans_right(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path, dimensions=(2000, 1000))
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    viewmodel.open_path(tmp_path / "wide.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+    before_index = viewmodel.current_index
+    before_pan = viewmodel.pan_x
+
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.WIDE_PAN
+    assert before_pan == viewmodel.layout_result.pan_max_x
+
+    viewmodel.handle_horizontal_key("right")
+
+    assert viewmodel.current_index == before_index
     assert viewmodel.pan_x < before_pan
+
+
+def test_reader_viewmodel_wide_buttons_pan_before_navigation(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path, dimensions=(2000, 1000))
+
+    viewmodel.open_path(tmp_path / "wide.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+    before_index = viewmodel.current_index
+    before_pan = viewmodel.pan_x
+
+    viewmodel.activate_left_side()
+
+    assert viewmodel.current_index == before_index
+    assert viewmodel.pan_x > before_pan
 
 
 def test_reader_viewmodel_vertical_mode_scrolls_continuously_and_snaps_by_page(tmp_path: Path) -> None:
@@ -420,6 +459,18 @@ def test_reader_viewmodel_shift_to_next_index_collapses_to_single_at_last_page(
     viewmodel.shift_to_next_index()
     assert viewmodel.current_index == viewmodel.page_count - 1
     assert viewmodel.current_display_indices == (viewmodel.page_count - 1,)
+
+
+def test_reader_viewmodel_reports_password_cancel_as_undecrypted_archive(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+    errors: list[str | None] = []
+    viewmodel.error_changed.connect(errors.append)
+
+    viewmodel.cancel_password_request()
+
+    assert errors == ["Could not load images because the archive is encrypted and no password was provided."]
+    assert viewmodel.error_message == errors[0]
+    assert viewmodel.is_loading is False
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

@@ -1,0 +1,6 @@
+7-Zip is distributed under the GNU LGPL with the unRAR restriction for portions
+of the RAR extraction code.
+
+When release packaging adds the platform-specific `7zz` or `7zz.exe` binaries
+to this directory tree, include the exact upstream `License.txt` from that
+7-Zip distribution beside the binary.

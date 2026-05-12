@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLab
 from PIL import Image
 
 from joyread.core.models.book import Book
-from joyread.core.repositories.mock_book_repository import MockBookRepository
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -99,7 +99,7 @@ def test_auto_hide_scroll_handle_reveals_then_hides_after_idle(qtbot) -> None:
 
 def test_shelf_content_switches_left_outer_radius_when_sidebar_hidden(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -148,7 +148,7 @@ def test_grid_columns_change_only_after_card_width_plus_minimum_gap(qtbot) -> No
 def test_grid_resize_keeps_card_widgets_stable(qtbot) -> None:
     apply_theme()
     grid = BookGridWidget(ResourceLoader())
-    books = MockBookRepository().list_books()
+    books = InMemoryBookRepository().list_books()
     qtbot.addWidget(grid)
     grid.set_books(books, set())
     grid.show()
@@ -166,7 +166,7 @@ def test_grid_resize_keeps_card_widgets_stable(qtbot) -> None:
 def test_grid_reused_card_updates_metadata_in_real_time(qtbot) -> None:
     apply_theme()
     grid = BookGridWidget(ResourceLoader())
-    books = MockBookRepository().list_books()
+    books = InMemoryBookRepository().list_books()
     qtbot.addWidget(grid)
     grid.set_books(books, set())
     grid.show()
@@ -223,7 +223,7 @@ def test_missing_book_card_uses_figma_opacity_without_color_tint(qtbot) -> None:
 
 def test_book_card_selected_outline_does_not_change_layout_geometry(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[0]
+    book = InMemoryBookRepository().list_books()[0]
     card = BookCardWidget(book, ResourceLoader())
     qtbot.addWidget(card)
 
@@ -331,7 +331,7 @@ def test_book_card_cover_can_update_from_generated_path(qtbot, tmp_path) -> None
     apply_theme()
     cover_path = tmp_path / "cover.png"
     write_test_png(cover_path)
-    book = MockBookRepository().list_books()[0]
+    book = InMemoryBookRepository().list_books()[0]
     card = BookCardWidget(book, ResourceLoader())
     qtbot.addWidget(card)
     cover = card.findChild(BookCoverWidget, "BookCover")
@@ -367,7 +367,7 @@ def test_book_progress_bar_clamps_value_and_keeps_figma_size(qtbot) -> None:
 
 def test_book_list_row_matches_figma_structure_and_selected_variant(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[1]
+    book = InMemoryBookRepository().list_books()[1]
     row = BookListRowWidget(book, ResourceLoader())
     qtbot.addWidget(row)
 
@@ -396,7 +396,7 @@ def test_book_list_row_cover_can_update_from_generated_path(qtbot, tmp_path) -> 
     apply_theme()
     cover_path = tmp_path / "list-cover.png"
     write_test_png(cover_path)
-    row = BookListRowWidget(MockBookRepository().list_books()[0], ResourceLoader())
+    row = BookListRowWidget(InMemoryBookRepository().list_books()[0], ResourceLoader())
     qtbot.addWidget(row)
     cover = row.findChild(BookCoverWidget, "BookCover")
     assert cover is not None
@@ -409,7 +409,7 @@ def test_book_list_row_cover_can_update_from_generated_path(qtbot, tmp_path) -> 
 
 def test_detail_button_emits_only_its_own_book_in_multi_selection_context(qtbot) -> None:
     apply_theme()
-    second = MockBookRepository().list_books()[1]
+    second = InMemoryBookRepository().list_books()[1]
     row = BookListRowWidget(second, ResourceLoader())
     qtbot.addWidget(row)
 
@@ -425,7 +425,7 @@ def test_detail_button_emits_only_its_own_book_in_multi_selection_context(qtbot)
 
 def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_thumbnails(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[1]
+    book = InMemoryBookRepository().list_books()[1]
     panel = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(panel)
     panel.resize(876, 760)
@@ -485,7 +485,7 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
 
 def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[1]
+    book = InMemoryBookRepository().list_books()[1]
     panel = BookDetailPanel(ResourceLoader())
     emitted_titles: list[tuple[str, str]] = []
     emitted_authors: list[tuple[str, str]] = []
@@ -517,7 +517,7 @@ def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
 
 def test_book_detail_language_pill_emits_menu_request_on_double_click(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[1]
+    book = InMemoryBookRepository().list_books()[1]
     panel = BookDetailPanel(ResourceLoader())
     emitted: list[tuple[str, QPoint]] = []
     panel.language_menu_requested.connect(lambda book_uuid, point: emitted.append((book_uuid, point)))
@@ -539,7 +539,7 @@ def test_book_detail_language_pill_emits_menu_request_on_double_click(qtbot) -> 
 
 def test_book_detail_language_pill_keeps_full_text_across_repeated_changes(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[1]
+    book = InMemoryBookRepository().list_books()[1]
     panel = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(panel)
     panel.show()
@@ -568,7 +568,7 @@ def test_book_detail_panel_cover_can_update_for_current_book(qtbot, tmp_path) ->
     apply_theme()
     cover_path = tmp_path / "detail-cover.png"
     write_test_png(cover_path, size=(200, 284))
-    book = MockBookRepository().list_books()[0]
+    book = InMemoryBookRepository().list_books()[0]
     panel = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(panel)
     panel.set_book(book)
@@ -606,7 +606,7 @@ def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> Non
 
 def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) -> None:
     apply_theme()
-    book = MockBookRepository().list_books()[0]
+    book = InMemoryBookRepository().list_books()[0]
     panel = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(panel)
     panel.set_book(book)
@@ -625,7 +625,7 @@ def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) ->
 
 def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -647,7 +647,7 @@ def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> Non
 
 def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -669,7 +669,7 @@ def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(q
 
 def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -695,7 +695,7 @@ def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> Non
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -738,7 +738,7 @@ def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
 
 def test_shelf_detail_panel_closes_with_escape(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -762,7 +762,7 @@ def test_shelf_detail_panel_closes_with_escape(qtbot) -> None:
 
 def test_shelf_detail_panel_closes_on_blank_shelf_click(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -800,7 +800,7 @@ def test_blank_grid_area_emits_clear_selection_signal(qtbot) -> None:
 
 def test_shelf_menu_targets_preserve_multi_selection(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
@@ -819,7 +819,7 @@ def test_shelf_menu_targets_preserve_multi_selection(qtbot) -> None:
 
 def test_shelf_export_menu_request_uses_selected_targets(qtbot) -> None:
     apply_theme()
-    viewmodel = ShelfViewModel(LibraryService(MockBookRepository()))
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
