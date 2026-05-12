@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession
+from joyread.core.archive.service import EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest
 from joyread.core.reader.models import ReaderPageImage
 
@@ -39,6 +40,34 @@ class ReaderSessionService:
                 dimensions=page.dimensions,
             )
         return loaded
+
+    def should_warm_disk_cache(self, path: str | Path) -> bool:
+        return Path(path).suffix.lower() in EXPENSIVE_ARCHIVE_EXTENSIONS
+
+    def warm_disk_cache(
+        self,
+        path: str | Path,
+        *,
+        password: str | None = None,
+        chunk_size: int = 8,
+        is_cancelled=None,  # noqa: ANN001 - accepts TaskHandle-like status checks.
+    ) -> None:
+        """Warm extracted-page disk cache in descending page order.
+
+        The reader keeps its own foreground session. Warm-up opens a separate
+        archive session so slow whole-book extraction never holds the visible
+        reader's session lock or blocks current/nearby page loads.
+        """
+
+        if not self.should_warm_disk_cache(path):
+            return
+        session = self.open_archive(path, password=password)
+        page_indices = list(range(session.page_count - 1, -1, -1))
+        chunk_size = max(1, int(chunk_size))
+        for start in range(0, len(page_indices), chunk_size):
+            if is_cancelled is not None and is_cancelled():
+                return
+            self.load_pages(session, tuple(page_indices[start : start + chunk_size]))
 
     def password_request_label(self, request: ArchivePasswordRequest) -> str:
         return f"{request.archive_format} archive password"

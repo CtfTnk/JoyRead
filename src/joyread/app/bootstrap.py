@@ -18,7 +18,8 @@ from joyread.ui.views.reader_window import ReaderWindow
 
 def create_application(argv: list[str] | None = None) -> tuple[QApplication, AppContext, QMainWindow]:
     argv = argv or sys.argv
-    app = QApplication(argv)
+    app = QApplication.instance() or QApplication(argv)
+    app.setQuitOnLastWindowClosed(True)
     context = create_app_context()
     context.paths.ensure_directories()
     configure_logging(context.paths.paths.logs)
@@ -32,6 +33,9 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
 
     direct_path = _direct_reader_path(argv[1:])
     if direct_path is not None:
+        # OS "Open With" should go straight to reader-only mode. Do not show
+        # the bookshelf or a QFileDialog here; macOS native panel helpers are
+        # only expected when the user explicitly opens an in-app file picker.
         window = ReaderWindow(context, direct_path)
     else:
         window = MainWindow(context)

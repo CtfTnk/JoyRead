@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QCloseEvent, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
@@ -137,6 +137,9 @@ class MainWindow(QMainWindow):
 
     def _select_reader_file(self, import_mode: bool) -> None:
         extensions = " ".join(f"*{suffix}" for suffix in sorted(ARCHIVE_EXTENSIONS))
+        # Keep the platform-native picker. On macOS this can briefly involve
+        # Open/Save Panel, QuickLook, and AutoFill helper processes owned by
+        # the OS; JoyRead does not spawn or manage those helpers directly.
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
             "Open Book",
@@ -157,6 +160,7 @@ class MainWindow(QMainWindow):
     ) -> None:  # noqa: ANN001
         reader = ReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
         reader.progress_changed.connect(self._handle_reader_progress_changed)
+        reader.closed.connect(lambda reader=reader: self._forget_reader_window(reader))
         reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
         self._reader_windows.append(reader)
         reader.show()
@@ -200,6 +204,12 @@ class MainWindow(QMainWindow):
     def _forget_reader_window(self, reader: ReaderWindow) -> None:
         if reader in self._reader_windows:
             self._reader_windows.remove(reader)
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._close_embedded_reader()
+        for reader in tuple(self._reader_windows):
+            reader.close()
+        super().closeEvent(event)
 
     def _handle_reader_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         self._context.shelf_viewmodel.apply_reader_progress(book_uuid, page_index, progress_percent)

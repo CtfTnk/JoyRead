@@ -19,6 +19,7 @@ from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
+from joyread.ui.widgets.section_banner import SectionBanner, SidebarSectionBanner
 
 
 class SidebarWidget(QWidget):
@@ -152,38 +153,7 @@ class SidebarWidget(QWidget):
         return button
 
 
-class SidebarSectionBanner(QFrame):
-    """Figma sidebar_section_banner: text left, 20px dropout indicator right."""
-
-    def __init__(self, title: str, resources: ResourceLoader, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
-        self.setObjectName("SidebarSectionBanner")
-        self.setFixedHeight(Theme.sidebar_section_height)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(
-            Theme.sidebar_section_padding_left,
-            Theme.sidebar_section_padding_top,
-            Theme.sidebar_section_padding_right,
-            Theme.sidebar_section_padding_bottom,
-        )
-        layout.setSpacing(0)
-
-        label = QLabel(title)
-        label.setObjectName("SidebarSectionLabel")
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(label, stretch=1)
-
-        arrow = QLabel()
-        arrow.setObjectName("SidebarSectionArrow")
-        arrow.setFixedSize(Theme.sidebar_section_arrow_size, Theme.sidebar_section_arrow_size)
-        arrow.setPixmap(
-            QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(
-                QSize(Theme.sidebar_section_arrow_size, Theme.sidebar_section_arrow_size)
-            )
-        )
-        layout.addWidget(arrow)
+__all__ = ["SidebarItemWidget", "SidebarSectionBanner", "SidebarWidget", "SectionBanner"]
 
 
 class SidebarItemWidget(QFrame):

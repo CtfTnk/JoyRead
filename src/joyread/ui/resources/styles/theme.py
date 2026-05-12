@@ -245,6 +245,16 @@ class Theme:
     settings_dropdown_height = 24
     settings_dropdown_indicator_width = 24
     settings_dropdown_icon_size = 18
+    settings_spin_width = 100
+    settings_spin_height = 24
+    settings_spin_outer_padding = 1
+    settings_spin_text_padding = 3
+    settings_spin_text_gap = 1
+    settings_spin_editor_width = 34
+    settings_spin_button_area_width = 26
+    settings_spin_button_gap = 2
+    settings_spin_step_button_width = 12
+    settings_spin_icon_size = 18
     settings_push_button_width = 52
     settings_push_button_height = 20
     settings_address_item_height = 56

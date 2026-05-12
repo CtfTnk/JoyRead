@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+
 try:
     from platformdirs import user_config_path, user_data_path
 except ImportError:  # pragma: no cover - platformdirs is a project dependency.
@@ -24,6 +26,14 @@ class AppSettings:
     shelf_sort_ascending: bool = False
     shelf_file_filter: str = "ALL"
     shelf_view_mode: str = "grid"
+    # Cache budgets (MB). Defaults intentionally match AppConfig so a missing
+    # settings.json or an upgrade from an older build behaves identically to a
+    # fresh install. Reader cache is the *total* shared budget across every
+    # open reader window — see CacheService.reader_page_cache.
+    reader_page_cache_mb: int = 512
+    detail_thumbnail_cache_mb: int = 64
+    archive_extraction_pool_mb: int = 1024
+    archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
 
 
 class SettingsStore:
@@ -79,6 +89,10 @@ class SettingsStore:
             shelf_sort_ascending=bool(raw.get("shelf_sort_ascending", False)),
             shelf_file_filter=str(raw.get("shelf_file_filter") or "ALL"),
             shelf_view_mode=str(raw.get("shelf_view_mode") or "grid"),
+            reader_page_cache_mb=_coerce_positive_int(raw.get("reader_page_cache_mb"), default=512),
+            detail_thumbnail_cache_mb=_coerce_positive_int(raw.get("detail_thumbnail_cache_mb"), default=64),
+            archive_extraction_pool_mb=_coerce_positive_int(raw.get("archive_extraction_pool_mb"), default=1024),
+            archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
         )
 
     def save(self, settings: AppSettings) -> None:
@@ -114,3 +128,20 @@ class SettingsStore:
 
 def _looks_like_source_checkout(path: Path) -> bool:
     return (path / "pyproject.toml").exists() and (path / "src" / "joyread").exists()
+
+
+def _coerce_positive_int(value: object, *, default: int) -> int:
+    """Parse a cache-budget integer with a graceful fallback.
+
+    Settings files written by older builds will not carry the cache fields;
+    we want missing/invalid entries to silently fall back to the documented
+    defaults so the app keeps booting after an upgrade.
+    """
+
+    if value is None:
+        return default
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    return coerced if coerced > 0 else default

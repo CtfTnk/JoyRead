@@ -10,6 +10,7 @@ from joyread.app.app_context import create_app_context
 from joyread.core.archive import ArchiveImageService
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
+from joyread.core.services.archive_extraction_pool import HiddenImageExtractionPool
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.storage_migration_service import StorageMigrationService
@@ -555,3 +556,23 @@ def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Pa
     assert (context.paths.paths.database / "joyread.sqlite3").exists()
     assert context.settings_store.settings_path.is_relative_to(tmp_path / "runtime" / ".joyread_support")
     context.database_interpreter.close()
+
+
+def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    source = tmp_path / "book.cb7"
+    source.write_bytes(b"fake")
+    context.archive_extraction_pool.put(source, "001.png", b"page")
+    old_directory = context.archive_extraction_pool.directory
+    assert old_directory is not None
+    assert any(path.is_file() for path in old_directory.rglob("*"))
+
+    context.settings_store.update(archive_cache_strategy="hidden_image_files")
+    context.apply_cache_settings()
+
+    assert isinstance(context.archive_extraction_pool, HiddenImageExtractionPool)
+    assert context.archive_extraction_pool.directory is not None
+    assert context.archive_extraction_pool.directory.name == ".archive_image_pages"
+    assert not any(path.is_file() for path in old_directory.rglob("*"))
+    context.close()

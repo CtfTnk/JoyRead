@@ -5,6 +5,7 @@ from pathlib import Path
 from PIL import Image
 
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.task_service import TaskHandle, TaskStatus
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
@@ -27,6 +28,48 @@ class _SyncTaskService:
         if on_success is not None:
             on_success(result)
         return handle
+
+
+class _ManualPageTaskService:
+    def __init__(self) -> None:
+        self.page_tasks = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None):  # noqa: ANN001
+        handle = TaskHandle(task_id=name)
+        handle.status = TaskStatus.RUNNING
+        if name.startswith("reader-pages"):
+            self.page_tasks.append((handle, callback, on_success, on_failure))
+            return handle
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return handle
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
+        return handle
+
+    def run_next_page_task(self) -> None:
+        handle, callback, on_success, on_failure = self.page_tasks.pop(0)
+        if handle.status == TaskStatus.CANCELLED:
+            return
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
 
 
 class _FakeSession:
@@ -117,6 +160,63 @@ def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None
     assert layout_modes
     assert ReaderDisplayMode.SINGLE not in layout_modes
     assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
+
+
+def test_reader_viewmodel_clears_stale_layout_while_step_navigation_target_loads(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    viewmodel = _viewmodel(tmp_path, task_service=task_service, prefetch_before=0, prefetch_after=0)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    task_service.run_next_page_task()
+
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [1, 0]
+
+    viewmodel.go_next()
+
+    assert viewmodel.current_index == 2
+    assert viewmodel.current_display_indices == (2, 3)
+    assert viewmodel.layout_result is None
+    assert viewmodel.loading_page_index == 2
+
+    viewmodel.go_next()
+
+    # Step navigation is ignored while the target spread is still unresolved.
+    assert viewmodel.current_display_indices == (2, 3)
+    assert viewmodel.loading_page_index == 2
+
+    task_service.run_next_page_task()
+
+    assert viewmodel.loading_page_index is None
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [3, 2]
+
+
+def test_reader_viewmodel_progress_seek_overrides_pending_step_navigation(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    viewmodel = _viewmodel(tmp_path, task_service=task_service, prefetch_before=0, prefetch_after=0)
+
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1600, 900)
+    task_service.run_next_page_task()
+    viewmodel.go_next()
+
+    assert viewmodel.loading_page_index == 2
+
+    viewmodel.seek(4)
+
+    assert viewmodel.current_display_indices == (4,)
+    assert viewmodel.loading_page_index == 4
+
+    task_service.run_next_page_task()
+    assert viewmodel.loading_page_index == 4
+    assert viewmodel.layout_result is None
+
+    task_service.run_next_page_task()
+    assert viewmodel.loading_page_index is None
+    assert viewmodel.layout_result is not None
+    assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [4]
 
 
 def test_reader_viewmodel_backward_navigation_uses_smallest_as_current_index(tmp_path: Path) -> None:
@@ -322,21 +422,180 @@ def test_reader_viewmodel_shift_to_next_index_collapses_to_single_at_last_page(
     assert viewmodel.current_display_indices == (viewmodel.page_count - 1,)
 
 
+def _cache_service(tmp_path: Path) -> CacheService:
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    return CacheService(archive_extraction_pool=pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+
+
 def _viewmodel(
     tmp_path: Path,
     dimensions: tuple[int, int] = (600, 900),
     library_service=None,  # noqa: ANN001
+    *,
+    cache_service: CacheService | None = None,
+    task_service=None,  # noqa: ANN001
+    prefetch_before: int = 1,
+    prefetch_after: int = 1,
 ) -> ReaderViewModel:
     source = tmp_path / "book.cbz"
     source.write_bytes(b"fake")
+    cache = cache_service or _cache_service(tmp_path)
     return ReaderViewModel(
         _FakeSessionService(dimensions),  # type: ignore[arg-type]
-        _SyncTaskService(),  # type: ignore[arg-type]
-        CacheService(16, 16),
+        task_service or _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
         library_service,  # type: ignore[arg-type]
         book_uuid="book-1" if library_service is not None else None,
         title="Book",
+        prefetch_before=prefetch_before,
+        prefetch_after=prefetch_after,
     )
+
+
+def test_reader_viewmodel_cancel_clears_only_its_namespace_in_shared_cache(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm_a = _viewmodel(tmp_path, cache_service=cache_service)
+    vm_b = _viewmodel(tmp_path, cache_service=cache_service)
+
+    vm_a.open_path(tmp_path / "a.cbz")
+    vm_b.open_path(tmp_path / "b.cbz")
+    vm_a.set_viewport_size(1600, 900)
+    vm_b.set_viewport_size(1600, 900)
+    bytes_before = cache_service.reader_page_cache.current_bytes
+    assert bytes_before > 0
+
+    vm_a.cancel()
+
+    # Reader B's pages survive — only A's slice of the shared cache is freed.
+    bytes_after = cache_service.reader_page_cache.current_bytes
+    assert bytes_after > 0
+    assert bytes_after < bytes_before
+    assert vm_a._session is None
+    assert vm_a._pages == {}
+    assert vm_a._layout_result is None
+    assert vm_a.page_count == 0
+
+
+def test_reader_viewmodel_multi_open_respects_shared_byte_budget(tmp_path: Path) -> None:
+    # A tight shared budget guarantees that opening two readers can never
+    # multiply memory: the cache evicts oldest pages from idle readers first.
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=1024)
+    cache_service = CacheService(archive_extraction_pool=pool, reader_page_cache_max_bytes=2048)
+    vm_a = _viewmodel(tmp_path, cache_service=cache_service)
+    vm_b = _viewmodel(tmp_path, cache_service=cache_service)
+
+    vm_a.open_path(tmp_path / "a.cbz")
+    vm_a.set_viewport_size(1600, 900)
+    vm_b.open_path(tmp_path / "b.cbz")
+    vm_b.set_viewport_size(1600, 900)
+
+    # Walk through both books to load several pages and exercise eviction.
+    for _ in range(3):
+        vm_a.go_next()
+        vm_b.go_next()
+
+    assert cache_service.reader_page_cache.current_bytes <= 2048
+
+
+def test_reader_viewmodel_ignores_late_page_results_after_cancel(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    vm = _viewmodel(tmp_path, task_service=task_service)
+    ready: list[ReaderPageImage] = []
+    vm.page_ready.connect(ready.append)
+
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+    assert task_service.page_tasks
+    _handle, _callback, on_success, _on_failure = task_service.page_tasks[0]
+
+    vm.cancel()
+    assert on_success is not None
+    on_success({0: ReaderPageImage(0, _png_bytes(), (8, 12))})
+
+    assert ready == []
+    assert vm._pages == {}
+    assert vm._page_handles == {}
+
+
+def test_reader_viewmodel_keeps_prefetch_pages_out_of_resident_pages(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm = _viewmodel(
+        tmp_path,
+        cache_service=cache_service,
+        prefetch_before=0,
+        prefetch_after=4,
+    )
+    vm.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+
+    for _ in range(3):
+        vm.go_next()
+
+    resident = set(vm._pages)
+    assert resident
+    assert resident <= vm._resident_page_indices()
+    assert len(resident) <= len(vm.current_display_indices)
+    cached = [index for index in range(vm.page_count) if vm._page_cache.get(index) is not None]
+    assert len(cached) > len(resident)
+
+
+def test_reader_viewmodel_prefetch_window_uses_configured_after_count(tmp_path: Path) -> None:
+    cache_service_low = _cache_service(tmp_path)
+    vm_low = _viewmodel(
+        tmp_path,
+        cache_service=cache_service_low,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    vm_low.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm_low.open_path(tmp_path / "low.cbz")
+    vm_low.set_viewport_size(700, 900)
+
+    cache_service_high = _cache_service(tmp_path)
+    vm_high = _viewmodel(
+        tmp_path,
+        cache_service=cache_service_high,
+        prefetch_before=0,
+        prefetch_after=3,
+    )
+    vm_high.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm_high.open_path(tmp_path / "high.cbz")
+    vm_high.set_viewport_size(700, 900)
+
+    # AppConfig.page_prefetch_after must translate into how many pages the
+    # reader has on hand ahead of the current spread. With the same starting
+    # state, a higher ``after`` value must keep strictly more pages cached.
+    low_namespace = vm_low._page_cache
+    high_namespace = vm_high._page_cache
+    low_cached = [i for i in range(vm_low.page_count) if low_namespace.get(i) is not None]
+    high_cached = [i for i in range(vm_high.page_count) if high_namespace.get(i) is not None]
+    assert len(high_cached) > len(low_cached)
+    # And in LTR the prefetched pages live ahead of the current index.
+    assert all(index >= vm_high.current_index for index in high_cached)
+
+
+def test_reader_viewmodel_rtl_swaps_prefetch_window(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm = _viewmodel(
+        tmp_path,
+        cache_service=cache_service,
+        prefetch_before=0,
+        prefetch_after=3,
+    )
+    # Default direction is RTL but be explicit so the intent is obvious.
+    vm.set_direction(ReaderDirection.RIGHT_TO_LEFT)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+    vm.seek(3)
+
+    namespace = vm._page_cache
+    # RTL swaps the window so the user-facing "forward" prefetch (decreasing
+    # archive indices) is covered by the configured ``after`` count. With
+    # prefetch_after=3 the cache should hold pages 0..3 (page 3 from the
+    # spread, pages 0..2 from the prefetch).
+    for index in range(0, 4):
+        assert namespace.get(index) is not None, f"page {index} should be prefetched"
 
 
 def _png_bytes() -> bytes:

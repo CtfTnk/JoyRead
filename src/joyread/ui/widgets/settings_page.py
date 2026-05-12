@@ -20,9 +20,20 @@ from PySide6.QtWidgets import (
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
+from joyread.ui.viewmodels.settings_viewmodel import (
+    ARCHIVE_POOL_MAX_MB,
+    ARCHIVE_POOL_MIN_MB,
+    ARCHIVE_CACHE_STRATEGY_OPTIONS,
+    DETAIL_THUMBNAIL_CACHE_MAX_MB,
+    DETAIL_THUMBNAIL_CACHE_MIN_MB,
+    READER_PAGE_CACHE_MAX_MB,
+    READER_PAGE_CACHE_MIN_MB,
+    SettingsSectionKey,
+    SettingsViewModel,
+)
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.menus import FigmaMenu
+from joyread.ui.widgets.section_banner import SectionBanner
 
 
 class SettingsPageWidget(QFrame):
@@ -79,6 +90,11 @@ class SettingsPageWidget(QFrame):
         return []
 
     def _general_items(self) -> list[QWidget]:
+        # General sub-group: existing settings, headed by the same banner
+        # widget the sidebar uses for "Book Shelf" / "Collections" so the
+        # grouping vocabulary is consistent across the app.
+        general_banner = SectionBanner("General", self._resources)
+
         language = SettingsDropdownItem(
             "Language",
             self._viewmodel.language,
@@ -102,7 +118,69 @@ class SettingsPageWidget(QFrame):
         storage = SettingsAddressItem("Storage Location", self._viewmodel.storage_location)
         storage.change_requested.connect(self.storage_change_requested.emit)
 
-        return [language, import_switch, window_switch, storage]
+        # Cache sub-group: user-tunable cache budgets and a one-shot purge for
+        # the disk pool. Live in General per design — there is no separate
+        # "Performance" section.
+        cache_banner = SectionBanner("Cache", self._resources)
+
+        reader_cache_item = SettingsNumericItem(
+            "Reader page cache (in-memory)",
+            self._viewmodel.reader_page_cache_mb,
+            READER_PAGE_CACHE_MIN_MB,
+            READER_PAGE_CACHE_MAX_MB,
+            self._resources,
+            "MB",
+        )
+        reader_cache_item.value_changed.connect(self._viewmodel.set_reader_page_cache_mb)
+
+        detail_cache_item = SettingsNumericItem(
+            "Detail thumbnail cache (in-memory)",
+            self._viewmodel.detail_thumbnail_cache_mb,
+            DETAIL_THUMBNAIL_CACHE_MIN_MB,
+            DETAIL_THUMBNAIL_CACHE_MAX_MB,
+            self._resources,
+            "MB",
+        )
+        detail_cache_item.value_changed.connect(self._viewmodel.set_detail_thumbnail_cache_mb)
+
+        archive_pool_item = SettingsNumericItem(
+            "Archive extraction pool (disk)",
+            self._viewmodel.archive_extraction_pool_mb,
+            ARCHIVE_POOL_MIN_MB,
+            ARCHIVE_POOL_MAX_MB,
+            self._resources,
+            "MB",
+        )
+        archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_mb)
+
+        archive_strategy_item = SettingsDropdownItem(
+            "Archive cache strategy",
+            self._viewmodel.archive_cache_strategy_label,
+            ARCHIVE_CACHE_STRATEGY_OPTIONS,
+            self._resources,
+        )
+        archive_strategy_item.value_changed.connect(self._viewmodel.set_archive_cache_strategy)
+
+        archive_pool_usage = SettingsCacheStatusItem(
+            "Archive pool usage",
+            current_bytes=self._viewmodel.archive_pool_current_bytes,
+            budget_mb=self._viewmodel.archive_extraction_pool_mb,
+        )
+        archive_pool_usage.clear_requested.connect(self._viewmodel.request_clear_archive_pool)
+
+        return [
+            general_banner,
+            language,
+            import_switch,
+            window_switch,
+            storage,
+            cache_banner,
+            reader_cache_item,
+            detail_cache_item,
+            archive_pool_item,
+            archive_strategy_item,
+            archive_pool_usage,
+        ]
 
 
 class SettingsSidebarWidget(QFrame):
@@ -521,3 +599,194 @@ class _SettingsNameCell(QWidget):
         label.setProperty("class", "SettingsItemNameText")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
+
+
+class SettingsNumericItem(SettingsOptionItem):
+    """Label + Figma spin button row for cache numeric settings."""
+
+    value_changed = QtSignal(int)
+
+    def __init__(
+        self,
+        name: str,
+        value: int,
+        minimum: int,
+        maximum: int,
+        resources: ResourceLoader,
+        suffix: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        self.spin_button = SettingsSpinButtonSmall(value, minimum, maximum, suffix, resources)
+        super().__init__(name, self.spin_button, parent)
+        self.spinbox = self.spin_button
+        self.spin_button.value_changed.connect(self.value_changed.emit)
+
+
+class SettingsSpinButtonSmall(QFrame):
+    """Small numeric stepper adapted from Figma node 229:3566."""
+
+    value_changed = QtSignal(int)
+
+    def __init__(
+        self,
+        value: int,
+        minimum: int,
+        maximum: int,
+        unit: str,
+        resources: ResourceLoader,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._minimum = int(minimum)
+        self._maximum = int(maximum)
+        self._unit = unit
+        self._value = max(self._minimum, min(self._maximum, int(value)))
+        self.setProperty("class", "SettingsSpinButtonSmall")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedSize(Theme.settings_spin_width, Theme.settings_spin_height)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.settings_spin_outer_padding,
+            0,
+            Theme.settings_spin_outer_padding,
+            0,
+        )
+        layout.setSpacing(0)
+
+        text = QWidget()
+        text.setObjectName("SettingsSpinText")
+        text_layout = QHBoxLayout(text)
+        text_layout.setContentsMargins(
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+            Theme.settings_spin_text_padding,
+        )
+        text_layout.setSpacing(Theme.settings_spin_text_gap)
+        self._value_editor = QLineEdit()
+        self._value_editor.setObjectName("SettingsSpinValueEditor")
+        self._value_editor.setProperty("class", "SettingsSpinValueText")
+        self._value_editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._value_editor.setFrame(False)
+        self._value_editor.setMaxLength(max(len(str(self._minimum)), len(str(self._maximum))))
+        self._value_editor.setFixedWidth(Theme.settings_spin_editor_width)
+        self._value_editor.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
+        self._value_editor.returnPressed.connect(self._commit_editor_value)
+        self._value_editor.editingFinished.connect(self._refresh_label)
+        self._unit_label = QLabel(unit)
+        self._unit_label.setProperty("class", "SettingsSpinValueText")
+        self._unit_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        text_layout.addWidget(self._value_editor)
+        if unit:
+            text_layout.addWidget(self._unit_label)
+        text_layout.addStretch(1)
+        layout.addWidget(text, stretch=1)
+
+        button_area = QWidget()
+        button_area.setObjectName("SettingsSpinButtonArea")
+        button_area.setFixedWidth(Theme.settings_spin_button_area_width)
+        button_layout = QHBoxLayout(button_area)
+        button_layout.setContentsMargins(0, 0, 0, 0)
+        button_layout.setSpacing(Theme.settings_spin_button_gap)
+        button_layout.addWidget(self._step_button(resources, "icon_left.svg", -1))
+        button_layout.addWidget(self._step_button(resources, "icon_right.svg", 1))
+        layout.addWidget(button_area)
+        self._refresh_label()
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    def set_value(self, value: int, *, emit: bool = True) -> None:
+        clamped = max(self._minimum, min(self._maximum, int(value)))
+        if clamped == self._value:
+            self._refresh_label()
+            return
+        self._value = clamped
+        self._refresh_label()
+        if emit:
+            self.value_changed.emit(clamped)
+
+    def step_by(self, delta: int) -> None:
+        self.set_value(self._value + delta)
+
+    def _step_button(self, resources: ResourceLoader, icon_name: str, delta: int) -> QToolButton:
+        button = QToolButton()
+        button.setProperty("class", "SettingsSpinStepButton")
+        button.setProperty("iconName", icon_name)
+        button.setIcon(QIcon(str(resources.icon_path(icon_name))))
+        button.setIconSize(QSize(Theme.settings_spin_icon_size, Theme.settings_spin_icon_size))
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedSize(Theme.settings_spin_step_button_width, Theme.settings_spin_height)
+        button.setAutoRepeat(True)
+        button.clicked.connect(lambda _checked=False, step=delta: self.step_by(step))
+        return button
+
+    def _refresh_label(self) -> None:
+        self._value_editor.setText(str(self._value))
+
+    def _commit_editor_value(self) -> None:
+        try:
+            value = int(self._value_editor.text())
+        except ValueError:
+            self._refresh_label()
+            return
+        self.set_value(value)
+
+
+class SettingsCacheStatusItem(QFrame):
+    """Row that displays current pool usage alongside a small ``Clear`` action."""
+
+    clear_requested = QtSignal()
+
+    def __init__(
+        self,
+        name: str,
+        current_bytes: int,
+        budget_mb: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setProperty("class", "SettingsItem")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedHeight(Theme.settings_item_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+            Theme.settings_item_padding,
+        )
+        layout.setSpacing(0)
+
+        layout.addWidget(_SettingsNameCell(name), stretch=1)
+
+        option = QWidget()
+        option.setObjectName("SettingsItemOption")
+        option.setFixedHeight(Theme.settings_item_name_height)
+        option_layout = QHBoxLayout(option)
+        option_layout.setContentsMargins(0, 0, Theme.settings_address_option_padding_right, 0)
+        option_layout.setSpacing(Theme.settings_address_option_gap)
+
+        self._usage_label = QLabel(_format_usage_label(current_bytes, budget_mb))
+        self._usage_label.setObjectName("SettingsCacheUsageLabel")
+        self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        option_layout.addWidget(self._usage_label, stretch=1)
+
+        clear_button = SettingsPushButton("Clear")
+        clear_button.clicked.connect(self.clear_requested.emit)
+        option_layout.addWidget(clear_button)
+
+        layout.addWidget(option)
+
+    def set_usage(self, current_bytes: int, budget_mb: int) -> None:
+        self._usage_label.setText(_format_usage_label(current_bytes, budget_mb))
+
+
+def _format_usage_label(current_bytes: int, budget_mb: int) -> str:
+    used_mb = max(0, current_bytes) / (1024 * 1024)
+    return f"{used_mb:.1f} / {budget_mb} MB"

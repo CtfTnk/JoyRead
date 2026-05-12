@@ -65,12 +65,14 @@ class ReaderShellWidget(QWidget):
         self.viewmodel = ReaderViewModel(
             context.reader_session_service,
             context.task_service,
-            context.cache_service,
+            context.cache_service.issue_reader_namespace(),
             context.library_service if book is not None else None,
             book_uuid=book.uuid if book is not None else None,
             title=title or (book.title if book is not None else self._source_path.stem),
             settings=_reader_settings_for_book(context, book),
             progress=_reader_progress_for_book(context, book, start_page_index),
+            prefetch_before=context.config.page_prefetch_before,
+            prefetch_after=context.config.page_prefetch_after,
         )
         self._connect_signals()
         self._install_auto_hide()
@@ -83,6 +85,7 @@ class ReaderShellWidget(QWidget):
     def cancel(self) -> None:
         if hasattr(self, "_open_timer"):
             self._open_timer.stop()
+        self.canvas.clear_pages()
         self.viewmodel.cancel()
 
     def open_with_password(self, password: str) -> None:
@@ -146,6 +149,8 @@ class ReaderShellWidget(QWidget):
             self.canvas.set_status_text(self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
             self.canvas.set_status_text("Loading...")
+        elif self.viewmodel.loading_page_index is not None:
+            self.canvas.set_status_text(f"Loading page {self.viewmodel.loading_page_index + 1}...")
         elif self.viewmodel.page_count <= 0:
             self.canvas.set_status_text("No readable pages.")
 

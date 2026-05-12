@@ -73,6 +73,8 @@ class TaskService:
         self._pool = thread_pool or QThreadPool()
         self._pool.setMaxThreadCount(max_workers)
         self._active_signals: set[_TaskSignals] = set()
+        self._active_handles: dict[str, TaskHandle[object]] = {}
+        self._shutting_down = False
 
     def submit(
         self,
@@ -83,9 +85,13 @@ class TaskService:
         on_failure: Callable[[Exception], None] | None = None,
     ) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
+        if self._shutting_down:
+            handle.status = TaskStatus.CANCELLED
+            return handle
         signals = _TaskSignals()
         handle._signals = signals
         self._active_signals.add(signals)
+        self._active_handles[handle.task_id] = handle  # type: ignore[assignment]
 
         def complete(result: object) -> None:
             if handle.status == TaskStatus.CANCELLED:
@@ -105,6 +111,7 @@ class TaskService:
 
         def cleanup() -> None:
             self._active_signals.discard(signals)
+            self._active_handles.pop(handle.task_id, None)
             handle._signals = None
 
         signals.completed.connect(complete)
@@ -114,6 +121,27 @@ class TaskService:
         handle.status = TaskStatus.RUNNING
         self._pool.start(_Runnable(handle, callback, signals))
         return handle
+
+    def shutdown(self, timeout_ms: int = 1500) -> None:
+        """Cancel queued/running work and wait briefly for the thread pool.
+
+        Qt cannot forcibly stop a QRunnable that is already inside user code,
+        so cancellation is cooperative: active handles are marked cancelled and
+        late success/failure signals are ignored. ``clear`` drops work that has
+        not started yet, and ``waitForDone`` gives in-flight tasks a bounded
+        chance to leave before application teardown continues.
+        """
+
+        self._shutting_down = True
+        for handle in list(self._active_handles.values()):
+            handle.cancel()
+        self._pool.clear()
+        self._pool.waitForDone(max(0, int(timeout_ms)))
+        for handle in list(self._active_handles.values()):
+            handle.cancel()
+            handle._signals = None
+        self._active_handles.clear()
+        self._active_signals.clear()
 
     def submit_placeholder(self, name: str, callback: Callable[[], T] | None = None) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
