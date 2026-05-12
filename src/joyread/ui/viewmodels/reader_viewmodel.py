@@ -67,6 +67,7 @@ class ReaderViewModel:
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
         self._warm_handle: TaskHandle[None] | None = None
         self._save_handle: TaskHandle[None] | None = None
+        self._task_generation = 0
         self._viewport_size = SizeF(1.0, 1.0)
         self._layout_result: ReaderLayoutResult | None = None
         self._pages: dict[int, ReaderPageImage] = {}
@@ -159,14 +160,16 @@ class ReaderViewModel:
         self._layout_waiting_for_pages = ()
         self._last_saved_progress = None
         self._emit_state()
+        generation = self._task_generation
         self._open_handle = self._task_service.submit(
             "reader-open",
             lambda: self._session_service.open_archive(self._source_path or source_path, password=password),
-            on_success=self._handle_open_success,
-            on_failure=self._handle_open_failure,
+            on_success=lambda session, generation=generation: self._handle_open_success(generation, session),
+            on_failure=lambda error, generation=generation: self._handle_open_failure(generation, error),
         )
 
     def cancel(self) -> None:
+        self._task_generation += 1
         if self._open_handle is not None:
             self._open_handle.cancel()
         for handle in self._page_handles.values():
@@ -179,6 +182,16 @@ class ReaderViewModel:
         self._page_handles.clear()
         self._warm_handle = None
         self._save_handle = None
+        with self._session_lock:
+            self._session = None
+        self.is_loading = False
+        self.loading_page_index = None
+        self._layout_waiting_for_pages = ()
+        self._pages.clear()
+        self._unavailable_pages.clear()
+        self._page_count = 0
+        self._layout_result = None
+        self._source_path = None
         # Free this session's slice of the shared reader page budget so other
         # open readers can claim it. The namespace itself stays valid; a
         # subsequent `open_path` will refill it.
@@ -222,7 +235,9 @@ class ReaderViewModel:
         self._finish_layout_loading()
         self._layout_result = result
         self._pan_x = max(result.pan_min_x, min(result.pan_max_x, self._pan_x))
+        self._prune_resident_pages()
         self.layout_changed.emit(result)
+        self._emit_ready_pages_for_layout(result)
         self._preload_nearby_pages()
         self._start_disk_cache_warmup()
         # Re-save once the layout actually settles. Before this point we only
@@ -268,7 +283,9 @@ class ReaderViewModel:
         self._finish_layout_loading()
         self._layout_result = result
         self._pan_x = 0.0
+        self._prune_resident_pages()
         self.layout_changed.emit(result)
+        self._emit_ready_pages_for_layout(result)
         self._preload_nearby_pages()
         self._start_disk_cache_warmup()
         # Vertical mode always anchors on `_primary_index`, so the saved values
@@ -507,7 +524,9 @@ class ReaderViewModel:
             return None
         return companion_index
 
-    def _handle_open_success(self, session: ArchiveImageSession) -> None:
+    def _handle_open_success(self, generation: int, session: ArchiveImageSession) -> None:
+        if generation != self._task_generation:
+            return
         self._session = session
         self._page_count = session.page_count
         self._primary_index = max(0, min(self._primary_index, max(0, self._page_count - 1)))
@@ -519,7 +538,9 @@ class ReaderViewModel:
         self._save_progress()
         self._emit_state()
 
-    def _handle_open_failure(self, error: Exception) -> None:
+    def _handle_open_failure(self, generation: int, error: Exception) -> None:
+        if generation != self._task_generation:
+            return
         self.is_loading = False
         if isinstance(error, (ArchivePasswordRequired, ArchivePasswordRejected)):
             self.password_required.emit(str(error))
@@ -542,6 +563,7 @@ class ReaderViewModel:
             return
 
         missing: list[int] = []
+        cached_images: list[ReaderPageImage] = []
         for page_index in dict.fromkeys(page_indices):
             if (
                 not 0 <= page_index < self._page_count
@@ -556,14 +578,21 @@ class ReaderViewModel:
             with self._session_lock:
                 dimensions = self._session.get_dimensions(page_index)
             if dimensions is not None:
-                self._handle_page_loaded(ReaderPageImage(page_index, cached, dimensions))
+                if self._should_keep_page_resident(page_index):
+                    cached_images.append(ReaderPageImage(page_index, cached, dimensions))
                 continue
             missing.append(page_index)
 
+        for image in cached_images:
+            self._store_page_loaded(image)
+
         if not missing:
+            if cached_images:
+                self.recalculate_layout()
             return
 
         requested = tuple(missing)
+        generation = self._task_generation
 
         def load() -> dict[int, ReaderPageImage]:
             with self._session_lock:
@@ -574,13 +603,27 @@ class ReaderViewModel:
         handle = self._task_service.submit(
             f"reader-pages-{requested[0]}",
             load,
-            on_success=lambda images, requested=requested: self._handle_page_batch_success(requested, images),
-            on_failure=lambda error, requested=requested: self._handle_page_batch_failure(requested, error),
+            on_success=lambda images, generation=generation, requested=requested: self._handle_page_batch_success(
+                generation, requested, images
+            ),
+            on_failure=lambda error, generation=generation, requested=requested: self._handle_page_batch_failure(
+                generation, requested, error
+            ),
         )
         for page_index in requested:
-            self._page_handles[page_index] = handle
+            if handle.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
+                self._page_handles[page_index] = handle
+        if cached_images:
+            self.recalculate_layout()
 
-    def _handle_page_batch_success(self, page_indices: tuple[int, ...], images: dict[int, ReaderPageImage]) -> None:
+    def _handle_page_batch_success(
+        self,
+        generation: int,
+        page_indices: tuple[int, ...],
+        images: dict[int, ReaderPageImage],
+    ) -> None:
+        if generation != self._task_generation:
+            return
         loaded = False
         for page_index in page_indices:
             self._page_handles.pop(page_index, None)
@@ -590,13 +633,15 @@ class ReaderViewModel:
                 continue
             self._unavailable_pages.discard(page_index)
             self._page_cache.put(page_index, image.image_bytes)
-            self._pages[image.page_index] = image
-            self.page_ready.emit(image)
-            loaded = True
+            if self._should_keep_page_resident(image.page_index):
+                self._store_page_loaded(image)
+                loaded = True
         if loaded:
             self.recalculate_layout()
 
-    def _handle_page_batch_failure(self, page_indices: tuple[int, ...], error: Exception) -> None:
+    def _handle_page_batch_failure(self, generation: int, page_indices: tuple[int, ...], error: Exception) -> None:
+        if generation != self._task_generation:
+            return
         for page_index in page_indices:
             self._page_handles.pop(page_index, None)
             self._mark_page_unavailable(page_index, error)
@@ -618,9 +663,33 @@ class ReaderViewModel:
             self.recalculate_layout()
 
     def _handle_page_loaded(self, image: ReaderPageImage) -> None:
-        self._pages[image.page_index] = image
-        self.page_ready.emit(image)
+        self._store_page_loaded(image)
         self.recalculate_layout()
+
+    def _store_page_loaded(self, image: ReaderPageImage) -> None:
+        self._pages[image.page_index] = image
+
+    def _emit_ready_pages_for_layout(self, result: ReaderLayoutResult) -> None:
+        for draw in result.page_draws:
+            image = self._pages.get(draw.page_index)
+            if image is not None:
+                self.page_ready.emit(image)
+
+    def _should_keep_page_resident(self, page_index: int) -> bool:
+        return page_index in self._resident_page_indices()
+
+    def _resident_page_indices(self) -> set[int]:
+        indices = set(self.current_display_indices)
+        indices.update(self._layout_waiting_for_pages)
+        if self._layout_result is not None:
+            indices.update(draw.page_index for draw in self._layout_result.page_draws)
+        return {index for index in indices if 0 <= index < self._page_count}
+
+    def _prune_resident_pages(self) -> None:
+        keep = self._resident_page_indices()
+        for page_index in tuple(self._pages):
+            if page_index not in keep:
+                self._pages.pop(page_index, None)
 
     def _wait_for_layout_pages(self, page_indices: tuple[int, ...], *, status_index: int) -> None:
         waiting = tuple(dict.fromkeys(page_indices))
@@ -634,6 +703,7 @@ class ReaderViewModel:
         self._pan_x = 0.0
         self.loading_page_index = status_index
         self._layout_waiting_for_pages = waiting
+        self._prune_resident_pages()
         self.layout_changed.emit(None)  # type: ignore[arg-type]
         self._emit_state()
 
@@ -656,6 +726,7 @@ class ReaderViewModel:
             return
         if not should_warm(self._source_path):
             return
+        source_path = self._source_path
         handle_ref: list[TaskHandle[None] | None] = [None]
 
         def is_cancelled() -> bool:
@@ -664,7 +735,7 @@ class ReaderViewModel:
 
         handle = self._task_service.submit(
             "reader-cache-warm",
-            lambda: warm_disk_cache(self._source_path, is_cancelled=is_cancelled),
+            lambda: warm_disk_cache(source_path, is_cancelled=is_cancelled),
         )
         handle_ref[0] = handle
         self._warm_handle = handle

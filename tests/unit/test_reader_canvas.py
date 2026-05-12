@@ -95,3 +95,38 @@ def test_spinner_phase_advances_when_timer_fires(canvas: ReaderCanvas) -> None:
 
     assert canvas._spinner_phase != initial_phase
     assert 0.0 <= canvas._spinner_phase < 360.0
+
+
+def test_canvas_ignores_non_visible_page_images_and_prunes_old_pixmaps(canvas: ReaderCanvas) -> None:
+    canvas.set_layout_result(_layout_with(0))
+
+    canvas.set_page_image(ReaderPageImage(page_index=1, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    assert canvas._pixmaps == {}
+
+    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    assert set(canvas._pixmaps) == {0}
+
+    canvas.set_layout_result(_layout_with(1))
+    assert canvas._pixmaps == {}
+    assert canvas._spinner_timer.isActive()
+
+
+def test_canvas_keeps_resident_page_image_that_arrives_before_layout(canvas: ReaderCanvas) -> None:
+    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    assert set(canvas._pixmaps) == {0}
+
+    canvas.set_layout_result(_layout_with(0))
+
+    assert set(canvas._pixmaps) == {0}
+    assert not canvas._spinner_timer.isActive()
+
+
+def test_canvas_clear_pages_drops_pixmaps_layout_and_spinner(canvas: ReaderCanvas) -> None:
+    canvas.set_layout_result(_layout_with(0))
+    assert canvas._spinner_timer.isActive()
+
+    canvas.clear_pages()
+
+    assert canvas._layout_result is None
+    assert canvas._pixmaps == {}
+    assert not canvas._spinner_timer.isActive()

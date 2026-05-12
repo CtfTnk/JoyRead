@@ -470,6 +470,10 @@ def test_reader_viewmodel_cancel_clears_only_its_namespace_in_shared_cache(tmp_p
     bytes_after = cache_service.reader_page_cache.current_bytes
     assert bytes_after > 0
     assert bytes_after < bytes_before
+    assert vm_a._session is None
+    assert vm_a._pages == {}
+    assert vm_a._layout_result is None
+    assert vm_a.page_count == 0
 
 
 def test_reader_viewmodel_multi_open_respects_shared_byte_budget(tmp_path: Path) -> None:
@@ -491,6 +495,49 @@ def test_reader_viewmodel_multi_open_respects_shared_byte_budget(tmp_path: Path)
         vm_b.go_next()
 
     assert cache_service.reader_page_cache.current_bytes <= 2048
+
+
+def test_reader_viewmodel_ignores_late_page_results_after_cancel(tmp_path: Path) -> None:
+    task_service = _ManualPageTaskService()
+    vm = _viewmodel(tmp_path, task_service=task_service)
+    ready: list[ReaderPageImage] = []
+    vm.page_ready.connect(ready.append)
+
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+    assert task_service.page_tasks
+    _handle, _callback, on_success, _on_failure = task_service.page_tasks[0]
+
+    vm.cancel()
+    assert on_success is not None
+    on_success({0: ReaderPageImage(0, _png_bytes(), (8, 12))})
+
+    assert ready == []
+    assert vm._pages == {}
+    assert vm._page_handles == {}
+
+
+def test_reader_viewmodel_keeps_prefetch_pages_out_of_resident_pages(tmp_path: Path) -> None:
+    cache_service = _cache_service(tmp_path)
+    vm = _viewmodel(
+        tmp_path,
+        cache_service=cache_service,
+        prefetch_before=0,
+        prefetch_after=4,
+    )
+    vm.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(700, 900)
+
+    for _ in range(3):
+        vm.go_next()
+
+    resident = set(vm._pages)
+    assert resident
+    assert resident <= vm._resident_page_indices()
+    assert len(resident) <= len(vm.current_display_indices)
+    cached = [index for index in range(vm.page_count) if vm._page_cache.get(index) is not None]
+    assert len(cached) > len(resident)
 
 
 def test_reader_viewmodel_prefetch_window_uses_configured_after_count(tmp_path: Path) -> None:

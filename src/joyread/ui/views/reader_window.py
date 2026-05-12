@@ -18,6 +18,7 @@ class ReaderWindow(QMainWindow):
     """Frameless top-level host for the reusable reader shell."""
 
     progress_changed = QtSignal(str, int, float)
+    closed = QtSignal()
 
     def __init__(
         self,
@@ -35,6 +36,7 @@ class ReaderWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(Theme.reader_width, Theme.reader_height)
         self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
 
@@ -66,4 +68,5 @@ class ReaderWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.shell.cancel()
+        self.closed.emit()
         super().closeEvent(event)

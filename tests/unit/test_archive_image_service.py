@@ -92,6 +92,24 @@ def test_session_bounds_ranged_reads_dimensions_and_navigation(tmp_path: Path) -
     assert session.seek(1) is True
 
 
+def test_session_caches_dimensions_without_retaining_archive_page_bytes(tmp_path: Path) -> None:
+    archive_path = tmp_path / "memory.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "001.png": _png_bytes((20, 10)),
+            "002.png": _png_bytes((30, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+    pages = session.get_pages((0, 1))
+
+    assert [page.dimensions if page is not None else None for page in pages] == [(20, 10), (30, 10)]
+    assert [record.dimensions for record in session._pages] == [(20, 10), (30, 10)]
+    assert all(not hasattr(record, "_page") for record in session._pages)
+
+
 def test_nested_cbz_pages_are_appended_in_discovery_order(tmp_path: Path) -> None:
     nested_buffer = BytesIO()
     with ZipFile(nested_buffer, "w", compression=ZIP_DEFLATED) as nested:

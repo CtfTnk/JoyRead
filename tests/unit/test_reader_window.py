@@ -366,11 +366,33 @@ def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path
 
     assert window._embedded_reader is None
     assert len(window._reader_windows) == 1
-    assert not window._reader_windows[0].header.back_button.isVisible()
+    reader = window._reader_windows[0]
+    assert reader.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+    assert not reader.header.back_button.isVisible()
 
-    for reader in tuple(window._reader_windows):
-        reader.close()
+    reader.close()
+    qtbot.wait(0)
+    assert window._reader_windows == []
     window.close()
+    context.close()
+
+
+def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("JOYREAD_USE_MOCK_REPOSITORY", "1")
+    context = create_app_context()
+    context.settings_store.update(individual_read_window=True)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+
+    window.open_reader_for_book(book.uuid)
+    assert len(window._reader_windows) == 1
+
+    window.close()
+    qtbot.wait(0)
+
+    assert window._reader_windows == []
     context.close()
 
 

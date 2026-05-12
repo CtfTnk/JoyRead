@@ -85,6 +85,7 @@ class ReaderShellWidget(QWidget):
     def cancel(self) -> None:
         if hasattr(self, "_open_timer"):
             self._open_timer.stop()
+        self.canvas.clear_pages()
         self.viewmodel.cancel()
 
     def open_with_password(self, password: str) -> None:

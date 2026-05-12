@@ -105,7 +105,7 @@ class _PageRecord:
     source: _ArchiveSource
     name: str
     password: str | None
-    _page: ArchivePage | None = None
+    dimensions: tuple[int, int] | None = None
 
 
 class ArchiveImageSession:
@@ -154,10 +154,18 @@ class ArchiveImageSession:
         return [page.image_bytes if page is not None else None for page in self.get_pages(range(start, start + count))]
 
     def get_dimensions(self, index: int) -> tuple[int, int] | None:
-        page = self.get_page(index)
-        if page is None:
+        if not self.is_valid_index(index):
             return None
-        return page.dimensions
+        record = self._pages[index]
+        if record.dimensions is not None:
+            return record.dimensions
+        payload = self._read_entries(record.source, ((record.name, record.password),)).get(record.name)
+        if payload is None:
+            return None
+        dimensions = _dimensions_from_bytes(payload)
+        if dimensions is not None:
+            record.dimensions = dimensions
+        return dimensions
 
     def get_page(self, index: int) -> ArchivePage | None:
         return self.get_pages((index,))[0]
@@ -171,10 +179,7 @@ class ArchiveImageSession:
             if not self.is_valid_index(page_index):
                 continue
             record = self._pages[page_index]
-            if record._page is not None:
-                results[result_index] = record._page
-            else:
-                missing.append((result_index, page_index, record))
+            missing.append((result_index, page_index, record))
 
         groups: OrderedDict[tuple[int, str | None], list[tuple[int, int, _PageRecord]]] = OrderedDict()
         for item in missing:
@@ -192,7 +197,7 @@ class ArchiveImageSession:
                 page = _archive_page_from_bytes(page_index, record, payload)
                 if page is None:
                     continue
-                record._page = page
+                record.dimensions = page.dimensions
                 results[result_index] = page
 
         return results
@@ -863,10 +868,8 @@ def _looks_like_password_error(exc: Exception) -> bool:
 
 
 def _archive_page_from_bytes(index: int, record: _PageRecord, payload: bytes) -> ArchivePage | None:
-    try:
-        with Image.open(BytesIO(payload)) as image:
-            dimensions = (int(image.width), int(image.height))
-    except (OSError, UnidentifiedImageError):
+    dimensions = _dimensions_from_bytes(payload)
+    if dimensions is None:
         return None
     return ArchivePage(
         index=index,
@@ -874,6 +877,14 @@ def _archive_page_from_bytes(index: int, record: _PageRecord, payload: bytes) ->
         dimensions=dimensions,
         display_path=record.display_path,
     )
+
+
+def _dimensions_from_bytes(payload: bytes) -> tuple[int, int] | None:
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            return (int(image.width), int(image.height))
+    except (OSError, UnidentifiedImageError):
+        return None
 
 
 def _run_archive_stdout_command(command: Sequence[str], entry_name: str) -> bytes:

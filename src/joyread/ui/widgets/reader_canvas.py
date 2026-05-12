@@ -60,15 +60,29 @@ class ReaderCanvas(QWidget):
     def set_layout_result(self, result: ReaderLayoutResult | None, pan_x: float = 0.0) -> None:
         self._layout_result = result
         self._pan_x = pan_x
+        self._prune_pixmaps_to_layout()
         self._refresh_spinner_state()
         self.update()
 
     def set_page_image(self, image: ReaderPageImage) -> None:
+        if self._layout_result is not None and not self._layout_draws_page(image.page_index):
+            return
+        existing = self._pixmaps.get(image.page_index)
+        if existing is not None and not existing.isNull():
+            return
         pixmap = QPixmap()
         if pixmap.loadFromData(image.image_bytes):
             self._pixmaps[image.page_index] = pixmap
             self._refresh_spinner_state()
             self.update()
+
+    def clear_pages(self) -> None:
+        self._layout_result = None
+        self._pixmaps.clear()
+        self._pan_x = 0.0
+        if self._spinner_timer.isActive():
+            self._spinner_timer.stop()
+        self.update()
 
     def set_status_text(self, text: str) -> None:
         self._status_text = text
@@ -150,6 +164,20 @@ class ReaderCanvas(QWidget):
             if pixmap is None or pixmap.isNull():
                 return True
         return False
+
+    def _layout_draws_page(self, page_index: int) -> bool:
+        return self._layout_result is not None and any(
+            draw.page_index == page_index for draw in self._layout_result.page_draws
+        )
+
+    def _prune_pixmaps_to_layout(self) -> None:
+        if self._layout_result is None:
+            self._pixmaps.clear()
+            return
+        visible = {draw.page_index for draw in self._layout_result.page_draws}
+        for page_index in tuple(self._pixmaps):
+            if page_index not in visible:
+                self._pixmaps.pop(page_index, None)
 
     def _tick_spinner(self) -> None:
         # Phase advances monotonically; ``%`` keeps the value small so the
