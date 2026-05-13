@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFontMetrics, QResizeEvent, QTextLayout, QTextOption
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
 
@@ -47,6 +47,14 @@ class ElidedLabel(QLabel):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._refresh_elision()
+
+    def sizeHint(self) -> QSize:  # noqa: N802 - Qt API override.
+        hint = super().sizeHint()
+        return QSize(0, hint.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802 - Qt API override.
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height())
 
     def _refresh_elision(self) -> None:
         metrics = QFontMetrics(self.font())

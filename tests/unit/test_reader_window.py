@@ -17,6 +17,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
+from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
@@ -213,6 +214,31 @@ def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qt
 
     assert panel._stack.currentWidget() is thumbnail_scroll
     assert thumbnail_scroll.verticalScrollBar().value() == thumbnail_value
+
+    context.close()
+
+
+def test_reader_topic_bookmark_row_elides_long_names_without_expanding_panel(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.resize(420, Theme.reader_topic_panel_min_height)
+    long_name = "Manatsu no Inaka de Asedaku ni Natte Musaboriau Oyako _ Mother and Son Sweating " * 4
+    panel.set_bookmarks((ReaderBookmarkItem("bookmark-long", long_name, 0),))
+    panel.set_mode(ReaderTopicMode.BOOKMARKS)
+    panel.show()
+    qtbot.wait(0)
+
+    bookmark_scroll = panel.findChild(QScrollArea, "ReaderTopicBookmarksScrollArea")
+    assert bookmark_scroll is not None
+    rows = [row for row in panel.findChildren(QFrame) if row.property("class") == "ReaderTopicItem"]
+    labels = [label for label in panel.findChildren(ElidedLabel) if label.full_text == long_name]
+
+    assert rows
+    assert labels
+    assert rows[0].width() <= bookmark_scroll.viewport().width()
+    assert labels[0].text() != long_name
+    assert labels[0].toolTip() == long_name
 
     context.close()
 
