@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -32,6 +32,10 @@ _SPINNER_GAP_TO_LABEL = 12
 _SPINNER_ARC_SWEEP = 110  # degrees of the moving arc
 _SPINNER_TICK_INTERVAL_MS = 70  # ~14 frames/sec — smooth enough, cheap to run
 _SPINNER_PHASE_STEP_DEG = 28
+_STATUS_TEXT_MAX_WIDTH = 680.0
+_STATUS_TEXT_WIDTH_RATIO = 0.72
+_STATUS_TEXT_HEIGHT_RATIO = 0.70
+_STATUS_TEXT_PADDING = 16.0
 
 
 class ReaderCanvas(QWidget):
@@ -122,8 +126,7 @@ class ReaderCanvas(QWidget):
         painter.fillRect(self.rect(), QColor(Theme.color_reader_background))
 
         if self._layout_result is None or not self._layout_result.page_draws:
-            painter.setPen(QColor(Theme.color_text_muted))
-            painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self._status_text)
+            _draw_wrapped_status_text(painter, QRectF(self.rect()), self._status_text)
             painter.end()
             return
 
@@ -208,6 +211,38 @@ def _draw_placeholder_page(painter: QPainter, rect: QRectF, spinner_phase: float
     painter.fillRect(rect, QColor(0, 0, 0, 36))
     _draw_loading_indicator(painter, rect, spinner_phase)
     painter.restore()
+
+
+def _draw_wrapped_status_text(painter: QPainter, rect: QRectF, text: str) -> None:
+    painter.save()
+    painter.setPen(QColor(Theme.color_text_muted))
+    text_rect = _wrapped_status_text_rect(painter.fontMetrics(), rect, text)
+    flags = Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap
+    shadow_rect = QRectF(text_rect)
+    shadow_rect.translate(0, 1)
+    painter.setPen(QColor(0, 0, 0, 80))
+    painter.drawText(shadow_rect, flags, text)
+    painter.setPen(QColor(Theme.color_text_muted))
+    painter.drawText(text_rect, flags, text)
+    painter.restore()
+
+
+def _wrapped_status_text_rect(metrics: QFontMetrics, rect: QRectF, text: str) -> QRectF:
+    max_width = max(1.0, min(_STATUS_TEXT_MAX_WIDTH, rect.width() * _STATUS_TEXT_WIDTH_RATIO))
+    max_height = max(1.0, rect.height() * _STATUS_TEXT_HEIGHT_RATIO)
+    bounds = metrics.boundingRect(
+        QRect(0, 0, int(max_width), int(max_height)),
+        int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+        text,
+    )
+    width = min(max_width, max(float(bounds.width()) + _STATUS_TEXT_PADDING, 1.0))
+    height = min(max_height, max(float(bounds.height()) + _STATUS_TEXT_PADDING, float(metrics.height())))
+    return QRectF(
+        rect.center().x() - (width / 2.0),
+        rect.center().y() - (height / 2.0),
+        width,
+        height,
+    )
 
 
 def _draw_loading_indicator(painter: QPainter, rect: QRectF, phase_deg: float) -> None:

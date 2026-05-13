@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from typing import Iterable
 
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
 from PySide6.QtPdf import QPdfDocument
+from PIL import Image, ImageChops
 
 from joyread.core.reader.models import ReaderPageImage
 
@@ -17,6 +19,11 @@ PDF_RENDER_DPI = 144
 PDF_RENDER_MAX_LONG_EDGE = 4096
 _PDF_POINTS_PER_INCH = 72.0
 _PDF_FALLBACK_PAGE_SIZE = (1224, 1584)
+_PDF_WHITE_MARGIN_THRESHOLD = 248
+_PDF_ALPHA_MARGIN_THRESHOLD = 16
+_PDF_CROP_PADDING_RATIO = 0.018
+_PDF_MIN_CROP_KEEP_RATIO = 0.55
+_PDF_MAX_CROP_KEEP_RATIO = 0.985
 
 
 class PdfError(Exception):
@@ -50,9 +57,16 @@ class PdfValidationResult:
 class PdfImageSession:
     """Bounded access to PDF pages rendered as images."""
 
-    def __init__(self, path: Path, dimensions: tuple[tuple[int, int], ...]) -> None:
+    def __init__(
+        self,
+        path: Path,
+        dimensions: tuple[tuple[int, int], ...],
+        *,
+        normalize_margins: bool = False,
+    ) -> None:
         self._path = path
-        self._dimensions = dimensions
+        self._dimensions = list(dimensions)
+        self._normalize_margins = normalize_margins
         self.current_index = 0
 
     @property
@@ -84,7 +98,13 @@ class PdfImageSession:
         document = _load_document(self._path)
         try:
             for result_index, page_index in valid:
-                image_bytes, dimensions = _render_page(document, page_index, self._dimensions[page_index])
+                image_bytes, dimensions = _render_page(
+                    document,
+                    page_index,
+                    self._dimensions[page_index],
+                    normalize_margins=self._normalize_margins,
+                )
+                self._dimensions[page_index] = dimensions
                 results[result_index] = ReaderPageImage(page_index, image_bytes, dimensions)
         finally:
             document.close()
@@ -109,6 +129,12 @@ class PdfImageSession:
 class PdfImageService:
     """Open and validate PDF files as rendered image page sources."""
 
+    def __init__(self, *, normalize_margins: bool = False) -> None:
+        # Automatic PDF margin cropping can change correctly authored page
+        # boxes. Keep reader output faithful by default; tests and future UI
+        # settings can opt in for damaged scans.
+        self._normalize_margins = normalize_margins
+
     def open(self, path: str | Path) -> PdfImageSession:
         source = Path(path)
         if not source.exists():
@@ -126,7 +152,7 @@ class PdfImageService:
             dimensions = tuple(_target_dimensions(document, index) for index in range(page_count))
         finally:
             document.close()
-        return PdfImageSession(source, dimensions)
+        return PdfImageSession(source, dimensions, normalize_margins=self._normalize_margins)
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:
         source = Path(path)
@@ -183,7 +209,13 @@ def _target_dimensions(document: QPdfDocument, page_index: int) -> tuple[int, in
     return pixel_width, pixel_height
 
 
-def _render_page(document: QPdfDocument, page_index: int, dimensions: tuple[int, int]) -> tuple[bytes, tuple[int, int]]:
+def _render_page(
+    document: QPdfDocument,
+    page_index: int,
+    dimensions: tuple[int, int],
+    *,
+    normalize_margins: bool = False,
+) -> tuple[bytes, tuple[int, int]]:
     width, height = dimensions
     image = document.render(page_index, QSize(width, height))
     if image.isNull():
@@ -197,4 +229,71 @@ def _render_page(document: QPdfDocument, page_index: int, dimensions: tuple[int,
             raise PdfReadError(f"Could not encode PDF page {page_index + 1}.")
     finally:
         buffer.close()
-    return bytes(byte_array), (int(image.width()), int(image.height()))
+    payload = bytes(byte_array)
+    if normalize_margins:
+        return _normalize_rendered_pdf_png(payload)
+    return payload, (image.width(), image.height())
+
+
+def _normalize_rendered_pdf_png(payload: bytes) -> tuple[bytes, tuple[int, int]]:
+    """Trim obvious PDF page-box margins without risking content loss."""
+
+    try:
+        with Image.open(BytesIO(payload)) as source:
+            image = source.convert("RGBA")
+    except OSError:
+        return payload, _png_dimensions(payload)
+
+    bbox = _content_bbox(image)
+    if bbox is None or not _should_crop(image.size, bbox):
+        return payload, image.size
+
+    width, height = image.size
+    padding = max(4, round(min(width, height) * _PDF_CROP_PADDING_RATIO))
+    left, top, right, bottom = bbox
+    crop_box = (
+        max(0, left - padding),
+        max(0, top - padding),
+        min(width, right + padding),
+        min(height, bottom + padding),
+    )
+    if crop_box == (0, 0, width, height):
+        return payload, image.size
+
+    cropped = image.crop(crop_box)
+    output = BytesIO()
+    cropped.save(output, format="PNG")
+    return output.getvalue(), cropped.size
+
+
+def _content_bbox(image: Image.Image) -> tuple[int, int, int, int] | None:
+    rgba = image.convert("RGBA")
+    gray = rgba.convert("L")
+    alpha = rgba.getchannel("A")
+    ink_mask = gray.point(lambda value: 255 if value < _PDF_WHITE_MARGIN_THRESHOLD else 0)
+    alpha_mask = alpha.point(lambda value: 255 if value > _PDF_ALPHA_MARGIN_THRESHOLD else 0)
+    return ImageChops.multiply(ink_mask, alpha_mask).getbbox()
+
+
+def _should_crop(size: tuple[int, int], bbox: tuple[int, int, int, int]) -> bool:
+    width, height = size
+    left, top, right, bottom = bbox
+    content_width = max(0, right - left)
+    content_height = max(0, bottom - top)
+    if content_width <= 0 or content_height <= 0:
+        return False
+    width_ratio = content_width / width
+    height_ratio = content_height / height
+    if width_ratio < _PDF_MIN_CROP_KEEP_RATIO or height_ratio < _PDF_MIN_CROP_KEEP_RATIO:
+        return False
+    if width_ratio > _PDF_MAX_CROP_KEEP_RATIO and height_ratio > _PDF_MAX_CROP_KEEP_RATIO:
+        return False
+    return True
+
+
+def _png_dimensions(payload: bytes) -> tuple[int, int]:
+    try:
+        with Image.open(BytesIO(payload)) as image:
+            return image.size
+    except OSError:
+        return _PDF_FALLBACK_PAGE_SIZE

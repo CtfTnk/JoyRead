@@ -568,15 +568,45 @@ class ReaderViewModel:
     def _handle_open_failure(self, generation: int, error: Exception) -> None:
         if generation != self._task_generation:
             return
+        if isinstance(error, ArchivePasswordRejected):
+            self._request_password_retry(error)
+            return
+        if isinstance(error, ArchivePasswordRequired):
+            self._request_password_retry(error)
+            return
         self.is_loading = False
-        if isinstance(error, (ArchivePasswordRequired, ArchivePasswordRejected)):
-            self.password_required.emit(str(error))
-            self.error_message = "Password required."
-        elif isinstance(error, ArchiveError):
+        if isinstance(error, ArchiveError):
             self.error_message = str(error)
         else:
             self.error_message = f"Could not open reader: {error}"
         self.error_changed.emit(self.error_message)
+        self._emit_state()
+
+    def _request_password_retry(self, error: ArchivePasswordRejected | ArchivePasswordRequired) -> None:
+        for handle in self._page_handles.values():
+            handle.cancel()
+        self._page_handles.clear()
+        with self._session_lock:
+            self._session = None
+        self.is_loading = False
+        self.loading_page_index = None
+        self._layout_waiting_for_pages = ()
+        self._layout_result = None
+        self._pages.clear()
+        self._unavailable_pages.clear()
+        self._page_count = 0
+        if isinstance(error, ArchivePasswordRejected):
+            self.error_message = "Incorrect password. Please try again."
+            prompt = self.error_message
+        elif isinstance(error, ArchiveError):
+            self.error_message = "Password required."
+            prompt = str(error)
+        else:
+            self.error_message = "Password required."
+            prompt = self.error_message
+        self.error_changed.emit(self.error_message)
+        self.layout_changed.emit(None)  # type: ignore[arg-type]
+        self.password_required.emit(prompt)
         self._emit_state()
 
     def _request_visible_pages(self) -> None:
@@ -671,6 +701,10 @@ class ReaderViewModel:
             return
         for page_index in page_indices:
             self._page_handles.pop(page_index, None)
+        if isinstance(error, (ArchivePasswordRejected, ArchivePasswordRequired)):
+            self._request_password_retry(error)
+            return
+        for page_index in page_indices:
             self._mark_page_unavailable(page_index, error)
 
     def _mark_page_unavailable(self, page_index: int, error: Exception | None = None) -> None:

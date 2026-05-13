@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
+from PySide6.QtCore import QRectF
 from PIL import Image
 
 from joyread.core.reader import (
@@ -15,6 +16,7 @@ from joyread.core.reader import (
     RectF,
 )
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
+from joyread.ui.widgets.reader_canvas import _wrapped_status_text_rect
 
 
 def _layout_with(*page_indices: int) -> ReaderLayoutResult:
@@ -130,3 +132,16 @@ def test_canvas_clear_pages_drops_pixmaps_layout_and_spinner(canvas: ReaderCanva
     assert canvas._layout_result is None
     assert canvas._pixmaps == {}
     assert not canvas._spinner_timer.isActive()
+
+
+def test_status_text_rect_wraps_long_reader_messages(canvas: ReaderCanvas) -> None:
+    canvas.resize(320, 200)
+    message = (
+        "Could not load images because the archive is encrypted and no password "
+        "was provided. Please enter the password to continue reading."
+    )
+
+    rect = _wrapped_status_text_rect(canvas.fontMetrics(), QRectF(canvas.rect()), message)
+
+    assert rect.width() <= 320 * 0.72 + 1
+    assert rect.height() > canvas.fontMetrics().height()

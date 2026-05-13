@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -668,6 +668,7 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept: Callable[[], None] | None = None
         self._on_reject: Callable[[], None] | None = None
         self._before_accept: Callable[[], bool] | None = None
+        self._key_forward_target: QLineEdit | None = None
 
         self._panel = JoyReadDialogPanel(self)
         self._panel.accepted.connect(self._accept)
@@ -730,8 +731,7 @@ class JoyReadDialogOverlay(QWidget):
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
-        content.field.line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
-        content.field.line_edit.selectAll()
+        self._focus_line_edit_deferred(content.field.line_edit, select_all_text=initial_text)
 
     def show_password_input(
         self,
@@ -743,8 +743,11 @@ class JoyReadDialogOverlay(QWidget):
         cancel_text: str = "Cancel",
         validator: Callable[[str], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
+        state_prompt: str | None = None,
     ) -> None:
         content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit)
+        if state_prompt:
+            content.set_state_prompt(state_prompt)
 
         def before_accept() -> bool:
             if validator is None:
@@ -763,8 +766,7 @@ class JoyReadDialogOverlay(QWidget):
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
-        content.field.line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
-        content.field.line_edit.selectAll()
+        self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
 
     def show_collection_select(
         self,
@@ -795,6 +797,8 @@ class JoyReadDialogOverlay(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             event.accept()
             return
+        if self._forward_key_to_active_input(event):
+            return
         super().keyPressEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -812,6 +816,42 @@ class JoyReadDialogOverlay(QWidget):
         self.raise_()
         self._panel.raise_()
         self.setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def _focus_line_edit_deferred(self, line_edit: QLineEdit, *, select_all_text: str) -> None:
+        self._key_forward_target = line_edit
+
+        def focus_line_edit() -> None:
+            if not self.isVisible() or not line_edit.isVisible():
+                return
+            line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
+            # If a fast first key arrived while the overlay still had focus,
+            # do not select that inserted text and make the next key replace it.
+            if line_edit.text() == select_all_text:
+                line_edit.selectAll()
+
+        QTimer.singleShot(0, focus_line_edit)
+
+    def _forward_key_to_active_input(self, event: QKeyEvent) -> bool:
+        target = self._key_forward_target
+        if target is None or not target.isVisible():
+            return False
+        if event.key() in {
+            Qt.Key.Key_Return,
+            Qt.Key.Key_Enter,
+            Qt.Key.Key_Escape,
+            Qt.Key.Key_Tab,
+            Qt.Key.Key_Backtab,
+        }:
+            return False
+        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier):
+            return False
+        text = event.text()
+        if not text:
+            return False
+        target.setFocus(Qt.FocusReason.PopupFocusReason)
+        target.insert(text)
+        event.accept()
+        return True
 
     def _position_panel(self) -> None:
         x = (self.width() - self._panel.width()) // 2
@@ -836,4 +876,5 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = None
         self._on_reject = None
         self._before_accept = None
+        self._key_forward_target = None
         self.hide()

@@ -167,7 +167,7 @@ class ReaderShellWidget(QWidget):
         if message:
             self.canvas.set_status_text(message)
 
-    def _show_password_dialog(self, _message: str) -> None:
+    def _show_password_dialog(self, message: str) -> None:
         self.dialog_overlay.show_password_input(
             "Archive Password",
             "Password",
@@ -176,6 +176,7 @@ class ReaderShellWidget(QWidget):
             cancel_text="Cancel",
             validator=lambda value: None if value else "Password cannot be empty.",
             on_cancel=self.viewmodel.cancel_password_request,
+            state_prompt=_password_state_prompt(message),
         )
 
     def _toggle_settings_panel(self) -> None:
@@ -462,3 +463,10 @@ def _side_button(resources, icon_name: str, parent: QWidget) -> QToolButton:  # 
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_side_button_width, Theme.reader_side_button_height)
     return button
+
+
+def _password_state_prompt(message: str) -> str | None:
+    normalized = message.lower()
+    if "incorrect password" in normalized or "rejected" in normalized or "wrong password" in normalized:
+        return "Incorrect password. Please try again."
+    return None

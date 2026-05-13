@@ -820,7 +820,7 @@ class ArchiveImageService:
         if password is not None:
             command.append(f"-p{password}")
         command.extend([str(source.path), name])
-        return _run_archive_stdout_command(command, name)
+        return _run_archive_stdout_command(command, name, password=password)
 
     def _read_rar_with_unar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         if source.path is None:
@@ -836,6 +836,8 @@ class ArchiveImageService:
             result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
+                if password is not None and _looks_like_password_error_text(stderr):
+                    raise ArchivePasswordRejected(f"Password rejected for RAR entry: {name}")
                 raise ArchiveReadError(f"unar could not extract {name}: {stderr or result.returncode}")
             extracted = Path(temp_dir) / name
             if not extracted.exists():
@@ -953,8 +955,25 @@ def _coerce_depth(value: object) -> int:
 
 
 def _looks_like_password_error(exc: Exception) -> bool:
-    text = str(exc).lower()
-    return "password" in text or "encrypted" in text or "bad decrypt" in text
+    return _looks_like_password_error_text(str(exc))
+
+
+def _looks_like_password_error_text(text: str) -> bool:
+    normalized = text.lower()
+    direct_markers = (
+        "password",
+        "encrypted",
+        "bad decrypt",
+        "wrong pass",
+        "incorrect pass",
+    )
+    if any(marker in normalized for marker in direct_markers):
+        return True
+    if "data error" in normalized and ("encrypted" in normalized or "wrong" in normalized):
+        return True
+    if "crc failed" in normalized and ("password" in normalized or "encrypted" in normalized):
+        return True
+    return False
 
 
 def _archive_page_from_bytes(index: int, record: _PageRecord, payload: bytes) -> ArchivePage | None:
@@ -977,13 +996,15 @@ def _dimensions_from_bytes(payload: bytes) -> tuple[int, int] | None:
         return None
 
 
-def _run_archive_stdout_command(command: Sequence[str], entry_name: str) -> bytes:
+def _run_archive_stdout_command(command: Sequence[str], entry_name: str, *, password: str | None = None) -> bytes:
     try:
         result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
     except OSError as exc:
         raise ArchiveDependencyMissing(f"Could not start archive backend: {command[0]}") from exc
     if result.returncode != 0:
         stderr = result.stderr.decode("utf-8", errors="replace").strip()
+        if password is not None and _looks_like_password_error_text(stderr):
+            raise ArchivePasswordRejected(f"Password rejected for archive entry: {entry_name}")
         raise ArchiveReadError(f"{command[0]} could not extract {entry_name}: {stderr or result.returncode}")
     if not result.stdout:
         raise ArchiveReadError(f"{command[0]} returned no data for {entry_name}")

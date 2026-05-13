@@ -396,6 +396,52 @@ def test_dialog_password_input_cancel_callback_and_unicode_text(qtbot) -> None:
     assert result == ["cancel"]
 
 
+def test_dialog_password_input_forwards_first_key_when_overlay_has_focus(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    result: list[str] = []
+    overlay.show_password_input("Archive Password", "Password", on_confirm=result.append)
+    QApplication.processEvents()
+    line_edit = overlay.panel.findChild(QLineEdit)
+    assert line_edit is not None
+
+    overlay.setFocus(Qt.FocusReason.PopupFocusReason)
+    qtbot.keyClicks(overlay, "tan'ke")
+    QApplication.processEvents()
+    qtbot.mouseClick(overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert result == ["tan'ke"]
+
+
+def test_dialog_password_input_shows_failure_prompt(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    overlay.show_password_input(
+        "Archive Password",
+        "Password",
+        on_confirm=lambda _value: None,
+        state_prompt="Incorrect password. Please try again.",
+    )
+    QApplication.processEvents()
+
+    prompt = overlay.panel.findChild(QLabel, "DialogStatePrompt")
+    assert prompt is not None
+    assert prompt.text() == "Incorrect password. Please try again."
+
+
 def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     apply_theme()
     context = create_app_context()

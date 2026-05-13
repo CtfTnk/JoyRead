@@ -4,6 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
+from joyread.core.archive import ArchivePasswordRejected
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
@@ -125,6 +126,19 @@ class _FakeLibraryService:
 
     def save_reader_settings(self, _book_uuid, _settings):  # noqa: ANN001
         return None
+
+
+class _RejectedPasswordSessionService:
+    def open_document(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise ArchivePasswordRejected("Password rejected for archive.")
+
+    def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        return {}
+
+
+class _RejectedPagePasswordSessionService(_FakeSessionService):
+    def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise ArchivePasswordRejected("Password rejected while extracting page.")
 
 
 def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path) -> None:
@@ -471,6 +485,45 @@ def test_reader_viewmodel_reports_password_cancel_as_undecrypted_archive(tmp_pat
     assert errors == ["Could not load images because the archive is encrypted and no password was provided."]
     assert viewmodel.error_message == errors[0]
     assert viewmodel.is_loading is False
+
+
+def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) -> None:
+    vm = ReaderViewModel(
+        _RejectedPasswordSessionService(),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    prompts: list[str] = []
+    errors: list[str | None] = []
+    vm.password_required.connect(prompts.append)
+    vm.error_changed.connect(errors.append)
+
+    vm.open_path(tmp_path / "encrypted.cbr", password="wrong")
+
+    assert prompts == ["Incorrect password. Please try again."]
+    assert errors == ["Incorrect password. Please try again."]
+    assert vm.error_message == "Incorrect password. Please try again."
+
+
+def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_path: Path) -> None:
+    vm = ReaderViewModel(
+        _RejectedPagePasswordSessionService(),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    prompts: list[str] = []
+    errors: list[str | None] = []
+    vm.password_required.connect(prompts.append)
+    vm.error_changed.connect(errors.append)
+
+    vm.open_path(tmp_path / "encrypted.cbr", password="wrong")
+
+    assert prompts == ["Incorrect password. Please try again."]
+    assert errors == ["Incorrect password. Please try again."]
+    assert vm.layout_result is None
+    assert vm.loading_page_index is None
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

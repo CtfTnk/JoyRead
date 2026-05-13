@@ -52,7 +52,8 @@ def test_cbz_discovers_images_sorts_groups_and_respects_default_depth(tmp_path: 
         },
     )
 
-    session = ArchiveImageService().open(archive_path)
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
 
     assert session.page_count == 5
     assert [session.get_dimensions(index) for index in session.index_range] == [
@@ -75,7 +76,8 @@ def test_session_bounds_ranged_reads_dimensions_and_navigation(tmp_path: Path) -
         },
     )
 
-    session = ArchiveImageService().open(archive_path)
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
 
     assert session.is_not_empty()
     assert list(session.index_range) == [0, 1]
@@ -104,7 +106,8 @@ def test_session_caches_dimensions_without_retaining_archive_page_bytes(tmp_path
         },
     )
 
-    session = ArchiveImageService().open(archive_path)
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
     pages = session.get_pages((0, 1))
 
     assert [page.dimensions if page is not None else None for page in pages] == [(20, 10), (30, 10)]
@@ -254,7 +257,11 @@ def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
         archive.setpassword(b"secret")
         archive.writestr("001.png", _png_bytes((32, 16)))
 
-    session = ArchiveImageService().open(archive_path, password_provider=lambda _request: "secret")
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(
+        archive_path,
+        password_provider=lambda _request: "secret",
+    )
 
     assert session.page_count == 1
     assert session.get_dimensions(0) == (32, 16)
@@ -524,7 +531,8 @@ def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pyt
     monkeypatch.setattr(backends.shutil, "which", fake_which)
     monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
 
-    session = ArchiveImageService().open(archive_path)
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
     page = session.get_page(0)
 
     assert page is not None
@@ -603,8 +611,96 @@ def test_encrypted_rar_read_prefers_7zip_backend(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(backends.shutil, "which", fake_which)
     monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
 
-    session = ArchiveImageService().open(archive_path, password_provider=lambda _request: "secret")
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(
+        archive_path,
+        password_provider=lambda _request: "secret",
+    )
     page = session.get_page(0)
 
     assert page is not None
     assert page.dimensions == (40, 20)
+
+
+def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from joyread.core.archive import backends
+    from joyread.core.archive import service as archive_service
+
+    archive_path = tmp_path / "encrypted.cbr"
+    archive_path.write_bytes(b"fake-rar")
+
+    class FakeInfo:
+        filename = "001.jpg"
+        file_size = 128
+
+        def isdir(self) -> bool:
+            return False
+
+    class FakeRarFile:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN001
+            return None
+
+        def needs_password(self) -> bool:
+            return True
+
+        def infolist(self):
+            return [FakeInfo()]
+
+        def read(self, *_args, **_kwargs) -> bytes:
+            raise FakeRarModule.BadRarFile("rarfile backend failed")
+
+    class FakeRarModule:
+        class RarCannotExec(Exception):
+            pass
+
+        class NeedFirstVolume(Exception):
+            pass
+
+        class BadRarFile(Exception):
+            pass
+
+        class PasswordRequired(Exception):
+            pass
+
+        class RarWrongPassword(Exception):
+            pass
+
+        RarFile = FakeRarFile
+
+        def tool_setup(self) -> None:
+            return None
+
+    def fake_which(name: str) -> str | None:
+        return "/opt/joyread/7zz" if name == "7zz" else None
+
+    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+        assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
+        assert "-pwrong" in command
+        return archive_service.subprocess.CompletedProcess(
+            command,
+            2,
+            stdout=b"",
+            stderr=b"ERROR: Data Error in encrypted file. Wrong password?",
+        )
+
+    monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
+    monkeypatch.setattr(backends.shutil, "which", fake_which)
+    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+
+    resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
+    session = ArchiveImageService(backend_resolver=resolver).open(
+        archive_path,
+        password_provider=lambda _request: "wrong",
+    )
+
+    with pytest.raises(ArchivePasswordRejected):
+        session.get_page(0)
