@@ -16,7 +16,7 @@ from joyread.core.reader import (
     RectF,
 )
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
-from joyread.ui.widgets.reader_canvas import _wrapped_status_text_rect
+from joyread.ui.widgets.reader_canvas import _status_text_is_clipped, _wrapped_status_text_rect
 
 
 def _layout_with(*page_indices: int) -> ReaderLayoutResult:
@@ -145,3 +145,18 @@ def test_status_text_rect_wraps_long_reader_messages(canvas: ReaderCanvas) -> No
 
     assert rect.width() <= 320 * 0.72 + 1
     assert rect.height() > canvas.fontMetrics().height()
+
+
+def test_status_text_tooltip_is_set_only_when_message_is_clipped(canvas: ReaderCanvas) -> None:
+    canvas.resize(180, 80)
+    message = "Could not load page 602: " + "very/long/path/" * 20
+
+    canvas.set_status_text(message)
+
+    assert _status_text_is_clipped(canvas.fontMetrics(), QRectF(canvas.rect()), message)
+    assert canvas.toolTip() == message
+
+    canvas.resize(800, 500)
+    canvas.set_status_text("No readable pages.")
+
+    assert canvas.toolTip() == ""

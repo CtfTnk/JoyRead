@@ -473,7 +473,8 @@ QLineEdit[class="DialogInputField"] {
     padding: __DIALOG_INPUT_FIELD_PADDING__;
 }
 
-QLabel#DialogStatePrompt {
+QLabel#DialogStatePrompt,
+QLabel#DialogDetailPrompt {
     color: __TEXT_COLOR__;
     font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
     font-weight: 400;

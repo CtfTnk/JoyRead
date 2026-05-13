@@ -474,6 +474,46 @@ def test_dialog_password_input_supports_skip_button_without_validation(qtbot) ->
     assert result == ["skip"]
 
 
+def test_dialog_password_input_elides_header_and_scrolls_long_detail(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+    archive_name = (
+        "Password for: 完整战车娘2022.10-2024.5.rar::EX/Code/"
+        "坦克世界是一款非常长非常长的嵌套压缩包名称.rar"
+    )
+    detail_text = "完整路径: " + ("完整战车娘2022.10-2024.5.rar::EX/Code/坦克世界/" * 20)
+
+    overlay.show_password_input(
+        "Archive Password",
+        archive_name,
+        on_confirm=lambda _value: None,
+        detail_text=detail_text,
+        state_prompt="Incorrect password. Please try again.",
+    )
+    QApplication.processEvents()
+
+    header = [
+        label
+        for label in overlay.panel.findChildren(QLabel)
+        if label.property("class") == "DialogInputHeader"
+    ][0]
+    detail = overlay.panel.findChild(QLabel, "DialogDetailPrompt")
+    content_scroll = overlay.panel.findChild(QScrollArea, "JoyReadDialogContentScrollArea")
+
+    assert header.text() != archive_name
+    assert header.toolTip() == archive_name
+    assert detail is not None
+    assert detail.text() == detail_text
+    assert detail.width() <= content_scroll.width()
+    assert content_scroll.height() == Theme.dialog_content_max_height
+    assert content_scroll.verticalScrollBar().maximum() > 0
+
+
 def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     apply_theme()
     context = create_app_context()

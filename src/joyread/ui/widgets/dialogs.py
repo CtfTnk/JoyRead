@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.elided_label import ElidedLabel
 
 
 class DialogTextButton(QFrame):
@@ -153,7 +154,7 @@ class DialogInputFieldWithHeader(QWidget):
         )
         layout.setSpacing(Theme.dialog_input_area_gap)
 
-        self._header = QLabel(header)
+        self._header = ElidedLabel(header)
         self._header.setProperty("class", "DialogInputHeader")
         layout.addWidget(self._header)
 
@@ -181,6 +182,7 @@ class DialogInputContent(QWidget):
         initial_text: str = "",
         *,
         echo_mode: QLineEdit.EchoMode = QLineEdit.EchoMode.Normal,
+        detail_text: str | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -213,9 +215,18 @@ class DialogInputContent(QWidget):
         input_layout.addWidget(self.field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
 
+        self._detail_label = QLabel(detail_text or "")
+        self._detail_label.setObjectName("DialogDetailPrompt")
+        self._detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setVisible(bool(detail_text))
+        layout.addWidget(self._detail_label)
+
         self._state_label = QLabel("")
         self._state_label.setObjectName("DialogStatePrompt")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_label.setWordWrap(True)
+        self._state_label.hide()
         layout.addWidget(self._state_label)
 
     @property
@@ -224,10 +235,17 @@ class DialogInputContent(QWidget):
 
     def set_state_prompt(self, message: str) -> None:
         self._state_label.setText(message)
+        self._state_label.setVisible(bool(message))
         self.updateGeometry()
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
+        label_width = max(1, width - (Theme.dialog_content_outer_padding * 2))
+        for label in (self._detail_label, self._state_label):
+            label.setFixedWidth(label_width)
+            if label.isVisible():
+                label.setFixedHeight(_wrapped_label_height(label, label_width))
+        self.updateGeometry()
 
 
 class DialogPasswordContent(QWidget):
@@ -285,6 +303,10 @@ class DialogPasswordContent(QWidget):
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
+
+
+def _wrapped_label_height(label: QLabel, width: int) -> int:
+    return max(label.sizeHint().height(), label.heightForWidth(width)) + Theme.dialog_message_clip_guard
 
 
 class DialogCollectionChoiceRow(QFrame):
@@ -751,9 +773,14 @@ class JoyReadDialogOverlay(QWidget):
         on_cancel: Callable[[], None] | None = None,
         on_skip: Callable[[], None] | None = None,
         skip_text: str | None = None,
+        detail_text: str | None = None,
         state_prompt: str | None = None,
     ) -> None:
-        content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit)
+        content = DialogInputContent(
+            header,
+            echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit,
+            detail_text=detail_text,
+        )
         if state_prompt:
             content.set_state_prompt(state_prompt)
 

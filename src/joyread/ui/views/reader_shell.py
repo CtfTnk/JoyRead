@@ -181,7 +181,8 @@ class ReaderShellWidget(QWidget):
             validator=lambda value: None if value else "Password cannot be empty.",
             on_cancel=self.viewmodel.cancel_password_request,
             on_skip=self.skip_password_request,
-            state_prompt=prompt.message if prompt.is_retry else None,
+            detail_text=prompt.archive_path,
+            state_prompt="Incorrect password. Please try again." if prompt.is_retry else None,
         )
 
     def _toggle_settings_panel(self) -> None:
@@ -468,4 +469,3 @@ def _side_button(resources, icon_name: str, parent: QWidget) -> QToolButton:  # 
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_side_button_width, Theme.reader_side_button_height)
     return button
-

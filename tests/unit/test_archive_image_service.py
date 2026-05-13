@@ -421,6 +421,70 @@ def test_wrong_nested_archive_password_reports_nested_archive_path(tmp_path: Pat
     assert exc_info.value.archive_path == "outer.cbz::nested.cbz"
 
 
+def test_wrong_nested_rar_password_reprompts_before_page_loading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from joyread.core.archive import service as archive_service
+
+    archive_path = tmp_path / "outer.cbz"
+    _write_zip(archive_path, {"nested.cbr": b"fake-rar"})
+
+    class FakeInfo:
+        filename = "001.jpg"
+        file_size = 128
+
+        def isdir(self) -> bool:
+            return False
+
+    class FakeRarFile:
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def __enter__(self):  # noqa: ANN001
+            return self
+
+        def __exit__(self, *_args) -> None:  # noqa: ANN001
+            return None
+
+        def needs_password(self) -> bool:
+            return True
+
+        def infolist(self):
+            return [FakeInfo()]
+
+        def read(self, *_args, **_kwargs) -> bytes:
+            raise FakeRarModule.BadRarFile("wrong password")
+
+    class FakeRarModule:
+        class RarCannotExec(Exception):
+            pass
+
+        class NeedFirstVolume(Exception):
+            pass
+
+        class BadRarFile(Exception):
+            pass
+
+        class PasswordRequired(Exception):
+            pass
+
+        class RarWrongPassword(Exception):
+            pass
+
+        RarFile = FakeRarFile
+
+        def tool_setup(self) -> None:
+            return None
+
+    monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
+
+    with pytest.raises(ArchivePasswordRejected) as exc_info:
+        ArchiveImageService().open(archive_path, password_provider=lambda _request: "wrong")
+
+    assert exc_info.value.archive_path == "outer.cbz::nested.cbr"
+
+
 def test_empty_corrupt_and_unsupported_archives_are_controlled(tmp_path: Path) -> None:
     empty_path = tmp_path / "empty.cbz"
     _write_zip(empty_path, {"notes.txt": b"no images"})
@@ -816,10 +880,8 @@ def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
     monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
-    session = ArchiveImageService(backend_resolver=resolver).open(
-        archive_path,
-        password_provider=lambda _request: "wrong",
-    )
-
     with pytest.raises(ArchivePasswordRejected):
-        session.get_page(0)
+        ArchiveImageService(backend_resolver=resolver).open(
+            archive_path,
+            password_provider=lambda _request: "wrong",
+        )

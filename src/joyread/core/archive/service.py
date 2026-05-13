@@ -759,6 +759,9 @@ class ArchiveImageService:
                         context,
                         reason="rar archive is encrypted",
                     )
+                    first_encrypted_entry = next((info.filename for info in archive.infolist() if not info.isdir()), None)
+                    if first_encrypted_entry is not None:
+                        self._verify_rar_password(source, first_encrypted_entry, password)
                 return [
                     _ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
                     for info in archive.infolist()
@@ -792,6 +795,15 @@ class ArchiveImageService:
                 archive_path=source.display_name,
             ) from exc
         except (rarfile.RarCannotExec, rarfile.BadRarFile, OSError) as exc:
+            if (
+                password is not None
+                and isinstance(exc, rarfile.BadRarFile)
+                and (source.path is None or _looks_like_password_error_text(str(exc)))
+            ):
+                raise ArchivePasswordRejected(
+                    f"Password rejected for RAR archive: {source.display_name}",
+                    archive_path=source.display_name,
+                ) from exc
             rar_failure = exc
 
         try:
@@ -806,6 +818,9 @@ class ArchiveImageService:
             if rar_failure is not None:
                 raise ArchiveReadError(f"Could not read RAR entry with any backend: {name}") from rar_failure
             raise exc
+
+    def _verify_rar_password(self, source: _ArchiveSource, name: str, password: str | None) -> None:
+        self._read_rar_entry(source, name, password)
 
     def _ensure_rar_backend(self) -> None:
         if rarfile is None:

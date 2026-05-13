@@ -13,6 +13,7 @@ from PySide6.QtGui import (
     QPaintEvent,
     QPen,
     QPixmap,
+    QResizeEvent,
     QWheelEvent,
 )
 from PySide6.QtWidgets import QWidget
@@ -90,6 +91,7 @@ class ReaderCanvas(QWidget):
 
     def set_status_text(self, text: str) -> None:
         self._status_text = text
+        self._refresh_status_tooltip()
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -144,6 +146,10 @@ class ReaderCanvas(QWidget):
                 painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
         painter.end()
 
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._refresh_status_tooltip()
+
     def _refresh_spinner_state(self) -> None:
         """Start or stop the spinner timer based on visible-page coverage.
 
@@ -187,6 +193,16 @@ class ReaderCanvas(QWidget):
         # float doesn't lose precision over very long sessions.
         self._spinner_phase = (self._spinner_phase + _SPINNER_PHASE_STEP_DEG) % 360.0
         self.update()
+
+    def _refresh_status_tooltip(self) -> None:
+        if self._layout_result is not None:
+            self.setToolTip("")
+            return
+        self.setToolTip(
+            self._status_text
+            if _status_text_is_clipped(self.fontMetrics(), QRectF(self.rect()), self._status_text)
+            else ""
+        )
 
 
 def _draw_placeholder_page(painter: QPainter, rect: QRectF, spinner_phase: float) -> None:
@@ -243,6 +259,19 @@ def _wrapped_status_text_rect(metrics: QFontMetrics, rect: QRectF, text: str) ->
         width,
         height,
     )
+
+
+def _status_text_is_clipped(metrics: QFontMetrics, rect: QRectF, text: str) -> bool:
+    max_width = max(1.0, min(_STATUS_TEXT_MAX_WIDTH, rect.width() * _STATUS_TEXT_WIDTH_RATIO))
+    max_height = max(1.0, rect.height() * _STATUS_TEXT_HEIGHT_RATIO)
+    bounds = metrics.boundingRect(
+        QRect(0, 0, int(max_width), 1000000),
+        int(Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap),
+        text,
+    )
+    return (float(bounds.width()) + _STATUS_TEXT_PADDING) > max_width or (
+        float(bounds.height()) + _STATUS_TEXT_PADDING
+    ) > max_height
 
 
 def _draw_loading_indicator(painter: QPainter, rect: QRectF, phase_deg: float) -> None:
