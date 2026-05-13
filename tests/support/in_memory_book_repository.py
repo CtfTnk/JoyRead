@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from joyread.core.models.book import Book
+from joyread.core.models.bookmark import Bookmark
 from joyread.core.models.collection import Collection
 from joyread.core.models.export import BookExportRecord
 from joyread.core.models.language import Language
@@ -36,6 +37,7 @@ class InMemoryBookRepository:
         self._books = books or _default_books()
         self._progress: dict[tuple[str, str], ReaderProgress] = {}
         self._reader_settings: dict[tuple[str, str], ReaderSettings] = {}
+        self._bookmarks: dict[tuple[str, str], list[Bookmark]] = {}
 
     def list_books(self) -> list[Book]:
         return list(self._books)
@@ -161,6 +163,39 @@ class InMemoryBookRepository:
         book_scope: str = "public",
     ) -> None:
         self._reader_settings[(book_scope, book_id)] = settings
+
+    def add_bookmark(self, book_id: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
+        now = datetime.now()
+        bookmark = Bookmark(str(uuid4()), book_scope, book_id, name, page_index, now, now)
+        self._bookmarks.setdefault((book_scope, book_id), []).append(bookmark)
+        self._bookmarks[(book_scope, book_id)].sort(key=lambda item: (item.page_index, item.created_at))
+        return bookmark
+
+    def list_bookmarks(self, book_id: str, book_scope: str = "public") -> list[Bookmark]:
+        return list(self._bookmarks.get((book_scope, book_id), ()))
+
+    def rename_bookmark(
+        self,
+        book_id: str,
+        bookmark_id: str,
+        name: str,
+        book_scope: str = "public",
+    ) -> None:
+        key = (book_scope, book_id)
+        bookmarks = self._bookmarks.get(key, [])
+        for index, bookmark in enumerate(bookmarks):
+            if bookmark.uuid == bookmark_id:
+                bookmarks[index] = replace(bookmark, name=name, updated_at=datetime.now())
+                return
+        raise ValueError(f"Bookmark does not exist: {bookmark_id}")
+
+    def delete_bookmark(self, book_id: str, bookmark_id: str, book_scope: str = "public") -> None:
+        key = (book_scope, book_id)
+        bookmarks = self._bookmarks.get(key, [])
+        next_bookmarks = [bookmark for bookmark in bookmarks if bookmark.uuid != bookmark_id]
+        if len(next_bookmarks) == len(bookmarks):
+            raise ValueError(f"Bookmark does not exist: {bookmark_id}")
+        self._bookmarks[key] = next_bookmarks
 
     @classmethod
     def _language_names_by_code(cls) -> dict[str, str]:

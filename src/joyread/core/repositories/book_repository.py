@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from joyread.core.models.book import Book
+from joyread.core.models.bookmark import Bookmark
 from joyread.core.models.collection import Collection
 from joyread.core.models.export import BookExportRecord
 from joyread.core.models.language import Language
@@ -67,4 +68,22 @@ class BookRepository(Protocol):
         settings: ReaderSettings,
         book_scope: str = "public",
     ) -> None:
+        ...
+
+    def add_bookmark(self, book_id: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
+        ...
+
+    def list_bookmarks(self, book_id: str, book_scope: str = "public") -> list[Bookmark]:
+        ...
+
+    def rename_bookmark(
+        self,
+        book_id: str,
+        bookmark_id: str,
+        name: str,
+        book_scope: str = "public",
+    ) -> None:
+        ...
+
+    def delete_bookmark(self, book_id: str, bookmark_id: str, book_scope: str = "public") -> None:
         ...

@@ -17,6 +17,7 @@ from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
+from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 
 
 class ReaderShellWidget(QWidget):
@@ -43,7 +44,10 @@ class ReaderShellWidget(QWidget):
         self._show_back_button = show_back_button
         self._control_widgets: tuple[QWidget, ...] = ()
         self._visible_controls: set[QWidget] = set()
+        self._app_event_filter_installed = False
         self._settings_event_filter_installed = False
+        self._topic_event_filter_installed = False
+        self._topic_page_count = -1
 
         self.setObjectName("ReaderRootPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -59,6 +63,8 @@ class ReaderShellWidget(QWidget):
         self.right_arrow = _side_button(context.resources, "icon_right.svg", self)
         self.settings_panel = ReaderSettingsPanel(context.resources, self)
         self.settings_panel.hide()
+        self.topic_panel = ReaderTopicPanel(context.resources, self)
+        self.topic_panel.hide()
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
         self.dialog_overlay.hide()
 
@@ -77,6 +83,7 @@ class ReaderShellWidget(QWidget):
             prefetch_after=context.config.page_prefetch_after,
             archive_internal_max_depth=app_settings.archive_internal_max_depth,
         )
+        self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self._connect_signals()
         self._install_auto_hide()
 
@@ -110,12 +117,19 @@ class ReaderShellWidget(QWidget):
         self.footer.transition_changed.connect(self.viewmodel.set_transition_mode)
         self.footer.spread_shift_requested.connect(self.viewmodel.shift_to_next_index)
         self.footer.settings_requested.connect(self._toggle_settings_panel)
+        self.header.topic_mode_requested.connect(self._show_topic_panel)
         self.canvas.mouse_moved.connect(self._handle_canvas_mouse_move)
-        self.canvas.left_clicked.connect(self._hide_settings_panel_if_visible)
+        self.canvas.left_clicked.connect(self._hide_floating_panels_if_visible)
         self.canvas.right_clicked.connect(lambda: self._show_controls(reset_timer=True))
         self.canvas.wheel_scrolled.connect(self.viewmodel.handle_vertical_scroll)
         self.left_arrow.clicked.connect(self.viewmodel.activate_left_side)
         self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
+        self.topic_panel.thumbnail_batch_requested.connect(self.viewmodel.request_topic_thumbnail_batch)
+        self.topic_panel.thumbnail_selected.connect(self.viewmodel.seek)
+        self.topic_panel.bookmark_selected.connect(self.viewmodel.seek)
+        self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)
+        self.topic_panel.bookmark_rename_requested.connect(self._show_rename_bookmark_dialog)
+        self.topic_panel.bookmark_delete_requested.connect(self.viewmodel.delete_bookmark)
         self.settings_panel.custom_enabled_changed.connect(self.viewmodel.set_custom_enabled)
         self.settings_panel.always_one_page_changed.connect(self.viewmodel.set_always_one_page)
         self.settings_panel.fit_mode_changed.connect(self.viewmodel.set_fit_mode)
@@ -128,6 +142,11 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.error_changed.connect(self._show_reader_error)
         self.viewmodel.password_required.connect(self._show_password_dialog)
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
+        self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
+        self.viewmodel.bookmark_error_changed.connect(
+            lambda message: self.dialog_overlay.show_info("Bookmarks", message)
+        )
+        self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
 
     def _install_auto_hide(self) -> None:
         self._control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
@@ -143,6 +162,9 @@ class ReaderShellWidget(QWidget):
 
     def _sync_state(self) -> None:
         self.header.set_title(self.viewmodel.title)
+        self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        if not self.viewmodel.can_use_bookmarks and self.topic_panel.mode == ReaderTopicMode.BOOKMARKS:
+            self._hide_topic_panel()
         self.footer.set_page_state(
             self.viewmodel.current_index,
             self.viewmodel.page_count,
@@ -151,6 +173,9 @@ class ReaderShellWidget(QWidget):
         self.footer.set_direction(self.viewmodel.settings.direction)
         self.footer.set_transition_mode(self.viewmodel.settings.transition_mode)
         self.settings_panel.set_settings(self.viewmodel.settings)
+        if self._topic_page_count != self.viewmodel.page_count:
+            self._topic_page_count = self.viewmodel.page_count
+            self.topic_panel.reset_thumbnails(self.viewmodel.page_count)
         if self.viewmodel.error_message:
             self.canvas.set_status_text(self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
@@ -189,10 +214,29 @@ class ReaderShellWidget(QWidget):
         if self.settings_panel.isVisible():
             self._hide_settings_panel()
             return
+        self._hide_topic_panel()
         self._position_settings_panel()
         self.settings_panel.show()
         self.settings_panel.raise_()
         self._install_settings_event_filter()
+        self._start_hide_timer_if_allowed()
+
+    def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
+        if mode == ReaderTopicMode.CONTENTS:
+            self.header.clear_topic_active_mode()
+            return
+        if mode == ReaderTopicMode.BOOKMARKS and not self.viewmodel.can_use_bookmarks:
+            self.header.clear_topic_active_mode()
+            return
+        self._hide_settings_panel()
+        self.header.set_topic_active_mode(mode)
+        self.topic_panel.set_mode(mode)
+        if mode == ReaderTopicMode.BOOKMARKS:
+            self.viewmodel.refresh_bookmarks()
+        self._position_topic_panel()
+        self.topic_panel.show()
+        self.topic_panel.raise_()
+        self._install_topic_event_filter()
         self._start_hide_timer_if_allowed()
 
     def _handle_canvas_mouse_move(self, position: QPoint) -> None:
@@ -247,6 +291,7 @@ class ReaderShellWidget(QWidget):
                 self.left_arrow,
                 self.right_arrow,
                 self.settings_panel,
+                self.topic_panel,
                 self.dialog_overlay,
             }:
                 return True
@@ -311,6 +356,7 @@ class ReaderShellWidget(QWidget):
             Theme.reader_side_button_width,
             Theme.reader_side_button_height,
         )
+        self._position_topic_panel()
         self.dialog_overlay.setGeometry(rect)
         self._position_settings_panel()
         self._raise_settings_panel_if_visible()
@@ -340,7 +386,9 @@ class ReaderShellWidget(QWidget):
             event.accept()
             return True
         if event.key() == Qt.Key.Key_Escape:
-            if self.settings_panel.isVisible():
+            if self.topic_panel.isVisible():
+                self._hide_topic_panel()
+            elif self.settings_panel.isVisible():
                 self._hide_settings_panel()
             elif self._show_back_button:
                 self.back_requested.emit()
@@ -360,6 +408,15 @@ class ReaderShellWidget(QWidget):
             widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
             if not self._is_settings_safe_click(widget):
                 self._hide_settings_panel()
+        if (
+            self._topic_event_filter_installed
+            and self.topic_panel.isVisible()
+            and event.type() == QEvent.Type.MouseButtonPress
+            and isinstance(event, QMouseEvent)
+        ):
+            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
+            if not self._is_topic_safe_click(widget):
+                self._hide_topic_panel()
         if watched in self._control_widgets and event.type() in {
             QEvent.Type.Enter,
             QEvent.Type.MouseMove,
@@ -383,6 +440,7 @@ class ReaderShellWidget(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:
         self.cancel()
         self._remove_settings_event_filter()
+        self._remove_topic_event_filter()
         super().closeEvent(event)
 
     def _position_settings_panel(self) -> None:
@@ -390,9 +448,20 @@ class ReaderShellWidget(QWidget):
         x = max(0, self.width() - self.settings_panel.width())
         self.settings_panel.move(x, 0)
 
+    def _position_topic_panel(self) -> None:
+        width = min(Theme.reader_topic_panel_width, max(Theme.reader_topic_panel_min_width, self.width() - 32))
+        height = min(Theme.reader_topic_panel_height, max(Theme.reader_topic_panel_min_height, self.height() - 32))
+        self.topic_panel.setFixedSize(width, height)
+        self.topic_panel.move((self.width() - width) // 2, (self.height() - height) // 2)
+
     def _hide_settings_panel_if_visible(self) -> None:
         if self.settings_panel.isVisible():
             self._hide_settings_panel()
+
+    def _hide_floating_panels_if_visible(self) -> None:
+        self._hide_settings_panel_if_visible()
+        if self.topic_panel.isVisible():
+            self._hide_topic_panel()
 
     def _hide_settings_panel(self) -> None:
         if self.settings_panel.isHidden():
@@ -401,27 +470,63 @@ class ReaderShellWidget(QWidget):
         self._remove_settings_event_filter()
         self._start_hide_timer_if_allowed()
 
+    def _hide_topic_panel(self) -> None:
+        if self.topic_panel.isHidden():
+            return
+        self.topic_panel.hide()
+        self.header.clear_topic_active_mode()
+        self._remove_topic_event_filter()
+        self._start_hide_timer_if_allowed()
+
     def _raise_settings_panel_if_visible(self) -> None:
         if self.settings_panel.isVisible():
             self.settings_panel.raise_()
-            if self.dialog_overlay.isVisible():
-                self.dialog_overlay.raise_()
+        if self.topic_panel.isVisible():
+            self.topic_panel.raise_()
+        if self.dialog_overlay.isVisible():
+            self.dialog_overlay.raise_()
 
     def _install_settings_event_filter(self) -> None:
         if self._settings_event_filter_installed:
             return
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
-            self._settings_event_filter_installed = True
+        self._settings_event_filter_installed = True
+        self._ensure_app_event_filter()
 
     def _remove_settings_event_filter(self) -> None:
         if not self._settings_event_filter_installed:
             return
+        self._settings_event_filter_installed = False
+        self._remove_app_event_filter_if_unused()
+
+    def _install_topic_event_filter(self) -> None:
+        if self._topic_event_filter_installed:
+            return
+        self._topic_event_filter_installed = True
+        self._ensure_app_event_filter()
+
+    def _remove_topic_event_filter(self) -> None:
+        if not self._topic_event_filter_installed:
+            return
+        self._topic_event_filter_installed = False
+        self._remove_app_event_filter_if_unused()
+
+    def _ensure_app_event_filter(self) -> None:
+        if self._app_event_filter_installed:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            self._app_event_filter_installed = True
+
+    def _remove_app_event_filter_if_unused(self) -> None:
+        if self._settings_event_filter_installed or self._topic_event_filter_installed:
+            return
+        if not self._app_event_filter_installed:
+            return
         app = QApplication.instance()
         if app is not None:
             app.removeEventFilter(self)
-        self._settings_event_filter_installed = False
+        self._app_event_filter_installed = False
 
     def _is_settings_safe_click(self, widget: QWidget | None) -> bool:
         while widget is not None:
@@ -431,6 +536,33 @@ class ReaderShellWidget(QWidget):
                 return True
             widget = widget.parentWidget()
         return False
+
+    def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
+        while widget is not None:
+            if widget in {
+                self.topic_panel,
+                self.header.topic_button_group,
+                self.header.detail_button,
+                self.header.bookmark_button,
+                self.header.thumbnail_button,
+            }:
+                return True
+            if widget.window().windowFlags() & Qt.WindowType.Popup:
+                return True
+            widget = widget.parentWidget()
+        return False
+
+    def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
+        self.dialog_overlay.show_input(
+            "Rename Bookmark",
+            "Bookmark Name",
+            on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(bookmark_uuid, name),
+            initial_text=current_name,
+            confirm_text="Rename",
+            cancel_text="Cancel",
+            validator=lambda value: None if value.strip() else "Bookmark name cannot be empty.",
+        )
+
 
 def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
     if book is None:

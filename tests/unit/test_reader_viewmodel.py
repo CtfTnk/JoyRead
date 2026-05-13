@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import datetime
+from uuid import uuid4
 
 from PIL import Image
 
 from joyread.core.archive import ArchiveEmptyError, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
@@ -142,12 +145,62 @@ class _FakeSessionService:
 class _FakeLibraryService:
     def __init__(self) -> None:
         self.progress_calls: list[tuple[str, int, float]] = []
+        self.bookmarks: list[Bookmark] = []
 
     def set_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         self.progress_calls.append((book_uuid, page_index, progress_percent))
 
     def save_reader_settings(self, _book_uuid, _settings):  # noqa: ANN001
         return None
+
+    def list_bookmarks(self, book_uuid: str, book_scope: str = "public") -> list[Bookmark]:
+        return [
+            bookmark
+            for bookmark in self.bookmarks
+            if bookmark.book_uuid == book_uuid and bookmark.book_scope == book_scope
+        ]
+
+    def add_bookmark(self, book_uuid: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
+        now = datetime.now()
+        bookmark = Bookmark(str(uuid4()), book_scope, book_uuid, name, page_index, now, now)
+        self.bookmarks.append(bookmark)
+        self.bookmarks.sort(key=lambda item: (item.page_index, item.created_at))
+        return bookmark
+
+    def rename_bookmark(
+        self,
+        book_uuid: str,
+        bookmark_uuid: str,
+        name: str,
+        book_scope: str = "public",
+    ) -> None:
+        for index, bookmark in enumerate(self.bookmarks):
+            if bookmark.uuid == bookmark_uuid and bookmark.book_uuid == book_uuid and bookmark.book_scope == book_scope:
+                self.bookmarks[index] = Bookmark(
+                    bookmark.uuid,
+                    bookmark.book_scope,
+                    bookmark.book_uuid,
+                    name,
+                    bookmark.page_index,
+                    bookmark.created_at,
+                    datetime.now(),
+                )
+                return
+        raise ValueError(f"Bookmark does not exist: {bookmark_uuid}")
+
+    def delete_bookmark(self, book_uuid: str, bookmark_uuid: str, book_scope: str = "public") -> None:
+        next_bookmarks = [
+            bookmark
+            for bookmark in self.bookmarks
+            if not (
+                bookmark.uuid == bookmark_uuid
+                and bookmark.book_uuid == book_uuid
+                and bookmark.book_scope == book_scope
+            )
+        ]
+        if len(next_bookmarks) == len(self.bookmarks):
+            raise ValueError(f"Bookmark does not exist: {bookmark_uuid}")
+        self.bookmarks = next_bookmarks
 
 
 class _RejectedPasswordSessionService:
@@ -633,6 +686,66 @@ def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipp
     assert errors[-1] == "No readable images. Encrypted archives were skipped."
     assert vm.error_message == "No readable images. Encrypted archives were skipped."
     assert vm.page_count == 0
+
+
+def test_reader_viewmodel_bookmarks_sync_from_library_service(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    vm = _viewmodel(tmp_path, library_service=library)
+    changes: list[tuple] = []
+    vm.bookmarks_changed.connect(lambda bookmarks: changes.append(bookmarks))
+
+    vm.open_path(tmp_path / "book.cbz")
+
+    assert vm.can_use_bookmarks is True
+    assert changes[-1] == ()
+
+    vm.add_bookmark()
+
+    assert len(library.bookmarks) == 1
+    added_uuid = library.bookmarks[0].uuid
+    assert library.bookmarks[0].name == "Book"
+    assert changes[-1][0].uuid == added_uuid
+    assert changes[-1][0].page_index == vm.current_index
+
+    vm.rename_bookmark(added_uuid, "Chapter start")
+
+    assert library.bookmarks[0].name == "Chapter start"
+    assert changes[-1][0].name == "Chapter start"
+
+    vm.delete_bookmark(added_uuid)
+
+    assert library.bookmarks == []
+    assert changes[-1] == ()
+
+
+def test_reader_viewmodel_ignores_bookmark_actions_without_library(tmp_path: Path) -> None:
+    vm = _viewmodel(tmp_path)
+    changes: list[tuple] = []
+    vm.bookmarks_changed.connect(lambda bookmarks: changes.append(bookmarks))
+
+    vm.open_path(tmp_path / "book.cbz")
+    vm.add_bookmark()
+
+    assert vm.can_use_bookmarks is False
+    assert vm.bookmarks == ()
+    assert changes[-1] == ()
+
+
+def test_reader_viewmodel_emits_topic_thumbnail_batches_from_active_session(tmp_path: Path) -> None:
+    vm = _viewmodel(tmp_path)
+    batches = []
+
+    vm.topic_thumbnail_batch_ready.connect(batches.append)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.request_topic_thumbnail_batch(0, 2, (100, 142))
+
+    assert batches
+    batch = batches[-1]
+    assert batch.start_index == 0
+    assert batch.next_index == 2
+    assert batch.has_more is True
+    assert [item.page_index for item in batch.items] == [0, 1]
+    assert all(item.image_bytes for item in batch.items)
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

@@ -493,6 +493,43 @@ class SqliteBookRepository(BookRepository):
             DatabasePriority.HIGH,
         )
 
+    def rename_bookmark(
+        self,
+        book_id: str,
+        bookmark_id: str,
+        name: str,
+        book_scope: str = "public",
+    ) -> None:
+        now = _now()
+
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                UPDATE bookmarks
+                SET name = ?, updated_at = ?
+                WHERE bookmark_id = ? AND book_scope = ? AND book_id = ?
+                """,
+                (name, now, bookmark_id, book_scope, book_id),
+            )
+            if cursor.rowcount <= 0:
+                raise ValueError(f"Bookmark does not exist: {bookmark_id}")
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
+    def delete_bookmark(self, book_id: str, bookmark_id: str, book_scope: str = "public") -> None:
+        def write(connection: sqlite3.Connection) -> None:
+            cursor = connection.execute(
+                """
+                DELETE FROM bookmarks
+                WHERE bookmark_id = ? AND book_scope = ? AND book_id = ?
+                """,
+                (bookmark_id, book_scope, book_id),
+            )
+            if cursor.rowcount <= 0:
+                raise ValueError(f"Bookmark does not exist: {bookmark_id}")
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
     def move_book_to_private(self, book_id: str, private_collection_id: str | None = None) -> str:
         private_book_id = str(uuid4())
         now = _now()

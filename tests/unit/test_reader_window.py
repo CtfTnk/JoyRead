@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -7,15 +8,18 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFrame
+from PySide6.QtWidgets import QFrame, QScrollArea
 
 from joyread.app.app_context import create_app_context
+from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
+from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:
@@ -27,7 +31,6 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     context = create_app_context()
     window = ReaderWindow(context, source)
     qtbot.addWidget(window)
-
     window.show()
     window.resize(Theme.reader_width, Theme.reader_height)
 
@@ -76,6 +79,170 @@ def test_reader_header_switch_icons_survive_hover_and_checked_modes(qtbot, tmp_p
             assert not icon.pixmap(Theme.icon_size, Theme.icon_size, mode, QIcon.State.On).isNull()
 
     window.close()
+    context.close()
+
+
+def test_reader_topic_button_group_disables_unavailable_modes_for_direct_files(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    assert not window.header.detail_button.isEnabled()
+    assert not window.header.bookmark_button.isEnabled()
+    assert window.header.thumbnail_button.isEnabled()
+    assert not window.header.detail_button.isCheckable()
+    assert not window.header.bookmark_button.isCheckable()
+    assert not window.header.thumbnail_button.isCheckable()
+    assert window.header.topic_button_group.active_mode is None
+
+    window.shell._show_topic_panel(ReaderTopicMode.BOOKMARKS)
+
+    assert window.topic_panel.isHidden()
+    assert window.header.topic_button_group.active_mode is None
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+
+    assert window.topic_panel.isVisible()
+    assert window.header.topic_button_group.active_mode == ReaderTopicMode.THUMBNAILS
+    assert window.header.thumbnail_button.property("topicActive") is True
+    assert window.header.detail_button.property("topicActive") is False
+    assert window.header.bookmark_button.property("topicActive") is False
+
+    window.shell._hide_topic_panel()
+
+    assert window.header.topic_button_group.active_mode is None
+
+    window.close()
+    context.close()
+
+
+def test_reader_topic_panel_opens_centered_and_closes_with_escape(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source, book=_reader_book(source))
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+
+    assert window.topic_panel.isVisible()
+    assert window.topic_panel.mode == ReaderTopicMode.THUMBNAILS
+    assert window.header.topic_button_group.active_mode == ReaderTopicMode.THUMBNAILS
+    assert window.topic_panel.geometry().getRect() == (
+        (Theme.reader_width - Theme.reader_topic_panel_width) // 2,
+        (Theme.reader_height - Theme.reader_topic_panel_height) // 2,
+        Theme.reader_topic_panel_width,
+        Theme.reader_topic_panel_height,
+    )
+
+    qtbot.keyClick(window, Qt.Key.Key_Escape)
+
+    assert window.topic_panel.isHidden()
+    assert window.header.topic_button_group.active_mode is None
+
+    window.close()
+    context.close()
+
+
+def test_reader_topic_panel_closes_on_canvas_click(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source, book=_reader_book(source))
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+    qtbot.mouseClick(window.canvas, Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
+
+    assert window.topic_panel.isHidden()
+    assert window.header.topic_button_group.active_mode is None
+
+    window.close()
+    context.close()
+
+
+def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.resize(Theme.reader_topic_panel_min_width, Theme.reader_topic_panel_min_height)
+    panel.set_bookmarks(
+        tuple(ReaderBookmarkItem(f"bookmark-{index}", f"Bookmark {index}", index) for index in range(60))
+    )
+    panel.reset_thumbnails(80)
+    panel.show()
+    panel.set_mode(ReaderTopicMode.THUMBNAILS)
+    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, 80, False, ()))
+
+    thumbnail_scroll = panel.findChild(QScrollArea, "ReaderTopicThumbnailsScrollArea")
+    bookmark_scroll = panel.findChild(QScrollArea, "ReaderTopicBookmarksScrollArea")
+    assert thumbnail_scroll is not None
+    assert bookmark_scroll is not None
+    assert thumbnail_scroll is not bookmark_scroll
+
+    qtbot.waitUntil(lambda: thumbnail_scroll.verticalScrollBar().maximum() > 0, timeout=1000)
+    thumbnail_scroll.verticalScrollBar().setValue(thumbnail_scroll.verticalScrollBar().maximum())
+    thumbnail_value = thumbnail_scroll.verticalScrollBar().value()
+
+    panel.set_mode(ReaderTopicMode.BOOKMARKS)
+
+    assert panel.mode == ReaderTopicMode.BOOKMARKS
+    assert panel._stack.currentWidget() is bookmark_scroll
+    assert bookmark_scroll.verticalScrollBar().value() == 0
+
+    qtbot.waitUntil(lambda: bookmark_scroll.verticalScrollBar().maximum() > 0, timeout=1000)
+    bookmark_scroll.verticalScrollBar().setValue(bookmark_scroll.verticalScrollBar().maximum())
+    panel.set_mode(ReaderTopicMode.THUMBNAILS)
+
+    assert panel._stack.currentWidget() is thumbnail_scroll
+    assert thumbnail_scroll.verticalScrollBar().value() == thumbnail_value
+
+    context.close()
+
+
+def test_reader_topic_panel_requests_more_thumbnails_after_append_without_resize(qtbot) -> None:
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    requests: list[tuple[int, int, tuple[int, int]]] = []
+    panel.thumbnail_batch_requested.connect(
+        lambda start, batch_size, size: requests.append((start, batch_size, size))
+    )
+    panel.resize(Theme.reader_topic_panel_width, Theme.reader_topic_panel_height)
+    panel.show()
+    panel.set_mode(ReaderTopicMode.THUMBNAILS)
+    panel.reset_thumbnails(100)
+
+    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
+    assert requests[-1][0] == 0
+
+    requests.clear()
+    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, Theme.reader_topic_thumbnail_batch_size, True, ()))
+
+    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
+    assert requests[-1] == (
+        Theme.reader_topic_thumbnail_batch_size,
+        Theme.reader_topic_thumbnail_batch_size,
+        (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+    )
+
     context.close()
 
 
@@ -388,6 +555,27 @@ def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, mon
 
     assert window._reader_windows == []
     context.close()
+
+
+def _reader_book(source: Path) -> Book:
+    now = datetime.now()
+    return Book(
+        uuid="reader-book",
+        title="Reader Book",
+        author=None,
+        language_tag="en",
+        language_name="English",
+        book_type="Comic",
+        file_format=source.suffix.lstrip(".").upper(),
+        file_path=str(source),
+        progress=0.0,
+        cover_thumbnail_path=None,
+        added_at=now,
+        updated_at=now,
+        last_read_at=None,
+        is_favourite=False,
+        original_file_name=source.name,
+    )
 
 
 def _context_with_imported_book(tmp_path: Path, monkeypatch) -> object:  # noqa: ANN001 - test helper returns AppContext.

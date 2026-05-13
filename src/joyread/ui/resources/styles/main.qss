@@ -142,10 +142,26 @@ QToolButton[class="ReaderButton"]:disabled {
     background: rgba(146, 146, 146, 0.35);
 }
 
-QFrame[class="ReaderTopGroup"] {
+QFrame[class="ReaderTopicButtonGroup"] {
     background: __WINDOW_COLOR__;
-    border: 2px solid __BUTTON_EDGE__;
-    border-radius: __READER_CONTROL_RADIUS__;
+    border: __READER_TOPIC_BUTTON_GROUP_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border-radius: __READER_TOPIC_BUTTON_GROUP_RADIUS__;
+}
+
+QToolButton[class="ReaderTopicButton"] {
+    background: transparent;
+    border: none;
+    border-radius: __READER_TOPIC_BUTTON_RADIUS__;
+    padding: 0;
+}
+
+QToolButton[class="ReaderTopicButton"]:hover,
+QToolButton[class="ReaderTopicButton"][topicActive="true"] {
+    background: __SELECTED_COLOR__;
+}
+
+QToolButton[class="ReaderTopicButton"]:disabled {
+    background: transparent;
 }
 
 QFrame[class="ReaderSwitch"] {
@@ -164,6 +180,10 @@ QToolButton[class="ReaderSwitchOption"] {
 QToolButton[class="ReaderSwitchOption"]:hover,
 QToolButton[class="ReaderSwitchOption"]:checked {
     background: __READER_CONTROL_SELECTED__;
+}
+
+QToolButton[class="ReaderSwitchOption"]:disabled {
+    background: transparent;
 }
 
 QToolButton[class="ReaderSideButton"] {
@@ -264,6 +284,79 @@ QFrame[class="ReaderSettingsSmallSwitchKnob"] {
     background: __SETTINGS_SWITCH_KNOB__;
     border: none;
     border-radius: __SETTINGS_SWITCH_KNOB_RADIUS__;
+}
+
+QFrame#ReaderTopicPanel {
+    background: transparent;
+    border: __READER_TOPIC_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __READER_TOPIC_PANEL_RADIUS__;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"],
+QWidget#ReaderTopicStack,
+QWidget#ReaderTopicContentsPage,
+QWidget#ReaderTopicBookmarksPage,
+QWidget#ReaderTopicThumbnailsPage {
+    background: transparent;
+    border: none;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar:vertical {
+    background: transparent;
+    border: none;
+    width: __SHELF_SCROLLBAR_WIDTH__;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border: none;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::handle:vertical:hover {
+    background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::add-line:vertical,
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::sub-line:vertical {
+    background: transparent;
+    border: none;
+    height: 0;
+}
+
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::add-page:vertical,
+QScrollArea[class="ReaderTopicScrollArea"] QScrollBar::sub-page:vertical {
+    background: transparent;
+}
+
+QFrame[class="ReaderTopicItem"],
+QFrame[class="ReaderTopicNewBookmark"] {
+    background: transparent;
+    border: none;
+    border-radius: __READER_TOPIC_ITEM_RADIUS__;
+}
+
+QFrame[class="ReaderTopicItem"]:hover,
+QFrame[class="ReaderTopicNewBookmark"]:hover {
+    background: __READER_TOPIC_ITEM_HOVER__;
+}
+
+QLabel[class="ReaderTopicItemLabel"] {
+    color: __TEXT_COLOR__;
+    font-size: __BODY_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QLabel[class="ReaderTopicItemIndex"],
+QLabel#ReaderTopicEmptyText {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __READER_TOPIC_INDEX_FONT_SIZE__;
+    font-weight: 500;
 }
 
 QFrame[class="ActionMenuButton"] {

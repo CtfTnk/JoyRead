@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from joyread.core.models.book import Book
+from joyread.core.models.bookmark import Bookmark
 from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
 from joyread.core.repositories.book_repository import BookRepository
@@ -80,3 +81,21 @@ class LibraryService:
         book_scope: str = "public",
     ) -> None:
         self._book_repository.save_reader_settings(book_uuid, settings, book_scope)
+
+    def list_bookmarks(self, book_uuid: str, book_scope: str = "public") -> list[Bookmark]:
+        return self._book_repository.list_bookmarks(book_uuid, book_scope)
+
+    def add_bookmark(self, book_uuid: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
+        return self._book_repository.add_bookmark(book_uuid, name, page_index, book_scope)
+
+    def rename_bookmark(
+        self,
+        book_uuid: str,
+        bookmark_uuid: str,
+        name: str,
+        book_scope: str = "public",
+    ) -> None:
+        self._book_repository.rename_bookmark(book_uuid, bookmark_uuid, name, book_scope)
+
+    def delete_bookmark(self, book_uuid: str, bookmark_uuid: str, book_scope: str = "public") -> None:
+        self._book_repository.delete_bookmark(book_uuid, bookmark_uuid, book_scope)

@@ -8,7 +8,6 @@ from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
-    QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
@@ -22,12 +21,125 @@ from PySide6.QtWidgets import (
 from joyread.core.reader import ReaderDirection, ReaderTransitionMode
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
 from joyread.ui.widgets.window_chrome import WindowControlsWidget
+
+
+class ReaderTopicButtonGroup(QFrame):
+    """Figma topic-button-group: action buttons with one active panel topic."""
+
+    topic_requested = QtSignal(object)
+
+    def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty("class", "ReaderTopicButtonGroup")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setFixedSize(Theme.reader_topic_button_group_width, Theme.reader_topic_button_group_height)
+        self._active_mode: ReaderTopicMode | None = None
+        self._buttons: dict[ReaderTopicMode, QToolButton] = {}
+        self._effects: dict[ReaderTopicMode, QGraphicsOpacityEffect] = {}
+        self._enabled: dict[ReaderTopicMode, bool] = {
+            ReaderTopicMode.CONTENTS: False,
+            ReaderTopicMode.BOOKMARKS: True,
+            ReaderTopicMode.THUMBNAILS: True,
+        }
+
+        layout = QHBoxLayout(self)
+        # Figma uses 4px visual padding and a 2px stroke. Qt borders consume
+        # layout space, so 2px margins preserve the outside-to-icon inset.
+        layout.setContentsMargins(
+            Theme.reader_topic_button_group_layout_margin,
+            Theme.reader_topic_button_group_layout_margin,
+            Theme.reader_topic_button_group_layout_margin,
+            Theme.reader_topic_button_group_layout_margin,
+        )
+        layout.setSpacing(Theme.reader_topic_button_group_gap)
+
+        self.contents_button = self._make_button(
+            resources,
+            ReaderTopicMode.CONTENTS,
+            "icon_list_detailMode.svg",
+            "Contents",
+        )
+        self.bookmark_button = self._make_button(
+            resources,
+            ReaderTopicMode.BOOKMARKS,
+            "icon_bookmark.svg",
+            "Bookmarks",
+        )
+        self.thumbnail_button = self._make_button(
+            resources,
+            ReaderTopicMode.THUMBNAILS,
+            "icon_list_cardMode.svg",
+            "Thumbnails",
+        )
+        layout.addWidget(self.contents_button)
+        layout.addWidget(self.bookmark_button)
+        layout.addWidget(_spacer(height=Theme.reader_topic_button_separator_height))
+        layout.addWidget(self.thumbnail_button)
+        self.set_contents_enabled(False)
+
+    @property
+    def active_mode(self) -> ReaderTopicMode | None:
+        return self._active_mode
+
+    def set_contents_enabled(self, enabled: bool) -> None:
+        self._set_enabled(ReaderTopicMode.CONTENTS, enabled)
+
+    def set_bookmarks_enabled(self, enabled: bool) -> None:
+        self._set_enabled(ReaderTopicMode.BOOKMARKS, enabled)
+
+    def set_active_mode(self, mode: ReaderTopicMode | None) -> None:
+        if mode is not None and not self._enabled.get(mode, False):
+            mode = None
+        if mode == self._active_mode:
+            return
+        self._active_mode = mode
+        for option_mode, button in self._buttons.items():
+            button.setProperty("topicActive", option_mode == mode)
+            _refresh_style(button)
+
+    def clear_active_mode(self) -> None:
+        self.set_active_mode(None)
+
+    def _make_button(
+        self,
+        resources: ResourceLoader,
+        mode: ReaderTopicMode,
+        icon_name: str,
+        tooltip: str,
+    ) -> QToolButton:
+        button = topic_button(resources, icon_name, tooltip)
+        button.clicked.connect(lambda _checked=False, mode=mode: self._request_mode(mode))
+        effect = QGraphicsOpacityEffect(button)
+        effect.setOpacity(1.0)
+        button.setGraphicsEffect(effect)
+        self._buttons[mode] = button
+        self._effects[mode] = effect
+        return button
+
+    def _request_mode(self, mode: ReaderTopicMode) -> None:
+        if not self._enabled.get(mode, False):
+            return
+        self.set_active_mode(mode)
+        self.topic_requested.emit(mode)
+
+    def _set_enabled(self, mode: ReaderTopicMode, enabled: bool) -> None:
+        self._enabled[mode] = enabled
+        button = self._buttons.get(mode)
+        effect = self._effects.get(mode)
+        if button is not None:
+            button.setEnabled(enabled)
+        if effect is not None:
+            effect.setOpacity(1.0 if enabled else 0.3)
+        if not enabled and self._active_mode == mode:
+            self.set_active_mode(None)
 
 
 class ReaderHeader(QWidget):
     back_requested = QtSignal()
     mouse_activity = QtSignal()
+    topic_mode_requested = QtSignal(object)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -53,31 +165,13 @@ class ReaderHeader(QWidget):
         self.back_spacer = _spacer(height=Theme.reader_control_size)
         layout.addWidget(self.back_spacer)
 
-        self.mode_group = QFrame()
-        self.mode_group.setProperty("class", "ReaderTopGroup")
-        shadow = QGraphicsDropShadowEffect(self.mode_group)
-        shadow.setBlurRadius(4)
-        shadow.setOffset(0, 0)
-        shadow.setColor(QColor(*Theme.color_shadow_rgba))
-        self.mode_group.setGraphicsEffect(shadow)
-        mode_layout = QHBoxLayout(self.mode_group)
-        # Figma uses 4px visual padding and a 2px stroke here. Qt borders
-        # consume layout space, so 2px margins preserve the visual inset.
-        mode_layout.setContentsMargins(2, 2, 2, 2)
-        mode_layout.setSpacing(Theme.reader_switch_gap)
-        self.detail_button = switch_option(resources, "icon_list_detailMode.svg", "Details")
-        self.detail_button.setEnabled(False)
-        disabled_effect = QGraphicsOpacityEffect(self.detail_button)
-        disabled_effect.setOpacity(0.3)
-        self.detail_button.setGraphicsEffect(disabled_effect)
-        self.bookmark_button = switch_option(resources, "icon_bookmark.svg", "Bookmarks")
-        self.thumbnail_button = switch_option(resources, "icon_list_cardMode.svg", "Thumbnails")
-        self.thumbnail_button.setChecked(True)
-        mode_layout.addWidget(self.detail_button)
-        mode_layout.addWidget(self.bookmark_button)
-        mode_layout.addWidget(_spacer(height=20))
-        mode_layout.addWidget(self.thumbnail_button)
-        layout.addWidget(self.mode_group)
+        self.topic_button_group = ReaderTopicButtonGroup(resources)
+        self.topic_button_group.topic_requested.connect(self.topic_mode_requested.emit)
+        self.mode_group = self.topic_button_group
+        self.detail_button = self.topic_button_group.contents_button
+        self.bookmark_button = self.topic_button_group.bookmark_button
+        self.thumbnail_button = self.topic_button_group.thumbnail_button
+        layout.addWidget(self.topic_button_group)
 
         layout.addStretch(1)
         self.title = QLabel("Place Holder - Book Name", self)
@@ -96,6 +190,18 @@ class ReaderHeader(QWidget):
     def set_title(self, title: str) -> None:
         self._full_title = title
         self._position_title()
+
+    def set_contents_enabled(self, enabled: bool) -> None:
+        self.topic_button_group.set_contents_enabled(enabled)
+
+    def set_bookmarks_enabled(self, enabled: bool) -> None:
+        self.topic_button_group.set_bookmarks_enabled(enabled)
+
+    def set_topic_active_mode(self, mode: ReaderTopicMode | None) -> None:
+        self.topic_button_group.set_active_mode(mode)
+
+    def clear_topic_active_mode(self) -> None:
+        self.topic_button_group.clear_active_mode()
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -117,7 +223,7 @@ class ReaderHeader(QWidget):
         painter.end()
 
     def _position_title(self) -> None:
-        left_edge = self.mode_group.geometry().right() + 12 if self.mode_group.width() else 160
+        left_edge = self.topic_button_group.geometry().right() + 12 if self.topic_button_group.width() else 160
         right_edge = 52 + 12
         safe_side = max(left_edge, right_edge)
         max_width = max(80, self.width() - (safe_side * 2))
@@ -455,6 +561,20 @@ def switch_option(resources: ResourceLoader, icon_name: str, tooltip: str) -> QT
     return button
 
 
+def topic_button(resources: ResourceLoader, icon_name: str, tooltip: str) -> QToolButton:
+    button = QToolButton()
+    button.setProperty("class", "ReaderTopicButton")
+    button.setProperty("iconName", icon_name)
+    button.setProperty("topicActive", False)
+    button.setCheckable(False)
+    button.setIcon(_reader_icon(resources, icon_name))
+    button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+    button.setToolTip(tooltip)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setFixedSize(Theme.reader_topic_button_size, Theme.reader_topic_button_size)
+    return button
+
+
 def _reader_icon(resources: ResourceLoader, icon_name: str) -> QIcon:
     icon_path = str(resources.icon_path(icon_name))
     icon = QIcon()
@@ -465,6 +585,12 @@ def _reader_icon(resources: ResourceLoader, icon_name: str) -> QIcon:
         for state in (QIcon.State.Off, QIcon.State.On):
             icon.addFile(icon_path, QSize(), mode, state)
     return icon
+
+
+def _refresh_style(widget: QWidget) -> None:
+    widget.style().unpolish(widget)
+    widget.style().polish(widget)
+    widget.update()
 
 
 def _spacer(height: int) -> QFrame:

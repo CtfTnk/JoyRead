@@ -523,6 +523,7 @@ def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(
     repository.update_book_metadata(book.uuid, title="Edited Title", author="Edited Author", language_tag="ja")
     repository.set_favourite(book.uuid, True)
     bookmark = repository.add_bookmark(book.uuid, "Good page", 7)
+    repository.rename_bookmark(book.uuid, bookmark.uuid, "Renamed page")
     updated = repository.get_book(book.uuid)
 
     assert updated is not None
@@ -531,11 +532,23 @@ def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(
     assert updated.language_tag == "ja"
     assert updated.language_name == "Japanese"
     assert updated.is_favourite is True
-    assert repository.list_bookmarks(book.uuid) == [bookmark]
+    renamed = repository.list_bookmarks(book.uuid)
+    assert len(renamed) == 1
+    assert renamed[0].uuid == bookmark.uuid
+    assert renamed[0].name == "Renamed page"
+    repository.delete_bookmark(book.uuid, bookmark.uuid)
+    assert repository.list_bookmarks(book.uuid) == []
 
     with pytest.raises(ValueError, match="Unknown language code"):
         repository.update_book_metadata(book.uuid, language_tag="bad")
 
+    with pytest.raises(ValueError, match="Bookmark does not exist"):
+        repository.rename_bookmark(book.uuid, bookmark.uuid, "Missing")
+
+    with pytest.raises(ValueError, match="Bookmark does not exist"):
+        repository.delete_bookmark(book.uuid, bookmark.uuid)
+
+    repository.add_bookmark(book.uuid, "Good page", 7)
     repository.delete_book(book.uuid)
     assert repository.get_book(book.uuid) is None
     assert repository.list_bookmarks(book.uuid) == []

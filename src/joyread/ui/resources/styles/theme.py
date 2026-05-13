@@ -345,6 +345,18 @@ class Theme:
     reader_switch_gap = 6
     reader_switch_option_size = 28
     reader_switch_option_radius = 6
+    # Reader topic-button-group from Figma node 219:2528.
+    reader_topic_button_group_width = 112
+    reader_topic_button_group_height = 36
+    reader_topic_button_group_visual_padding = 4
+    reader_topic_button_group_border_width = 2
+    reader_topic_button_group_layout_margin = (
+        reader_topic_button_group_visual_padding - reader_topic_button_group_border_width
+    )
+    reader_topic_button_group_gap = 6
+    reader_topic_button_size = 28
+    reader_topic_button_radius = 6
+    reader_topic_button_separator_height = 20
     reader_slider_height = 12
     reader_slider_track_height = 6
     reader_slider_knob_width = 14
@@ -376,6 +388,29 @@ class Theme:
     reader_settings_zoom_track_height = 4
     reader_settings_zoom_knob_width = 10
     reader_settings_zoom_knob_height = 8
+    # Reader topic panel from Figma node 612:3723.
+    reader_topic_panel_width = 785
+    reader_topic_panel_height = 760
+    reader_topic_panel_min_width = 400
+    reader_topic_panel_min_height = 400
+    reader_topic_panel_radius = 10
+    reader_topic_panel_border_width = 2
+    reader_topic_panel_visual_padding = 8
+    reader_topic_panel_layout_margin = reader_topic_panel_visual_padding - reader_topic_panel_border_width
+    reader_topic_panel_gap = 10
+    reader_topic_section_padding = 10
+    reader_topic_item_height = 24
+    reader_topic_item_gap = 10
+    reader_topic_item_padding_left = 15
+    reader_topic_item_padding_right = 10
+    reader_topic_item_padding_vertical = 2
+    reader_topic_item_label_gap = 5
+    reader_topic_item_radius = 4
+    reader_topic_add_icon_size = 18
+    reader_topic_index_font_size = 10
+    reader_topic_scroll_threshold = 400
+    reader_topic_thumbnail_batch_size = 24
+    reader_topic_thumbnail_cache_bytes = 32 * 1024 * 1024
     reader_auto_hide_delay_ms = 1600
     reader_fade_duration_ms = 160
     reader_edge_reveal_distance = 78
@@ -420,6 +455,7 @@ class Theme:
     color_reader_settings_background_rgba = (255, 255, 255, 204)
     color_reader_settings_control_rgba = (255, 255, 255, 230)
     color_reader_settings_switch_background_rgba = (185, 185, 185, 230)
+    color_reader_topic_item_hover_rgba = (238, 238, 238, 230)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -503,6 +539,9 @@ class Theme:
             "__READER_SIDE_BUTTON_RADIUS__": f"{cls.reader_side_button_radius}px",
             "__READER_SWITCH_PANEL__": cls._rgba_qss(cls.color_reader_switch_panel_rgba),
             "__READER_SWITCH_OPTION_RADIUS__": f"{cls.reader_switch_option_radius}px",
+            "__READER_TOPIC_BUTTON_GROUP_BORDER_WIDTH__": f"{cls.reader_topic_button_group_border_width}px",
+            "__READER_TOPIC_BUTTON_GROUP_RADIUS__": f"{cls.reader_control_radius}px",
+            "__READER_TOPIC_BUTTON_RADIUS__": f"{cls.reader_topic_button_radius}px",
             "__READER_SLIDER_EMPTY__": cls._rgba_qss(cls.color_reader_slider_empty_rgba),
             "__READER_SLIDER_FILLED__": cls._rgba_qss(cls.color_reader_slider_filled_rgba),
             "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
@@ -514,6 +553,11 @@ class Theme:
             "__READER_SETTINGS_CONTROL_FONT_SIZE__": f"{cls.settings_control_font_size}px",
             "__READER_SETTINGS_CONTROL_BACKGROUND__": cls._rgba_qss(cls.color_reader_settings_control_rgba),
             "__READER_SETTINGS_SWITCH_BACKGROUND__": cls._rgba_qss(cls.color_reader_settings_switch_background_rgba),
+            "__READER_TOPIC_PANEL_BORDER_WIDTH__": f"{cls.reader_topic_panel_border_width}px",
+            "__READER_TOPIC_PANEL_RADIUS__": f"{cls.reader_topic_panel_radius}px",
+            "__READER_TOPIC_ITEM_RADIUS__": f"{cls.reader_topic_item_radius}px",
+            "__READER_TOPIC_INDEX_FONT_SIZE__": f"{cls.reader_topic_index_font_size}px",
+            "__READER_TOPIC_ITEM_HOVER__": cls._rgba_qss(cls.color_reader_topic_item_hover_rgba),
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 
 from joyread.core.archive import ArchiveError, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import (
     ReaderDirection,
     ReaderDisplayMode,
@@ -21,9 +23,10 @@ from joyread.core.reader import (
     SizeF,
     SmartLayoutEngine,
 )
-from joyread.core.services.cache_service import NamespacedPageCache
+from joyread.core.services.cache_service import BoundedByteCache, NamespacedPageCache
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService, TaskStatus
+from joyread.core.services.thumbnail_service import render_contain_blur_thumbnail
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
@@ -34,6 +37,27 @@ class ReaderPasswordPrompt:
     display_name: str
     message: str
     is_retry: bool = False
+
+
+@dataclass(frozen=True)
+class ReaderBookmarkItem:
+    uuid: str
+    name: str
+    page_index: int
+
+
+@dataclass(frozen=True)
+class ReaderTopicThumbnailItem:
+    page_index: int
+    image_bytes: bytes
+
+
+@dataclass(frozen=True)
+class ReaderTopicThumbnailBatch:
+    start_index: int
+    next_index: int
+    has_more: bool
+    items: tuple[ReaderTopicThumbnailItem, ...]
 
 
 class ReaderViewModel:
@@ -60,6 +84,9 @@ class ReaderViewModel:
         self.error_changed: Signal[str | None] = Signal()
         self.password_required: Signal[ReaderPasswordPrompt] = Signal()
         self.progress_changed: Signal[tuple[str, int, float]] = Signal()
+        self.bookmarks_changed: Signal[tuple[ReaderBookmarkItem, ...]] = Signal()
+        self.bookmark_error_changed: Signal[str] = Signal()
+        self.topic_thumbnail_batch_ready: Signal[ReaderTopicThumbnailBatch] = Signal()
 
         self._session_service = session_service
         self._task_service = task_service
@@ -80,11 +107,17 @@ class ReaderViewModel:
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
         self._warm_handle: TaskHandle[None] | None = None
         self._save_handle: TaskHandle[None] | None = None
+        self._bookmark_handle: TaskHandle[tuple[ReaderBookmarkItem, ...]] | None = None
+        self._topic_thumbnail_handle: TaskHandle[ReaderTopicThumbnailBatch] | None = None
         self._task_generation = 0
         self._viewport_size = SizeF(1.0, 1.0)
         self._layout_result: ReaderLayoutResult | None = None
         self._pages: dict[int, ReaderPageImage] = {}
         self._unavailable_pages: set[int] = set()
+        self._bookmarks: tuple[ReaderBookmarkItem, ...] = ()
+        self._topic_thumbnail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(
+            Theme.reader_topic_thumbnail_cache_bytes,
+        )
         self._page_count = 0
         # Prefetch windows come from AppConfig; we hold the raw values and let
         # `_preload_nearby_pages` apply direction-aware bias so RTL readers
@@ -118,6 +151,14 @@ class ReaderViewModel:
     @property
     def page_count(self) -> int:
         return self._page_count
+
+    @property
+    def can_use_bookmarks(self) -> bool:
+        return self._library_service is not None and self._book_uuid is not None
+
+    @property
+    def bookmarks(self) -> tuple[ReaderBookmarkItem, ...]:
+        return self._bookmarks
 
     @property
     def current_index(self) -> int:
@@ -209,10 +250,16 @@ class ReaderViewModel:
             self._warm_handle.cancel()
         if self._save_handle is not None:
             self._save_handle.cancel()
+        if self._bookmark_handle is not None:
+            self._bookmark_handle.cancel()
+        if self._topic_thumbnail_handle is not None:
+            self._topic_thumbnail_handle.cancel()
         self._open_handle = None
         self._page_handles.clear()
         self._warm_handle = None
         self._save_handle = None
+        self._bookmark_handle = None
+        self._topic_thumbnail_handle = None
         with self._session_lock:
             self._session = None
         self.is_loading = False
@@ -220,6 +267,7 @@ class ReaderViewModel:
         self._layout_waiting_for_pages = ()
         self._pages.clear()
         self._unavailable_pages.clear()
+        self._bookmarks = ()
         self._page_count = 0
         self._layout_result = None
         self._source_path = None
@@ -233,6 +281,8 @@ class ReaderViewModel:
         # open readers can claim it. The namespace itself stays valid; a
         # subsequent `open_path` will refill it.
         self._page_cache.clear()
+        self._topic_thumbnail_cache.clear()
+        self.bookmarks_changed.emit(self._bookmarks)
 
     def cancel_password_request(self) -> None:
         self._pending_password_archive = None
@@ -259,6 +309,85 @@ class ReaderViewModel:
             self._emit_state()
             return
         self.open_path(source_path)
+
+    def refresh_bookmarks(self) -> None:
+        if not self.can_use_bookmarks:
+            self._set_bookmarks(())
+            return
+        self._submit_bookmark_task(
+            "reader-bookmarks-load",
+            lambda service, book_uuid: _bookmark_items(service.list_bookmarks(book_uuid)),
+            refresh_on_failure=False,
+        )
+
+    def add_bookmark(self) -> None:
+        if not self.can_use_bookmarks or self._page_count <= 0:
+            return
+        page_index = self.current_index
+        default_name = self.title.strip() or "Bookmark"
+
+        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+            service.add_bookmark(book_uuid, default_name, page_index)
+            return _bookmark_items(service.list_bookmarks(book_uuid))
+
+        self._submit_bookmark_task("reader-bookmark-add", work)
+
+    def rename_bookmark(self, bookmark_uuid: str, name: str) -> None:
+        cleaned = name.strip()
+        if not self.can_use_bookmarks or not bookmark_uuid or not cleaned:
+            return
+
+        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+            service.rename_bookmark(book_uuid, bookmark_uuid, cleaned)
+            return _bookmark_items(service.list_bookmarks(book_uuid))
+
+        self._submit_bookmark_task("reader-bookmark-rename", work)
+
+    def delete_bookmark(self, bookmark_uuid: str) -> None:
+        if not self.can_use_bookmarks or not bookmark_uuid:
+            return
+
+        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+            service.delete_bookmark(book_uuid, bookmark_uuid)
+            return _bookmark_items(service.list_bookmarks(book_uuid))
+
+        self._submit_bookmark_task("reader-bookmark-delete", work)
+
+    def request_topic_thumbnail_batch(
+        self,
+        start_index: int,
+        batch_size: int,
+        size: tuple[int, int],
+    ) -> None:
+        if self._session is None or self._page_count <= 0:
+            self.topic_thumbnail_batch_ready.emit(ReaderTopicThumbnailBatch(0, 0, False, ()))
+            return
+        if self._topic_thumbnail_handle is not None and self._topic_thumbnail_handle.status in {
+            TaskStatus.PENDING,
+            TaskStatus.RUNNING,
+        }:
+            return
+
+        width = max(1, int(size[0]))
+        height = max(1, int(size[1]))
+        batch_size = max(1, int(batch_size))
+        start = max(0, min(int(start_index), self._page_count))
+        end = min(self._page_count, start + batch_size)
+        generation = self._task_generation
+
+        def work() -> ReaderTopicThumbnailBatch:
+            return self._load_topic_thumbnail_batch(start, end, (width, height))
+
+        self._topic_thumbnail_handle = self._task_service.submit(
+            f"reader-topic-thumbnails-{start}",
+            work,
+            on_success=lambda batch, generation=generation: self._handle_topic_thumbnail_success(generation, batch),
+            on_failure=lambda error, generation=generation, start=start: self._handle_topic_thumbnail_failure(
+                generation,
+                start,
+                error,
+            ),
+        )
 
     def set_viewport_size(self, width: int, height: int) -> None:
         size = SizeF(max(1.0, float(width)), max(1.0, float(height)))
@@ -606,6 +735,7 @@ class ReaderViewModel:
         self._request_visible_pages()
         self.recalculate_layout()
         self._save_progress()
+        self.refresh_bookmarks()
         self._emit_state()
 
     def _handle_open_failure(self, generation: int, error: Exception) -> None:
@@ -663,6 +793,118 @@ class ReaderViewModel:
         self.layout_changed.emit(None)  # type: ignore[arg-type]
         self.password_required.emit(prompt)
         self._emit_state()
+
+    def _submit_bookmark_task(
+        self,
+        name: str,
+        work: Callable[[LibraryService, str], tuple[ReaderBookmarkItem, ...]],
+        *,
+        refresh_on_failure: bool = True,
+    ) -> None:
+        if self._library_service is None or self._book_uuid is None:
+            self._set_bookmarks(())
+            return
+        if self._bookmark_handle is not None and self._bookmark_handle.status in {
+            TaskStatus.PENDING,
+            TaskStatus.RUNNING,
+        }:
+            self._bookmark_handle.cancel()
+        generation = self._task_generation
+        service = self._library_service
+        book_uuid = self._book_uuid
+        self._bookmark_handle = self._task_service.submit(
+            name,
+            lambda: work(service, book_uuid),
+            on_success=lambda bookmarks, generation=generation: self._handle_bookmark_success(
+                generation,
+                bookmarks,
+            ),
+            on_failure=lambda error, generation=generation, refresh=refresh_on_failure: (
+                self._handle_bookmark_failure(generation, error, refresh_on_failure=refresh)
+            ),
+        )
+
+    def _handle_bookmark_success(
+        self,
+        generation: int,
+        bookmarks: tuple[ReaderBookmarkItem, ...],
+    ) -> None:
+        if generation != self._task_generation:
+            return
+        self._bookmark_handle = None
+        self._set_bookmarks(bookmarks)
+
+    def _handle_bookmark_failure(
+        self,
+        generation: int,
+        error: Exception,
+        *,
+        refresh_on_failure: bool,
+    ) -> None:
+        if generation != self._task_generation:
+            return
+        self._bookmark_handle = None
+        self.bookmark_error_changed.emit(f"Could not sync bookmarks: {error}")
+        if refresh_on_failure:
+            self.refresh_bookmarks()
+
+    def _set_bookmarks(self, bookmarks: tuple[ReaderBookmarkItem, ...]) -> None:
+        self._bookmarks = tuple(sorted(bookmarks, key=lambda item: (item.page_index, item.name, item.uuid)))
+        self.bookmarks_changed.emit(self._bookmarks)
+
+    def _load_topic_thumbnail_batch(
+        self,
+        start: int,
+        end: int,
+        size: tuple[int, int],
+    ) -> ReaderTopicThumbnailBatch:
+        items: list[ReaderTopicThumbnailItem] = []
+        missing: list[int] = []
+        width, height = size
+        for page_index in range(start, end):
+            cached = self._topic_thumbnail_cache.get((page_index, width, height))
+            if cached is None:
+                missing.append(page_index)
+                continue
+            items.append(ReaderTopicThumbnailItem(page_index, cached))
+
+        if missing:
+            with self._session_lock:
+                if self._session is None:
+                    return ReaderTopicThumbnailBatch(start, start, False, ())
+                pages = self._session_service.load_pages(self._session, tuple(missing))
+            for page_index in missing:
+                image = pages.get(page_index)
+                if image is None:
+                    continue
+                try:
+                    rendered = render_contain_blur_thumbnail(image.image_bytes, size)
+                except Exception:
+                    continue
+                self._topic_thumbnail_cache.put((page_index, width, height), rendered)
+                items.append(ReaderTopicThumbnailItem(page_index, rendered))
+
+        return ReaderTopicThumbnailBatch(
+            start,
+            end,
+            end < self._page_count,
+            tuple(sorted(items, key=lambda item: item.page_index)),
+        )
+
+    def _handle_topic_thumbnail_success(self, generation: int, batch: ReaderTopicThumbnailBatch) -> None:
+        if generation != self._task_generation:
+            return
+        self._topic_thumbnail_handle = None
+        self.topic_thumbnail_batch_ready.emit(batch)
+
+    def _handle_topic_thumbnail_failure(self, generation: int, start: int, error: Exception) -> None:
+        if generation != self._task_generation:
+            return
+        self._topic_thumbnail_handle = None
+        if isinstance(error, (ArchivePasswordRejected, ArchivePasswordRequired)):
+            self._request_password_retry(error)
+            return
+        self.topic_thumbnail_batch_ready.emit(ReaderTopicThumbnailBatch(start, start, False, ()))
 
     def _request_visible_pages(self) -> None:
         self._request_pages(self.current_display_indices)
@@ -1031,3 +1273,7 @@ def _archive_display_name(archive_path: str) -> str:
         return Path(archive_path).name or archive_path
     except (OSError, ValueError):
         return archive_path
+
+
+def _bookmark_items(bookmarks: list[Bookmark]) -> tuple[ReaderBookmarkItem, ...]:
+    return tuple(ReaderBookmarkItem(bookmark.uuid, bookmark.name, bookmark.page_index) for bookmark in bookmarks)

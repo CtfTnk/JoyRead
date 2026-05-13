@@ -58,6 +58,7 @@ class ReaderWindow(QMainWindow):
         self.left_arrow = self.shell.left_arrow
         self.right_arrow = self.shell.right_arrow
         self.settings_panel = self.shell.settings_panel
+        self.topic_panel = self.shell.topic_panel
         self.dialog_overlay = self.shell.dialog_overlay
         self.viewmodel = self.shell.viewmodel
 
