@@ -7,7 +7,7 @@ from typing import Protocol
 
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
-from joyread.core.archive.models import ArchivePasswordRequest
+from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 
@@ -43,6 +43,8 @@ class ReaderSessionService:
         self,
         path: str | Path,
         password: str | None = None,
+        passwords: dict[str, str] | None = None,
+        skipped_archives: set[str] | None = None,
         *,
         archive_internal_max_depth: int = 2,
     ) -> ReaderImageSession:
@@ -51,6 +53,8 @@ class ReaderSessionService:
             return self.open_archive(
                 path,
                 password=password,
+                passwords=passwords,
+                skipped_archives=skipped_archives,
                 archive_internal_max_depth=archive_internal_max_depth,
             )
         if suffix in PDF_EXTENSIONS:
@@ -61,12 +65,22 @@ class ReaderSessionService:
         self,
         path: str | Path,
         password: str | None = None,
+        passwords: dict[str, str] | None = None,
+        skipped_archives: set[str] | None = None,
         *,
         archive_internal_max_depth: int = 2,
     ) -> ArchiveImageSession:
         provider = None
+        password_map = dict(passwords or {})
+        skipped = set(skipped_archives or ())
         if password is not None:
-            provider = lambda _request: password
+            password_map.setdefault(str(Path(path)), password)
+        if password_map or skipped:
+            provider = lambda request: (
+                ArchivePasswordResponse(skip=True)
+                if request.archive_path in skipped
+                else password_map.get(request.archive_path)
+            )
         return self._archive_image_service.open(
             path,
             password_provider=provider,

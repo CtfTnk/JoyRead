@@ -127,18 +127,54 @@ class MainWindow(QMainWindow):
 
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
-        self._show_reader_window(source_path, title=source_path.stem)
-        if import_mode:
-            settings = self._settings_for_reader_launch()
-            self._context.task_service.submit(
-                "open-and-import-file",
-                lambda: self._context.import_service.import_files(
-                    [source_path],
-                    archive_internal_max_depth=settings.archive_internal_max_depth,
+        if not import_mode:
+            self._show_reader_window(source_path, title=source_path.stem)
+            return
+
+        settings = self._settings_for_reader_launch()
+        self._context.task_service.submit(
+            "open-and-import-preflight",
+            lambda: self._context.import_service.preflight_file(
+                source_path,
+                archive_internal_max_depth=settings.archive_internal_max_depth,
+            ),
+            on_success=lambda result, source_path=source_path, settings=settings: self._handle_open_import_preflight(
+                source_path,
+                settings,
+                result,
+            ),
+            on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+        )
+
+    def _handle_open_import_preflight(self, source_path: Path, settings, result) -> None:  # noqa: ANN001
+        if result.can_import:
+            self._start_open_and_import(source_path, settings)
+            return
+        if result.status == "skipped":
+            self.dialog_overlay.show_confirm(
+                "Open Read Only",
+                (
+                    "JoyRead won't import this file because it is encrypted or contains encrypted archives.\n\n"
+                    "You can still open it for reading."
                 ),
-                on_success=lambda _result: self._reload_after_background_import(),
-                on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+                on_confirm=lambda source_path=source_path: self._show_reader_window(source_path, title=source_path.stem),
+                confirm_text="Read Only",
+                cancel_text="Cancel",
             )
+            return
+        self.dialog_overlay.show_info("Open & Import Failed", result.message or "This file cannot be imported.")
+
+    def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
+        self._show_reader_window(source_path, title=source_path.stem)
+        self._context.task_service.submit(
+            "open-and-import-file",
+            lambda: self._context.import_service.import_files(
+                [source_path],
+                archive_internal_max_depth=settings.archive_internal_max_depth,
+            ),
+            on_success=lambda _result: self._reload_after_background_import(),
+            on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+        )
 
     def _select_reader_file(self, import_mode: bool) -> None:
         extensions = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_READER_EXTENSIONS))
@@ -309,6 +345,7 @@ class MainWindow(QMainWindow):
             (
                 f"Imported: {result.imported_count}\n"
                 f"Duplicates: {result.duplicate_count}\n"
+                f"Skipped: {getattr(result, 'skipped_count', 0)}\n"
                 f"Failed: {result.failed_count}"
             ),
         )

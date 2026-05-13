@@ -474,6 +474,7 @@ class JoyReadDialogPanel(QFrame):
 
     accepted = QtSignal()
     rejected = QtSignal()
+    skipped = QtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -564,15 +565,15 @@ class JoyReadDialogPanel(QFrame):
         content: QWidget,
         cancel_text: str,
         confirm_text: str,
+        skip_text: str | None = None,
     ) -> None:
         self._set_title(title)
         self._set_content_widget(content)
-        self._set_buttons(
-            (
-                (cancel_text, self.rejected.emit),
-                (confirm_text, self.accepted.emit),
-            )
-        )
+        buttons: list[tuple[str, Callable[[], None]]] = [(cancel_text, self.rejected.emit)]
+        if skip_text is not None:
+            buttons.append((skip_text, self.skipped.emit))
+        buttons.append((confirm_text, self.accepted.emit))
+        self._set_buttons(tuple(buttons))
 
     def refresh_size(self) -> None:
         self._refresh_size()
@@ -667,12 +668,14 @@ class JoyReadDialogOverlay(QWidget):
         self._resources = resources
         self._on_accept: Callable[[], None] | None = None
         self._on_reject: Callable[[], None] | None = None
+        self._on_skip: Callable[[], None] | None = None
         self._before_accept: Callable[[], bool] | None = None
         self._key_forward_target: QLineEdit | None = None
 
         self._panel = JoyReadDialogPanel(self)
         self._panel.accepted.connect(self._accept)
         self._panel.rejected.connect(self._reject)
+        self._panel.skipped.connect(self._skip)
         self.hide()
 
     @property
@@ -682,6 +685,7 @@ class JoyReadDialogOverlay(QWidget):
     def show_info(self, title: str, message: str, button_text: str = "Confirm") -> None:
         self._on_accept = None
         self._on_reject = None
+        self._on_skip = None
         self._before_accept = None
         self._panel.set_info(title, message, button_text)
         self._show_centered()
@@ -694,9 +698,10 @@ class JoyReadDialogOverlay(QWidget):
         on_cancel: Callable[[], None] | None = None,
         confirm_text: str = "Confirm",
         cancel_text: str = "Cancel",
-    ) -> None:
+        ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
+        self._on_skip = None
         self._before_accept = None
         self._panel.set_confirm(title, message, cancel_text, confirm_text)
         self._show_centered()
@@ -728,6 +733,7 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept = before_accept
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = None
+        self._on_skip = None
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
@@ -743,6 +749,8 @@ class JoyReadDialogOverlay(QWidget):
         cancel_text: str = "Cancel",
         validator: Callable[[str], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
+        on_skip: Callable[[], None] | None = None,
+        skip_text: str | None = None,
         state_prompt: str | None = None,
     ) -> None:
         content = DialogInputContent(header, echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit)
@@ -763,7 +771,8 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept = before_accept
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = on_cancel
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._on_skip = on_skip
+        self._panel.set_input_content(title, content, cancel_text, confirm_text, skip_text)
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
         self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
@@ -785,6 +794,7 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept = before_accept
         self._on_accept = lambda: on_confirm(content.selected_collection_uuid or "")
         self._on_reject = None
+        self._on_skip = None
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
         self._show_centered()
 
@@ -872,9 +882,16 @@ class JoyReadDialogOverlay(QWidget):
         if callback is not None:
             callback()
 
+    def _skip(self) -> None:
+        callback = self._on_skip
+        self._clear_and_hide()
+        if callback is not None:
+            callback()
+
     def _clear_and_hide(self) -> None:
         self._on_accept = None
         self._on_reject = None
+        self._on_skip = None
         self._before_accept = None
         self._key_forward_target = None
         self.hide()

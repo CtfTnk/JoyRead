@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pyzipper
 import pytest
 from PIL import Image
 from PySide6.QtGui import QPainter, QPdfWriter
@@ -31,11 +33,43 @@ def _png_bytes(path: Path, color: str = "#336699") -> None:
     Image.new("RGB", (10, 20), color).save(path, format="PNG")
 
 
+def _png_payload(color: str = "#336699") -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (10, 20), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _write_cbz(path: Path, color: str = "#336699") -> None:
     image = path.with_suffix(".png")
     _png_bytes(image, color)
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
         archive.write(image, "001.png")
+
+
+def _write_encrypted_cbz(path: Path, password: str = "secret") -> None:
+    with pyzipper.AESZipFile(
+        path,
+        "w",
+        compression=ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        archive.writestr("001.png", _png_payload())
+
+
+def _write_cbz_with_nested_encrypted_archive(path: Path) -> None:
+    nested = BytesIO()
+    with pyzipper.AESZipFile(
+        nested,
+        "w",
+        compression=ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword(b"secret")
+        archive.writestr("001.png", _png_payload("#cc4422"))
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("001.png", _png_payload())
+        archive.writestr("nested.cbz", nested.getvalue())
 
 
 def _write_pdf(path: Path) -> None:
@@ -302,6 +336,43 @@ def test_import_folder_respects_filesystem_depth(tmp_path: Path) -> None:
     assert depth_two.imported_count == 1
     assert depth_two.duplicate_count == 1
     assert [book.title for book in books] == ["nested", "root"]
+    database.close()
+
+
+def test_import_skips_encrypted_archives_without_adding_books(tmp_path: Path) -> None:
+    source = tmp_path / "encrypted.cbz"
+    _write_encrypted_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+
+    result = service.import_files([source])
+    item_rows = database.execute(
+        lambda connection: connection.execute("SELECT status, message FROM import_items").fetchall()
+    )
+
+    assert result.imported_count == 0
+    assert result.skipped_count == 1
+    assert result.failed_count == 0
+    assert result.items[0].status == "skipped"
+    assert "Skipped encrypted archive" in (result.items[0].message or "")
+    assert SqliteBookRepository(database).list_books() == []
+    assert [(row["status"], "Skipped encrypted archive" in row["message"]) for row in item_rows] == [
+        ("skipped", True)
+    ]
+    database.close()
+
+
+def test_import_skips_unencrypted_archives_containing_encrypted_archives(tmp_path: Path) -> None:
+    source = tmp_path / "outer.cbz"
+    _write_cbz_with_nested_encrypted_archive(source)
+    service, database, _paths = _import_service(tmp_path)
+
+    result = service.import_files([source])
+
+    assert result.imported_count == 0
+    assert result.skipped_count == 1
+    assert result.failed_count == 0
+    assert "outer.cbz::nested.cbz" in (result.items[0].message or "")
+    assert SqliteBookRepository(database).list_books() == []
     database.close()
 
 

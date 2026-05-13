@@ -16,6 +16,8 @@ from joyread.core.archive import (
     ArchiveImageService,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
+    ArchivePasswordPolicy,
+    ArchivePasswordResponse,
     ArchiveUnsupportedFormat,
     ArchiveValidationCode,
     ExtractionBackendResolver,
@@ -34,6 +36,23 @@ def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
         for name, data in entries.items():
             archive.writestr(name, data)
+
+
+def _encrypted_cbz_bytes(password: str = "secret", image_size: tuple[int, int] = (32, 16)) -> bytes:
+    buffer = BytesIO()
+    with pyzipper.AESZipFile(
+        buffer,
+        "w",
+        compression=ZIP_DEFLATED,
+        encryption=pyzipper.WZ_AES,
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        archive.writestr("001.png", _png_bytes(image_size))
+    return buffer.getvalue()
+
+
+def _write_encrypted_cbz(path: Path, password: str = "secret", image_size: tuple[int, int] = (32, 16)) -> None:
+    path.write_bytes(_encrypted_cbz_bytes(password, image_size))
 
 
 def test_cbz_discovers_images_sorts_groups_and_respects_default_depth(tmp_path: Path) -> None:
@@ -248,14 +267,7 @@ def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytes
 
 def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
-    with pyzipper.AESZipFile(
-        archive_path,
-        "w",
-        compression=ZIP_DEFLATED,
-        encryption=pyzipper.WZ_AES,
-    ) as archive:
-        archive.setpassword(b"secret")
-        archive.writestr("001.png", _png_bytes((32, 16)))
+    _write_encrypted_cbz(archive_path)
 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
     session = ArchiveImageService(backend_resolver=resolver).open(
@@ -286,20 +298,127 @@ def test_encrypted_zip_accepts_unicode_password(tmp_path: Path) -> None:
 
 def test_encrypted_zip_without_password_is_controlled(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
-    with pyzipper.AESZipFile(
-        archive_path,
-        "w",
-        compression=ZIP_DEFLATED,
-        encryption=pyzipper.WZ_AES,
-    ) as archive:
-        archive.setpassword(b"secret")
-        archive.writestr("001.png", _png_bytes((32, 16)))
+    _write_encrypted_cbz(archive_path)
 
     with pytest.raises(ArchivePasswordRequired):
         ArchiveImageService().open(archive_path)
 
     with pytest.raises(ArchivePasswordRejected):
         ArchiveImageService().open(archive_path, password_provider=lambda _request: "wrong")
+
+
+def test_password_policy_forbid_skips_encrypted_archives_without_prompting(tmp_path: Path) -> None:
+    archive_path = tmp_path / "encrypted.cbz"
+    _write_encrypted_cbz(archive_path)
+    provider_calls = []
+
+    result = ArchiveImageService().validate_archive(
+        archive_path,
+        password_policy=ArchivePasswordPolicy.FORBID,
+        password_provider=lambda request: provider_calls.append(request) or "secret",
+    )
+
+    assert result.is_valid is False
+    assert result.code == ArchiveValidationCode.PASSWORD_REQUIRED
+    assert result.error_type == "ArchivePasswordRequired"
+    assert "Skipped encrypted archive" in result.message
+    assert provider_calls == []
+
+
+def test_nested_encrypted_archive_is_skipped_for_import_but_readable_when_opened(tmp_path: Path) -> None:
+    archive_path = tmp_path / "outer.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "001.png": _png_bytes((20, 10)),
+            "nested.cbz": _encrypted_cbz_bytes("secret", (32, 16)),
+        },
+    )
+
+    skipped = ArchiveImageService().validate_archive(
+        archive_path,
+        password_policy=ArchivePasswordPolicy.FORBID,
+    )
+    requests = []
+    session = ArchiveImageService().open(
+        archive_path,
+        password_provider=lambda request: requests.append(request.archive_path) or "secret",
+    )
+
+    assert skipped.code == ArchiveValidationCode.PASSWORD_REQUIRED
+    assert "outer.cbz::nested.cbz" in skipped.message
+    assert requests == ["outer.cbz::nested.cbz"]
+    assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (32, 16)]
+
+
+def test_nested_encrypted_archive_can_be_skipped_while_outer_images_remain(tmp_path: Path) -> None:
+    archive_path = tmp_path / "outer.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "001.png": _png_bytes((20, 10)),
+            "nested.cbz": _encrypted_cbz_bytes("secret", (32, 16)),
+        },
+    )
+    requests = []
+
+    session = ArchiveImageService().open(
+        archive_path,
+        password_provider=lambda request: requests.append(request.archive_path) or ArchivePasswordResponse(skip=True),
+    )
+
+    assert requests == ["outer.cbz::nested.cbz"]
+    assert session.page_count == 1
+    assert session.get_dimensions(0) == (20, 10)
+
+
+def test_skipping_only_top_level_encrypted_archive_reports_no_readable_images(tmp_path: Path) -> None:
+    archive_path = tmp_path / "encrypted.cbz"
+    _write_encrypted_cbz(archive_path)
+
+    with pytest.raises(ArchiveEmptyError, match="No readable images. Encrypted archives were skipped."):
+        ArchiveImageService().open(
+            archive_path,
+            password_provider=lambda _request: ArchivePasswordResponse(skip=True),
+        )
+
+
+def test_multiple_nested_encrypted_archives_prompt_in_order_and_skip_independently(tmp_path: Path) -> None:
+    archive_path = tmp_path / "outer.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "001.png": _png_bytes((20, 10)),
+            "nested-a.cbz": _encrypted_cbz_bytes("secret-a", (32, 16)),
+            "nested-b.cbz": _encrypted_cbz_bytes("secret-b", (48, 16)),
+        },
+    )
+    requests = []
+
+    session = ArchiveImageService().open(
+        archive_path,
+        password_provider=lambda request: (
+            requests.append(request.archive_path)
+            or (
+                ArchivePasswordResponse(skip=True)
+                if request.archive_path.endswith("nested-a.cbz")
+                else "secret-b"
+            )
+        ),
+    )
+
+    assert requests == ["outer.cbz::nested-a.cbz", "outer.cbz::nested-b.cbz"]
+    assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (48, 16)]
+
+
+def test_wrong_nested_archive_password_reports_nested_archive_path(tmp_path: Path) -> None:
+    archive_path = tmp_path / "outer.cbz"
+    _write_zip(archive_path, {"nested.cbz": _encrypted_cbz_bytes("secret", (32, 16))})
+
+    with pytest.raises(ArchivePasswordRejected) as exc_info:
+        ArchiveImageService().open(archive_path, password_provider=lambda _request: "wrong")
+
+    assert exc_info.value.archive_path == "outer.cbz::nested.cbz"
 
 
 def test_empty_corrupt_and_unsupported_archives_are_controlled(tmp_path: Path) -> None:

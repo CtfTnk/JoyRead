@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from joyread.core.archive import ArchivePasswordRejected
+from joyread.core.archive import ArchiveEmptyError, ArchivePasswordRejected, ArchivePasswordRequired
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
@@ -94,10 +94,32 @@ class _FakeSessionService:
     def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
         self._session = _FakeSession(dimensions)
 
-    def open_document(self, path: Path, password=None, *, archive_internal_max_depth=2):  # noqa: ANN001
-        return self.open_archive(path, password=password, archive_internal_max_depth=archive_internal_max_depth)
+    def open_document(  # noqa: ANN001
+        self,
+        path: Path,
+        password=None,
+        passwords=None,
+        skipped_archives=None,
+        *,
+        archive_internal_max_depth=2,
+    ):
+        return self.open_archive(
+            path,
+            password=password,
+            passwords=passwords,
+            skipped_archives=skipped_archives,
+            archive_internal_max_depth=archive_internal_max_depth,
+        )
 
-    def open_archive(self, _path: Path, password=None, *, archive_internal_max_depth=2):  # noqa: ANN001
+    def open_archive(  # noqa: ANN001
+        self,
+        _path: Path,
+        password=None,
+        passwords=None,
+        skipped_archives=None,
+        *,
+        archive_internal_max_depth=2,
+    ):
         del archive_internal_max_depth
         return self._session
 
@@ -130,7 +152,10 @@ class _FakeLibraryService:
 
 class _RejectedPasswordSessionService:
     def open_document(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
-        raise ArchivePasswordRejected("Password rejected for archive.")
+        raise ArchivePasswordRejected(
+            "Password rejected for archive.",
+            archive_path="outer.cbz::nested.cbz",
+        )
 
     def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
         return {}
@@ -138,7 +163,44 @@ class _RejectedPasswordSessionService:
 
 class _RejectedPagePasswordSessionService(_FakeSessionService):
     def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
-        raise ArchivePasswordRejected("Password rejected while extracting page.")
+        raise ArchivePasswordRejected(
+            "Password rejected while extracting page.",
+            archive_path="outer.cbz::nested.cbz",
+        )
+
+
+class _RequiredThenSkipSessionService(_FakeSessionService):
+    def __init__(self) -> None:
+        super().__init__((600, 900))
+        self.skipped_archives: list[set[str]] = []
+
+    def open_document(self, _path: Path, *, skipped_archives=None, **_kwargs):  # noqa: ANN001
+        skipped = set(skipped_archives or ())
+        self.skipped_archives.append(skipped)
+        if "outer.cbz::nested.cbz" not in skipped:
+            raise ArchivePasswordRequired(
+                "Password required for archive: outer.cbz::nested.cbz",
+                archive_path="outer.cbz::nested.cbz",
+            )
+        return self._session
+
+
+class _SkipLeavesNoPagesSessionService:
+    def __init__(self) -> None:
+        self.skipped_archives: list[set[str]] = []
+
+    def open_document(self, _path: Path, *, skipped_archives=None, **_kwargs):  # noqa: ANN001
+        skipped = set(skipped_archives or ())
+        self.skipped_archives.append(skipped)
+        if "encrypted.cbz" not in skipped:
+            raise ArchivePasswordRequired(
+                "Password required for archive: encrypted.cbz",
+                archive_path="encrypted.cbz",
+            )
+        raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
+
+    def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        return {}
 
 
 def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path) -> None:
@@ -494,16 +556,20 @@ def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) ->
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
     )
-    prompts: list[str] = []
+    prompts = []
     errors: list[str | None] = []
     vm.password_required.connect(prompts.append)
     vm.error_changed.connect(errors.append)
 
     vm.open_path(tmp_path / "encrypted.cbr", password="wrong")
 
-    assert prompts == ["Incorrect password. Please try again."]
-    assert errors == ["Incorrect password. Please try again."]
-    assert vm.error_message == "Incorrect password. Please try again."
+    assert len(prompts) == 1
+    assert prompts[0].archive_path == "outer.cbz::nested.cbz"
+    assert prompts[0].display_name == "outer.cbz::nested.cbz"
+    assert prompts[0].message == "Incorrect password for outer.cbz::nested.cbz. Please try again."
+    assert prompts[0].is_retry is True
+    assert errors == ["Incorrect password for outer.cbz::nested.cbz. Please try again."]
+    assert vm.error_message == "Incorrect password for outer.cbz::nested.cbz. Please try again."
 
 
 def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_path: Path) -> None:
@@ -513,17 +579,60 @@ def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_pa
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
     )
-    prompts: list[str] = []
+    prompts = []
     errors: list[str | None] = []
     vm.password_required.connect(prompts.append)
     vm.error_changed.connect(errors.append)
 
     vm.open_path(tmp_path / "encrypted.cbr", password="wrong")
 
-    assert prompts == ["Incorrect password. Please try again."]
-    assert errors == ["Incorrect password. Please try again."]
+    assert len(prompts) == 1
+    assert prompts[0].archive_path == "outer.cbz::nested.cbz"
+    assert prompts[0].message == "Incorrect password for outer.cbz::nested.cbz. Please try again."
+    assert errors == ["Incorrect password for outer.cbz::nested.cbz. Please try again."]
     assert vm.layout_result is None
     assert vm.loading_page_index is None
+
+
+def test_reader_viewmodel_skip_password_request_reopens_with_skipped_archive(tmp_path: Path) -> None:
+    session_service = _RequiredThenSkipSessionService()
+    vm = ReaderViewModel(
+        session_service,  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    prompts = []
+    vm.password_required.connect(prompts.append)
+
+    vm.open_path(tmp_path / "outer.cbz")
+    vm.skip_password_request()
+
+    assert len(prompts) == 1
+    assert prompts[0].archive_path == "outer.cbz::nested.cbz"
+    assert session_service.skipped_archives == [set(), {"outer.cbz::nested.cbz"}]
+    assert vm.page_count == 5
+    assert vm.error_message is None
+
+
+def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipped(tmp_path: Path) -> None:
+    session_service = _SkipLeavesNoPagesSessionService()
+    vm = ReaderViewModel(
+        session_service,  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    errors: list[str | None] = []
+    vm.error_changed.connect(errors.append)
+
+    vm.open_path(tmp_path / "encrypted.cbz")
+    vm.skip_password_request()
+
+    assert session_service.skipped_archives == [set(), {"encrypted.cbz"}]
+    assert errors[-1] == "No readable images. Encrypted archives were skipped."
+    assert vm.error_message == "No readable images. Encrypted archives were skipped."
+    assert vm.page_count == 0
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 
@@ -28,6 +28,14 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
 
+@dataclass(frozen=True)
+class ReaderPasswordPrompt:
+    archive_path: str
+    display_name: str
+    message: str
+    is_retry: bool = False
+
+
 class ReaderViewModel:
     """Coordinates reader state without depending on PySide widgets."""
 
@@ -50,7 +58,7 @@ class ReaderViewModel:
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
         self.page_ready: Signal[ReaderPageImage] = Signal()
         self.error_changed: Signal[str | None] = Signal()
-        self.password_required: Signal[str] = Signal()
+        self.password_required: Signal[ReaderPasswordPrompt] = Signal()
         self.progress_changed: Signal[tuple[str, int, float]] = Signal()
 
         self._session_service = session_service
@@ -64,6 +72,9 @@ class ReaderViewModel:
         self._session_lock = RLock()
         self._session: ReaderImageSession | None = None
         self._source_path: Path | None = None
+        self._archive_passwords: dict[str, str] = {}
+        self._skipped_archives: set[str] = set()
+        self._pending_password_archive: str | None = None
         self._book_uuid = book_uuid
         self._open_handle: TaskHandle[ReaderImageSession] | None = None
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
@@ -153,8 +164,18 @@ class ReaderViewModel:
         return self.settings.direction == ReaderDirection.TOP_TO_BOTTOM
 
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
-        self.cancel()
-        self._source_path = Path(source_path)
+        path = Path(source_path)
+        if self._source_path != path and password is None:
+            self._archive_passwords.clear()
+            self._skipped_archives.clear()
+            self._pending_password_archive = None
+        if password is not None:
+            archive_path = self._pending_password_archive or str(path)
+            self._archive_passwords[archive_path] = password
+            self._skipped_archives.discard(archive_path)
+            self._pending_password_archive = None
+        self.cancel(reset_passwords=False)
+        self._source_path = path
         self.is_loading = True
         self.error_message = None
         self._pages.clear()
@@ -170,14 +191,15 @@ class ReaderViewModel:
             "reader-open",
             lambda: self._session_service.open_document(
                 self._source_path or source_path,
-                password=password,
+                passwords=dict(self._archive_passwords),
+                skipped_archives=set(self._skipped_archives),
                 archive_internal_max_depth=self._archive_internal_max_depth,
             ),
             on_success=lambda session, generation=generation: self._handle_open_success(generation, session),
             on_failure=lambda error, generation=generation: self._handle_open_failure(generation, error),
         )
 
-    def cancel(self) -> None:
+    def cancel(self, *, reset_passwords: bool = True) -> None:
         self._task_generation += 1
         if self._open_handle is not None:
             self._open_handle.cancel()
@@ -201,6 +223,10 @@ class ReaderViewModel:
         self._page_count = 0
         self._layout_result = None
         self._source_path = None
+        if reset_passwords:
+            self._archive_passwords.clear()
+            self._skipped_archives.clear()
+            self._pending_password_archive = None
         self._wide_pan_anchor = None
         self._wide_pan_user_panned = False
         # Free this session's slice of the shared reader page budget so other
@@ -209,6 +235,9 @@ class ReaderViewModel:
         self._page_cache.clear()
 
     def cancel_password_request(self) -> None:
+        self._pending_password_archive = None
+        self._archive_passwords.clear()
+        self._skipped_archives.clear()
         self.is_loading = False
         self.loading_page_index = None
         self._layout_waiting_for_pages = ()
@@ -216,6 +245,20 @@ class ReaderViewModel:
         self.error_message = "Could not load images because the archive is encrypted and no password was provided."
         self.error_changed.emit(self.error_message)
         self._emit_state()
+
+    def skip_password_request(self) -> None:
+        source_path = self._source_path
+        archive_path = self._pending_password_archive or (str(source_path) if source_path is not None else "")
+        self._pending_password_archive = None
+        if archive_path:
+            self._archive_passwords.pop(archive_path, None)
+            self._skipped_archives.add(archive_path)
+        if source_path is None:
+            self.error_message = "No readable images. Encrypted archives were skipped."
+            self.error_changed.emit(self.error_message)
+            self._emit_state()
+            return
+        self.open_path(source_path)
 
     def set_viewport_size(self, width: int, height: int) -> None:
         size = SizeF(max(1.0, float(width)), max(1.0, float(height)))
@@ -583,6 +626,11 @@ class ReaderViewModel:
         self._emit_state()
 
     def _request_password_retry(self, error: ArchivePasswordRejected | ArchivePasswordRequired) -> None:
+        archive_path = getattr(error, "archive_path", None) or str(self._source_path or "")
+        self._pending_password_archive = archive_path or None
+        if isinstance(error, ArchivePasswordRejected) and archive_path:
+            self._archive_passwords.pop(archive_path, None)
+            self._skipped_archives.discard(archive_path)
         for handle in self._page_handles.values():
             handle.cancel()
         self._page_handles.clear()
@@ -595,15 +643,22 @@ class ReaderViewModel:
         self._pages.clear()
         self._unavailable_pages.clear()
         self._page_count = 0
+        display_name = _archive_display_name(archive_path)
         if isinstance(error, ArchivePasswordRejected):
-            self.error_message = "Incorrect password. Please try again."
-            prompt = self.error_message
-        elif isinstance(error, ArchiveError):
-            self.error_message = "Password required."
-            prompt = str(error)
+            prompt = ReaderPasswordPrompt(
+                archive_path=archive_path,
+                display_name=display_name,
+                message=f"Incorrect password for {display_name}. Please try again.",
+                is_retry=True,
+            )
         else:
-            self.error_message = "Password required."
-            prompt = self.error_message
+            prompt = ReaderPasswordPrompt(
+                archive_path=archive_path,
+                display_name=display_name,
+                message=f"Password required for {display_name}.",
+                is_retry=False,
+            )
+        self.error_message = prompt.message
         self.error_changed.emit(self.error_message)
         self.layout_changed.emit(None)  # type: ignore[arg-type]
         self.password_required.emit(prompt)
@@ -782,6 +837,8 @@ class ReaderViewModel:
 
     def _start_disk_cache_warmup(self) -> None:
         if self._source_path is None or self._warm_handle is not None:
+            return
+        if self._archive_passwords or self._skipped_archives:
             return
         should_warm = getattr(self._session_service, "should_warm_disk_cache", None)
         warm_disk_cache = getattr(self._session_service, "warm_disk_cache", None)
@@ -965,3 +1022,12 @@ class ReaderViewModel:
 
     def _emit_state(self) -> None:
         self.state_changed.emit()
+
+
+def _archive_display_name(archive_path: str) -> str:
+    if "::" in archive_path:
+        return archive_path
+    try:
+        return Path(archive_path).name or archive_path
+    except (OSError, ValueError):
+        return archive_path

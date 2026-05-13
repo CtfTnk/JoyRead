@@ -33,7 +33,9 @@ from joyread.core.archive.errors import (
 )
 from joyread.core.archive.models import (
     ArchivePage,
+    ArchivePasswordPolicy,
     ArchivePasswordRequest,
+    ArchivePasswordResponse,
     ArchiveValidationCode,
     ArchiveValidationResult,
     PasswordProvider,
@@ -106,6 +108,17 @@ class _PageRecord:
     name: str
     password: str | None
     dimensions: tuple[int, int] | None = None
+
+
+@dataclass
+class _ScanContext:
+    password_provider: PasswordProvider | None
+    password_policy: ArchivePasswordPolicy
+    skipped_archives: set[str]
+
+
+class _ArchiveSourceSkipped(Exception):
+    """Internal control flow for user-skipped encrypted archive sources."""
 
 
 class ArchiveImageSession:
@@ -278,6 +291,7 @@ class ArchiveImageService:
         self,
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
+        password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
         max_depth: int = 2,
         max_nested_depth: int | None = None,
     ) -> ArchiveValidationResult:
@@ -321,6 +335,7 @@ class ArchiveImageService:
             session = self.open(
                 path,
                 password_provider=password_provider,
+                password_policy=password_policy,
                 max_depth=effective_max_depth,
             )
             first_page = session.get_page(0)
@@ -357,6 +372,7 @@ class ArchiveImageService:
         self,
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
+        password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
         max_depth: int = 2,
         max_nested_depth: int | None = None,
     ) -> ArchiveImageSession:
@@ -371,13 +387,20 @@ class ArchiveImageService:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
 
         source = _ArchiveSource(label=path.name, suffix=suffix, path=path)
+        context = _ScanContext(
+            password_provider=password_provider,
+            password_policy=password_policy,
+            skipped_archives=set(),
+        )
         pages = self._scan_archive(
             source,
-            password_provider,
+            context,
             max_depth=effective_max_depth,
             archive_level=0,
         )
         if not pages:
+            if context.skipped_archives:
+                raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
             raise ArchiveEmptyError(
                 f"No supported image pages found in archive within archive depth {effective_max_depth}: {path}"
             )
@@ -420,11 +443,14 @@ class ArchiveImageService:
     def _scan_archive(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
         max_depth: int,
         archive_level: int,
     ) -> list[_PageRecord]:
-        entries = self._list_entries(source, password_provider)
+        try:
+            entries = self._list_entries(source, context)
+        except _ArchiveSourceSkipped:
+            return []
         entry_prefix = _transparent_single_root_prefix(entries)
         root_group: list[_PageRecord] = []
         group_by_parent: OrderedDict[str, list[_PageRecord]] = OrderedDict({"": root_group})
@@ -464,7 +490,7 @@ class ArchiveImageService:
                 )
                 nested_pages = self._scan_archive(
                     nested_source,
-                    password_provider,
+                    context,
                     max_depth=max_depth,
                     archive_level=archive_level + 1,
                 )
@@ -491,15 +517,15 @@ class ArchiveImageService:
     def _list_entries(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
     ) -> list[_ArchiveEntry]:
         if source.suffix in _ZIP_EXTENSIONS:
-            return self._list_zip_entries(source, password_provider)
+            return self._list_zip_entries(source, context)
         if source.suffix in _SEVEN_ZIP_EXTENSIONS:
-            return self._list_7z_entries(source, password_provider)
+            return self._list_7z_entries(source, context)
         if source.suffix in _RAR_EXTENSIONS:
             self._configure_rarfile_tools()
-            return self._list_rar_entries(source, password_provider)
+            return self._list_rar_entries(source, context)
         raise ArchiveUnsupportedFormat(f"Unsupported nested archive format: {source.suffix}")
 
     def _read_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
@@ -561,7 +587,7 @@ class ArchiveImageService:
     def _list_zip_entries(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
     ) -> list[_ArchiveEntry]:
         if pyzipper is None:
             raise ArchiveDependencyMissing("pyzipper is required for ZIP/CBZ archives.")
@@ -572,7 +598,11 @@ class ArchiveImageService:
                 encrypted = [info for info in infos if not info.is_dir() and info.flag_bits & 0x1]
                 password = None
                 if encrypted:
-                    password = self._request_password(source, password_provider, reason="zip archive is encrypted")
+                    password = self._request_password(
+                        source,
+                        context,
+                        reason="zip archive is encrypted",
+                    )
                     self._verify_zip_password(source, encrypted[0].filename, password)
                 return [
                     _ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
@@ -607,7 +637,10 @@ class ArchiveImageService:
             return payloads
         except RuntimeError as exc:
             if _looks_like_password_error(exc):
-                raise ArchivePasswordRejected(f"Password rejected for ZIP entry: {entries[0][0]}") from exc
+                raise ArchivePasswordRejected(
+                    f"Password rejected for archive: {source.display_name}",
+                    archive_path=source.display_name,
+                ) from exc
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
         except (*_ZIP_BAD_FILE_ERRORS, KeyError) as exc:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
@@ -618,7 +651,7 @@ class ArchiveImageService:
     def _list_7z_entries(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
     ) -> list[_ArchiveEntry]:
         if py7zr is None:
             raise ArchiveDependencyMissing("py7zr is required for 7Z/CB7 archives.")
@@ -630,7 +663,7 @@ class ArchiveImageService:
                     if archive.needs_password() and password is None:
                         password = self._request_password(
                             source,
-                            password_provider,
+                            context,
                             attempt=attempt,
                             reason="7z archive is encrypted",
                         )
@@ -643,19 +676,25 @@ class ArchiveImageService:
             except py7zr.PasswordRequired as exc:
                 password = self._request_password(
                     source,
-                    password_provider,
+                    context,
                     attempt=attempt,
                     reason="7z archive requires a password",
                 )
                 continue
             except py7zr.Bad7zFile as exc:
                 if password is not None:
-                    raise ArchivePasswordRejected(f"Password rejected for 7Z archive: {source.display_name}") from exc
+                    raise ArchivePasswordRejected(
+                        f"Password rejected for 7Z archive: {source.display_name}",
+                        archive_path=source.display_name,
+                    ) from exc
                 raise ArchiveCorruptError(f"Corrupt 7Z archive: {source.display_name}") from exc
             except OSError as exc:
                 raise ArchiveOpenError(f"Could not open 7Z archive: {source.display_name}") from exc
 
-        raise ArchivePasswordRejected(f"Password rejected for 7Z archive: {source.display_name}")
+        raise ArchivePasswordRejected(
+            f"Password rejected for 7Z archive: {source.display_name}",
+            archive_path=source.display_name,
+        )
 
     def _read_7z_entry(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         payload = self._read_7z_entries(source, ((name, password),)).get(name)
@@ -689,10 +728,16 @@ class ArchiveImageService:
                 raise ArchiveReadError(f"7Z entries were not extracted: {', '.join(missing[:3])}")
             return payloads
         except py7zr.PasswordRequired as exc:
-            raise ArchivePasswordRequired(f"Password required for 7Z entry: {targets[0]}") from exc
+            raise ArchivePasswordRequired(
+                f"Password required for 7Z archive: {source.display_name}",
+                archive_path=source.display_name,
+            ) from exc
         except py7zr.DecompressionError as exc:
             if password is not None:
-                raise ArchivePasswordRejected(f"Password rejected for 7Z entry: {targets[0]}") from exc
+                raise ArchivePasswordRejected(
+                    f"Password rejected for 7Z archive: {source.display_name}",
+                    archive_path=source.display_name,
+                ) from exc
             raise ArchiveReadError(f"Could not decompress 7Z entry: {targets[0]}") from exc
         except py7zr.Bad7zFile as exc:
             raise ArchiveReadError(f"Could not read 7Z entry: {targets[0]}") from exc
@@ -700,7 +745,7 @@ class ArchiveImageService:
     def _list_rar_entries(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
     ) -> list[_ArchiveEntry]:
         if rarfile is None or not hasattr(rarfile, "RarFile"):
             raise ArchiveDependencyMissing("rarfile is required for RAR/CBR archives.")
@@ -709,7 +754,11 @@ class ArchiveImageService:
         try:
             with rarfile.RarFile(source.open_arg(), "r") as archive:
                 if archive.needs_password():
-                    password = self._request_password(source, password_provider, reason="rar archive is encrypted")
+                    password = self._request_password(
+                        source,
+                        context,
+                        reason="rar archive is encrypted",
+                    )
                 return [
                     _ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
                     for info in archive.infolist()
@@ -733,9 +782,15 @@ class ArchiveImageService:
                 with rarfile.RarFile(source.open_arg(), "r") as archive:
                     return archive.read(name, pwd=password)
         except rarfile.PasswordRequired as exc:
-            raise ArchivePasswordRequired(f"Password required for RAR entry: {name}") from exc
+            raise ArchivePasswordRequired(
+                f"Password required for RAR archive: {source.display_name}",
+                archive_path=source.display_name,
+            ) from exc
         except rarfile.RarWrongPassword as exc:
-            raise ArchivePasswordRejected(f"Password rejected for RAR entry: {name}") from exc
+            raise ArchivePasswordRejected(
+                f"Password rejected for RAR archive: {source.display_name}",
+                archive_path=source.display_name,
+            ) from exc
         except (rarfile.RarCannotExec, rarfile.BadRarFile, OSError) as exc:
             rar_failure = exc
 
@@ -820,7 +875,13 @@ class ArchiveImageService:
         if password is not None:
             command.append(f"-p{password}")
         command.extend([str(source.path), name])
-        return _run_archive_stdout_command(command, name, password=password)
+        try:
+            return _run_archive_stdout_command(command, name, password=password)
+        except ArchivePasswordRejected as exc:
+            raise ArchivePasswordRejected(
+                f"Password rejected for RAR archive: {source.display_name}",
+                archive_path=source.display_name,
+            ) from exc
 
     def _read_rar_with_unar(self, source: _ArchiveSource, name: str, password: str | None) -> bytes:
         if source.path is None:
@@ -837,7 +898,10 @@ class ArchiveImageService:
             if result.returncode != 0:
                 stderr = result.stderr.decode("utf-8", errors="replace").strip()
                 if password is not None and _looks_like_password_error_text(stderr):
-                    raise ArchivePasswordRejected(f"Password rejected for RAR entry: {name}")
+                    raise ArchivePasswordRejected(
+                        f"Password rejected for RAR archive: {source.display_name}",
+                        archive_path=source.display_name,
+                    )
                 raise ArchiveReadError(f"unar could not extract {name}: {stderr or result.returncode}")
             extracted = Path(temp_dir) / name
             if not extracted.exists():
@@ -850,14 +914,22 @@ class ArchiveImageService:
     def _request_password(
         self,
         source: _ArchiveSource,
-        password_provider: PasswordProvider | None,
+        context: _ScanContext,
         attempt: int = 1,
         reason: str | None = None,
     ) -> str:
-        if password_provider is None:
-            raise ArchivePasswordRequired(f"Password required for archive: {source.display_name}")
+        if context.password_policy == ArchivePasswordPolicy.FORBID:
+            raise ArchivePasswordRequired(
+                f"Skipped encrypted archive: {source.display_name}",
+                archive_path=source.display_name,
+            )
+        if context.password_provider is None:
+            raise ArchivePasswordRequired(
+                f"Password required for archive: {source.display_name}",
+                archive_path=source.display_name,
+            )
 
-        password = password_provider(
+        response = context.password_provider(
             ArchivePasswordRequest(
                 archive_path=source.display_name,
                 archive_format=source.suffix.lstrip(".").upper(),
@@ -865,8 +937,18 @@ class ArchiveImageService:
                 reason=reason,
             )
         )
+        if isinstance(response, ArchivePasswordResponse):
+            if response.skip:
+                context.skipped_archives.add(source.display_name)
+                raise _ArchiveSourceSkipped()
+            password = response.password
+        else:
+            password = response
         if password is None:
-            raise ArchivePasswordRequired(f"Password request cancelled for archive: {source.display_name}")
+            raise ArchivePasswordRequired(
+                f"Password request cancelled for archive: {source.display_name}",
+                archive_path=source.display_name,
+            )
         return password
 
 

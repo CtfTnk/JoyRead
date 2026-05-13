@@ -16,7 +16,13 @@ class ArchivePasswordRequest:
     reason: str | None = None
 
 
-PasswordProvider = Callable[[ArchivePasswordRequest], str | None]
+@dataclass(frozen=True)
+class ArchivePasswordResponse:
+    password: str | None = None
+    skip: bool = False
+
+
+PasswordProvider = Callable[[ArchivePasswordRequest], str | ArchivePasswordResponse | None]
 
 
 class ArchiveValidationCode(StrEnum):
@@ -32,6 +38,11 @@ class ArchiveValidationCode(StrEnum):
     DEPENDENCY_MISSING = "dependency_missing"
     OPEN_FAILED = "open_failed"
     UNKNOWN_ERROR = "unknown_error"
+
+
+class ArchivePasswordPolicy(StrEnum):
+    ALLOW = "allow"
+    FORBID = "forbid"
 
 
 @dataclass(frozen=True)

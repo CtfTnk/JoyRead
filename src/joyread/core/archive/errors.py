@@ -30,9 +30,17 @@ class ArchiveReadError(ArchiveError):
 class ArchivePasswordRequired(ArchiveError):
     """The archive is encrypted and no usable password was provided."""
 
+    def __init__(self, message: str, *, archive_path: str | None = None) -> None:
+        super().__init__(message)
+        self.archive_path = archive_path
+
 
 class ArchivePasswordRejected(ArchiveError):
     """The provided archive password was rejected."""
+
+    def __init__(self, message: str, *, archive_path: str | None = None) -> None:
+        super().__init__(message)
+        self.archive_path = archive_path
 
 
 class ArchiveDependencyMissing(ArchiveError):

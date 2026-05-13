@@ -12,7 +12,7 @@ from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
+from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
@@ -94,6 +94,9 @@ class ReaderShellWidget(QWidget):
     def open_with_password(self, password: str) -> None:
         self.viewmodel.open_path(self._source_path, password=password)
 
+    def skip_password_request(self) -> None:
+        self.viewmodel.skip_password_request()
+
     def _connect_signals(self) -> None:
         self.header.back_requested.connect(self.back_requested.emit)
         self.header.mouse_activity.connect(lambda: self._show_controls((self.header,), reset_timer=True))
@@ -167,16 +170,18 @@ class ReaderShellWidget(QWidget):
         if message:
             self.canvas.set_status_text(message)
 
-    def _show_password_dialog(self, message: str) -> None:
+    def _show_password_dialog(self, prompt: ReaderPasswordPrompt) -> None:
         self.dialog_overlay.show_password_input(
             "Archive Password",
-            "Password",
+            f"Password for: {prompt.display_name}",
             on_confirm=self.open_with_password,
             confirm_text="Open",
             cancel_text="Cancel",
+            skip_text="Skip",
             validator=lambda value: None if value else "Password cannot be empty.",
             on_cancel=self.viewmodel.cancel_password_request,
-            state_prompt=_password_state_prompt(message),
+            on_skip=self.skip_password_request,
+            state_prompt=prompt.message if prompt.is_retry else None,
         )
 
     def _toggle_settings_panel(self) -> None:
@@ -464,9 +469,3 @@ def _side_button(resources, icon_name: str, parent: QWidget) -> QToolButton:  # 
     button.setFixedSize(Theme.reader_side_button_width, Theme.reader_side_button_height)
     return button
 
-
-def _password_state_prompt(message: str) -> str | None:
-    normalized = message.lower()
-    if "incorrect password" in normalized or "rejected" in normalized or "wrong password" in normalized:
-        return "Incorrect password. Please try again."
-    return None

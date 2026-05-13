@@ -13,7 +13,9 @@ from joyread.core.archive.errors import (
 )
 from joyread.core.archive.models import (
     ArchivePage,
+    ArchivePasswordPolicy,
     ArchivePasswordRequest,
+    ArchivePasswordResponse,
     ArchiveValidationCode,
     ArchiveValidationResult,
     PasswordProvider,
@@ -31,7 +33,9 @@ __all__ = [
     "ArchiveOpenError",
     "ArchivePage",
     "ArchivePasswordRejected",
+    "ArchivePasswordPolicy",
     "ArchivePasswordRequest",
+    "ArchivePasswordResponse",
     "ArchivePasswordRequired",
     "ArchiveReadError",
     "ArchiveUnsupportedFormat",

@@ -1,4 +1,5 @@
 from datetime import datetime
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWidget
@@ -6,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWid
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.services.import_service import ImportPreflightResult
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.main_window import MainWindow
@@ -442,6 +444,36 @@ def test_dialog_password_input_shows_failure_prompt(qtbot) -> None:
     assert prompt.text() == "Incorrect password. Please try again."
 
 
+def test_dialog_password_input_supports_skip_button_without_validation(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    result: list[str] = []
+    overlay.show_password_input(
+        "Archive Password",
+        "Password for: outer.cbz::nested.cbz",
+        on_confirm=lambda value: result.append(f"open:{value}"),
+        on_cancel=lambda: result.append("cancel"),
+        on_skip=lambda: result.append("skip"),
+        skip_text="Skip",
+        validator=lambda value: None if value else "Password cannot be empty.",
+    )
+    QApplication.processEvents()
+    buttons = overlay.panel.findChildren(DialogTextButton)
+
+    assert [button.text for button in buttons] == ["Cancel", "Skip", "Confirm"]
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert result == ["skip"]
+
+
 def test_main_window_uses_global_dialog_for_placeholder_messages(qtbot) -> None:
     apply_theme()
     context = create_app_context()
@@ -509,6 +541,48 @@ def test_main_window_uses_global_confirm_dialog_for_delete(qtbot) -> None:
     assert window.dialog_overlay.isVisible()
     assert title_labels == ["Delete Book"]
     assert buttons == ["Cancel", "Delete"]
+    context.close()
+
+
+def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    opened: list[Path] = []
+    import_started: list[Path] = []
+    source = tmp_path / "encrypted.cbz"
+    monkeypatch.setattr(window, "_show_reader_window", lambda path, **_kwargs: opened.append(Path(path)))
+    monkeypatch.setattr(window, "_start_open_and_import", lambda path, _settings: import_started.append(Path(path)))
+
+    window._handle_open_import_preflight(
+        source,
+        object(),
+        ImportPreflightResult(
+            source_path=str(source),
+            can_import=False,
+            status="skipped",
+            message="Skipped encrypted archive.",
+        ),
+    )
+    QApplication.processEvents()
+
+    buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
+    assert window.dialog_overlay.isVisible()
+    assert [button.text for button in buttons] == ["Cancel", "Read Only"]
+    assert opened == []
+    assert import_started == []
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert window.dialog_overlay.isHidden()
+    assert opened == [source]
+    assert import_started == []
     context.close()
 
 

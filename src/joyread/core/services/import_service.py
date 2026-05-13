@@ -10,7 +10,7 @@ import shutil
 import sqlite3
 from uuid import uuid4
 
-from joyread.core.archive import ArchiveImageService, ArchiveValidationCode
+from joyread.core.archive import ArchiveImageService, ArchivePasswordPolicy, ArchiveValidationCode
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 from joyread.core.services.hash_service import HashService
@@ -35,8 +35,23 @@ class ImportBatchResult:
     batch_id: str
     imported_count: int
     duplicate_count: int
+    skipped_count: int
     failed_count: int
     items: tuple[ImportItemResult, ...]
+
+
+@dataclass(frozen=True)
+class ImportPreflightResult:
+    source_path: str
+    can_import: bool
+    status: str
+    message: str | None = None
+
+
+@dataclass(frozen=True)
+class _ValidationFailure:
+    status: str
+    message: str
 
 
 class ImportService:
@@ -86,6 +101,23 @@ class ImportService:
             manifest_path=None,
             archive_internal_max_depth=archive_internal_max_depth,
         )
+
+    def preflight_file(
+        self,
+        path: str | Path,
+        *,
+        archive_internal_max_depth: int | None = None,
+    ) -> ImportPreflightResult:
+        source_path = Path(path).expanduser()
+        failure = self._validate_source(source_path, archive_internal_max_depth)
+        if failure is not None:
+            return ImportPreflightResult(
+                source_path=str(source_path),
+                can_import=False,
+                status=failure.status,
+                message=failure.message,
+            )
+        return ImportPreflightResult(str(source_path), True, "importable")
 
     def import_folder(
         self,
@@ -159,6 +191,7 @@ class ImportService:
             batch_id=batch_id,
             imported_count=sum(item.status == "imported" for item in results),
             duplicate_count=sum(item.status == "duplicate" for item in results),
+            skipped_count=sum(item.status == "skipped" for item in results),
             failed_count=sum(item.status == "failed" for item in results),
             items=tuple(results),
         )
@@ -178,8 +211,8 @@ class ImportService:
                 batch_id,
                 source_display,
                 external_id,
-                status="failed",
-                message=failure,
+                status=failure.status,
+                message=failure.message,
             )
 
         content_hash = self._hash_service.compute(source_path, self._hash_algorithm)
@@ -242,25 +275,28 @@ class ImportService:
             message="Imported.",
         )
 
-    def _validate_source(self, source_path: Path, archive_internal_max_depth: int | None) -> str | None:
+    def _validate_source(self, source_path: Path, archive_internal_max_depth: int | None) -> _ValidationFailure | None:
         if not source_path.exists():
-            return f"Source file does not exist: {source_path}"
+            return _ValidationFailure("failed", f"Source file does not exist: {source_path}")
         if not source_path.is_file():
-            return f"Source path is not a file: {source_path}"
+            return _ValidationFailure("failed", f"Source path is not a file: {source_path}")
         suffix = source_path.suffix.lower()
         if suffix not in BOOK_EXTENSIONS:
-            return f"Unsupported book format: {suffix or source_path.name}"
+            return _ValidationFailure("failed", f"Unsupported book format: {suffix or source_path.name}")
         if suffix in ARCHIVE_EXTENSIONS:
             validation = self._archive_service.validate_archive(
                 source_path,
+                password_policy=ArchivePasswordPolicy.FORBID,
                 max_depth=archive_internal_max_depth if archive_internal_max_depth is not None else 2,
             )
             if validation.code != ArchiveValidationCode.OK:
-                return validation.message
+                if validation.code in {ArchiveValidationCode.PASSWORD_REQUIRED, ArchiveValidationCode.PASSWORD_REJECTED}:
+                    return _ValidationFailure("skipped", validation.message)
+                return _ValidationFailure("failed", validation.message)
         if suffix in PDF_EXTENSIONS:
             validation = self._pdf_service.validate_pdf(source_path)
             if not validation.is_valid:
-                return validation.message
+                return _ValidationFailure("failed", validation.message)
         return None
 
     def _copy_to_books(self, source_path: Path, content_hash: str) -> Path:
