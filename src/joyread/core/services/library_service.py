@@ -65,6 +65,14 @@ class LibraryService:
         for book_uuid in book_uuids:
             self._book_repository.add_book_to_collection(book_uuid, collection_uuid)
 
+    def remove_books_from_collection(self, book_uuids: tuple[str, ...], collection_uuid: str) -> None:
+        for book_uuid in book_uuids:
+            self._book_repository.remove_book_from_collection(book_uuid, collection_uuid)
+
+    def remove_books_from_recent(self, book_uuids: tuple[str, ...]) -> None:
+        for book_uuid in book_uuids:
+            self._book_repository.remove_book_from_recent(book_uuid)
+
     def get_progress(self, book_uuid: str, book_scope: str = "public") -> ReaderProgress | None:
         return self._book_repository.get_progress(book_uuid, book_scope)
 

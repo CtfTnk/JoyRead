@@ -108,6 +108,9 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.collection_failed.connect(
             lambda message: self.dialog_overlay.show_info("Collection", message)
         )
+        context.shelf_viewmodel.remove_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Remove Failed", message)
+        )
         context.shelf_viewmodel.load_books()
         self.sidebar.set_collections(context.shelf_viewmodel.collections)
         self.shelf_view.render()

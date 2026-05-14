@@ -75,6 +75,7 @@ class ShelfViewModel:
         self.collections_changed: Signal[str | None] = Signal()
         self.collection_failed: Signal[str] = Signal()
         self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
+        self.remove_failed: Signal[str] = Signal()
 
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
@@ -146,6 +147,10 @@ class ShelfViewModel:
                 reverse=True,
             )
         return sorted(books, key=self._sort_key, reverse=not self.sort_ascending)
+
+    @property
+    def can_remove_from_current_shelf(self) -> bool:
+        return self.current_shelf == ShelfKey.RECENT.value or self.current_shelf.startswith("collection:")
 
     def load_books(self) -> None:
         self.is_loading = True
@@ -473,6 +478,37 @@ class ShelfViewModel:
             on_failure=lambda error: self.collection_failed.emit(str(error)),
         )
 
+    def remove_books_from_current_shelf(self, book_uuids: Iterable[str]) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
+        if not target_ids or not self.can_remove_from_current_shelf:
+            return
+
+        current_shelf = self.current_shelf
+        if current_shelf == ShelfKey.RECENT.value:
+            def remove_books() -> None:
+                self._library_service.remove_books_from_recent(target_ids)
+        else:
+            collection_uuid = self._collection_uuid_from_shelf(current_shelf)
+
+            def remove_books() -> None:
+                self._library_service.remove_books_from_collection(target_ids, collection_uuid)
+
+        if self._task_service is None:
+            try:
+                remove_books()
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self._handle_books_removed_from_shelf_failure(exc)
+                return
+            self._handle_books_removed_from_shelf(target_ids)
+            return
+
+        self._task_service.submit(
+            "remove-books-from-shelf",
+            remove_books,
+            on_success=lambda _result, target_ids=target_ids: self._handle_books_removed_from_shelf(target_ids),
+            on_failure=self._handle_books_removed_from_shelf_failure,
+        )
+
     def _handle_favourite_success(self, target_ids: tuple[str, ...], is_favourite: bool) -> None:
         changed = False
         next_books: list[Book] = []
@@ -537,6 +573,13 @@ class ShelfViewModel:
     def _handle_books_added_to_collection(self, target_ids: tuple[str, ...]) -> None:
         self.load_books()
         self.books_added_to_collection.emit(target_ids)
+
+    def _handle_books_removed_from_shelf(self, _target_ids: tuple[str, ...]) -> None:
+        self.load_books()
+
+    def _handle_books_removed_from_shelf_failure(self, error: Exception) -> None:
+        self.load_books()
+        self.remove_failed.emit(str(error))
 
     def delete_books(self, book_uuids: Iterable[str]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))

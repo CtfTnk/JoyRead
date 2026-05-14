@@ -26,7 +26,7 @@ from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
-from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
+from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, collection_shelf_key
 from joyread.ui.views.shelf_view import ShelfView
 
 
@@ -842,6 +842,87 @@ def test_shelf_export_menu_request_uses_selected_targets(qtbot) -> None:
     _trigger_menu_row(qtbot, captured_menus.pop(), "Export")
 
     assert emitted == [(first.uuid, second.uuid), (third.uuid,)]
+
+
+def test_shelf_empty_state_copy_is_contextual(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository(books=[])))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+
+    view.render()
+
+    assert _state_label_texts(view.empty_state) == (
+        "No books yet",
+        "Use Open & Import or Import to add books to your bookshelf.",
+    )
+
+    viewmodel.set_current_shelf(collection_shelf_key("collection-a"))
+    view.render()
+
+    assert _state_label_texts(view.empty_state) == (
+        "No books in this collection",
+        "Add books to this collection from a book's More menu.",
+    )
+
+
+def test_shelf_remove_menu_visibility_is_contextual(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    captured_menus: list[QWidget] = []
+    view._exec_interaction_popup = lambda menu, _pos: captured_menus.append(menu)  # type: ignore[method-assign]
+
+    view._show_book_menu(viewmodel.visible_books[0].uuid, QPoint(0, 0))
+    assert "Remove" not in _menu_row_labels(captured_menus.pop())
+
+    viewmodel.set_current_shelf(ShelfKey.FAVOURITES.value)
+    view._show_book_menu(viewmodel.visible_books[0].uuid, QPoint(0, 0))
+    assert "Remove" not in _menu_row_labels(captured_menus.pop())
+
+    viewmodel.set_current_shelf(ShelfKey.RECENT.value)
+    view._show_book_menu(viewmodel.visible_books[0].uuid, QPoint(0, 0))
+    assert "Remove" in _menu_row_labels(captured_menus.pop())
+
+    viewmodel.set_current_shelf(collection_shelf_key("collection-a"))
+    view._show_book_menu(viewmodel.visible_books[0].uuid, QPoint(0, 0))
+    assert "Remove" in _menu_row_labels(captured_menus.pop())
+
+
+def test_shelf_remove_menu_removes_from_collection_without_deleting_books(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    viewmodel.set_current_shelf(collection_shelf_key("collection-a"))
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    captured_menus: list[QWidget] = []
+    view._exec_interaction_popup = lambda menu, _pos: captured_menus.append(menu)  # type: ignore[method-assign]
+    first, second = viewmodel.visible_books[:2]
+    viewmodel.select_book(first.uuid)
+    viewmodel.select_book(second.uuid, additive=True)
+
+    view._show_book_menu(second.uuid, QPoint(0, 0))
+    _trigger_menu_row(qtbot, captured_menus.pop(), "Remove")
+
+    books_by_uuid = {book.uuid: book for book in viewmodel.books}
+    assert first.uuid in books_by_uuid
+    assert second.uuid in books_by_uuid
+    assert "collection-a" not in books_by_uuid[first.uuid].collection_ids
+    assert "collection-a" not in books_by_uuid[second.uuid].collection_ids
+
+
+def _state_label_texts(widget: QWidget) -> tuple[str, str]:
+    title = next(label.text() for label in widget.findChildren(QLabel) if label.property("class") == "StateTitle")
+    body = next(label.text() for label in widget.findChildren(QLabel) if label.property("class") == "StateBody")
+    return title, body
+
+
+def _menu_row_labels(menu: QWidget) -> list[str]:
+    return [row.findChild(QLabel).text() for row in menu.findChildren(QFrame) if row.objectName() == "FigmaMenuItem"]
 
 
 def _trigger_menu_row(qtbot, menu: QWidget, label_text: str) -> None:  # noqa: ANN001

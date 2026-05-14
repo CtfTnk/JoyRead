@@ -62,7 +62,7 @@ class SearchPanelWidget(QFrame):
         self._layout.addWidget(self._collapse_button)
         self._layout.addWidget(self._expand_button)
 
-        self.set_expanded(True)
+        self.set_expanded(False)
 
     @property
     def query(self) -> str:

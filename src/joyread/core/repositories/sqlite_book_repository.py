@@ -160,6 +160,15 @@ class SqliteBookRepository(BookRepository):
 
         self._database.execute(write, DatabasePriority.NORMAL)
 
+    def remove_book_from_recent(self, book_id: str) -> None:
+        self._database.execute(
+            lambda connection: connection.execute(
+                "DELETE FROM recent_books WHERE book_id = ?",
+                (book_id,),
+            ),
+            DatabasePriority.NORMAL,
+        )
+
     def _delete_book_records(self, connection: sqlite3.Connection, book_id: str) -> _BookDeletionCleanup:
         row = connection.execute(
             """
@@ -315,8 +324,21 @@ class SqliteBookRepository(BookRepository):
             DatabasePriority.NORMAL,
         )
 
+    def remove_book_from_collection(self, book_id: str, collection_id: str) -> None:
+        self._database.execute(
+            lambda connection: connection.execute(
+                """
+                DELETE FROM collection_books
+                WHERE collection_id = ? AND book_id = ?
+                """,
+                (collection_id, book_id),
+            ),
+            DatabasePriority.NORMAL,
+        )
+
     def set_progress(self, book_id: str, page_index: int, progress_percent: float) -> None:
         now = _now()
+
         def write(connection: sqlite3.Connection) -> None:
             connection.execute(
                 """

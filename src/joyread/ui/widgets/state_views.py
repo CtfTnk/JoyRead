@@ -15,14 +15,18 @@ class StateView(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(8)
 
-        title_label = QLabel(title)
-        title_label.setProperty("class", "StateTitle")
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_label = QLabel(title)
+        self._title_label.setProperty("class", "StateTitle")
+        self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        body_label = QLabel(body)
-        body_label.setProperty("class", "StateBody")
-        body_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        body_label.setWordWrap(True)
+        self._body_label = QLabel(body)
+        self._body_label.setProperty("class", "StateBody")
+        self._body_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._body_label.setWordWrap(True)
 
-        layout.addWidget(title_label)
-        layout.addWidget(body_label)
+        layout.addWidget(self._title_label)
+        layout.addWidget(self._body_label)
+
+    def set_text(self, title: str, body: str) -> None:
+        self._title_label.setText(title)
+        self._body_label.setText(body)

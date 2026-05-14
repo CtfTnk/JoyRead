@@ -25,7 +25,7 @@ class InMemoryBookRepository:
     )
 
     def __init__(self, books: list[Book] | None = None, collections: list[Collection] | None = None) -> None:
-        self._collections = collections or [
+        self._collections = collections if collections is not None else [
             Collection(
                 uuid="collection-a",
                 name="A Collection",
@@ -34,7 +34,7 @@ class InMemoryBookRepository:
                 updated_at=datetime(2026, 4, 28, 12),
             )
         ]
-        self._books = books or _default_books()
+        self._books = books if books is not None else _default_books()
         self._progress: dict[tuple[str, str], ReaderProgress] = {}
         self._reader_settings: dict[tuple[str, str], ReaderSettings] = {}
         self._bookmarks: dict[tuple[str, str], list[Bookmark]] = {}
@@ -131,6 +131,26 @@ class InMemoryBookRepository:
         self._books = [
             replace(book, collection_ids=(*book.collection_ids, collection_id), updated_at=datetime.now())
             if book.uuid == book_id and collection_id not in book.collection_ids
+            else book
+            for book in self._books
+        ]
+
+    def remove_book_from_collection(self, book_id: str, collection_id: str) -> None:
+        self._books = [
+            replace(
+                book,
+                collection_ids=tuple(value for value in book.collection_ids if value != collection_id),
+                updated_at=datetime.now(),
+            )
+            if book.uuid == book_id and collection_id in book.collection_ids
+            else book
+            for book in self._books
+        ]
+
+    def remove_book_from_recent(self, book_id: str) -> None:
+        self._books = [
+            replace(book, last_read_at=None, updated_at=datetime.now())
+            if book.uuid == book_id and book.last_read_at is not None
             else book
             for book in self._books
         ]

@@ -41,3 +41,17 @@ def test_in_memory_repository_resolves_test_set_archives() -> None:
     assert pressure_book.collection_ids == ()
     assert Path(pressure_book.file_path).exists()
     assert ArchiveImageService().open(pressure_book.file_path).page_count == pressure_book.page_count
+
+
+def test_in_memory_repository_removes_collection_and_recent_membership_only() -> None:
+    repository = InMemoryBookRepository()
+    akane_book = next(book for book in repository.list_books() if book.uuid == "mock-book-01")
+
+    repository.remove_book_from_collection(akane_book.uuid, "collection-a")
+    repository.remove_book_from_recent(akane_book.uuid)
+
+    updated = next(book for book in repository.list_books() if book.uuid == akane_book.uuid)
+    assert updated.progress == akane_book.progress
+    assert updated.collection_ids == ()
+    assert updated.last_read_at is None
+    assert len(repository.list_books()) == 15

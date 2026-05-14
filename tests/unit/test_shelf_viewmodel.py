@@ -256,6 +256,53 @@ def test_collection_commands_validate_and_reload_state() -> None:
     assert vm.current_shelf == ShelfKey.ALL.value
 
 
+def test_remove_books_from_collection_shelf_keeps_library_records() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_current_shelf(collection_shelf_key("collection-a"))
+    first, second = vm.visible_books[:2]
+
+    vm.select_book(first.uuid)
+    vm.select_book(second.uuid, additive=True)
+    vm.show_detail(first.uuid)
+    vm.remove_books_from_current_shelf((first.uuid, second.uuid))
+
+    books_by_uuid = {book.uuid: book for book in vm.books}
+    assert first.uuid in books_by_uuid
+    assert second.uuid in books_by_uuid
+    assert "collection-a" not in books_by_uuid[first.uuid].collection_ids
+    assert "collection-a" not in books_by_uuid[second.uuid].collection_ids
+    assert first.uuid not in {book.uuid for book in vm.visible_books}
+    assert second.uuid not in {book.uuid for book in vm.visible_books}
+    assert vm.selected_book_ids == set()
+    assert vm.detail_book_uuid is None
+
+
+def test_remove_books_from_recent_shelf_preserves_progress_and_library_records() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_current_shelf(ShelfKey.RECENT.value)
+    first, second = vm.visible_books[:2]
+    original_progress = {first.uuid: first.progress, second.uuid: second.progress}
+
+    vm.select_book(first.uuid)
+    vm.select_book(second.uuid, additive=True)
+    vm.show_detail(first.uuid)
+    vm.remove_books_from_current_shelf((first.uuid, second.uuid))
+
+    books_by_uuid = {book.uuid: book for book in vm.books}
+    assert first.uuid in books_by_uuid
+    assert second.uuid in books_by_uuid
+    assert books_by_uuid[first.uuid].last_read_at is None
+    assert books_by_uuid[second.uuid].last_read_at is None
+    assert books_by_uuid[first.uuid].progress == original_progress[first.uuid]
+    assert books_by_uuid[second.uuid].progress == original_progress[second.uuid]
+    assert first.uuid not in {book.uuid for book in vm.visible_books}
+    assert second.uuid not in {book.uuid for book in vm.visible_books}
+    assert vm.selected_book_ids == set()
+    assert vm.detail_book_uuid is None
+
+
 def test_delete_books_clears_selection_detail_and_reloads_books() -> None:
     vm = make_viewmodel()
     vm.load_books()

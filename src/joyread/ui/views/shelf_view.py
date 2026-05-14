@@ -68,7 +68,7 @@ class ShelfView(QWidget):
         self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.grid = BookGridWidget(resources)
         self.list_view = BookListWidget(resources)
-        self.empty_state = StateView("No books yet", "Import actions are placeholders in this phase.")
+        self.empty_state = StateView("No books yet", "Use Open & Import or Import to add books to your bookshelf.")
         self.loading_state = StateView("Loading library", "Preparing the mock bookshelf.")
         self.error_state = StateView("Could not load library", "The library service returned an error.")
         self.importing_state = StateView("Importing", "Import progress UI is reserved for a future phase.")
@@ -133,6 +133,7 @@ class ShelfView(QWidget):
 
         books = self._viewmodel.visible_books
         if not books:
+            self._update_empty_state_copy()
             self.stack.setCurrentWidget(self.empty_state)
             self._render_detail_panel()
             return
@@ -163,9 +164,9 @@ class ShelfView(QWidget):
             on_detail=self._viewmodel.show_detail,
             on_add_to_collection=lambda _uuid: self.add_to_collection_requested.emit(target_ids),
             on_export=lambda _uuid: self.export_books_requested.emit(target_ids),
-            on_remove=lambda _uuid: self._show_placeholder_for_targets("Remove from Library", target_ids),
+            on_remove=lambda _uuid: self._viewmodel.remove_books_from_current_shelf(target_ids),
             on_delete=lambda _uuid: self.delete_books_requested.emit(target_ids),
-            show_remove=self._viewmodel.current_shelf != ShelfKey.ALL.value,
+            show_remove=self._viewmodel.can_remove_from_current_shelf,
         )
         self._exec_interaction_popup(menu, global_pos)
 
@@ -195,12 +196,35 @@ class ShelfView(QWidget):
                 return book
         return None
 
+    def _update_empty_state_copy(self) -> None:
+        if self._viewmodel.search_query or self._viewmodel.file_filter.value != "ALL":
+            self.empty_state.set_text("No matching books", "Try adjusting your search or filter.")
+            return
+        if self._viewmodel.current_shelf == ShelfKey.ALL.value:
+            self.empty_state.set_text(
+                "No books yet",
+                "Use Open & Import or Import to add books to your bookshelf.",
+            )
+            return
+        if self._viewmodel.current_shelf == ShelfKey.RECENT.value:
+            self.empty_state.set_text("No recent books", "Books you read will appear here.")
+            return
+        if self._viewmodel.current_shelf == ShelfKey.FAVOURITES.value:
+            self.empty_state.set_text(
+                "No favourites yet",
+                "Favourite books from a book's More menu to find them here.",
+            )
+            return
+        if self._viewmodel.current_shelf.startswith("collection:"):
+            self.empty_state.set_text(
+                "No books in this collection",
+                "Add books to this collection from a book's More menu.",
+            )
+            return
+        self.empty_state.set_text("No books found", "There are no books to show here.")
+
     def _show_placeholder(self, action: str) -> None:
         self.info_requested.emit(action, f"{action} is a placeholder in this phase.")
-
-    def _show_placeholder_for_targets(self, action: str, book_uuids: tuple[str, ...]) -> None:
-        suffix = f"\n\nSelected books: {len(book_uuids)}" if len(book_uuids) > 1 else ""
-        self.info_requested.emit(action, f"{action} is a placeholder in this phase.{suffix}")
 
     def create_action_menu(self) -> FigmaMenu:
         return build_action_menu(

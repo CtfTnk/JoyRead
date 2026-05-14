@@ -400,6 +400,19 @@ def test_recent_books_are_public_only_and_capped_at_ten(tmp_path: Path) -> None:
     assert len(recent_rows) == 10
     assert len(recent_books) == 10
 
+    target = recent_books[0]
+    repository.remove_book_from_recent(target.uuid)
+    updated_target = next(book for book in repository.list_books() if book.uuid == target.uuid)
+    assert updated_target.last_read_at is None
+    assert updated_target.progress == target.progress
+    assert repository.get_progress(target.uuid).progress_percent == 10.0
+    assert target.uuid not in {
+        row["book_id"]
+        for row in database.execute(
+            lambda connection: connection.execute("SELECT book_id FROM recent_books").fetchall()
+        )
+    }
+
     database.execute(
         lambda connection: connection.execute(
             """
@@ -490,6 +503,13 @@ def test_collection_delete_and_private_move_keep_public_books_consistent(tmp_pat
 
     assert repository.list_collections()[0].name == "Reading Queue"
     assert repository.list_books()[0].collection_ids == (collection.uuid,)
+
+    repository.remove_book_from_collection(book.uuid, collection.uuid)
+
+    assert repository.list_books()[0].collection_ids == ()
+    assert repository.list_books()[0].uuid == book.uuid
+
+    repository.add_book_to_collection(book.uuid, collection.uuid)
 
     repository.delete_collection(collection.uuid)
 
