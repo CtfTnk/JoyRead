@@ -115,6 +115,10 @@ class TaskService:
     ) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
         if self._shutting_down:
+            # Hand back a pre-cancelled handle rather than raising. Shutdown
+            # happens while many ViewModels are still emitting submits in
+            # response to teardown signals; making every caller handle a new
+            # exception path during shutdown would be all-pain-no-gain.
             logger.debug("Task %s rejected: service shutting down", handle.task_id)
             handle.status = TaskStatus.CANCELLED
             return handle

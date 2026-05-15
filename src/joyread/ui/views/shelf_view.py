@@ -45,6 +45,11 @@ class ShelfView(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
         self._resources = resources
+        # Streaming thumbnail/cover updates are paused while a popup
+        # (context menu, dialog) is open and replayed on close. Live grid
+        # mutations during a popup interaction cause jank — items reflow
+        # while the user is mid-click — so we coalesce updates here and
+        # flush them once the depth counter returns to zero.
         self._popup_interaction_depth = 0
         self._deferred_page_thumbnails: list[tuple[str, int, bytes]] = []
         self._deferred_detail_batch_finishes: list[tuple[str, int, bool]] = []

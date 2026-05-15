@@ -88,6 +88,10 @@ class PathService:
         support_root: Path | None,
     ) -> AppPaths:
         if storage_root is not None:
+            # `storage_root` (library data, cache, thumbnails) and
+            # `support_root` (config + logs) are split on purpose so that the
+            # user can move their library to another disk without losing
+            # `settings.json` or the rolling log. Tests pass both equal.
             data_root = storage_root.expanduser().resolve()
             support = support_root.expanduser().resolve() if support_root is not None else data_root
             cache_root = data_root / "Cache"

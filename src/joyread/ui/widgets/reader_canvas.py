@@ -70,6 +70,11 @@ class ReaderCanvas(QWidget):
         self.update()
 
     def set_page_image(self, image: ReaderPageImage) -> None:
+        # Drop pages that are no longer in the current layout. The reader VM
+        # may emit ``page_ready`` after the user has already navigated away,
+        # and rendering those stale pages would paint last spread's content
+        # on top of the new one for a frame. The same defence catches
+        # out-of-order arrivals from the worker pool.
         if self._layout_result is not None and not self._layout_draws_page(image.page_index):
             return
         existing = self._pixmaps.get(image.page_index)

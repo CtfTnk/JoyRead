@@ -75,7 +75,11 @@ _SEVEN_ZIP_READ_LIMIT = 512 * 1024 * 1024
 _ZIP_BAD_FILE_ERRORS = (BadZipFile,)
 _EXPENSIVE_CACHE_EXTENSIONS = _SEVEN_ZIP_EXTENSIONS | _RAR_EXTENSIONS
 EXPENSIVE_ARCHIVE_EXTENSIONS = _EXPENSIVE_CACHE_EXTENSIONS
-if pyzipper is not None:  # pyzipper uses its own BadZipFile class.
+if pyzipper is not None:
+    # pyzipper vendors its own ``zipfile`` fork to support AES, and that fork
+    # raises a different ``BadZipFile`` class. Without catching both, a
+    # corrupt password-protected ZIP would escape the "controlled archive
+    # error" contract and surface as an unhandled exception in the reader.
     _ZIP_BAD_FILE_ERRORS = (BadZipFile, pyzipper.zipfile.BadZipFile)
 
 

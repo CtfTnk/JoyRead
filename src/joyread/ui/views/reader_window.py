@@ -51,7 +51,11 @@ class ReaderWindow(QMainWindow):
         self.shell.progress_changed.connect(self.progress_changed.emit)
         self.setCentralWidget(self.shell)
 
-        # Compatibility aliases keep focused tests and small debugging helpers simple.
+        # Compatibility aliases: the embedded reader (in MainWindow) and
+        # tests both reach into these widgets by attribute name. Exposing
+        # them on the window lets both code paths share the same access
+        # surface regardless of whether the reader is embedded or standalone,
+        # so existing tests do not need to know about the inner shell.
         self.canvas = self.shell.canvas
         self.header = self.shell.header
         self.footer = self.shell.footer

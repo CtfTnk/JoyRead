@@ -69,6 +69,12 @@ class ShelfViewModel:
         self.selection_changed: Signal[set[str]] = Signal()
         self.book_open_requested: Signal[str] = Signal()
         self.book_open_at_requested: Signal[tuple[str, int]] = Signal()
+        # cover_ready / page_thumbnail_ready / detail_thumbnail_batch_finished
+        # fire from the TaskService worker thread (the thumbnail jobs are
+        # submitted to the QThreadPool). Receivers in widgets must marshal
+        # back to the Qt UI thread (Qt::AutoConnection is the default for
+        # Qt signals; this in-process Signal class is used directly, so the
+        # subscriber is responsible).
         self.cover_ready: Signal[tuple[str, Path]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
         self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()

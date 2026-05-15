@@ -97,6 +97,12 @@ class ReaderShellWidget(QWidget):
         self._connect_signals()
         self._install_auto_hide()
 
+        # Defer ``open_path`` by one event-loop tick. Constructing the
+        # widget tree synchronously starts the open task immediately, but
+        # the viewport size is still 0×0 until the first layout pass runs;
+        # opening here would compute a layout against bogus dimensions and
+        # need to redo it. A 0 ms timer lets Qt finish the initial layout
+        # pass so the first archive read sees the real viewport.
         self._open_timer = QTimer(self)
         self._open_timer.setSingleShot(True)
         self._open_timer.timeout.connect(lambda: self.viewmodel.open_path(self._source_path))

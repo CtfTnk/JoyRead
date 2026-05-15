@@ -5,7 +5,10 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from PySide6 import QtCore
 
@@ -132,3 +135,40 @@ _QT_LEVEL_MAP = {
     QtCore.QtMsgType.QtCriticalMsg: logging.ERROR,
     QtCore.QtMsgType.QtFatalMsg: logging.CRITICAL,
 }
+
+
+def get_logger(name: str) -> logging.Logger:
+    """One-line wrapper around :func:`logging.getLogger` for the joyread tree.
+
+    Same semantics as ``logging.getLogger(name)`` today. The indirection lets
+    future cross-cutting concerns (rate-limiting, structured context fields,
+    per-subsystem filters) be added in one place instead of touching every
+    module's ``getLogger`` call.
+    """
+
+    return logging.getLogger(name)
+
+
+@contextmanager
+def log_timed_block(
+    logger: logging.Logger,
+    label: str,
+    *,
+    level: int = logging.DEBUG,
+) -> Iterator[None]:
+    """Emit ``label start`` / ``label done in X ms`` around a block.
+
+    Lets one-off code paths (archive scans, import phases, storage moves) get
+    a start/finish trace without sprinkling ``perf_counter()`` + ``logger``
+    pairs everywhere. Exceptions propagate; the "done" line still fires from
+    the ``finally`` clause so a failure-aborted block is still bracketed in
+    the log.
+    """
+
+    start = time.perf_counter()
+    logger.log(level, "%s start", label)
+    try:
+        yield
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.log(level, "%s done in %.0f ms", label, elapsed_ms)

@@ -105,6 +105,10 @@ class DatabaseInterpreter:
             self._queue.qsize(),
         )
         self._closed = True
+        # Sentinel "stop running" marker for the interpreter thread: a
+        # callback of `None` plus an effectively-infinite priority means the
+        # worker can drain any pre-queued real work first and only then
+        # encounter this entry and break out of its run loop.
         self._queue.put(
             _QueuedDatabaseRequest(
                 priority=1_000_000,
@@ -128,6 +132,10 @@ class DatabaseInterpreter:
                     self._queue.task_done()
                     break
                 if request.future is not None and request.future.cancelled():
+                    # The caller abandoned this read before the queue reached
+                    # it (typically a viewmodel that was torn down between
+                    # submit and execute). Running the callback now would
+                    # just waste a connection-bound SQL roundtrip, so skip.
                     self._queue.task_done()
                     continue
                 start = time.perf_counter()

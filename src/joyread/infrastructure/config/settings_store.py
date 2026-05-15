@@ -76,6 +76,10 @@ class SettingsStore:
     def load(self) -> AppSettings:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         if not self.settings_path.exists():
+            # Fresh install: write the defaults to disk so the file is present
+            # for out-of-app edits and so later versions can ALTER the
+            # on-disk shape against a stable JSON document rather than a
+            # virtual one. The next `load` short-circuits past this branch.
             settings = self.default_settings()
             self.save(settings)
             return settings

@@ -15,6 +15,8 @@ from joyread.infrastructure.logging.logging_service import (
     LOG_FILE_MAX_BYTES,
     LOG_FILE_NAME,
     configure_logging,
+    get_logger,
+    log_timed_block,
 )
 
 
@@ -114,6 +116,51 @@ def test_configure_logging_writes_to_file(tmp_path: Path) -> None:
 def test_configure_logging_quiets_pil(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     assert logging.getLogger("PIL").level == logging.WARNING
+
+
+def test_get_logger_returns_named_logger() -> None:
+    one = get_logger("joyread.facade.test")
+    two = get_logger("joyread.facade.test")
+    assert one is two
+    assert one.name == "joyread.facade.test"
+
+
+def test_log_timed_block_emits_start_and_done(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = get_logger("joyread.facade.timed")
+    with caplog.at_level(logging.DEBUG, logger="joyread.facade.timed"):
+        with log_timed_block(logger, "scan"):
+            pass
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(m == "scan start" for m in messages)
+    assert any(m.startswith("scan done in ") and m.endswith(" ms") for m in messages)
+
+
+def test_log_timed_block_emits_done_when_block_raises(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = get_logger("joyread.facade.timed_raises")
+    with caplog.at_level(logging.DEBUG, logger="joyread.facade.timed_raises"):
+        with pytest.raises(RuntimeError):
+            with log_timed_block(logger, "import-batch"):
+                raise RuntimeError("boom")
+    messages = [record.getMessage() for record in caplog.records]
+    # Both bracket lines must fire even though the block raised: that's the
+    # whole point of putting the "done" log inside ``finally``.
+    assert any(m == "import-batch start" for m in messages)
+    assert any(m.startswith("import-batch done in ") for m in messages)
+
+
+def test_log_timed_block_respects_custom_level(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    logger = get_logger("joyread.facade.timed_info")
+    with caplog.at_level(logging.INFO, logger="joyread.facade.timed_info"):
+        with log_timed_block(logger, "migrate", level=logging.INFO):
+            pass
+    levels = {record.levelno for record in caplog.records}
+    assert levels == {logging.INFO}
 
 
 def test_qt_message_handler_forwards_to_joyread_qt_logger(tmp_path: Path) -> None:

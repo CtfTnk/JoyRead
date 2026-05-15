@@ -37,13 +37,22 @@ logger = logging.getLogger(__name__)
 
 
 def _default_sizer(value: object) -> int:
-    """Best-effort byte-size estimate for cache values."""
+    """Best-effort byte-size estimate for cache values.
+
+    Used by :class:`BoundedByteCache` when a caller does not supply its own
+    sizer. The 64-byte fallback is intentional: opaque small payloads (file
+    path strings, small dataclasses) carry no meaningful "size" for an
+    LRU budget, so any constant works as long as it is consistent across
+    the cache. The actual bytes those values reference live elsewhere
+    (e.g., on disk for cover paths).
+    """
 
     try:
         return len(value)  # type: ignore[arg-type]
     except TypeError:
-        # Fall back to a conservative constant for opaque payloads (file paths,
-        # small dataclasses) where ``len`` is not meaningful as a byte budget.
+        # Opaque payload: fall back to the agreed constant. Logged at DEBUG so
+        # an unexpected non-sized value type does not silently distort the
+        # budget without leaving a breadcrumb.
         logger.debug("Cache sizer fell back to constant for %r", type(value).__name__)
         return 64
 

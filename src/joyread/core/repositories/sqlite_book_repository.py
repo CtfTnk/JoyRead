@@ -37,6 +37,10 @@ class _BookDeletionCleanup:
 
 
 class SqliteBookRepository(BookRepository):
+    # Sanitises user-supplied book UUIDs before they are embedded in
+    # generated thumbnail/cover filenames. Anything outside the allow-list
+    # is collapsed to ``_`` so a malicious or weird UUID cannot escape the
+    # thumbnails directory via path separators.
     _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
     def __init__(
@@ -60,6 +64,9 @@ class SqliteBookRepository(BookRepository):
         return self._database.execute(_list_languages, DatabasePriority.HIGH)
 
     def get_export_records(self, book_ids: tuple[str, ...]) -> list[BookExportRecord]:
+        # ``dict.fromkeys`` is an order-preserving dedup: exports must follow
+        # the order the user selected (shelf order, multi-select sequence),
+        # not the row order SQLite happens to return.
         target_ids = tuple(dict.fromkeys(book_ids))
         if not target_ids:
             return []

@@ -77,6 +77,10 @@ class AppContext:
         self.reload_storage_from_settings()
 
     def reload_storage_from_settings(self) -> None:
+        # Rebuild every storage-rooted service in the right order: settings →
+        # path service → archive pool → archive reading stack → database. A
+        # piecemeal swap risks dangling references to the previous storage
+        # root, so the whole subtree is reconstructed atomically here.
         self.settings = self.settings_store.load()
         logger.info("Reloading storage from settings root=%s", self.settings.storage_location)
         self.paths = _create_path_service(self.config, self.settings_store, self.settings)
@@ -130,6 +134,11 @@ class AppContext:
             self.settings.detail_thumbnail_cache_mb,
         )
         if next_strategy != previous_strategy:
+            # Strategy change isn't a resize — `ArchiveExtractionPool` and
+            # `HiddenImageExtractionPool` use completely different on-disk
+            # layouts. The old pool's bytes must be cleared and the dependent
+            # archive/thumbnail/import services rebuilt against the new pool
+            # so they don't keep a reference to the old object.
             self.archive_extraction_pool.clear()
             self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
             self._rebuild_archive_reading_services()

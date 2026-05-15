@@ -81,6 +81,11 @@ class ReaderSessionService:
         if password is not None:
             password_map.setdefault(str(Path(path)), password)
         if password_map or skipped:
+            # Adapt the reader's simple "password dict + skipped set" inputs
+            # to the full ``PasswordProvider`` protocol the archive service
+            # expects. The reader VM never touches the protocol type
+            # directly — keeping that translation here so callers stay
+            # ignorant of the archive-service API shape.
             provider = lambda request: (
                 ArchivePasswordResponse(skip=True)
                 if request.archive_path in skipped

@@ -115,6 +115,11 @@ class ReaderViewModel:
         self._pending_settings_save: ReaderSettings | None = None
         self._bookmark_handle: TaskHandle[tuple[ReaderBookmarkItem, ...]] | None = None
         self._topic_thumbnail_handle: TaskHandle[ReaderTopicThumbnailBatch] | None = None
+        # Bumped on every `cancel()`/`open_path()`. Worker callbacks compare
+        # against this snapshot before mutating state, so a page-load that
+        # finishes after the user has navigated to a different book (or
+        # closed the reader) silently drops its result instead of stomping
+        # the canvas with stale pixels from the previous document.
         self._task_generation = 0
         self._viewport_size = SizeF(1.0, 1.0)
         self._layout_result: ReaderLayoutResult | None = None
