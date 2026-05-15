@@ -1,4 +1,4 @@
-"""Skeleton tests for the novel reader shell + window routing."""
+"""Tests for the novel reader shell, viewmodel, and main_window routing."""
 
 from __future__ import annotations
 
@@ -6,9 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QPoint, Qt
 
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
@@ -17,6 +15,15 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.main_window import NOVEL_FORMATS, MainWindow, _is_novel_source
 from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.novel_reader_window import NovelReaderWindow
+from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
+
+from tests.support.epub_fixtures import write_tiny_epub
+
+
+def _wait_for_chapter(qtbot, window) -> None:  # noqa: ANN001
+    """Block until the viewmodel finishes loading the resume chapter."""
+    qtbot.waitUntil(lambda: not window.shell.viewmodel.is_loading, timeout=2000)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.chapter_count > 0, timeout=2000)
 
 
 def test_novel_format_routing_recognises_epub() -> None:
@@ -27,8 +34,7 @@ def test_novel_format_routing_recognises_epub() -> None:
 
 
 def test_novel_reader_window_chrome_matches_skeleton_layout(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
+    source = write_tiny_epub(tmp_path / "novel.epub")
     context = create_app_context()
     window = NovelReaderWindow(context, source)
     qtbot.addWidget(window)
@@ -59,9 +65,147 @@ def test_novel_reader_window_chrome_matches_skeleton_layout(qtbot, tmp_path: Pat
     context.close()
 
 
+def test_novel_reader_loads_chapter_and_populates_toc(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(
+        tmp_path / "novel.epub",
+        title="Sample Novel",
+        chapter_titles=("Prologue", "Chapter One", "Epilogue"),
+    )
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    _wait_for_chapter(qtbot, window)
+
+    assert window.shell.viewmodel.title == "Sample Novel"
+    assert window.shell.viewmodel.chapter_count == 3
+    assert window.shell.viewmodel.current_index == 0
+    # TOC items reach the topic panel via the viewmodel.
+    assert window.shell.viewmodel.can_use_contents
+    assert window.header.detail_button.isEnabled()
+    # Footer indicator reflects spine state.
+    assert window.footer.page_indicator.text() == "1/3"
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_topic_contents_seek_changes_chapter(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(
+        tmp_path / "novel.epub",
+        chapter_titles=("Prologue", "Chapter 1", "Chapter 2", "Epilogue"),
+    )
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    _wait_for_chapter(qtbot, window)
+    # Simulate the topic panel emitting contents_selected for spine 2.
+    window.topic_panel.contents_selected.emit(2)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 2, timeout=2000)
+    assert window.footer.page_indicator.text() == "3/4"
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_paddle_buttons_advance_chapter(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(
+        tmp_path / "novel.epub",
+        chapter_titles=("Prologue", "Chapter 1", "Epilogue"),
+    )
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    _wait_for_chapter(qtbot, window)
+
+    window.right_arrow.click()
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 1, timeout=2000)
+    window.right_arrow.click()
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 2, timeout=2000)
+    window.left_arrow.click()
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 1, timeout=2000)
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_custom_panel_opens_and_closes_on_escape(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_custom_panel()
+
+    assert window.custom_panel.isVisible()
+    assert window.custom_panel.geometry().getRect() == (
+        Theme.reader_width - Theme.novel_custom_panel_width,
+        0,
+        Theme.novel_custom_panel_width,
+        Theme.reader_height,
+    )
+
+    qtbot.keyClick(window, Qt.Key.Key_Escape)
+    assert window.custom_panel.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_custom_panel_closes_on_outside_click(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_custom_panel()
+    assert window.custom_panel.isVisible()
+
+    qtbot.mouseClick(window.content_area, Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
+
+    assert window.custom_panel.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_topic_panel_opens_contents_after_load(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(
+        tmp_path / "novel.epub",
+        chapter_titles=("Prologue", "Chapter 1", "Epilogue"),
+    )
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    _wait_for_chapter(qtbot, window)
+    window.shell._show_topic_panel(ReaderTopicMode.CONTENTS)
+    assert window.topic_panel.isVisible()
+    assert window.topic_panel.mode == ReaderTopicMode.CONTENTS
+
+    qtbot.keyClick(window, Qt.Key.Key_Escape)
+    assert window.topic_panel.isHidden()
+
+    window.close()
+    context.close()
+
+
 def test_novel_content_area_right_click_wakes_chrome(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
+    source = write_tiny_epub(tmp_path / "novel.epub")
     context = create_app_context()
     window = NovelReaderWindow(context, source)
     qtbot.addWidget(window)
@@ -89,8 +233,7 @@ def test_novel_content_area_right_click_wakes_chrome(qtbot, tmp_path: Path) -> N
 
 
 def test_novel_content_area_edge_mouse_move_reveals_paddles(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
+    source = write_tiny_epub(tmp_path / "novel.epub")
     context = create_app_context()
     window = NovelReaderWindow(context, source)
     qtbot.addWidget(window)
@@ -118,100 +261,146 @@ def test_novel_content_area_edge_mouse_move_reveals_paddles(qtbot, tmp_path: Pat
     context.close()
 
 
-def test_novel_reader_custom_panel_opens_and_closes_on_escape(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
+def test_novel_custom_panel_font_size_changes_default_stylesheet(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(tmp_path / "novel.epub")
     context = create_app_context()
     window = NovelReaderWindow(context, source)
     qtbot.addWidget(window)
     window.resize(Theme.reader_width, Theme.reader_height)
     window.show()
 
-    window.shell._toggle_custom_panel()
+    _wait_for_chapter(qtbot, window)
 
-    assert window.custom_panel.isVisible()
-    assert window.custom_panel.geometry().getRect() == (
-        Theme.reader_width - Theme.novel_custom_panel_width,
-        0,
-        Theme.novel_custom_panel_width,
-        Theme.reader_height,
-    )
+    # Custom off → default stylesheet contains no explicit font-size rule.
+    css_off = window.content_area.document().defaultStyleSheet()
+    assert "font-size" not in css_off
 
-    qtbot.keyClick(window, Qt.Key.Key_Escape)
-    assert window.custom_panel.isHidden()
-
-    window.close()
-    context.close()
-
-
-def test_novel_reader_custom_panel_closes_on_outside_click(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
-    context = create_app_context()
-    window = NovelReaderWindow(context, source)
-    qtbot.addWidget(window)
-    window.resize(Theme.reader_width, Theme.reader_height)
-    window.show()
-
-    window.shell._toggle_custom_panel()
-    assert window.custom_panel.isVisible()
-
-    qtbot.mouseClick(window.content_area, Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
-
-    assert window.custom_panel.isHidden()
-
-    window.close()
-    context.close()
-
-
-def test_novel_slider_round_trips_with_content_area_scroll(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
-    context = create_app_context()
-    window = NovelReaderWindow(context, source)
-    qtbot.addWidget(window)
-    window.resize(Theme.reader_width, Theme.reader_height)
-    window.show()
-    qtbot.wait(0)
-
-    # The placeholder body is long enough to force a scrollable viewport.
-    assert window.content_area.is_scrollable()
-
-    # Slider → content area: setting the slider scrolls the body.
-    window.footer.slider.setValue(50)
-    qtbot.wait(0)
-    assert window.content_area.scroll_percentage() == pytest.approx(0.5, abs=0.05)
-
-    # Content area → slider: drive the underlying scrollbar directly
-    # (set_scroll_percentage intentionally suppresses the round-trip
-    # signal to break re-entrancy, but a real user scroll fires it).
-    bar = window.content_area.verticalScrollBar()
-    bar.setValue(int(bar.maximum() * 0.9))
-    qtbot.wait(0)
-    assert window.footer.slider.value() == pytest.approx(90, abs=2)
-
-    window.close()
-    context.close()
-
-
-def test_novel_custom_panel_signals_drive_content_area(qtbot, tmp_path: Path) -> None:
-    source = tmp_path / "novel.epub"
-    source.write_bytes(b"placeholder")
-    context = create_app_context()
-    window = NovelReaderWindow(context, source)
-    qtbot.addWidget(window)
-    window.resize(Theme.reader_width, Theme.reader_height)
-    window.show()
-
-    # Toggle the switch — content area should acknowledge via its status line.
     window.custom_panel.enable_switch.set_checked(True)
-    qtbot.wait(0)
-    assert "ON" in window.content_area._status_label.text()
-
-    # Spin font size up via the embedded spinner; body label font size follows.
     window.custom_panel.font_size_control.set_value(24)
     qtbot.wait(0)
-    assert window.content_area._body_label.font().pointSize() == 24
+    css_on = window.content_area.document().defaultStyleSheet()
+    assert "font-size: 24pt" in css_on
+
+    # Toggle off → font-size override drops out of the stylesheet again.
+    window.custom_panel.enable_switch.set_checked(False)
+    qtbot.wait(0)
+    css_off_again = window.content_area.document().defaultStyleSheet()
+    assert "font-size" not in css_off_again
+
+    window.close()
+    context.close()
+
+
+def test_novel_disable_custom_keeps_chosen_font_for_next_toggle(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+    _wait_for_chapter(qtbot, window)
+
+    window.custom_panel.enable_switch.set_checked(True)
+    window.custom_panel.font_size_control.set_value(28)
+    qtbot.wait(0)
+    assert "font-size: 28pt" in window.content_area.document().defaultStyleSheet()
+
+    # Toggle off — Font Size row is visually disabled while custom is off.
+    window.custom_panel.enable_switch.set_checked(False)
+    qtbot.wait(0)
+    assert "font-size" not in window.content_area.document().defaultStyleSheet()
+    assert not window.custom_panel.font_size_row.isEnabled()
+
+    # Toggle back on — 28pt returns without re-input.
+    window.custom_panel.enable_switch.set_checked(True)
+    qtbot.wait(0)
+    assert "font-size: 28pt" in window.content_area.document().defaultStyleSheet()
+    assert window.custom_panel.font_size_row.isEnabled()
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_resumes_from_saved_chapter(qtbot, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    novel_path = write_tiny_epub(
+        tmp_path / "story.epub",
+        chapter_titles=("A", "B", "C", "D"),
+    )
+    book = _novel_book(novel_path)
+    # Seed the shelf so library_service has a row to persist against.
+    context.shelf_viewmodel.books = [book]
+
+    window = NovelReaderWindow(context, novel_path, book=book)
+    qtbot.addWidget(window)
+    window.show()
+    _wait_for_chapter(qtbot, window)
+
+    # Seek to chapter 2, wait for persistence to settle.
+    window.shell.viewmodel.seek(2)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 2, timeout=2000)
+    qtbot.waitUntil(
+        lambda: (
+            context.library_service.get_progress(book.uuid) is not None
+            and context.library_service.get_progress(book.uuid).page_index == 2
+        ),
+        timeout=2000,
+    )
+    window.shell.cancel()
+    window.close()
+    qtbot.wait(0)
+
+    # Reopen — viewmodel reads progress from library_service and resumes.
+    window2 = NovelReaderWindow(context, novel_path, book=book)
+    qtbot.addWidget(window2)
+    window2.show()
+    _wait_for_chapter(qtbot, window2)
+    qtbot.waitUntil(lambda: window2.shell.viewmodel.current_index == 2, timeout=2000)
+    assert window2.footer.page_indicator.text() == "3/4"
+
+    window2.close()
+    context.close()
+
+
+def test_novel_reader_add_and_delete_bookmark_roundtrip(qtbot, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    novel_path = write_tiny_epub(
+        tmp_path / "story.epub",
+        chapter_titles=("Prologue", "Chapter 1", "Epilogue"),
+    )
+    book = _novel_book(novel_path)
+    context.shelf_viewmodel.books = [book]
+
+    window = NovelReaderWindow(context, novel_path, book=book)
+    qtbot.addWidget(window)
+    window.show()
+    _wait_for_chapter(qtbot, window)
+
+    window.shell.viewmodel.seek(1)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 1, timeout=2000)
+    window.shell.viewmodel.add_bookmark()
+    qtbot.waitUntil(
+        lambda: len(window.shell.viewmodel._bookmarks) == 1,  # noqa: SLF001
+        timeout=2000,
+    )
+    bookmark = window.shell.viewmodel._bookmarks[0]  # noqa: SLF001
+    # Bookmark name defaults to the TOC chapter title.
+    assert bookmark.name == "Chapter 1"
+    assert bookmark.page_index == 1
+
+    # Seek away then click the bookmark via the topic panel signal.
+    window.shell.viewmodel.seek(2)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 2, timeout=2000)
+    window.topic_panel.bookmark_selected.emit(bookmark.page_index)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 1, timeout=2000)
+
+    window.shell.viewmodel.delete_bookmark(bookmark.uuid)
+    qtbot.waitUntil(
+        lambda: len(window.shell.viewmodel._bookmarks) == 0,  # noqa: SLF001
+        timeout=2000,
+    )
 
     window.close()
     context.close()
@@ -220,8 +409,7 @@ def test_novel_custom_panel_signals_drive_content_area(qtbot, tmp_path: Path) ->
 def test_main_window_routes_epub_book_to_novel_reader(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
-    novel_path = tmp_path / "story.epub"
-    novel_path.write_bytes(b"placeholder")
+    novel_path = write_tiny_epub(tmp_path / "story.epub")
     book = _novel_book(novel_path)
 
     window = MainWindow(context)
@@ -244,8 +432,7 @@ def test_main_window_routes_epub_book_to_novel_reader(qtbot, tmp_path: Path, mon
 def test_main_window_routes_epub_file_open_to_novel_window(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
-    novel_path = tmp_path / "anything.epub"
-    novel_path.write_bytes(b"placeholder")
+    novel_path = write_tiny_epub(tmp_path / "anything.epub")
 
     window = MainWindow(context)
     qtbot.addWidget(window)

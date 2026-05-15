@@ -9,6 +9,7 @@ from typing import Protocol
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
+from joyread.core.reader.epub_session import EPUB_EXTENSIONS, EpubReaderSession, open_epub_session
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 
@@ -16,7 +17,10 @@ from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 logger = logging.getLogger(__name__)
 
 
-SUPPORTED_READER_EXTENSIONS = ARCHIVE_EXTENSIONS | PDF_EXTENSIONS
+# EPUB is text-flow, not image-paged; the reader-window code path
+# branches on suffix before consulting this union, so EPUB never
+# reaches the ``ReaderImageSession`` Protocol below.
+SUPPORTED_READER_EXTENSIONS = ARCHIVE_EXTENSIONS | PDF_EXTENSIONS | EPUB_EXTENSIONS
 
 
 class ReaderImageSession(Protocol):
@@ -65,6 +69,15 @@ class ReaderSessionService:
         if suffix in PDF_EXTENSIONS:
             return self._pdf_image_service.open(path)
         raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
+
+    def open_epub(self, path: str | Path) -> EpubReaderSession:
+        """Open an EPUB and return a chapter-flow session.
+
+        Lives alongside ``open_archive`` / ``open_document`` so callers
+        (the novel viewmodel, tests) can address it directly without
+        going through the image-paged routing in ``open_document``.
+        """
+        return open_epub_session(path)
 
     def open_archive(
         self,

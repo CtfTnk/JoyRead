@@ -15,6 +15,7 @@ dependencies = [
     "pyzipper>=0.3",
     "platformdirs>=4.2",
     "rarfile>=4.2",
+    "lxml>=5.0",
 ]
 
 [project.optional-dependencies]

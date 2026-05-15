@@ -1,10 +1,11 @@
-"""Skeleton novel reader shell mirroring the manga reader's chrome.
+"""Novel reader shell wiring an EPUB viewmodel to the JoyRead chrome.
 
-Engine work is deferred: this widget renders a placeholder
-``NovelContentArea`` and pipes the footer slider to its scrollbar so the
-chrome behaviour (auto-hide, ESC ladder, panel outside-click close,
-slider↔scroll) can be exercised end-to-end before any EPUB parsing
-exists.
+Chapter content comes from ``NovelReaderViewModel`` (via
+``NovelChapterPayload``) and renders in a ``QTextBrowser``-backed
+``NovelContentArea``. The chrome (auto-hide, panels, ESC ladder,
+slider↔scroll, edge-reveal) is unchanged from the skeleton; the only
+addition is consuming the viewmodel's TOC + bookmarks + progress
+signals.
 """
 
 from __future__ import annotations
@@ -28,8 +29,10 @@ from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection
+from joyread.core.reader import ReaderDirection, ReaderProgress
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
+from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.novel_content_area import NovelContentArea
@@ -64,11 +67,25 @@ class NovelReaderShellWidget(QWidget):
         self._drag_position: QPoint | None = None
         self._show_back_button = show_back_button
         self._book = book
-        # Skeleton placeholders. Engine work replaces these with the real
-        # chapter/page indices coming from a NovelReaderViewModel.
+        # ``page_count`` here = spine length once the viewmodel loads.
+        # Footer slider still tracks scroll-within-chapter; the page
+        # indicator shows ``(current_chapter + 1) / chapter_count``.
         self._page_count = 1
         self._current_index = 0
-        del start_page_index  # accepted for signature parity with manga shell
+        self._writing_mode_hint_shown = False
+
+        # Resume from the last-saved chapter when the shelf knows about
+        # this book. ``page_index`` in the schema stores the spine index
+        # for EPUB readers — see plan §7.
+        start_index = max(0, int(start_page_index)) if start_page_index is not None else 0
+        if start_index == 0 and book is not None and context.library_service is not None:
+            try:
+                progress: ReaderProgress | None = context.library_service.get_progress(book.uuid)
+            except Exception:
+                logger.exception("Loading novel progress failed for %s", book.uuid)
+                progress = None
+            if progress is not None:
+                start_index = max(0, int(progress.page_index))
 
         self.setObjectName("NovelReaderRootPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -106,7 +123,8 @@ class NovelReaderShellWidget(QWidget):
 
         resolved_title = title or (book.title if book is not None else self._source_path.stem)
         self.header.set_title(resolved_title)
-        # Topic group: contents/bookmarks unavailable in the skeleton.
+        # Thumbnails mode is novel-irrelevant (no per-chapter previews
+        # yet); CONTENTS/BOOKMARKS flip on once the viewmodel populates.
         self.header.set_contents_enabled(False)
         self.header.set_bookmarks_enabled(False)
         self.topic_panel.reset_thumbnails(0)
@@ -117,17 +135,39 @@ class NovelReaderShellWidget(QWidget):
         self._update_page_indicator()
 
         logger.info(
-            "NovelReaderShellWidget init: path=%s book=%s embedded=%s",
+            "NovelReaderShellWidget init: path=%s book=%s embedded=%s start_index=%s",
             self._source_path,
             book.uuid if book is not None else None,
             show_back_button,
+            start_index,
+        )
+
+        self.viewmodel = NovelReaderViewModel(
+            context.task_service,
+            context.library_service if book is not None else None,
+            book_uuid=book.uuid if book is not None else None,
+            title=resolved_title,
+            initial_spine_index=start_index,
         )
 
         self._connect_signals()
         self._install_auto_hide()
 
+        # Defer the open by one event-loop tick so the first layout
+        # pass sees a real viewport size before the chapter HTML lands.
+        from PySide6.QtCore import QTimer
+
+        self._open_timer = QTimer(self)
+        self._open_timer.setSingleShot(True)
+        self._open_timer.timeout.connect(lambda: self.viewmodel.open_path(self._source_path))
+        self._open_timer.start(0)
+
     def cancel(self) -> None:
         """Tear down before close; symmetric with the manga shell."""
+        if hasattr(self, "_open_timer"):
+            self._open_timer.stop()
+        if hasattr(self, "viewmodel"):
+            self.viewmodel.cancel()
 
     def _connect_signals(self) -> None:
         self.header.back_requested.connect(self.back_requested.emit)
@@ -135,25 +175,49 @@ class NovelReaderShellWidget(QWidget):
         self.header.custom_requested.connect(self._toggle_custom_panel)
         self.header.topic_mode_requested.connect(self._show_topic_panel)
         self.footer.mouse_activity.connect(lambda: self._show_controls((self.footer,), reset_timer=True))
-        self.footer.start_requested.connect(self._scroll_to_start)
-        self.footer.previous_requested.connect(lambda: self.content_area.scroll_by_viewport(-1))
-        self.footer.next_requested.connect(lambda: self.content_area.scroll_by_viewport(1))
-        self.footer.end_requested.connect(self._scroll_to_end)
+        # Footer paddles navigate by chapter (not by viewport scroll —
+        # within-chapter scroll is handled by the slider + wheel +
+        # keyboard).
+        self.footer.start_requested.connect(self._handle_jump_to_start)
+        self.footer.previous_requested.connect(self._handle_previous_chapter)
+        self.footer.next_requested.connect(self._handle_next_chapter)
+        self.footer.end_requested.connect(self._handle_jump_to_end)
         self.footer.seek_requested.connect(self._handle_seek)
-        self.left_arrow.clicked.connect(lambda: self.content_area.scroll_by_viewport(-1))
-        self.right_arrow.clicked.connect(lambda: self.content_area.scroll_by_viewport(1))
+        # Side paddles advance / rewind a chapter as well, matching the
+        # Figma double-arrow affordance for novel readers.
+        self.left_arrow.clicked.connect(self._handle_previous_chapter)
+        self.right_arrow.clicked.connect(self._handle_next_chapter)
         # Edge-of-content mouse + right-click wake the chrome — mirrors
         # the manga shell's wiring against ``ReaderCanvas``.
         self.content_area.mouse_moved.connect(self._handle_content_mouse_move)
         self.content_area.left_clicked.connect(self._hide_floating_panels_if_visible)
         self.content_area.right_clicked.connect(lambda: self._show_controls(reset_timer=True))
-        # Slider doubles as a scrollbar — both directions feed each other,
-        # but ``NovelContentArea.set_scroll_percentage`` and the slider
-        # blockSignals guard prevent the round-trip from looping.
+        # Slider doubles as a scrollbar for the current chapter — both
+        # directions feed each other; the re-entrancy guards inside
+        # ``NovelContentArea`` and the slider's blockSignals prevent
+        # the round-trip from looping.
         self.footer.slider.valueChanged.connect(self._sync_content_from_slider)
         self.content_area.scroll_changed.connect(self._sync_slider_from_content)
         self.custom_panel.enable_custom_changed.connect(self._handle_enable_custom_changed)
         self.custom_panel.font_size_changed.connect(self._handle_font_size_changed)
+        # Topic panel selections all funnel through the viewmodel's
+        # spine-indexed seek.
+        self.topic_panel.contents_selected.connect(self.viewmodel.seek)
+        self.topic_panel.bookmark_selected.connect(self.viewmodel.seek)
+        self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)
+        self.topic_panel.bookmark_rename_requested.connect(self._show_rename_bookmark_dialog)
+        self.topic_panel.bookmark_delete_requested.connect(self.viewmodel.delete_bookmark)
+        # ViewModel → shell.
+        self.viewmodel.state_changed.connect(self._sync_state_from_viewmodel)
+        self.viewmodel.chapter_rendered.connect(self._handle_chapter_rendered)
+        self.viewmodel.toc_changed.connect(self._handle_toc_changed)
+        self.viewmodel.bookmarks_changed.connect(self._handle_bookmarks_changed)
+        self.viewmodel.bookmark_error_changed.connect(
+            lambda message: self.dialog_overlay.show_info("Bookmarks", message)
+        )
+        self.viewmodel.progress_changed.connect(self._handle_progress_changed)
+        self.viewmodel.error_changed.connect(self._handle_error_changed)
+        self.viewmodel.writing_mode_warning.connect(self._handle_writing_mode_warning)
 
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
@@ -195,13 +259,12 @@ class NovelReaderShellWidget(QWidget):
 
     # --- Slider <-> scroll wiring --------------------------------------
     def _handle_seek(self, index: int) -> None:
-        if self._page_count <= 1:
-            # Slider currently mirrors scroll percentage rather than page
-            # indices; the seek_requested signal fires on slider release
-            # and we already track it via valueChanged. Nothing to do.
-            return
-        self._current_index = max(0, min(index, self._page_count - 1))
-        self._update_page_indicator()
+        # The slider domain is 0..100 = scroll percentage within the
+        # current chapter. The slider value already drove the content
+        # area via ``_sync_content_from_slider``; this handler is a
+        # no-op kept for future engine wiring (e.g. snap to a TOC
+        # anchor on slider release).
+        del index
 
     def _sync_content_from_slider(self, value: int) -> None:
         maximum = max(1, self.footer.slider.maximum())
@@ -221,16 +284,25 @@ class NovelReaderShellWidget(QWidget):
         finally:
             self.footer.slider.blockSignals(False)
 
-    def _scroll_to_start(self) -> None:
-        self.content_area.set_scroll_percentage(0.0)
+    def _handle_previous_chapter(self) -> None:
+        if hasattr(self, "viewmodel"):
+            self.viewmodel.go_previous()
 
-    def _scroll_to_end(self) -> None:
-        self.content_area.set_scroll_percentage(1.0)
+    def _handle_next_chapter(self) -> None:
+        if hasattr(self, "viewmodel"):
+            self.viewmodel.go_next()
+
+    def _handle_jump_to_start(self) -> None:
+        if hasattr(self, "viewmodel"):
+            self.viewmodel.jump_to_start()
+
+    def _handle_jump_to_end(self) -> None:
+        if hasattr(self, "viewmodel"):
+            self.viewmodel.jump_to_end()
 
     def _update_page_indicator(self) -> None:
-        # For the skeleton the slider runs from 0..100 to give the seek
-        # bar continuous resolution against the placeholder body. When a
-        # real engine ships, ``page_count`` drives the slider domain.
+        # Slider runs from 0..100 = scroll-within-current-chapter. The
+        # page indicator labels show ``(spine_index + 1) / chapter_count``.
         self.footer.slider.blockSignals(True)
         try:
             self.footer.slider.setMinimum(0)
@@ -252,10 +324,27 @@ class NovelReaderShellWidget(QWidget):
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
-        # Topic features (TOC/bookmarks/thumbnails) need the engine; the
-        # skeleton acknowledges the click but renders no panel content.
-        self.header.clear_topic_active_mode()
-        del mode
+        # Thumbnails mode is novel-irrelevant (no per-chapter previews
+        # yet); the header keeps it disabled, but defend if reached.
+        if mode == ReaderTopicMode.THUMBNAILS:
+            self.header.clear_topic_active_mode()
+            return
+        if mode == ReaderTopicMode.CONTENTS and not self.viewmodel.can_use_contents:
+            self.header.clear_topic_active_mode()
+            return
+        if mode == ReaderTopicMode.BOOKMARKS and not self.viewmodel.can_use_bookmarks:
+            self.header.clear_topic_active_mode()
+            return
+        self._hide_custom_panel()
+        self.header.set_topic_active_mode(mode)
+        self.topic_panel.set_mode(mode)
+        if mode == ReaderTopicMode.BOOKMARKS:
+            self.viewmodel.refresh_bookmarks()
+        self._position_topic_panel()
+        self.topic_panel.show()
+        self.topic_panel.raise_()
+        self.panel_filter.activate(self.topic_panel)
+        self._start_hide_timer_if_allowed()
 
     def _hide_custom_panel(self) -> None:
         if self.custom_panel.isHidden():
@@ -326,7 +415,7 @@ class NovelReaderShellWidget(QWidget):
             widget = widget.parentWidget()
         return False
 
-    # --- Custom panel sink (skeleton-only) ------------------------------
+    # --- Custom panel sink ----------------------------------------------
     def _handle_enable_custom_changed(self, enabled: bool) -> None:
         logger.debug("novel custom: enable_custom=%s", enabled)
         self.custom_panel.set_enable_custom(enabled, emit=False)
@@ -335,6 +424,66 @@ class NovelReaderShellWidget(QWidget):
     def _handle_font_size_changed(self, size: int) -> None:
         logger.debug("novel custom: font_size=%s", size)
         self.content_area.apply_font_size(size)
+
+    # --- Viewmodel signal handlers --------------------------------------
+    def _sync_state_from_viewmodel(self) -> None:
+        self.header.set_title(self.viewmodel.title)
+        self._page_count = max(1, self.viewmodel.chapter_count)
+        self._current_index = max(0, min(self.viewmodel.current_index, self._page_count - 1))
+        self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        self.header.set_contents_enabled(self.viewmodel.can_use_contents)
+        self._update_page_indicator()
+        if self.viewmodel.is_loading:
+            self.content_area.show_error("Opening EPUB…")
+        elif self.viewmodel.error_message:
+            self.content_area.show_error(self.viewmodel.error_message)
+
+    def _handle_chapter_rendered(self, payload: NovelChapterPayload) -> None:
+        self._current_index = payload.spine_index
+        self._page_count = max(1, payload.chapter_count)
+        self.content_area.set_chapter(payload)
+        self._update_page_indicator()
+        # Reset slider to top after a chapter swap (scroll-changed will
+        # follow once the content settles).
+        self.footer.slider.blockSignals(True)
+        try:
+            self.footer.slider.setValue(0)
+        finally:
+            self.footer.slider.blockSignals(False)
+
+    def _handle_toc_changed(self, items: tuple[ReaderContentsItem, ...]) -> None:
+        self.topic_panel.set_contents(items)
+        self.header.set_contents_enabled(bool(items))
+
+    def _handle_bookmarks_changed(self, items: tuple[ReaderBookmarkItem, ...]) -> None:
+        self.topic_panel.set_bookmarks(items)
+        self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+
+    def _handle_progress_changed(self, book_uuid: str, page_index: int, percent: float) -> None:
+        self.progress_changed.emit(book_uuid, page_index, percent)
+
+    def _handle_error_changed(self, message: str | None) -> None:
+        if message:
+            self.content_area.show_error(message)
+
+    def _handle_writing_mode_warning(self, message: str) -> None:
+        if self._writing_mode_hint_shown:
+            return
+        self._writing_mode_hint_shown = True
+        self.dialog_overlay.show_info("Heads up", message)
+
+    def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
+        self.dialog_overlay.show_input(
+            "Rename Bookmark",
+            "Bookmark Name",
+            on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(
+                bookmark_uuid, name
+            ),
+            initial_text=current_name,
+            confirm_text="Rename",
+            cancel_text="Cancel",
+            validator=lambda value: None if value.strip() else "Bookmark name cannot be empty.",
+        )
 
     # --- Auto-hide helpers ----------------------------------------------
     def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
@@ -372,7 +521,16 @@ class NovelReaderShellWidget(QWidget):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         rect = self.rect()
-        self.content_area.setGeometry(rect)
+        # Inset the content area by the shell's corner radius on left
+        # and right so text glyphs never enter the rounded-corner zone.
+        # Top/bottom are covered by the header/footer chrome bands.
+        inset = Theme.reader_radius
+        self.content_area.setGeometry(
+            inset,
+            0,
+            max(0, self.width() - 2 * inset),
+            self.height(),
+        )
         self.header.setGeometry(0, 0, self.width(), Theme.reader_banner_height)
         self.footer.setGeometry(
             0,

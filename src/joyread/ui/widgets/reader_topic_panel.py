@@ -18,7 +18,11 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
+from joyread.ui.viewmodels.reader_viewmodel import (
+    ReaderBookmarkItem,
+    ReaderContentsItem,
+    ReaderTopicThumbnailBatch,
+)
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_detail import DetailThumbnailGrid
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -35,6 +39,7 @@ class ReaderTopicPanel(QFrame):
     thumbnail_batch_requested = QtSignal(int, int, tuple)
     thumbnail_selected = QtSignal(int)
     bookmark_selected = QtSignal(int)
+    contents_selected = QtSignal(int)
     new_bookmark_requested = QtSignal()
     bookmark_rename_requested = QtSignal(str, str)
     bookmark_delete_requested = QtSignal(str)
@@ -124,6 +129,22 @@ class ReaderTopicPanel(QFrame):
         if self._mode == ReaderTopicMode.THUMBNAILS and self.isVisible():
             self._defer_thumbnail_check()
 
+    def set_contents(self, items: tuple[ReaderContentsItem, ...]) -> None:
+        """Populate CONTENTS mode with a TOC list. Empty tuple = placeholder."""
+        _clear_layout(self._contents_layout)
+        if not items:
+            placeholder = QLabel("Table of contents not available.")
+            placeholder.setObjectName("ReaderTopicEmptyText")
+            placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            placeholder.setWordWrap(True)
+            self._contents_layout.addWidget(placeholder, stretch=1)
+            return
+        for item in items:
+            row = _TopicContentsRow(item)
+            row.clicked.connect(self.contents_selected.emit)
+            self._contents_layout.addWidget(row)
+        self._contents_layout.addStretch(1)
+
     def set_bookmarks(self, bookmarks: tuple[ReaderBookmarkItem, ...]) -> None:
         _clear_layout(self._bookmark_layout)
         for bookmark in bookmarks:
@@ -157,19 +178,19 @@ class ReaderTopicPanel(QFrame):
     def _build_contents_page(self) -> QWidget:
         self._contents_page = QWidget()
         self._contents_page.setObjectName("ReaderTopicContentsPage")
-        layout = QVBoxLayout(self._contents_page)
-        layout.setContentsMargins(
+        self._contents_layout = QVBoxLayout(self._contents_page)
+        self._contents_layout.setContentsMargins(
             Theme.reader_topic_section_padding,
             Theme.reader_topic_section_padding,
             Theme.reader_topic_section_padding,
             Theme.reader_topic_section_padding,
         )
-        layout.setSpacing(0)
-        label = QLabel("Table of contents is unavailable in manga mode.")
-        label.setObjectName("ReaderTopicEmptyText")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setWordWrap(True)
-        layout.addWidget(label, stretch=1)
+        self._contents_layout.setSpacing(Theme.reader_topic_item_gap)
+        self._contents_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        # Default state: empty placeholder until a viewmodel calls
+        # ``set_contents``. Manga reader leaves CONTENTS disabled so it
+        # never reaches this widget.
+        self.set_contents(())
         return self._contents_page
 
     def _build_bookmarks_page(self) -> QWidget:
@@ -233,6 +254,55 @@ class ReaderTopicPanel(QFrame):
             Theme.reader_topic_thumbnail_batch_size,
             (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
         )
+
+
+class _TopicContentsRow(QFrame):
+    clicked = QtSignal(int)
+
+    def __init__(self, item: ReaderContentsItem, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._item = item
+        self._pressed_inside = False
+        self.setProperty("class", "ReaderTopicItem")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFixedHeight(Theme.reader_topic_item_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+
+        layout = QHBoxLayout(self)
+        # Indent nested TOC entries proportional to their depth, mirroring
+        # how a typical book viewer renders subsections under chapters.
+        depth_indent = Theme.reader_topic_item_padding_left + max(0, item.depth) * 16
+        layout.setContentsMargins(
+            depth_indent,
+            Theme.reader_topic_item_padding_vertical,
+            Theme.reader_topic_item_padding_right,
+            Theme.reader_topic_item_padding_vertical,
+        )
+        layout.setSpacing(Theme.reader_topic_item_label_gap)
+
+        self._label = ElidedLabel(item.label)
+        self._label.setProperty("class", "ReaderTopicItemLabel")
+        self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout.addWidget(self._label)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
+        self._pressed_inside = False
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            event.accept()
+            if self.rect().contains(event.position().toPoint()):
+                self.clicked.emit(self._item.page_index)
+            return
+        self._pressed_inside = False
+        super().mouseReleaseEvent(event)
 
 
 class _TopicBookmarkRow(QFrame):

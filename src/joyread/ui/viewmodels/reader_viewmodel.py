@@ -51,6 +51,21 @@ class ReaderBookmarkItem:
 
 
 @dataclass(frozen=True)
+class ReaderContentsItem:
+    """One TOC entry surfaced to the topic panel's CONTENTS mode.
+
+    ``page_index`` carries the spine index for EPUB readers. The
+    manga reader currently doesn't populate this list (its CONTENTS
+    tab stays disabled), so reusing ``page_index`` as an opaque
+    seek target keeps the topic_panel API symmetric with bookmarks.
+    """
+
+    label: str
+    page_index: int
+    depth: int = 0
+
+
+@dataclass(frozen=True)
 class ReaderTopicThumbnailItem:
     page_index: int
     image_bytes: bytes

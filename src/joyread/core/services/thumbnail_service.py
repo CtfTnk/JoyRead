@@ -12,11 +12,18 @@ from threading import Lock
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 from joyread.core.archive import ArchiveError, ArchiveImageService
+from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderImageSession, ReaderSessionService, SUPPORTED_READER_EXTENSIONS
-from joyread.core.reader.pdf_session import PdfError
+from joyread.core.reader import ReaderImageSession, ReaderSessionService
+from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfError
 from joyread.core.services.cache_service import BoundedByteCache, CacheService
 from joyread.infrastructure.filesystem.path_service import PathService
+
+
+# Image-paged formats only: EPUB lives in ``SUPPORTED_READER_EXTENSIONS``
+# (the reader can open it) but its chapter-flow surface has no first
+# image we can render a cover from, so it's excluded here.
+_THUMBNAIL_GENERABLE_EXTENSIONS = ARCHIVE_EXTENSIONS | PDF_EXTENSIONS
 
 
 SizeTuple = tuple[int, int]
@@ -65,7 +72,11 @@ class ThumbnailService:
 
     def can_generate_from(self, book: Book) -> bool:
         source = Path(book.file_path)
-        return source.exists() and source.is_file() and source.suffix.lower() in SUPPORTED_READER_EXTENSIONS
+        return (
+            source.exists()
+            and source.is_file()
+            and source.suffix.lower() in _THUMBNAIL_GENERABLE_EXTENSIONS
+        )
 
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         signature = self._source_signature(book)

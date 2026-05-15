@@ -50,6 +50,9 @@ class NovelCustomPanel(QFrame):
 
         self.enable_switch = _SmallSwitch()
         self.enable_switch.toggled.connect(self.enable_custom_changed.emit)
+        # Also gate the dependent rows immediately on toggle so the
+        # visual disabled state doesn't lag behind a slow shell handler.
+        self.enable_switch.toggled.connect(self._sync_child_enabled)
         self.enable_row = _SettingRow("Enable Custom", self.enable_switch)
         layout.addWidget(self.enable_row)
 
