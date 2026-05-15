@@ -140,8 +140,15 @@ class ReaderHeader(QWidget):
     back_requested = QtSignal()
     mouse_activity = QtSignal()
     topic_mode_requested = QtSignal(object)
+    custom_requested = QtSignal()
 
-    def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        resources: ResourceLoader,
+        parent: QWidget | None = None,
+        *,
+        show_custom_button: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("ReaderHeader")
         self.setMouseTracking(True)
@@ -180,7 +187,20 @@ class ReaderHeader(QWidget):
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.title.setFixedHeight(Theme.reader_control_size)
         layout.addStretch(1)
-        layout.addWidget(QWidget(), stretch=0)
+        # Optional gear at the right edge for the novel reader's Custom
+        # panel. Manga passes ``show_custom_button=False`` so its layout
+        # is unchanged (a zero-size spacer keeps title-centering symmetry).
+        self.custom_button = reader_button(
+            resources,
+            "icon_setting.svg",
+            "Custom",
+            self.custom_requested.emit,
+        )
+        self.custom_button.setVisible(show_custom_button)
+        if show_custom_button:
+            layout.addWidget(self.custom_button)
+        else:
+            layout.addWidget(QWidget(), stretch=0)
 
     def set_back_visible(self, visible: bool) -> None:
         self.back_button.setVisible(visible)

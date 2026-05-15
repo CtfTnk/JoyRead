@@ -416,6 +416,13 @@ class Theme:
     reader_edge_reveal_distance = 78
     reader_pan_step_ratio = 0.18
     reader_pan_min_step = 80
+    # Novel reader (Figma node 616:4911). Right-side "Custom" panel
+    # mirrors the settings panel width per Figma; content area renders
+    # a long placeholder until the EPUB engine lands.
+    novel_custom_panel_width = 260
+    novel_content_margin = 48
+    novel_content_max_width = 760
+    novel_placeholder_font_size = 14
 
     # Palette
     color_window = "#ffffff"

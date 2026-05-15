@@ -14,6 +14,8 @@ from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
+from joyread.ui.views.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
@@ -28,12 +30,21 @@ from joyread.ui.widgets.window_chrome import WindowChromeWidget
 logger = logging.getLogger(__name__)
 
 
+# Formats handled by the novel reader skeleton. Engine work will expand
+# this (and remove the read-only restriction in ``open_reader_for_file``).
+NOVEL_FORMATS: frozenset[str] = frozenset({".epub"})
+
+
+def _is_novel_source(path: Path) -> bool:
+    return path.suffix.lower() in NOVEL_FORMATS
+
+
 class MainWindow(QMainWindow):
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._context = context
-        self._reader_windows: list[ReaderWindow] = []
-        self._embedded_reader: ReaderShellWidget | None = None
+        self._reader_windows: list[ReaderWindow | NovelReaderWindow] = []
+        self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
@@ -126,16 +137,25 @@ class MainWindow(QMainWindow):
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
             return
         individual = self._settings_for_reader_launch().individual_read_window
+        source_path = Path(book.file_path)
+        is_novel = _is_novel_source(source_path)
         logger.info(
-            "open_reader_for_book uuid=%s page=%s mode=%s",
+            "open_reader_for_book uuid=%s page=%s mode=%s reader=%s",
             book_uuid,
             page_index,
             "window" if individual else "embedded",
+            "novel" if is_novel else "manga",
         )
+        if is_novel:
+            if individual:
+                self._show_novel_reader_window(source_path, book=book, start_page_index=page_index)
+            else:
+                self._show_embedded_novel_reader(source_path, book=book, start_page_index=page_index)
+            return
         if individual:
-            self._show_reader_window(Path(book.file_path), book=book, start_page_index=page_index)
+            self._show_reader_window(source_path, book=book, start_page_index=page_index)
         else:
-            self._show_embedded_reader(Path(book.file_path), book=book, start_page_index=page_index)
+            self._show_embedded_reader(source_path, book=book, start_page_index=page_index)
 
     def open_reader_for_book_at(self, book_uuid: str, page_index: int) -> None:
         self.open_reader_for_book(book_uuid, page_index)
@@ -143,6 +163,11 @@ class MainWindow(QMainWindow):
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
         logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
+        if _is_novel_source(source_path):
+            # Skeleton: .epub bypasses preflight/import (no parser yet),
+            # opening read-only regardless of ``import_mode``.
+            self._show_novel_reader_window(source_path, title=source_path.stem)
+            return
         if not import_mode:
             self._show_reader_window(source_path, title=source_path.stem)
             return
@@ -193,7 +218,8 @@ class MainWindow(QMainWindow):
         )
 
     def _select_reader_file(self, import_mode: bool) -> None:
-        extensions = " ".join(f"*{suffix}" for suffix in sorted(SUPPORTED_READER_EXTENSIONS))
+        readable_suffixes = sorted(SUPPORTED_READER_EXTENSIONS | NOVEL_FORMATS)
+        extensions = " ".join(f"*{suffix}" for suffix in readable_suffixes)
         # Keep the platform-native picker. On macOS this can briefly involve
         # Open/Save Panel, QuickLook, and AutoFill helper processes owned by
         # the OS; JoyRead does not spawn or manage those helpers directly.
@@ -294,6 +320,51 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_resize_grip"):
             self._resize_grip.hide()
 
+    def _show_novel_reader_window(
+        self,
+        path: Path,
+        *,
+        book=None,
+        title: str | None = None,
+        start_page_index: int | None = None,
+    ) -> None:  # noqa: ANN001
+        reader = NovelReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
+        reader.progress_changed.connect(self._handle_reader_progress_changed)
+        reader.closed.connect(lambda reader=reader: self._forget_reader_window(reader))
+        reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
+        self._reader_windows.append(reader)
+        reader.show()
+        reader.raise_()
+
+    def _show_embedded_novel_reader(
+        self,
+        path: Path,
+        *,
+        book,
+        start_page_index: int | None = None,
+    ) -> None:  # noqa: ANN001
+        root = self.centralWidget()
+        if root is None:
+            return
+        self._hide_settings_page()
+        self._close_embedded_reader()
+        self._embedded_reader = NovelReaderShellWidget(
+            self._context,
+            path,
+            book=book,
+            show_back_button=True,
+            start_page_index=start_page_index,
+            parent=root,
+        )
+        self._embedded_reader.back_requested.connect(self._close_embedded_reader)
+        self._embedded_reader.progress_changed.connect(self._handle_reader_progress_changed)
+        self._embedded_reader.setGeometry(root.rect())
+        self._embedded_reader.show()
+        self._embedded_reader.raise_()
+        self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        if hasattr(self, "_resize_grip"):
+            self._resize_grip.hide()
+
     def _close_embedded_reader(self) -> None:
         if self._embedded_reader is None:
             return
@@ -306,7 +377,7 @@ class MainWindow(QMainWindow):
             self._resize_grip.show()
             self._resize_grip.raise_()
 
-    def _forget_reader_window(self, reader: ReaderWindow) -> None:
+    def _forget_reader_window(self, reader: ReaderWindow | NovelReaderWindow) -> None:
         if reader in self._reader_windows:
             self._reader_windows.remove(reader)
 

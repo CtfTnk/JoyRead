@@ -14,6 +14,7 @@ from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
+from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
@@ -46,11 +47,6 @@ class ReaderShellWidget(QWidget):
         self._source_path = Path(source_path)
         self._drag_position: QPoint | None = None
         self._show_back_button = show_back_button
-        self._control_widgets: tuple[QWidget, ...] = ()
-        self._visible_controls: set[QWidget] = set()
-        self._app_event_filter_installed = False
-        self._settings_event_filter_installed = False
-        self._topic_event_filter_installed = False
         self._topic_page_count = -1
 
         self.setObjectName("ReaderRootPanel")
@@ -166,16 +162,34 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
 
     def _install_auto_hide(self) -> None:
-        self._control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
-        for widget in self._control_widgets:
-            self._visible_controls.add(widget)
-            widget.installEventFilter(self)
-
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(Theme.reader_auto_hide_delay_ms)
-        self._hide_timer.timeout.connect(self._hide_inactive_controls)
-        self._hide_timer.start()
+        control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
+        # Late-bind both callbacks via lambdas: tests monkeypatch
+        # ``_control_interaction_active`` on the shell to force hide
+        # behaviour, and the panel-raise helper depends on panel state
+        # that changes after the controller is constructed.
+        self.auto_hide = AutoHideController(
+            self,
+            control_widgets,
+            delay_ms=Theme.reader_auto_hide_delay_ms,
+            interaction_predicate=lambda: self._control_interaction_active(),
+            on_after_show=lambda: self._raise_settings_panel_if_visible(),
+        )
+        # Header still needs the shell as an event filter for window-drag,
+        # so install the shell on it directly. Other control widgets only
+        # need the auto-hide controller's filter for reveal-on-hover.
+        self.header.installEventFilter(self)
+        self.panel_filter = PanelOutsideClickFilter(self)
+        self.panel_filter.register(
+            self.settings_panel,
+            safe_click_predicate=self._is_settings_safe_click,
+            on_outside_click=self._hide_settings_panel,
+        )
+        self.panel_filter.register(
+            self.topic_panel,
+            safe_click_predicate=self._is_topic_safe_click,
+            on_outside_click=self._hide_topic_panel,
+        )
+        self.auto_hide.start()
 
     def _sync_state(self) -> None:
         self.header.set_title(self.viewmodel.title)
@@ -235,7 +249,7 @@ class ReaderShellWidget(QWidget):
         self._position_settings_panel()
         self.settings_panel.show()
         self.settings_panel.raise_()
-        self._install_settings_event_filter()
+        self.panel_filter.activate(self.settings_panel)
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
@@ -253,7 +267,7 @@ class ReaderShellWidget(QWidget):
         self._position_topic_panel()
         self.topic_panel.show()
         self.topic_panel.raise_()
-        self._install_topic_event_filter()
+        self.panel_filter.activate(self.topic_panel)
         self._start_hide_timer_if_allowed()
 
     def _handle_canvas_mouse_move(self, position: QPoint) -> None:
@@ -271,31 +285,12 @@ class ReaderShellWidget(QWidget):
             self._show_controls((self.right_arrow,), reset_timer=True)
 
     def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        target_widgets = widgets or self._control_widgets
-        for widget in target_widgets:
-            self._set_control_visible(widget, True)
-        self._raise_settings_panel_if_visible()
+        self.auto_hide.show(widgets, reset_timer=False)
         if reset_timer:
             self._start_hide_timer_if_allowed()
 
     def _hide_inactive_controls(self) -> None:
-        if self._control_interaction_active():
-            self._hide_timer.start()
-            return
-        for widget in self._control_widgets:
-            self._set_control_visible(widget, False)
-
-    def _set_control_visible(self, widget: QWidget, visible: bool) -> None:
-        if widget not in self._control_widgets:
-            return
-        if visible:
-            self._visible_controls.add(widget)
-            widget.show()
-            widget.raise_()
-            self._raise_settings_panel_if_visible()
-        else:
-            self._visible_controls.discard(widget)
-            widget.hide()
+        self.auto_hide.hide_inactive()
 
     def _control_interaction_active(self) -> bool:
         if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
@@ -318,7 +313,7 @@ class ReaderShellWidget(QWidget):
     def _start_hide_timer_if_allowed(self) -> None:
         if self.dialog_overlay.isVisible():
             return
-        self._hide_timer.start()
+        self.auto_hide.restart()
 
     def _activate_left_outer(self) -> None:
         if self.viewmodel.is_right_to_left:
@@ -416,29 +411,6 @@ class ReaderShellWidget(QWidget):
         return False
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if (
-            self._settings_event_filter_installed
-            and self.settings_panel.isVisible()
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(event, QMouseEvent)
-        ):
-            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
-            if not self._is_settings_safe_click(widget):
-                self._hide_settings_panel()
-        if (
-            self._topic_event_filter_installed
-            and self.topic_panel.isVisible()
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(event, QMouseEvent)
-        ):
-            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
-            if not self._is_topic_safe_click(widget):
-                self._hide_topic_panel()
-        if watched in self._control_widgets and event.type() in {
-            QEvent.Type.Enter,
-            QEvent.Type.MouseMove,
-        }:
-            self._show_controls((watched,), reset_timer=True)  # type: ignore[arg-type]
         if watched is self.header:
             if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
                 if event.button() == Qt.MouseButton.LeftButton:
@@ -456,8 +428,7 @@ class ReaderShellWidget(QWidget):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self.cancel()
-        self._remove_settings_event_filter()
-        self._remove_topic_event_filter()
+        self.panel_filter.deactivate_all()
         super().closeEvent(event)
 
     def _position_settings_panel(self) -> None:
@@ -484,7 +455,7 @@ class ReaderShellWidget(QWidget):
         if self.settings_panel.isHidden():
             return
         self.settings_panel.hide()
-        self._remove_settings_event_filter()
+        self.panel_filter.deactivate(self.settings_panel)
         self._start_hide_timer_if_allowed()
 
     def _hide_topic_panel(self) -> None:
@@ -492,7 +463,7 @@ class ReaderShellWidget(QWidget):
             return
         self.topic_panel.hide()
         self.header.clear_topic_active_mode()
-        self._remove_topic_event_filter()
+        self.panel_filter.deactivate(self.topic_panel)
         self._start_hide_timer_if_allowed()
 
     def _raise_settings_panel_if_visible(self) -> None:
@@ -503,53 +474,14 @@ class ReaderShellWidget(QWidget):
         if self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
 
-    def _install_settings_event_filter(self) -> None:
-        if self._settings_event_filter_installed:
-            return
-        self._settings_event_filter_installed = True
-        self._ensure_app_event_filter()
-
-    def _remove_settings_event_filter(self) -> None:
-        if not self._settings_event_filter_installed:
-            return
-        self._settings_event_filter_installed = False
-        self._remove_app_event_filter_if_unused()
-
-    def _install_topic_event_filter(self) -> None:
-        if self._topic_event_filter_installed:
-            return
-        self._topic_event_filter_installed = True
-        self._ensure_app_event_filter()
-
-    def _remove_topic_event_filter(self) -> None:
-        if not self._topic_event_filter_installed:
-            return
-        self._topic_event_filter_installed = False
-        self._remove_app_event_filter_if_unused()
-
-    def _ensure_app_event_filter(self) -> None:
-        if self._app_event_filter_installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
-            self._app_event_filter_installed = True
-
-    def _remove_app_event_filter_if_unused(self) -> None:
-        if self._settings_event_filter_installed or self._topic_event_filter_installed:
-            return
-        if not self._app_event_filter_installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
-        self._app_event_filter_installed = False
-
     def _is_settings_safe_click(self, widget: QWidget | None) -> bool:
+        # See ``NovelReaderShellWidget._is_custom_safe_click`` for why
+        # ``windowType()`` is used instead of a bitwise AND against the
+        # Popup flag.
         while widget is not None:
             if widget in {self.settings_panel, self.footer.settings_button}:
                 return True
-            if widget.window().windowFlags() & Qt.WindowType.Popup:
+            if widget.window().windowType() == Qt.WindowType.Popup:
                 return True
             widget = widget.parentWidget()
         return False
@@ -564,7 +496,7 @@ class ReaderShellWidget(QWidget):
                 self.header.thumbnail_button,
             }:
                 return True
-            if widget.window().windowFlags() & Qt.WindowType.Popup:
+            if widget.window().windowType() == Qt.WindowType.Popup:
                 return True
             widget = widget.parentWidget()
         return False
