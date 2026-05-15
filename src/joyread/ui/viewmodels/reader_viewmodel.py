@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -29,6 +30,9 @@ from joyread.core.services.task_service import TaskHandle, TaskService, TaskStat
 from joyread.core.services.thumbnail_service import render_contain_blur_thumbnail
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,8 @@ class ReaderViewModel:
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
         self._warm_handle: TaskHandle[None] | None = None
         self._save_handle: TaskHandle[None] | None = None
+        self._settings_save_handle: TaskHandle[None] | None = None
+        self._pending_settings_save: ReaderSettings | None = None
         self._bookmark_handle: TaskHandle[tuple[ReaderBookmarkItem, ...]] | None = None
         self._topic_thumbnail_handle: TaskHandle[ReaderTopicThumbnailBatch] | None = None
         self._task_generation = 0
@@ -206,6 +212,12 @@ class ReaderViewModel:
 
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
         path = Path(source_path)
+        logger.info(
+            "ReaderViewModel open_path book=%s path=%s with_password=%s",
+            self._book_uuid,
+            path,
+            password is not None,
+        )
         if self._source_path != path and password is None:
             self._archive_passwords.clear()
             self._skipped_archives.clear()
@@ -241,6 +253,11 @@ class ReaderViewModel:
         )
 
     def cancel(self, *, reset_passwords: bool = True) -> None:
+        logger.debug(
+            "ReaderViewModel cancel book=%s reset_passwords=%s",
+            self._book_uuid,
+            reset_passwords,
+        )
         self._task_generation += 1
         if self._open_handle is not None:
             self._open_handle.cancel()
@@ -250,6 +267,8 @@ class ReaderViewModel:
             self._warm_handle.cancel()
         if self._save_handle is not None:
             self._save_handle.cancel()
+        # Reader preferences are intentionally not cancelled here. They are
+        # tiny per-book writes and should survive closing the reader window.
         if self._bookmark_handle is not None:
             self._bookmark_handle.cancel()
         if self._topic_thumbnail_handle is not None:
@@ -636,6 +655,13 @@ class ReaderViewModel:
         self.recalculate_layout()
         self._emit_state()
 
+    def set_vertical_fit_width(self, enabled: bool) -> None:
+        self.settings = replace(self.settings, vertical_fit_width=enabled)
+        self._vertical_scroll_y = 0.0
+        self._persist_settings()
+        self.recalculate_layout()
+        self._emit_state()
+
     def set_vertical_zoom_percent(self, value: int) -> None:
         clamped = max(25, min(200, int(value)))
         self.settings = replace(self.settings, vertical_zoom_percent=clamped)
@@ -647,17 +673,19 @@ class ReaderViewModel:
     def handle_vertical_scroll(self, delta_y: int) -> bool:
         if not self._is_vertical_mode or self._page_count <= 0:
             return False
-        step = self._vertical_step()
-        if step <= 0:
-            return True
-
         self._vertical_scroll_y += float(delta_y)
         changed_page = False
-        while self._vertical_scroll_y <= -step and self._primary_index < self._page_count - 1:
+        while self._primary_index < self._page_count - 1:
+            step = self._vertical_step(self._primary_index)
+            if step <= 0 or self._vertical_scroll_y > -step:
+                break
             self._primary_index += 1
             self._vertical_scroll_y += step
             changed_page = True
-        while self._vertical_scroll_y >= step and self._primary_index > 0:
+        while self._primary_index > 0:
+            step = self._vertical_step(self._primary_index - 1)
+            if step <= 0 or self._vertical_scroll_y < step:
+                break
             self._primary_index -= 1
             self._vertical_scroll_y -= step
             changed_page = True
@@ -879,7 +907,14 @@ class ReaderViewModel:
                     continue
                 try:
                     rendered = render_contain_blur_thumbnail(image.image_bytes, size)
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "Topic thumbnail render failed page=%d size=%dx%d: %s",
+                        page_index,
+                        width,
+                        height,
+                        exc,
+                    )
                     continue
                 self._topic_thumbnail_cache.put((page_index, width, height), rendered)
                 items.append(ReaderTopicThumbnailItem(page_index, rendered))
@@ -1178,13 +1213,20 @@ class ReaderViewModel:
             return planned
         return (max(0, min(self._primary_index, max(0, self._page_count - 1))),)
 
-    def _vertical_step(self) -> float:
+    def _vertical_step(self, page_index: int) -> float:
+        gap = float(self.settings.page_spacing if self.settings.vertical_custom_enabled else 0)
+        if self.settings.vertical_custom_enabled and self.settings.vertical_fit_width:
+            image = self._pages.get(page_index)
+            if image is not None:
+                width, height = image.dimensions
+                if width > 0 and height > 0 and self._viewport_size.width > 0:
+                    return (self._viewport_size.width * (float(height) / float(width))) + gap
+            return self._viewport_size.height + gap
         zoom = (
             max(25, min(200, int(self.settings.vertical_zoom_percent))) / 100.0
             if self.settings.vertical_custom_enabled
             else 1.0
         )
-        gap = float(self.settings.page_spacing if self.settings.vertical_custom_enabled else 0)
         return (self._viewport_size.height * zoom) + gap
 
     def _sync_wide_pan_for_layout(self, result: ReaderLayoutResult) -> None:
@@ -1256,11 +1298,66 @@ class ReaderViewModel:
     def _persist_settings(self) -> None:
         if self._library_service is None or self._book_uuid is None:
             return
-        settings = self.settings
-        self._task_service.submit(
-            "reader-settings",
-            lambda: self._library_service.save_reader_settings(self._book_uuid or "", settings),
+        self._pending_settings_save = self.settings
+        if self._settings_save_in_flight():
+            return
+        self._submit_pending_settings_save()
+
+    def _settings_save_in_flight(self) -> bool:
+        return self._settings_save_handle is not None and self._settings_save_handle.status in {
+            TaskStatus.PENDING,
+            TaskStatus.RUNNING,
+        }
+
+    def _submit_pending_settings_save(self) -> None:
+        if self._library_service is None or self._book_uuid is None or self._pending_settings_save is None:
+            return
+        settings = self._pending_settings_save
+        self._pending_settings_save = None
+        service = self._library_service
+        book_uuid = self._book_uuid
+        logger.debug(
+            "Persisting reader settings book=%s direction=%s fit=%s vertical_custom=%s",
+            book_uuid,
+            settings.direction.value,
+            settings.fit_mode.value,
+            settings.vertical_custom_enabled,
         )
+        self._settings_save_handle = self._task_service.submit(
+            "reader-settings",
+            lambda: service.save_reader_settings(book_uuid, settings),
+            on_success=lambda _result, settings=settings: self._handle_settings_save_finished(settings),
+            on_failure=lambda error, settings=settings, book_uuid=book_uuid: self._handle_settings_save_failed(
+                book_uuid, settings, error
+            ),
+        )
+
+    def _handle_settings_save_failed(
+        self,
+        book_uuid: str,
+        settings: ReaderSettings,
+        error: Exception,
+    ) -> None:
+        # The task service already logs the traceback at ERROR. Surface a
+        # reader-side line so the failed save is tied to the book + setting
+        # snapshot it tried to persist (this is the call site that hid the
+        # ``vertical_fit_width`` schema-drift OperationalError).
+        logger.error(
+            "Persist reader settings failed book=%s direction=%s: %s",
+            book_uuid,
+            settings.direction.value,
+            error,
+        )
+        self._handle_settings_save_finished(settings)
+
+    def _handle_settings_save_finished(self, saved_settings: ReaderSettings) -> None:
+        self._settings_save_handle = None
+        if self._pending_settings_save is None:
+            return
+        if self._pending_settings_save == saved_settings:
+            self._pending_settings_save = None
+            return
+        self._submit_pending_settings_save()
 
     def _emit_state(self) -> None:
         self.state_changed.emit()

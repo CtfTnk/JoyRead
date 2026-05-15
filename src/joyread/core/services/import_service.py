@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 import json
@@ -19,6 +20,8 @@ from joyread.infrastructure.filesystem.path_service import PathService
 
 
 BOOK_EXTENSIONS = frozenset({".epub", ".pdf"}) | ARCHIVE_EXTENSIONS
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -140,6 +143,13 @@ class ImportService:
         batch_id = str(uuid4())
         started_at = _now()
         manifest_display = str(manifest_path) if manifest_path is not None else None
+        logger.info(
+            "Import batch %s starting: %d item(s) manifest=%s max_depth=%s",
+            batch_id,
+            len(items),
+            manifest_display,
+            archive_internal_max_depth,
+        )
         self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -165,6 +175,7 @@ class ImportService:
                     archive_internal_max_depth=archive_internal_max_depth,
                 )
             except Exception as exc:
+                logger.warning("Import item %s failed: %s", source_value, exc, exc_info=True)
                 result = self._record_item(
                     batch_id,
                     source_value,
@@ -172,6 +183,12 @@ class ImportService:
                     status="failed",
                     message=str(exc),
                 )
+            logger.debug(
+                "Import item %s -> %s (book_id=%s)",
+                source_value,
+                result.status,
+                result.book_id,
+            )
             results.append(result)
 
         completed_at = _now()
@@ -187,7 +204,7 @@ class ImportService:
             ),
             DatabasePriority.NORMAL,
         )
-        return ImportBatchResult(
+        batch_result = ImportBatchResult(
             batch_id=batch_id,
             imported_count=sum(item.status == "imported" for item in results),
             duplicate_count=sum(item.status == "duplicate" for item in results),
@@ -195,6 +212,15 @@ class ImportService:
             failed_count=sum(item.status == "failed" for item in results),
             items=tuple(results),
         )
+        logger.info(
+            "Import batch %s finished: imported=%d duplicate=%d skipped=%d failed=%d",
+            batch_id,
+            batch_result.imported_count,
+            batch_result.duplicate_count,
+            batch_result.skipped_count,
+            batch_result.failed_count,
+        )
+        return batch_result
 
     def _import_one(
         self,

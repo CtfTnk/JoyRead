@@ -144,6 +144,7 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
     )
     assert "original_file_name" in book_file_columns
     assert "vertical_zoom_percent" in reader_settings_columns
+    assert "vertical_fit_width" in reader_settings_columns
     database.close()
 
 
@@ -440,6 +441,7 @@ def test_reader_settings_persist_per_public_book(tmp_path: Path) -> None:
     settings = ReaderSettings(
         direction=ReaderDirection.LEFT_TO_RIGHT,
         vertical_custom_enabled=True,
+        vertical_fit_width=True,
         page_spacing=24,
         vertical_zoom_percent=135,
         custom_enabled=True,

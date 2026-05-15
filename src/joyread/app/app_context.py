@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from os import environ
 from pathlib import Path
@@ -35,6 +36,9 @@ from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
 
 
+logger = logging.getLogger(__name__)
+
+
 @dataclass
 class AppContext:
     config: AppConfig
@@ -60,17 +64,21 @@ class AppContext:
     settings_viewmodel: SettingsViewModel
 
     def close(self) -> None:
+        logger.info("AppContext shutting down: cancelling tasks then closing database")
         self.task_service.shutdown()
         self.database_interpreter.close()
+        logger.info("AppContext shutdown complete")
 
     def reconfigure_storage(self, new_root: Path) -> None:
         old_root = Path(self.settings.storage_location)
+        logger.info("Reconfiguring storage: %s -> %s", old_root, new_root)
         self.database_interpreter.close()
         self.storage_migration_service.move_storage_location(old_root, new_root)
         self.reload_storage_from_settings()
 
     def reload_storage_from_settings(self) -> None:
         self.settings = self.settings_store.load()
+        logger.info("Reloading storage from settings root=%s", self.settings.storage_location)
         self.paths = _create_path_service(self.config, self.settings_store, self.settings)
         self.paths.ensure_directories()
         # The cache directory follows the storage root, so changing storage
@@ -113,6 +121,14 @@ class AppContext:
         previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         self.settings = self.settings_store.load()
         next_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
+        logger.info(
+            "Applying cache settings: strategy=%s->%s reader_mb=%s pool_mb=%s detail_mb=%s",
+            previous_strategy.value,
+            next_strategy.value,
+            self.settings.reader_page_cache_mb,
+            self.settings.archive_extraction_pool_mb,
+            self.settings.detail_thumbnail_cache_mb,
+        )
         if next_strategy != previous_strategy:
             self.archive_extraction_pool.clear()
             self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
@@ -148,7 +164,9 @@ class AppContext:
     def clear_archive_extraction_pool(self) -> None:
         """User-triggered "Clear archive cache" button hook."""
 
+        bytes_before = self.archive_extraction_pool.current_bytes
         self.archive_extraction_pool.clear()
+        logger.info("Cleared archive extraction pool: freed %d bytes", bytes_before)
         self._refresh_settings_pool_usage()
 
     def _refresh_settings_pool_usage(self) -> None:
@@ -161,6 +179,7 @@ class AppContext:
 
 
 def create_app_context() -> AppContext:
+    logger.info("Creating AppContext")
     config = AppConfig()
     runtime_override = environ.get("JOYREAD_RUNTIME_DIR")
     support_root = Path(runtime_override) / ".joyread_support" if runtime_override else None
@@ -241,6 +260,12 @@ def create_app_context() -> AppContext:
     # effects (resize/clear) easy to find from one place.
     settings_viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
     settings_viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
+    logger.info(
+        "AppContext ready (storage=%s, workers=%d, archive_cache_strategy=%s)",
+        settings.storage_location,
+        config.max_background_workers,
+        settings.archive_cache_strategy,
+    )
     return context
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
@@ -23,6 +24,9 @@ from joyread.core.reader.models import (
     ReaderTransitionMode,
 )
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -109,6 +113,11 @@ class SqliteBookRepository(BookRepository):
             values.append(language_tag)
         if not updates:
             return
+        logger.debug(
+            "update_book_metadata book=%s fields=%s",
+            book_id,
+            [field.split(" ", 1)[0] for field in updates],
+        )
         updates.append("updated_at = ?")
         values.append(_now())
         values.append(book_id)
@@ -127,6 +136,7 @@ class SqliteBookRepository(BookRepository):
         )
 
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
+        logger.debug("set_favourite book=%s value=%s", book_id, is_favourite)
         now = _now()
         self._database.execute(
             lambda connection: connection.execute(
@@ -137,6 +147,7 @@ class SqliteBookRepository(BookRepository):
         )
 
     def delete_book(self, book_id: str) -> None:
+        logger.info("delete_book %s", book_id)
         cleanup = self._database.execute(
             lambda connection: self._delete_book_records(connection, book_id),
             DatabasePriority.NORMAL,
@@ -272,6 +283,7 @@ class SqliteBookRepository(BookRepository):
 
     def create_collection(self, name: str) -> Collection:
         collection_id = str(uuid4())
+        logger.info("create_collection name=%r id=%s", name, collection_id)
         now = _now()
 
         def write(connection: sqlite3.Connection) -> Collection:
@@ -293,6 +305,7 @@ class SqliteBookRepository(BookRepository):
         return self._database.execute(write, DatabasePriority.NORMAL)
 
     def delete_collection(self, collection_id: str) -> None:
+        logger.info("delete_collection %s", collection_id)
         self._database.execute(
             lambda connection: connection.execute(
                 "DELETE FROM collections WHERE collection_id = ?",
@@ -302,6 +315,7 @@ class SqliteBookRepository(BookRepository):
         )
 
     def rename_collection(self, collection_id: str, name: str) -> None:
+        logger.debug("rename_collection %s -> %r", collection_id, name)
         now = _now()
         self._database.execute(
             lambda connection: connection.execute(
@@ -312,6 +326,7 @@ class SqliteBookRepository(BookRepository):
         )
 
     def add_book_to_collection(self, book_id: str, collection_id: str) -> None:
+        logger.debug("add_book_to_collection book=%s collection=%s", book_id, collection_id)
         now = _now()
         self._database.execute(
             lambda connection: connection.execute(
@@ -325,6 +340,7 @@ class SqliteBookRepository(BookRepository):
         )
 
     def remove_book_from_collection(self, book_id: str, collection_id: str) -> None:
+        logger.debug("remove_book_from_collection book=%s collection=%s", book_id, collection_id)
         self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -337,6 +353,9 @@ class SqliteBookRepository(BookRepository):
         )
 
     def set_progress(self, book_id: str, page_index: int, progress_percent: float) -> None:
+        logger.debug(
+            "set_progress book=%s page=%d percent=%.2f", book_id, page_index, progress_percent
+        )
         now = _now()
 
         def write(connection: sqlite3.Connection) -> None:
@@ -390,6 +409,7 @@ class SqliteBookRepository(BookRepository):
                 SELECT
                     direction,
                     vertical_enabled,
+                    vertical_fit_width,
                     page_spacing,
                     vertical_zoom_percent,
                     custom_enabled,
@@ -414,6 +434,14 @@ class SqliteBookRepository(BookRepository):
         settings: ReaderSettings,
         book_scope: str = "public",
     ) -> None:
+        logger.debug(
+            "save_reader_settings scope=%s book=%s direction=%s fit=%s vertical_custom=%s",
+            book_scope,
+            book_id,
+            settings.direction.value,
+            settings.fit_mode.value,
+            settings.vertical_custom_enabled,
+        )
         now = _now()
 
         def write(connection: sqlite3.Connection) -> None:
@@ -424,6 +452,7 @@ class SqliteBookRepository(BookRepository):
                     book_id,
                     direction,
                     vertical_enabled,
+                    vertical_fit_width,
                     page_spacing,
                     vertical_zoom_percent,
                     custom_enabled,
@@ -433,10 +462,11 @@ class SqliteBookRepository(BookRepository):
                     spread_offset,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(book_scope, book_id) DO UPDATE SET
                     direction = excluded.direction,
                     vertical_enabled = excluded.vertical_enabled,
+                    vertical_fit_width = excluded.vertical_fit_width,
                     page_spacing = excluded.page_spacing,
                     vertical_zoom_percent = excluded.vertical_zoom_percent,
                     custom_enabled = excluded.custom_enabled,
@@ -451,6 +481,7 @@ class SqliteBookRepository(BookRepository):
                     book_id,
                     settings.direction.value,
                     1 if settings.vertical_custom_enabled else 0,
+                    1 if settings.vertical_fit_width else 0,
                     int(settings.page_spacing),
                     int(settings.vertical_zoom_percent),
                     1 if settings.custom_enabled else 0,
@@ -466,6 +497,14 @@ class SqliteBookRepository(BookRepository):
 
     def add_bookmark(self, book_id: str, name: str, page_index: int, book_scope: str = "public") -> Bookmark:
         bookmark_id = str(uuid4())
+        logger.debug(
+            "add_bookmark scope=%s book=%s page=%d id=%s name=%r",
+            book_scope,
+            book_id,
+            page_index,
+            bookmark_id,
+            name,
+        )
         now = _now()
 
         def write(connection: sqlite3.Connection) -> Bookmark:
@@ -522,6 +561,13 @@ class SqliteBookRepository(BookRepository):
         name: str,
         book_scope: str = "public",
     ) -> None:
+        logger.debug(
+            "rename_bookmark scope=%s book=%s id=%s name=%r",
+            book_scope,
+            book_id,
+            bookmark_id,
+            name,
+        )
         now = _now()
 
         def write(connection: sqlite3.Connection) -> None:
@@ -539,6 +585,10 @@ class SqliteBookRepository(BookRepository):
         self._database.execute(write, DatabasePriority.NORMAL)
 
     def delete_bookmark(self, book_id: str, bookmark_id: str, book_scope: str = "public") -> None:
+        logger.debug(
+            "delete_bookmark scope=%s book=%s id=%s", book_scope, book_id, bookmark_id
+        )
+
         def write(connection: sqlite3.Connection) -> None:
             cursor = connection.execute(
                 """
@@ -771,6 +821,7 @@ def _reader_settings_from_row(row: sqlite3.Row) -> ReaderSettings:
     return ReaderSettings(
         direction=_coerce_direction(row["direction"]),
         vertical_custom_enabled=bool(row["vertical_enabled"]),
+        vertical_fit_width=bool(row["vertical_fit_width"]),
         page_spacing=max(0, int(row["page_spacing"])),
         vertical_zoom_percent=max(25, min(200, int(row["vertical_zoom_percent"] or 100))),
         custom_enabled=bool(row["custom_enabled"]),

@@ -22,6 +22,7 @@ JPEG/PNG bytes — the zip is purely a grouping container.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -32,6 +33,10 @@ import shutil
 from threading import RLock
 from typing import Protocol
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
+
+
+logger = logging.getLogger(__name__)
+
 
 class ArchiveExtractionCache(Protocol):
     @property
@@ -124,9 +129,15 @@ class ArchiveExtractionPool:
                 # The bundle exists for this source but the specific page has
                 # not been cached yet; treat as a normal miss.
                 return None
-            except (BadZipFile, OSError):
+            except (BadZipFile, OSError) as exc:
                 # Corrupted bundle (interrupted write, disk error). Drop it so
                 # the next put starts clean.
+                logger.warning(
+                    "Dropping corrupt archive bundle %s for entry %r: %s",
+                    entry.path,
+                    entry_name,
+                    exc,
+                )
                 self._forget_locked(book_key)
                 return None
             # Touch the bundle so it sits at the MRU end of the LRU queue.
@@ -169,7 +180,13 @@ class ArchiveExtractionPool:
             bundle_path.parent.mkdir(parents=True, exist_ok=True)
             self._write_bundle_locked(bundle_path, tmp_path, safe_name, data)
             stat = bundle_path.stat()
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                "Archive bundle write failed for %s (entry %r): %s",
+                bundle_path,
+                entry_name,
+                exc,
+            )
             # Clean up an orphan tmp from a partial write so it does not
             # accumulate. The pool stays consistent with what is on disk.
             try:
@@ -214,7 +231,13 @@ class ArchiveExtractionPool:
             bundle_path.parent.mkdir(parents=True, exist_ok=True)
             self._write_bundle_many_locked(bundle_path, tmp_path, safe_payloads)
             stat = bundle_path.stat()
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                "Archive bundle batch write failed for %s (%d entries): %s",
+                bundle_path,
+                len(safe_payloads),
+                exc,
+            )
             try:
                 tmp_path.unlink(missing_ok=True)
             except OSError:
@@ -274,7 +297,10 @@ class ArchiveExtractionPool:
             scanned: list[tuple[str, _PoolEntry]] = []
             try:
                 entries = list(self._directory.iterdir())
-            except OSError:
+            except OSError as exc:
+                logger.warning(
+                    "Archive pool reconcile failed to list %s: %s", self._directory, exc
+                )
                 return
             for path in entries:
                 if not path.is_file():
@@ -312,7 +338,8 @@ class ArchiveExtractionPool:
     def _book_key_for(self, source: Path) -> str | None:
         try:
             stat = source.stat()
-        except OSError:
+        except OSError as exc:
+            logger.debug("Archive pool stat failed for %s: %s", source, exc)
             return None
         # The book key fingerprints the source file itself (path + mtime +
         # size). Editing the source produces a different key, so stale
@@ -358,10 +385,15 @@ class ArchiveExtractionPool:
                         if info.filename in payloads:
                             continue
                         existing[info.filename] = archive.read(info)
-            except (BadZipFile, OSError):
+            except (BadZipFile, OSError) as exc:
                 # Corrupted bundle: start over. Subsequent reads for other
                 # pages of this book will miss and re-extract, which is the
                 # acceptable fallback.
+                logger.warning(
+                    "Discarding corrupt bundle %s during rewrite: %s",
+                    bundle_path,
+                    exc,
+                )
                 existing = {}
         try:
             with ZipFile(tmp_path, "w", compression=ZIP_STORED) as archive:
@@ -452,7 +484,10 @@ class HiddenImageExtractionPool:
                 payload = entry.path.read_bytes()
                 os.utime(entry.path, None)
                 stat = entry.path.stat()
-            except OSError:
+            except OSError as exc:
+                logger.warning(
+                    "Hidden image cache read failed for %s: %s", entry.path, exc
+                )
                 self._forget_locked((book_key, entry_key))
                 return None
             refreshed = _PoolEntry(entry.path, stat.st_size, stat.st_mtime)
@@ -484,7 +519,10 @@ class HiddenImageExtractionPool:
                 tmp_path.write_bytes(data)
                 os.replace(tmp_path, final_path)
                 stat = final_path.stat()
-            except OSError:
+            except OSError as exc:
+                logger.warning(
+                    "Hidden image cache write failed for %s: %s", final_path, exc
+                )
                 try:
                     tmp_path.unlink(missing_ok=True)
                 except OSError:

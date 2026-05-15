@@ -21,6 +21,7 @@ pressure.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from threading import RLock
 from typing import Callable, Generic, TypeVar
@@ -32,6 +33,8 @@ from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 K = TypeVar("K")
 V = TypeVar("V")
 
+logger = logging.getLogger(__name__)
+
 
 def _default_sizer(value: object) -> int:
     """Best-effort byte-size estimate for cache values."""
@@ -41,6 +44,7 @@ def _default_sizer(value: object) -> int:
     except TypeError:
         # Fall back to a conservative constant for opaque payloads (file paths,
         # small dataclasses) where ``len`` is not meaningful as a byte budget.
+        logger.debug("Cache sizer fell back to constant for %r", type(value).__name__)
         return 64
 
 
@@ -224,6 +228,8 @@ class CacheService:
         """
 
         if reader_page_cache_bytes is not None:
+            logger.debug("Resizing reader_page_cache to %d bytes", reader_page_cache_bytes)
             self.reader_page_cache.resize(reader_page_cache_bytes)
         if archive_extraction_pool_bytes is not None:
+            logger.debug("Resizing archive_extraction_pool to %d bytes", archive_extraction_pool_bytes)
             self.archive_extraction_pool.resize(archive_extraction_pool_bytes)

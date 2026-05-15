@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -10,6 +11,8 @@ import shutil
 
 
 SEVEN_ZIP_ENV_VAR = "JOYREAD_7ZIP_PATH"
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,23 +41,28 @@ class ExtractionBackendResolver:
     def seven_zip(self) -> ExtractionBackend | None:
         for candidate, source in self._seven_zip_candidates():
             if _is_executable_file(candidate):
+                logger.debug("7-Zip backend resolved (source=%s)", source)
                 return ExtractionBackend("7zip", str(candidate), source, supports_passwords=True)
         for name in ("7zz", "7z"):
             executable = shutil.which(name)
             if executable is not None:
+                logger.debug("7-Zip backend resolved via PATH (%s)", name)
                 return ExtractionBackend("7zip", executable, f"PATH:{name}", supports_passwords=True)
+        logger.warning("No 7-Zip backend available; encrypted/expensive archives may fail")
         return None
 
     def unar(self) -> ExtractionBackend | None:
         executable = shutil.which("unar")
         if executable is None:
             return None
+        logger.debug("unar backend resolved via PATH")
         return ExtractionBackend("unar", executable, "PATH:unar", supports_passwords=True)
 
     def bsdtar(self) -> ExtractionBackend | None:
         executable = shutil.which("bsdtar")
         if executable is None:
             return None
+        logger.debug("bsdtar backend resolved via PATH")
         return ExtractionBackend("bsdtar", executable, "PATH:bsdtar", supports_passwords=False)
 
     def missing_message(self, *, encrypted: bool = False) -> str:

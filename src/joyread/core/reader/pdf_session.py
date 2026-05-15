@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -12,6 +13,9 @@ from PySide6.QtPdf import QPdfDocument
 from PIL import Image, ImageChops
 
 from joyread.core.reader.models import ReaderPageImage
+
+
+logger = logging.getLogger(__name__)
 
 
 PDF_EXTENSIONS = frozenset({".pdf"})
@@ -137,6 +141,7 @@ class PdfImageService:
 
     def open(self, path: str | Path) -> PdfImageSession:
         source = Path(path)
+        logger.debug("PDF open: path=%s", source)
         if not source.exists():
             raise PdfOpenError(f"PDF does not exist: {source}")
         if not source.is_file():
@@ -152,6 +157,7 @@ class PdfImageService:
             dimensions = tuple(_target_dimensions(document, index) for index in range(page_count))
         finally:
             document.close()
+        logger.info("PDF opened: %s pages=%d", source.name, page_count)
         return PdfImageSession(source, dimensions, normalize_margins=self._normalize_margins)
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:

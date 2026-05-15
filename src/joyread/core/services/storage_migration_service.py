@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +10,9 @@ import shutil
 from uuid import uuid4
 
 from joyread.infrastructure.config.settings_store import SettingsStore
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -26,7 +30,9 @@ class StorageMigrationService:
     def move_storage_location(self, old_root: Path, new_root: Path) -> StorageMigrationResult:
         old_root = old_root.expanduser().resolve()
         new_root = new_root.expanduser().resolve()
+        logger.info("Storage migration starting: %s -> %s", old_root, new_root)
         if old_root == new_root:
+            logger.info("Storage migration no-op: source equals destination")
             self._settings_store.update(storage_location=str(new_root))
             return StorageMigrationResult(old_root, new_root, None, None)
         if new_root.is_relative_to(old_root):
@@ -38,6 +44,7 @@ class StorageMigrationService:
             shutil.rmtree(staging)
 
         if old_root.exists():
+            logger.info("Copying current storage into staging directory %s", staging)
             shutil.copytree(old_root, staging)
         else:
             staging.mkdir(parents=True, exist_ok=True)
@@ -45,6 +52,7 @@ class StorageMigrationService:
         replaced_backup = None
         if new_root.exists() and any(new_root.iterdir()):
             replaced_backup = _backup_path(new_root, "replaced")
+            logger.info("Destination not empty; moving aside to %s", replaced_backup)
             shutil.move(str(new_root), str(replaced_backup))
         elif new_root.exists():
             new_root.rmdir()
@@ -54,9 +62,11 @@ class StorageMigrationService:
         old_backup = None
         if old_root.exists():
             old_backup = _backup_path(old_root, "backup")
+            logger.info("Renaming previous storage to backup %s", old_backup)
             shutil.move(str(old_root), str(old_backup))
 
         self._settings_store.update(storage_location=str(new_root))
+        logger.info("Storage migration complete (root=%s)", new_root)
         return StorageMigrationResult(old_root, new_root, old_backup, replaced_backup)
 
 

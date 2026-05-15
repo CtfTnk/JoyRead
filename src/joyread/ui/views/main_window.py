@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
@@ -22,6 +23,9 @@ from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import WindowChromeWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -118,9 +122,17 @@ class MainWindow(QMainWindow):
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
+            logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
             return
-        if self._settings_for_reader_launch().individual_read_window:
+        individual = self._settings_for_reader_launch().individual_read_window
+        logger.info(
+            "open_reader_for_book uuid=%s page=%s mode=%s",
+            book_uuid,
+            page_index,
+            "window" if individual else "embedded",
+        )
+        if individual:
             self._show_reader_window(Path(book.file_path), book=book, start_page_index=page_index)
         else:
             self._show_embedded_reader(Path(book.file_path), book=book, start_page_index=page_index)
@@ -130,6 +142,7 @@ class MainWindow(QMainWindow):
 
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
+        logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
         if not import_mode:
             self._show_reader_window(source_path, title=source_path.stem)
             return

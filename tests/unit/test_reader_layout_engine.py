@@ -166,3 +166,32 @@ def test_vertical_stack_uses_gap_and_zoom_only_when_custom_enabled() -> None:
     assert custom.page_draws[1].rect.height == pytest.approx(1200)
     assert custom.page_draws[1].rect.y == pytest.approx(-100)
     assert custom.page_draws[2].rect.y == pytest.approx(1120)
+
+
+def test_vertical_stack_can_fit_width_when_custom_enabled() -> None:
+    result = SmartLayoutEngine().calculate_vertical(
+        SizeF(1000, 800),
+        (
+            (0, SizeF(200, 400)),
+            (1, SizeF(500, 250)),
+            (2, SizeF(250, 500)),
+        ),
+        ReaderLayoutSettings(
+            direction=ReaderDirection.TOP_TO_BOTTOM,
+            vertical_custom_enabled=True,
+            vertical_fit_width=True,
+            page_spacing=20,
+            vertical_zoom_percent=50,
+        ),
+        anchor_index=1,
+        scroll_y=10,
+    )
+
+    assert [draw.page_index for draw in result.page_draws] == [0, 1, 2]
+    assert result.page_draws[1].rect.width == pytest.approx(1000)
+    assert result.page_draws[1].rect.height == pytest.approx(500)
+    assert result.page_draws[1].rect.x == pytest.approx(0)
+    assert result.page_draws[1].rect.y == pytest.approx(10)
+    assert result.page_draws[0].rect.y == pytest.approx(-2010)
+    assert result.page_draws[2].rect.y == pytest.approx(530)
+    assert result.scale == pytest.approx(2.0)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable
@@ -13,6 +14,9 @@ from joyread.core.models.cache import (
 )
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.signals import Signal
+
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsSectionKey(StrEnum):
@@ -208,7 +212,8 @@ class SettingsViewModel:
             return
         try:
             usage = max(0, int(provider()))
-        except Exception:  # pragma: no cover - provider is host-supplied.
+        except Exception as exc:  # pragma: no cover - provider is host-supplied.
+            logger.warning("archive_pool_bytes_provider failed: %s", exc)
             return
         if usage == self.archive_pool_current_bytes:
             return

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Protocol
 
@@ -10,6 +11,9 @@ from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_E
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
+
+
+logger = logging.getLogger(__name__)
 
 
 SUPPORTED_READER_EXTENSIONS = ARCHIVE_EXTENSIONS | PDF_EXTENSIONS
@@ -49,6 +53,7 @@ class ReaderSessionService:
         archive_internal_max_depth: int = 2,
     ) -> ReaderImageSession:
         suffix = Path(path).suffix.lower()
+        logger.info("Opening reader document: path=%s suffix=%s", path, suffix)
         if suffix in ARCHIVE_EXTENSIONS:
             return self.open_archive(
                 path,
@@ -137,6 +142,7 @@ class ReaderSessionService:
 
         if not self.should_warm_disk_cache(path):
             return
+        logger.debug("Warming disk cache for %s", path)
         session = self.open_archive(
             path,
             password=password,
@@ -146,8 +152,10 @@ class ReaderSessionService:
         chunk_size = max(1, int(chunk_size))
         for start in range(0, len(page_indices), chunk_size):
             if is_cancelled is not None and is_cancelled():
+                logger.debug("Disk cache warm cancelled at chunk start=%d", start)
                 return
             self.load_pages(session, tuple(page_indices[start : start + chunk_size]))
+        logger.debug("Disk cache warm complete for %s", path)
 
     def password_request_label(self, request: ArchivePasswordRequest) -> str:
         return f"{request.archive_format} archive password"

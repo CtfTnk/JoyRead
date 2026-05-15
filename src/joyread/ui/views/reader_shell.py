@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
@@ -18,6 +19,9 @@ from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReaderShellWidget(QWidget):
@@ -70,6 +74,12 @@ class ReaderShellWidget(QWidget):
 
         app_settings = context.settings_store.load()
         context.settings = app_settings
+        logger.info(
+            "ReaderShellWidget init: path=%s book=%s embedded=%s",
+            self._source_path,
+            book.uuid if book is not None else None,
+            show_back_button,
+        )
         self.viewmodel = ReaderViewModel(
             context.reader_session_service,
             context.task_service,
@@ -134,6 +144,7 @@ class ReaderShellWidget(QWidget):
         self.settings_panel.always_one_page_changed.connect(self.viewmodel.set_always_one_page)
         self.settings_panel.fit_mode_changed.connect(self.viewmodel.set_fit_mode)
         self.settings_panel.vertical_custom_enabled_changed.connect(self.viewmodel.set_vertical_custom_enabled)
+        self.settings_panel.vertical_fit_width_changed.connect(self.viewmodel.set_vertical_fit_width)
         self.settings_panel.page_spacing_changed.connect(self.viewmodel.set_page_spacing)
         self.settings_panel.zoom_percent_changed.connect(self.viewmodel.set_vertical_zoom_percent)
         self.viewmodel.state_changed.connect(self._sync_state)
@@ -569,7 +580,16 @@ def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderS
         return ReaderSettings()
     try:
         return context.library_service.get_reader_settings(book.uuid) or ReaderSettings()
-    except Exception:
+    except Exception as exc:
+        # Falling back silently here is how the ``vertical_fit_width`` schema
+        # drift hid for so long: bookkeeping read errors made every reload
+        # look like fresh defaults. Log loudly before swallowing.
+        logger.error(
+            "Loading reader settings failed for book=%s; using defaults: %s",
+            book.uuid,
+            exc,
+            exc_info=True,
+        )
         return ReaderSettings()
 
 
@@ -582,7 +602,13 @@ def _reader_progress_for_book(
     if book is not None:
         try:
             progress = context.library_service.get_progress(book.uuid)
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "Loading reader progress failed for book=%s; ignoring stored progress: %s",
+                book.uuid,
+                exc,
+                exc_info=True,
+            )
             progress = None
 
     if start_page_index is None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from dataclasses import dataclass, field
 from enum import StrEnum
 from itertools import count
@@ -11,6 +13,8 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal as QtSignal
 
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(StrEnum):
@@ -49,18 +53,43 @@ class _Runnable(QRunnable):
 
     def run(self) -> None:
         if self._handle.status == TaskStatus.CANCELLED:
+            logger.debug("Task %s skipped (cancelled before run)", self._handle.task_id)
             _safe_emit(self._signals.finished)
             return
+        logger.debug("Task %s starting", self._handle.task_id)
+        start = time.perf_counter()
         try:
             result = self._callback()
         except Exception as exc:  # pragma: no cover - exact task failures are callback-specific.
+            elapsed_ms = (time.perf_counter() - start) * 1000.0
             if self._handle.status != TaskStatus.CANCELLED:
+                logger.error(
+                    "Task %s failed after %.0f ms: %s",
+                    self._handle.task_id,
+                    elapsed_ms,
+                    exc,
+                    exc_info=True,
+                )
                 _safe_emit(self._signals.failed, exc)
+            else:
+                logger.debug(
+                    "Task %s raised after cancellation (suppressed): %s",
+                    self._handle.task_id,
+                    exc,
+                )
             _safe_emit(self._signals.finished)
             return
 
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
         if self._handle.status != TaskStatus.CANCELLED:
+            logger.debug("Task %s completed in %.0f ms", self._handle.task_id, elapsed_ms)
             _safe_emit(self._signals.completed, result)
+        else:
+            logger.debug(
+                "Task %s completed in %.0f ms but was cancelled; dropping result",
+                self._handle.task_id,
+                elapsed_ms,
+            )
         _safe_emit(self._signals.finished)
 
 
@@ -86,8 +115,10 @@ class TaskService:
     ) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
         if self._shutting_down:
+            logger.debug("Task %s rejected: service shutting down", handle.task_id)
             handle.status = TaskStatus.CANCELLED
             return handle
+        logger.debug("Task %s submitted", handle.task_id)
         signals = _TaskSignals()
         handle._signals = signals
         self._active_signals.add(signals)
@@ -132,6 +163,8 @@ class TaskService:
         chance to leave before application teardown continues.
         """
 
+        active = len(self._active_handles)
+        logger.info("TaskService shutdown: cancelling %d active task(s)", active)
         self._shutting_down = True
         for handle in list(self._active_handles.values()):
             handle.cancel()
@@ -142,6 +175,7 @@ class TaskService:
             handle._signals = None
         self._active_handles.clear()
         self._active_signals.clear()
+        logger.info("TaskService shutdown complete")
 
     def submit_placeholder(self, name: str, callback: Callable[[], T] | None = None) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
@@ -160,7 +194,8 @@ class TaskService:
 def _safe_emit(signal, *args: object) -> None:  # noqa: ANN001
     try:
         signal.emit(*args)
-    except RuntimeError:
+    except RuntimeError as exc:
         # A window can be closed while a background QRunnable is finishing.
         # Dropping the late signal is safer than letting shutdown surface a Qt wrapper error.
+        logger.warning("Dropping late task signal: %s", exc)
         return

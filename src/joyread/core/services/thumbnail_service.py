@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
@@ -20,6 +21,8 @@ from joyread.infrastructure.filesystem.path_service import PathService
 
 SizeTuple = tuple[int, int]
 DetailThumbnailCache = BoundedByteCache[tuple[int, int, int], bytes]
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -99,7 +102,13 @@ class ThumbnailService:
             if first_page is None:
                 return None
             rendered = render_contain_blur_thumbnail(first_page.image_bytes, size)
-        except (ArchiveError, PdfError, OSError, UnidentifiedImageError):
+        except (ArchiveError, PdfError, OSError, UnidentifiedImageError) as exc:
+            logger.warning(
+                "Cover generation failed for book=%s size=%s: %s",
+                book.uuid,
+                size,
+                exc,
+            )
             return None
 
         cover_path = self._cover_path(book, signature, size)
@@ -136,7 +145,14 @@ class ThumbnailService:
             if page is None:
                 return None
             rendered = render_contain_blur_thumbnail(page.image_bytes, size)
-        except (ArchiveError, PdfError, OSError, UnidentifiedImageError):
+        except (ArchiveError, PdfError, OSError, UnidentifiedImageError) as exc:
+            logger.warning(
+                "Page thumbnail failed for book=%s page=%d size=%s: %s",
+                book.uuid,
+                page_index,
+                size,
+                exc,
+            )
             return None
 
         if detail_cache is not None:
@@ -170,7 +186,10 @@ class ThumbnailService:
 
         try:
             session = self._session_for(book, signature)
-        except (ArchiveError, PdfError, OSError):
+        except (ArchiveError, PdfError, OSError) as exc:
+            logger.warning(
+                "Detail thumbnail session failed for book=%s: %s", book.uuid, exc
+            )
             return empty
 
         if start_index >= session.page_count:
@@ -213,7 +232,8 @@ class ThumbnailService:
 
         try:
             rendered = render_contain_blur_thumbnail(page_bytes, size)
-        except (OSError, UnidentifiedImageError):
+        except (OSError, UnidentifiedImageError) as exc:
+            logger.warning("Detail thumbnail render failed for page=%d: %s", page_index, exc)
             return None
 
         if detail_cache is not None:

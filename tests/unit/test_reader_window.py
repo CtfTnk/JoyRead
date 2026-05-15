@@ -298,9 +298,9 @@ def test_reader_settings_panel_matches_figma_side_panel_geometry(qtbot) -> None:
 
     assert len(sections) == 2
     assert {section.height() for section in sections} == {Theme.reader_settings_section_height}
-    assert len(rows) == 6
+    assert len(rows) == 7
     assert {row.height() for row in rows} == {Theme.reader_settings_row_height}
-    assert len(switches) == 3
+    assert len(switches) == 4
     assert {switch.size().width() for switch in switches} == {Theme.settings_switch_width}
     assert {switch.size().height() for switch in switches} == {Theme.settings_switch_height}
     assert len(controls) == 3
@@ -492,6 +492,7 @@ def test_reader_settings_disabled_rows_use_half_opacity(qtbot) -> None:
 
     assert panel.one_page_row.graphicsEffect().opacity() == pytest.approx(0.5)
     assert panel.fit_row.graphicsEffect().opacity() == pytest.approx(0.5)
+    assert panel.vertical_fit_width_row.graphicsEffect().opacity() == pytest.approx(0.5)
     assert panel.spacing_row.graphicsEffect().opacity() == pytest.approx(0.5)
     assert panel.zoom_row.graphicsEffect().opacity() == pytest.approx(0.5)
 
@@ -499,8 +500,21 @@ def test_reader_settings_disabled_rows_use_half_opacity(qtbot) -> None:
 
     assert panel.one_page_row.graphicsEffect().opacity() == pytest.approx(1.0)
     assert panel.fit_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.vertical_fit_width_row.graphicsEffect().opacity() == pytest.approx(1.0)
     assert panel.spacing_row.graphicsEffect().opacity() == pytest.approx(1.0)
     assert panel.zoom_row.graphicsEffect().opacity() == pytest.approx(1.0)
+
+    panel.set_settings(
+        ReaderSettings(
+            custom_enabled=True,
+            vertical_custom_enabled=True,
+            vertical_fit_width=True,
+        )
+    )
+
+    assert panel.vertical_fit_width_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.spacing_row.graphicsEffect().opacity() == pytest.approx(1.0)
+    assert panel.zoom_row.graphicsEffect().opacity() == pytest.approx(0.5)
 
     context.close()
 
@@ -562,6 +576,41 @@ def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path
     reader.close()
     qtbot.wait(0)
     assert window._reader_windows == []
+    window.close()
+    context.close()
+
+
+def test_shelf_reader_reloads_saved_per_book_settings(qtbot, tmp_path: Path, monkeypatch) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+
+    window.open_reader_for_book(book.uuid)
+    assert window._embedded_reader is not None
+    window._embedded_reader.viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    window._embedded_reader.viewmodel.set_vertical_custom_enabled(True)
+    window._embedded_reader.viewmodel.set_vertical_fit_width(True)
+
+    def settings_saved() -> bool:
+        settings = context.library_service.get_reader_settings(book.uuid)
+        return (
+            settings is not None
+            and settings.direction == ReaderDirection.LEFT_TO_RIGHT
+            and settings.vertical_custom_enabled
+            and settings.vertical_fit_width
+        )
+
+    qtbot.waitUntil(settings_saved, timeout=1000)
+    window._close_embedded_reader()
+
+    window.open_reader_for_book(book.uuid)
+
+    assert window._embedded_reader is not None
+    assert window._embedded_reader.viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
+    assert window._embedded_reader.viewmodel.settings.vertical_custom_enabled is True
+    assert window._embedded_reader.viewmodel.settings.vertical_fit_width is True
+
     window.close()
     context.close()
 

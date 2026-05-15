@@ -7,6 +7,7 @@ instead of parsing archive formats directly.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -19,6 +20,9 @@ from typing import Iterable, Sequence
 from zipfile import BadZipFile
 
 from PIL import Image, UnidentifiedImageError
+
+
+logger = logging.getLogger(__name__)
 
 from joyread.core.archive.errors import (
     ArchiveCorruptError,
@@ -379,6 +383,13 @@ class ArchiveImageService:
         effective_max_depth = _coerce_depth(max_nested_depth if max_nested_depth is not None else max_depth)
         path = Path(archive_path)
         suffix = path.suffix.lower()
+        logger.debug(
+            "Archive open: path=%s suffix=%s max_depth=%d policy=%s",
+            path,
+            suffix,
+            effective_max_depth,
+            password_policy.value if hasattr(password_policy, "value") else password_policy,
+        )
         if not path.exists():
             raise ArchiveOpenError(f"Archive does not exist: {path}")
         if not path.is_file():
@@ -404,6 +415,7 @@ class ArchiveImageService:
             raise ArchiveEmptyError(
                 f"No supported image pages found in archive within archive depth {effective_max_depth}: {path}"
             )
+        logger.info("Archive opened: %s pages=%d", path.name, len(pages))
         return ArchiveImageSession(pages, self._read_entries)
 
     def _validation_result(

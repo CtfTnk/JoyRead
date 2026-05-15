@@ -8,7 +8,7 @@ from PIL import Image
 
 from joyread.core.archive import ArchiveEmptyError, ArchivePasswordRejected, ArchivePasswordRequired
 from joyread.core.models.bookmark import Bookmark
-from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage
+from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage, ReaderSettings
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.task_service import TaskHandle, TaskStatus
@@ -60,6 +60,48 @@ class _ManualPageTaskService:
 
     def run_next_page_task(self) -> None:
         handle, callback, on_success, on_failure = self.page_tasks.pop(0)
+        if handle.status == TaskStatus.CANCELLED:
+            return
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
+
+
+class _DeferredSettingsTaskService:
+    def __init__(self) -> None:
+        self.settings_tasks = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None):  # noqa: ANN001
+        handle = TaskHandle(task_id=name)
+        handle.status = TaskStatus.RUNNING
+        if name == "reader-settings":
+            self.settings_tasks.append((handle, callback, on_success, on_failure))
+            return handle
+        try:
+            result = callback()
+        except Exception as exc:  # pragma: no cover - test helper only.
+            handle.status = TaskStatus.FAILED
+            handle.error = exc
+            if on_failure is not None:
+                on_failure(exc)
+            return handle
+        handle.status = TaskStatus.COMPLETED
+        handle.result = result
+        if on_success is not None:
+            on_success(result)
+        return handle
+
+    def complete_next_settings_task(self) -> None:
+        handle, callback, on_success, on_failure = self.settings_tasks.pop(0)
         if handle.status == TaskStatus.CANCELLED:
             return
         try:
@@ -145,13 +187,14 @@ class _FakeSessionService:
 class _FakeLibraryService:
     def __init__(self) -> None:
         self.progress_calls: list[tuple[str, int, float]] = []
+        self.settings_calls: list[tuple[str, ReaderSettings]] = []
         self.bookmarks: list[Bookmark] = []
 
     def set_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         self.progress_calls.append((book_uuid, page_index, progress_percent))
 
-    def save_reader_settings(self, _book_uuid, _settings):  # noqa: ANN001
-        return None
+    def save_reader_settings(self, book_uuid: str, settings: ReaderSettings) -> None:
+        self.settings_calls.append((book_uuid, settings))
 
     def list_bookmarks(self, book_uuid: str, book_scope: str = "public") -> list[Bookmark]:
         return [
@@ -511,11 +554,102 @@ def test_reader_viewmodel_vertical_custom_settings_do_not_change_direction(tmp_p
 
     viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
     viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_fit_width(True)
     viewmodel.set_vertical_zoom_percent(500)
 
     assert viewmodel.settings.direction == ReaderDirection.LEFT_TO_RIGHT
     assert viewmodel.settings.vertical_custom_enabled is True
+    assert viewmodel.settings.vertical_fit_width is True
     assert viewmodel.settings.vertical_zoom_percent == 200
+
+
+def test_reader_viewmodel_vertical_fit_width_uses_page_width_for_scroll_step(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path, dimensions=(500, 250))
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_fit_width(True)
+    viewmodel.set_page_spacing(20)
+
+    assert viewmodel.layout_result is not None
+    anchor = next(draw for draw in viewmodel.layout_result.page_draws if draw.page_index == 0)
+    assert anchor.rect.width == 1000
+    assert anchor.rect.height == 500
+
+    assert viewmodel.handle_vertical_scroll(-519) is True
+    assert viewmodel.current_index == 0
+
+    assert viewmodel.handle_vertical_scroll(-1) is True
+    assert viewmodel.current_index == 1
+
+
+def test_reader_settings_saves_latest_per_book_when_changes_overlap(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    task_service = _DeferredSettingsTaskService()
+    viewmodel = _viewmodel(tmp_path, library_service=library, task_service=task_service)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_fit_width(True)
+
+    assert len(task_service.settings_tasks) == 1
+    assert library.settings_calls == []
+
+    task_service.complete_next_settings_task()
+
+    assert len(library.settings_calls) == 1
+    assert len(task_service.settings_tasks) == 1
+
+    task_service.complete_next_settings_task()
+
+    assert len(library.settings_calls) == 2
+    book_uuid, final_settings = library.settings_calls[-1]
+    assert book_uuid == "book-1"
+    assert final_settings.direction == ReaderDirection.LEFT_TO_RIGHT
+    assert final_settings.vertical_custom_enabled is True
+    assert final_settings.vertical_fit_width is True
+
+
+def test_reader_settings_save_survives_reader_cancel(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    task_service = _DeferredSettingsTaskService()
+    viewmodel = _viewmodel(tmp_path, library_service=library, task_service=task_service)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    viewmodel.cancel()
+    task_service.complete_next_settings_task()
+
+    assert library.settings_calls == [
+        (
+            "book-1",
+            ReaderSettings(direction=ReaderDirection.LEFT_TO_RIGHT),
+        )
+    ]
+
+
+def test_reader_settings_pending_latest_save_survives_reader_cancel(tmp_path: Path) -> None:
+    library = _FakeLibraryService()
+    task_service = _DeferredSettingsTaskService()
+    viewmodel = _viewmodel(tmp_path, library_service=library, task_service=task_service)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_fit_width(True)
+    viewmodel.cancel()
+
+    task_service.complete_next_settings_task()
+    task_service.complete_next_settings_task()
+
+    assert library.settings_calls[-1] == (
+        "book-1",
+        ReaderSettings(
+            direction=ReaderDirection.LEFT_TO_RIGHT,
+            vertical_custom_enabled=True,
+            vertical_fit_width=True,
+        ),
+    )
 
 
 def test_reader_viewmodel_progress_uses_largest_for_percent_and_smallest_for_resume(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
@@ -20,6 +21,9 @@ from joyread.ui.viewmodels.signals import Signal
 
 
 _DEFAULT_DETAIL_THUMBNAIL_CACHE_MB = 64
+
+
+logger = logging.getLogger(__name__)
 
 
 class ViewMode(StrEnum):
@@ -153,6 +157,7 @@ class ShelfViewModel:
         return self.current_shelf == ShelfKey.RECENT.value or self.current_shelf.startswith("collection:")
 
     def load_books(self) -> None:
+        logger.debug("Shelf load_books")
         self.is_loading = True
         self.error_message = None
         self._emit_state()
@@ -161,12 +166,20 @@ class ShelfViewModel:
             self.collections = self._library_service.list_collections()
             self.languages = self._library_service.list_languages()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
+            logger.warning("Shelf load_books failed: %s", exc, exc_info=True)
             self.error_message = str(exc)
             self.books = []
             self.collections = []
             self.languages = []
         finally:
             self.is_loading = False
+            logger.debug(
+                "Shelf load_books finished: books=%d collections=%d languages=%d error=%s",
+                len(self.books),
+                len(self.collections),
+                len(self.languages),
+                self.error_message,
+            )
             self._emit_state()
 
     def replace_services(
@@ -303,6 +316,13 @@ class ShelfViewModel:
             try:
                 self._library_service.set_favourites(target_ids, is_favourite)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning(
+                    "set_favourites failed books=%s value=%s: %s",
+                    target_ids,
+                    is_favourite,
+                    exc,
+                    exc_info=True,
+                )
                 self.favourite_failed.emit(str(exc))
                 return
             self._handle_favourite_success(target_ids, is_favourite)
@@ -315,8 +335,12 @@ class ShelfViewModel:
                 target_ids,
                 is_favourite,
             ),
-            on_failure=lambda error: self.favourite_failed.emit(str(error)),
+            on_failure=lambda error, target_ids=target_ids: self._emit_favourite_failed(target_ids, error),
         )
+
+    def _emit_favourite_failed(self, target_ids: tuple[str, ...], error: Exception) -> None:
+        logger.warning("set_favourites task failed books=%s: %s", target_ids, error)
+        self.favourite_failed.emit(str(error))
 
     def update_book_title(self, book_uuid: str, title: str) -> None:
         normalized_title = _normalize_detail_text(title)
@@ -405,6 +429,7 @@ class ShelfViewModel:
             try:
                 collection = self._library_service.create_collection(normalized_name)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning("create_collection failed name=%r: %s", normalized_name, exc)
                 self.collection_failed.emit(str(exc))
                 return
             self._handle_collection_created(collection)
@@ -414,7 +439,7 @@ class ShelfViewModel:
             "create-collection",
             lambda: self._library_service.create_collection(normalized_name),
             on_success=self._handle_collection_created,
-            on_failure=lambda error: self.collection_failed.emit(str(error)),
+            on_failure=lambda error: self._emit_collection_failed("create", error),
         )
 
     def rename_collection(self, collection_uuid: str, name: str) -> None:
@@ -427,6 +452,12 @@ class ShelfViewModel:
             try:
                 self._library_service.rename_collection(collection_uuid, normalized_name)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning(
+                    "rename_collection failed id=%s name=%r: %s",
+                    collection_uuid,
+                    normalized_name,
+                    exc,
+                )
                 self.collection_failed.emit(str(exc))
                 return
             self._handle_collection_changed()
@@ -436,7 +467,7 @@ class ShelfViewModel:
             "rename-collection",
             lambda: self._library_service.rename_collection(collection_uuid, normalized_name),
             on_success=lambda _result: self._handle_collection_changed(),
-            on_failure=lambda error: self.collection_failed.emit(str(error)),
+            on_failure=lambda error: self._emit_collection_failed("rename", error),
         )
 
     def delete_collection(self, collection_uuid: str) -> None:
@@ -445,6 +476,7 @@ class ShelfViewModel:
             try:
                 self._library_service.delete_collection(collection_uuid)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning("delete_collection failed id=%s: %s", collection_uuid, exc)
                 self.collection_failed.emit(str(exc))
                 return
             self._handle_collection_deleted(collection_key)
@@ -454,7 +486,7 @@ class ShelfViewModel:
             "delete-collection",
             lambda: self._library_service.delete_collection(collection_uuid),
             on_success=lambda _result, collection_key=collection_key: self._handle_collection_deleted(collection_key),
-            on_failure=lambda error: self.collection_failed.emit(str(error)),
+            on_failure=lambda error: self._emit_collection_failed("delete", error),
         )
 
     def add_books_to_collection(self, book_uuids: Iterable[str], collection_uuid: str) -> None:
@@ -466,6 +498,12 @@ class ShelfViewModel:
             try:
                 self._library_service.add_books_to_collection(target_ids, collection_uuid)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning(
+                    "add_books_to_collection failed books=%s collection=%s: %s",
+                    target_ids,
+                    collection_uuid,
+                    exc,
+                )
                 self.collection_failed.emit(str(exc))
                 return
             self._handle_books_added_to_collection(target_ids)
@@ -475,8 +513,12 @@ class ShelfViewModel:
             "add-books-to-collection",
             lambda: self._library_service.add_books_to_collection(target_ids, collection_uuid),
             on_success=lambda _result, target_ids=target_ids: self._handle_books_added_to_collection(target_ids),
-            on_failure=lambda error: self.collection_failed.emit(str(error)),
+            on_failure=lambda error: self._emit_collection_failed("add-books", error),
         )
+
+    def _emit_collection_failed(self, operation: str, error: Exception) -> None:
+        logger.warning("Collection %s task failed: %s", operation, error)
+        self.collection_failed.emit(str(error))
 
     def remove_books_from_current_shelf(self, book_uuids: Iterable[str]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
@@ -546,6 +588,7 @@ class ShelfViewModel:
         self._emit_state()
 
     def _handle_book_metadata_failure(self, error: Exception) -> None:
+        logger.warning("update_book_metadata failed: %s", error)
         self.load_books()
         self.book_metadata_failed.emit(str(error))
 
@@ -578,6 +621,7 @@ class ShelfViewModel:
         self.load_books()
 
     def _handle_books_removed_from_shelf_failure(self, error: Exception) -> None:
+        logger.warning("remove_books_from_current_shelf failed: %s", error)
         self.load_books()
         self.remove_failed.emit(str(error))
 
@@ -586,10 +630,12 @@ class ShelfViewModel:
         if not target_ids:
             return
 
+        logger.info("delete_books request books=%s", target_ids)
         if self._task_service is None:
             try:
                 self._library_service.delete_books(target_ids)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning("delete_books failed books=%s: %s", target_ids, exc, exc_info=True)
                 self.delete_failed.emit(str(exc))
                 return
             self._handle_delete_success(target_ids)
@@ -727,6 +773,7 @@ class ShelfViewModel:
         self.books_deleted.emit(target_ids)
 
     def _handle_delete_failure(self, error: Exception, target_ids: tuple[str, ...]) -> None:
+        logger.warning("delete_books task failed books=%s: %s", target_ids, error)
         target_set = set(target_ids)
         self.selected_book_ids -= target_set
         if self.detail_book_uuid in target_set:

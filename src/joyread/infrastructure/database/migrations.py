@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
+import time
+
+
+logger = logging.getLogger(__name__)
 
 
 MIGRATIONS: tuple[tuple[int, str], ...] = (
@@ -240,6 +245,19 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ADD COLUMN vertical_zoom_percent INTEGER NOT NULL DEFAULT 100;
         """,
     ),
+    # Note: version 7 is intentionally skipped. An earlier in-development
+    # branch (EPUB shell) shipped a different migration 7 and recorded its
+    # version row in some local databases. Numbering this ALTER as 8 ensures
+    # it actually runs against those drifted databases — and fresh installs
+    # are unaffected because the migration runner only cares about the set
+    # of versions present, not contiguity.
+    (
+        8,
+        """
+        ALTER TABLE reader_settings
+            ADD COLUMN vertical_fit_width INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
 )
 
 
@@ -257,9 +275,18 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
         int(row["version"])
         for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
     }
+    pending = [version for version, _sql in MIGRATIONS if version not in applied]
+    logger.info(
+        "Migrations: %d already applied, %d pending=%s",
+        len(applied),
+        len(pending),
+        pending,
+    )
     for version, sql in MIGRATIONS:
         if version in applied:
             continue
+        logger.info("Applying migration %d", version)
+        start = time.perf_counter()
         try:
             connection.executescript(
                 f"""
@@ -269,12 +296,27 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
                 COMMIT;
                 """
             )
-        except Exception:
+        except Exception as exc:
+            logger.error(
+                "Migration %d failed: %s\nSQL:\n%s",
+                version,
+                exc,
+                sql,
+                exc_info=True,
+            )
             try:
                 connection.execute("ROLLBACK")
-            except sqlite3.OperationalError:
-                pass
+            except sqlite3.OperationalError as rollback_exc:
+                # Silent before; surface so a stuck transaction or closed
+                # connection is at least visible in the log.
+                logger.warning(
+                    "ROLLBACK after migration %d failure also failed: %s",
+                    version,
+                    rollback_exc,
+                )
             raise
+        elapsed_ms = (time.perf_counter() - start) * 1000.0
+        logger.info("Migration %d applied in %.0f ms", version, elapsed_ms)
 
 
 def _sqlite_basename(value: object) -> str:

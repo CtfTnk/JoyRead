@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -10,6 +11,9 @@ import re
 from joyread.core.models.export import BookExportRecord
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.services.hash_service import HashService
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -37,6 +41,7 @@ class ExportService:
     def export_books(self, book_ids: tuple[str, ...], destination_dir: str | Path) -> ExportBatchResult:
         target_ids = tuple(dict.fromkeys(book_ids))
         destination = Path(destination_dir).expanduser()
+        logger.info("Exporting %d book(s) to %s", len(target_ids), destination)
         if not destination.exists():
             raise ValueError(f"Export folder does not exist: {destination}")
         if not destination.is_dir():
@@ -92,6 +97,12 @@ class ExportService:
         try:
             shutil.copy2(source_path, destination_path)
         except OSError as exc:
+            logger.warning(
+                "Export copy failed for book=%s to %s: %s",
+                record.book_uuid,
+                destination_path,
+                exc,
+            )
             return ExportItemResult(
                 book_uuid=record.book_uuid,
                 original_file_name=record.original_file_name,

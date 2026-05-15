@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import IntEnum
@@ -16,6 +18,12 @@ from joyread.infrastructure.database.sqlite_connection import open_sqlite_connec
 
 
 T = TypeVar("T")
+
+logger = logging.getLogger(__name__)
+
+# Single-callback runtime above this triggers a WARNING. The DB actor is
+# serial, so a slow query directly stalls every other queued request.
+_SLOW_QUERY_MS = 200
 
 
 class DatabasePriority(IntEnum):
@@ -50,6 +58,7 @@ class DatabaseInterpreter:
 
     def start(self) -> None:
         if not self._thread.is_alive():
+            logger.info("DatabaseInterpreter starting (path=%s)", self.database_path)
             self._thread.start()
             self._ready.wait(timeout=5)
 
@@ -70,6 +79,12 @@ class DatabaseInterpreter:
             future=future,
         )
         self._queue.put(request)  # type: ignore[arg-type]
+        logger.debug(
+            "DB request queued seq=%d priority=%s queue_depth=%d",
+            request.sequence,
+            DatabasePriority(request.priority).name,
+            self._queue.qsize(),
+        )
         return future
 
     def execute(
@@ -84,6 +99,11 @@ class DatabaseInterpreter:
     def close(self) -> None:
         if self._closed:
             return
+        logger.info(
+            "DatabaseInterpreter closing (path=%s, pending=%d)",
+            self.database_path,
+            self._queue.qsize(),
+        )
         self._closed = True
         self._queue.put(
             _QueuedDatabaseRequest(
@@ -95,9 +115,11 @@ class DatabaseInterpreter:
         )
         if self._thread.is_alive():
             self._thread.join(timeout=5)
+        logger.info("DatabaseInterpreter closed")
 
     def _run(self) -> None:
         connection = open_sqlite_connection(self.database_path)
+        logger.debug("DatabaseInterpreter ready (thread=%s)", self._thread.name)
         self._ready.set()
         try:
             while True:
@@ -108,15 +130,36 @@ class DatabaseInterpreter:
                 if request.future is not None and request.future.cancelled():
                     self._queue.task_done()
                     continue
+                start = time.perf_counter()
                 try:
                     result = request.callback(connection)
                 except Exception as exc:
+                    # Surface the failure before stashing on the future so the
+                    # error path is visible even when the caller never reads
+                    # ``future.result()``. Previously this was the silent
+                    # site that hid the schema-drift OperationalError.
+                    logger.error(
+                        "DB request failed seq=%d priority=%s: %s",
+                        request.sequence,
+                        DatabasePriority(request.priority).name,
+                        exc,
+                        exc_info=True,
+                    )
                     if request.future is not None:
                         request.future.set_exception(exc)
                 else:
                     if request.future is not None:
                         request.future.set_result(result)
                 finally:
+                    elapsed_ms = (time.perf_counter() - start) * 1000.0
+                    if elapsed_ms >= _SLOW_QUERY_MS:
+                        logger.warning(
+                            "Slow DB request seq=%d priority=%s elapsed_ms=%.0f",
+                            request.sequence,
+                            DatabasePriority(request.priority).name,
+                            elapsed_ms,
+                        )
                     self._queue.task_done()
         finally:
             connection.close()
+            logger.debug("DatabaseInterpreter thread exited")

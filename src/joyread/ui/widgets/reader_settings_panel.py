@@ -31,6 +31,7 @@ class ReaderSettingsPanel(QFrame):
     always_one_page_changed = QtSignal(bool)
     fit_mode_changed = QtSignal(object)
     vertical_custom_enabled_changed = QtSignal(bool)
+    vertical_fit_width_changed = QtSignal(bool)
     page_spacing_changed = QtSignal(int)
     zoom_percent_changed = QtSignal(int)
 
@@ -72,6 +73,11 @@ class ReaderSettingsPanel(QFrame):
         self.vertical_switch.toggled.connect(self.vertical_custom_enabled_changed.emit)
         layout.addWidget(_SettingRow("Enable Custom", self.vertical_switch))
 
+        self.vertical_fit_width_switch = _SmallSwitch()
+        self.vertical_fit_width_switch.toggled.connect(self.vertical_fit_width_changed.emit)
+        self.vertical_fit_width_row = _SettingRow("Fit Width", self.vertical_fit_width_switch)
+        layout.addWidget(self.vertical_fit_width_row)
+
         self.spacing_control = _SpinButton(resources, suffix="px", value=0, minimum=0, maximum=200)
         self.spacing_control.value_changed.connect(self.page_spacing_changed.emit)
         self.spacing_row = _SettingRow("Gap", self.spacing_control, option_margin=0)
@@ -89,10 +95,11 @@ class ReaderSettingsPanel(QFrame):
         self.one_page_switch.set_checked(settings.always_one_page, emit=False)
         self.fit_dropdown.set_value(settings.fit_mode, emit=False)
         self.vertical_switch.set_checked(settings.vertical_custom_enabled, emit=False)
+        self.vertical_fit_width_switch.set_checked(settings.vertical_fit_width, emit=False)
         self.spacing_control.set_value(settings.page_spacing, emit=False)
         self.zoom_control.set_value(settings.vertical_zoom_percent, emit=False)
         self._sync_child_enabled(settings.custom_enabled)
-        self._sync_vertical_child_enabled(settings.vertical_custom_enabled)
+        self._sync_vertical_child_enabled(settings.vertical_custom_enabled, settings.vertical_fit_width)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
@@ -107,9 +114,10 @@ class ReaderSettingsPanel(QFrame):
         self.one_page_row.set_row_enabled(custom_enabled)
         self.fit_row.set_row_enabled(custom_enabled)
 
-    def _sync_vertical_child_enabled(self, custom_enabled: bool) -> None:
+    def _sync_vertical_child_enabled(self, custom_enabled: bool, fit_width: bool) -> None:
+        self.vertical_fit_width_row.set_row_enabled(custom_enabled)
         self.spacing_row.set_row_enabled(custom_enabled)
-        self.zoom_row.set_row_enabled(custom_enabled)
+        self.zoom_row.set_row_enabled(custom_enabled and not fit_width)
 
 
 class _SectionBanner(QFrame):
