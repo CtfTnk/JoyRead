@@ -69,6 +69,7 @@ class ShelfViewModel:
         self.selection_changed: Signal[set[str]] = Signal()
         self.book_open_requested: Signal[str] = Signal()
         self.book_open_at_requested: Signal[tuple[str, int]] = Signal()
+        self.missing_book_requested: Signal[str] = Signal()
         # cover_ready / page_thumbnail_ready / detail_thumbnail_batch_finished
         # fire from the TaskService worker thread (the thumbnail jobs are
         # submitted to the QThreadPool). Receivers in widgets must marshal
@@ -266,9 +267,14 @@ class ShelfViewModel:
             self._emit_state()
 
     def show_detail(self, book_uuid: str) -> None:
-        if any(book.uuid == book_uuid for book in self.books):
-            self._set_detail_book_uuid(book_uuid)
-            self._emit_state()
+        book = self._refresh_book_state(book_uuid)
+        if book is None:
+            return
+        if book.is_missing:
+            self.missing_book_requested.emit(book_uuid)
+            return
+        self._set_detail_book_uuid(book_uuid)
+        self._emit_state()
 
     def hide_detail(self) -> None:
         if self.detail_book_uuid is None:
@@ -277,13 +283,23 @@ class ShelfViewModel:
         self._emit_state()
 
     def open_book(self, book_uuid: str) -> None:
-        if any(book.uuid == book_uuid for book in self.books):
-            self.book_open_requested.emit(book_uuid)
+        book = self._refresh_book_state(book_uuid)
+        if book is None:
+            return
+        if book.is_missing:
+            self.missing_book_requested.emit(book_uuid)
+            return
+        self.book_open_requested.emit(book_uuid)
 
     def open_book_at(self, book_uuid: str, page_index: int) -> None:
-        if any(book.uuid == book_uuid for book in self.books):
-            normalized_index = max(0, page_index)
-            self.book_open_at_requested.emit(book_uuid, normalized_index)
+        book = self._refresh_book_state(book_uuid)
+        if book is None:
+            return
+        if book.is_missing:
+            self.missing_book_requested.emit(book_uuid)
+            return
+        normalized_index = max(0, page_index)
+        self.book_open_at_requested.emit(book_uuid, normalized_index)
 
     def apply_reader_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         del page_index
@@ -744,6 +760,28 @@ class ShelfViewModel:
     def _collection_uuid_from_shelf(self, shelf: str) -> str:
         prefix = "collection:"
         return shelf[len(prefix) :] if shelf.startswith(prefix) else shelf
+
+    def _book_by_uuid(self, book_uuid: str) -> Book | None:
+        return next((book for book in self.books if book.uuid == book_uuid), None)
+
+    def _refresh_book_state(self, book_uuid: str) -> Book | None:
+        # Query the repository on demand so actions reflect missing files
+        # removed while the app is running.
+        try:
+            refreshed = self._library_service.get_book(book_uuid)
+        except Exception as exc:  # pragma: no cover - repository-specific failure path.
+            logger.warning("refresh_book_state failed book=%s: %s", book_uuid, exc, exc_info=True)
+            return self._book_by_uuid(book_uuid)
+        if refreshed is None:
+            return None
+        current = self._book_by_uuid(book_uuid)
+        if current is None:
+            return refreshed
+        if current == refreshed:
+            return refreshed
+        self.books = [refreshed if book.uuid == book_uuid else book for book in self.books]
+        self._emit_state()
+        return refreshed
 
     def _emit_state(self) -> None:
         visible_ids = {book.uuid for book in self.visible_books}

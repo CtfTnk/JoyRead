@@ -17,6 +17,9 @@ class LibraryService:
     def list_books(self) -> list[Book]:
         return self._book_repository.list_books()
 
+    def get_book(self, book_uuid: str) -> Book | None:
+        return self._book_repository.get_book(book_uuid)
+
     def list_collections(self) -> list[Collection]:
         return self._book_repository.list_collections()
 

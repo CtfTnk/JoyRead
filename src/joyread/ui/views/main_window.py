@@ -111,6 +111,7 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
         context.shelf_viewmodel.books_deleted.connect(self._handle_books_deleted)
         context.shelf_viewmodel.collections_changed.connect(self._handle_collections_changed)
+        context.shelf_viewmodel.missing_book_requested.connect(self._show_missing_book_dialog)
         context.shelf_viewmodel.delete_failed.connect(
             lambda message: self.dialog_overlay.show_info("Delete Failed", message)
         )
@@ -135,6 +136,9 @@ class MainWindow(QMainWindow):
         if book is None:
             logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
+            return
+        if book.is_missing:
+            self._show_missing_book_dialog(book_uuid)
             return
         individual = self._settings_for_reader_launch().individual_read_window
         source_path = Path(book.file_path)
@@ -500,6 +504,24 @@ class MainWindow(QMainWindow):
             on_confirm=lambda target_ids=target_ids: self._context.shelf_viewmodel.delete_books(target_ids),
             confirm_text="Delete",
             cancel_text="Cancel",
+        )
+
+    def _show_missing_book_dialog(self, book_uuid: str) -> None:
+        book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+        if book is None:
+            self.dialog_overlay.show_info("Missing File", "The selected book is no longer available.")
+            return
+        message = (
+            f"'{book.title}' cannot be found on disk.\n\n"
+            "Confirm to keep it in your library, or delete it from JoyRead."
+        )
+        self.dialog_overlay.show_confirm(
+            "Missing File",
+            message,
+            on_confirm=lambda: None,
+            on_cancel=lambda book_uuid=book_uuid: self._context.shelf_viewmodel.delete_books((book_uuid,)),
+            confirm_text="Confirm",
+            cancel_text="Delete",
         )
 
     def _select_storage_location(self) -> None:

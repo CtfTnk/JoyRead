@@ -97,6 +97,34 @@ def test_open_book_at_emits_page_index_for_valid_book() -> None:
     assert emitted == [(target.uuid, 5)]
 
 
+def test_open_book_emits_missing_signal_for_missing_book() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    missing = next(book for book in vm.books if book.is_missing)
+    opened: list[str] = []
+    missing_events: list[str] = []
+    vm.book_open_requested.connect(opened.append)
+    vm.missing_book_requested.connect(missing_events.append)
+
+    vm.open_book(missing.uuid)
+
+    assert opened == []
+    assert missing_events == [missing.uuid]
+
+
+def test_show_detail_emits_missing_signal_for_missing_book() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    missing = next(book for book in vm.books if book.is_missing)
+    missing_events: list[str] = []
+    vm.missing_book_requested.connect(missing_events.append)
+
+    vm.show_detail(missing.uuid)
+
+    assert vm.detail_book_uuid is None
+    assert missing_events == [missing.uuid]
+
+
 def test_recent_shelf_ignores_user_sort_and_uses_latest_read_first() -> None:
     vm = make_viewmodel()
     vm.load_books()

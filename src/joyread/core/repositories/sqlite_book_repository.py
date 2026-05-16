@@ -55,7 +55,13 @@ class SqliteBookRepository(BookRepository):
         self._thumbnails_root = thumbnails_root.resolve() if thumbnails_root is not None else None
 
     def list_books(self) -> list[Book]:
-        return self._database.execute(_list_books, DatabasePriority.HIGH)
+        def read(connection: sqlite3.Connection) -> list[Book]:
+            # Refresh missing/healthy state before listing so the bookshelf
+            # reflects on-disk changes without manual repair.
+            _refresh_book_file_states(connection)
+            return _list_books(connection)
+
+        return self._database.execute(read, DatabasePriority.HIGH)
 
     def list_collections(self) -> list[Collection]:
         return self._database.execute(_list_collections, DatabasePriority.HIGH)
@@ -72,6 +78,7 @@ class SqliteBookRepository(BookRepository):
             return []
 
         def read(connection: sqlite3.Connection) -> list[BookExportRecord]:
+            _refresh_book_file_states(connection, target_ids)
             placeholders = ", ".join("?" for _book_id in target_ids)
             rows = connection.execute(
                 f"""
@@ -96,7 +103,11 @@ class SqliteBookRepository(BookRepository):
         return self._database.execute(read, DatabasePriority.HIGH)
 
     def get_book(self, book_id: str) -> Book | None:
-        books = self._database.execute(lambda connection: _list_books(connection, book_id), DatabasePriority.HIGH)
+        def read(connection: sqlite3.Connection) -> list[Book]:
+            _refresh_book_file_states(connection, (book_id,))
+            return _list_books(connection, book_id)
+
+        books = self._database.execute(read, DatabasePriority.HIGH)
         return books[0] if books else None
 
     def update_book_metadata(
@@ -699,6 +710,56 @@ def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> l
         parameters,
     ).fetchall()
     return [_book_from_row(row) for row in rows]
+
+
+def _refresh_book_file_states(connection: sqlite3.Connection, book_ids: tuple[str, ...] | None = None) -> None:
+    where = ""
+    parameters: tuple[object, ...] = ()
+    if book_ids:
+        placeholders = ", ".join("?" for _book_id in book_ids)
+        where = f"WHERE books.book_id IN ({placeholders})"
+        parameters = tuple(book_ids)
+    rows = connection.execute(
+        f"""
+        SELECT
+            books.book_id,
+            book_files.file_id,
+            book_files.storage_path,
+            book_files.state
+        FROM books
+        JOIN book_files ON book_files.file_id = books.file_id
+        {where}
+        """,
+        parameters,
+    ).fetchall()
+    if not rows:
+        return
+
+    now = _now()
+    updates: list[tuple[str, str, str]] = []
+    missing_count = 0
+    healthy_count = 0
+    for row in rows:
+        storage_path = Path(row["storage_path"]).expanduser()
+        desired_state = "healthy" if storage_path.exists() else "missing"
+        if row["state"] == desired_state:
+            continue
+        updates.append((desired_state, now, row["file_id"]))
+        if desired_state == "missing":
+            missing_count += 1
+        else:
+            healthy_count += 1
+    if updates:
+        connection.executemany(
+            "UPDATE book_files SET state = ?, updated_at = ? WHERE file_id = ?",
+            updates,
+        )
+    if missing_count or healthy_count:
+        logger.info(
+            "Refreshed book file state: missing=%d healthy=%d",
+            missing_count,
+            healthy_count,
+        )
 
 
 def _list_collections(connection: sqlite3.Connection) -> list[Collection]:

@@ -77,6 +77,20 @@ def test_thumbnail_service_returns_none_for_missing_unsupported_and_empty_archiv
     assert service.generate_cover(empty, (200, 284)) is None
 
 
+def test_thumbnail_service_uses_cached_cover_when_source_missing(tmp_path: Path) -> None:
+    service = _thumbnail_service(tmp_path)
+    book = _sample_book()
+    missing = Book(**{**book.__dict__, "uuid": "missing-cover", "file_path": str(tmp_path / "missing.cbz")})
+    covers_dir = service._paths.paths.thumbnails / "covers"
+    covers_dir.mkdir(parents=True, exist_ok=True)
+    cached = covers_dir / "missing-cover-signature-200x284.png"
+    cached.write_bytes(b"cover")
+
+    resolved = service.existing_cover_path(missing, (200, 284))
+
+    assert resolved == cached
+
+
 def test_thumbnail_service_generates_pdf_cover_and_detail_thumbnail(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
     service = _thumbnail_service(tmp_path)
     pdf_path = tmp_path / "sample.pdf"

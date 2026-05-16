@@ -16,6 +16,9 @@ class BookRepository(Protocol):
     def list_books(self) -> list[Book]:
         ...
 
+    def get_book(self, book_id: str) -> Book | None:
+        ...
+
     def list_collections(self) -> list[Collection]:
         ...
 

@@ -81,7 +81,9 @@ class ThumbnailService:
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         signature = self._source_signature(book)
         if signature is None:
-            return None
+            # Source is missing (or unreadable), so fall back to any cached
+            # cover on disk to keep the bookshelf visually populated.
+            return self._fallback_cover_path(book, size)
 
         cache_key = self._cover_cache_key(book, signature, size)
         cached = self._cache_service.cover_index.get(cache_key)
@@ -278,6 +280,17 @@ class ThumbnailService:
 
     def _covers_dir(self) -> Path:
         return self._paths.paths.thumbnails / "covers"
+
+    def _fallback_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
+        safe_uuid = self._safe_book_uuid(book.uuid)
+        pattern = f"{safe_uuid}-*-{size[0]}x{size[1]}.png"
+        candidates = list(self._covers_dir().glob(pattern))
+        if not candidates:
+            return None
+        try:
+            return max(candidates, key=lambda path: path.stat().st_mtime)
+        except OSError:
+            return candidates[0]
 
     def _remove_stale_covers(self, book: Book, keep: Path) -> None:
         safe_uuid = self._safe_book_uuid(book.uuid)

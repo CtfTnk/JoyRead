@@ -42,6 +42,9 @@ class InMemoryBookRepository:
     def list_books(self) -> list[Book]:
         return list(self._books)
 
+    def get_book(self, book_id: str) -> Book | None:
+        return next((book for book in self._books if book.uuid == book_id), None)
+
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
 

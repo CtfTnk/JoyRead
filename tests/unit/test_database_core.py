@@ -317,6 +317,47 @@ def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # no
     database.close()
 
 
+def test_list_books_marks_missing_when_file_deleted(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Missing File.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    refreshed = repository.list_books()[0]
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert refreshed.is_missing is True
+    assert state == "missing"
+    database.close()
+
+
+def test_get_book_marks_missing_when_file_deleted(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Missing Get.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    refreshed = repository.get_book(book.uuid)
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert refreshed is not None
+    assert refreshed.is_missing is True
+    assert state == "missing"
+    database.close()
+
+
 def test_import_folder_respects_filesystem_depth(tmp_path: Path) -> None:
     root_file = tmp_path / "folder" / "root.cbz"
     child_file = tmp_path / "folder" / "child" / "nested.cbz"
