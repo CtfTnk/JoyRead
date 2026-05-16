@@ -29,6 +29,7 @@ class NovelCustomPanel(QFrame):
 
     enable_custom_changed = QtSignal(bool)
     font_size_changed = QtSignal(int)
+    disable_css_changed = QtSignal(bool)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -70,6 +71,17 @@ class NovelCustomPanel(QFrame):
         self.font_size_row = _SettingRow("Font Size", self.font_size_control, option_margin=0)
         layout.addWidget(self.font_size_row)
 
+        # Disable-CSS escape hatch — independent of Enable Custom because
+        # it controls engine behaviour (whether to apply the EPUB's own
+        # stylesheet), not user customisation. Defaults off so books
+        # render with their intended typography; the user toggles on
+        # when an EPUB's CSS produces layout issues like horizontal
+        # overflow at small viewports.
+        self.disable_css_switch = _SmallSwitch()
+        self.disable_css_switch.toggled.connect(self.disable_css_changed.emit)
+        self.disable_css_row = _SettingRow("Disable CSS", self.disable_css_switch)
+        layout.addWidget(self.disable_css_row)
+
         layout.addStretch(1)
         self._sync_child_enabled(False)
 
@@ -79,6 +91,9 @@ class NovelCustomPanel(QFrame):
 
     def set_font_size(self, size: int, *, emit: bool = False) -> None:
         self.font_size_control.set_value(size, emit=emit)
+
+    def set_disable_css(self, disabled: bool, *, emit: bool = False) -> None:
+        self.disable_css_switch.set_checked(disabled, emit=emit)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

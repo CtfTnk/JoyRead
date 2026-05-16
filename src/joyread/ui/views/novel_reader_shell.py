@@ -200,6 +200,7 @@ class NovelReaderShellWidget(QWidget):
         self.content_area.scroll_changed.connect(self._sync_slider_from_content)
         self.custom_panel.enable_custom_changed.connect(self._handle_enable_custom_changed)
         self.custom_panel.font_size_changed.connect(self._handle_font_size_changed)
+        self.custom_panel.disable_css_changed.connect(self._handle_disable_css_changed)
         # Topic panel selections all funnel through the viewmodel's
         # spine-indexed seek.
         self.topic_panel.contents_selected.connect(self.viewmodel.seek)
@@ -424,6 +425,10 @@ class NovelReaderShellWidget(QWidget):
     def _handle_font_size_changed(self, size: int) -> None:
         logger.debug("novel custom: font_size=%s", size)
         self.content_area.apply_font_size(size)
+
+    def _handle_disable_css_changed(self, disabled: bool) -> None:
+        logger.debug("novel custom: disable_css=%s", disabled)
+        self.content_area.apply_disable_css(disabled)
 
     # --- Viewmodel signal handlers --------------------------------------
     def _sync_state_from_viewmodel(self) -> None:

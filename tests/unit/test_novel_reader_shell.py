@@ -321,6 +321,32 @@ def test_novel_disable_custom_keeps_chosen_font_for_next_toggle(qtbot, tmp_path:
     context.close()
 
 
+def test_novel_disable_css_toggle_flips_resource_handling(qtbot, tmp_path: Path) -> None:
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+    _wait_for_chapter(qtbot, window)
+
+    # Default off: EPUB CSS would be served through the asset reader.
+    assert not window.content_area._disable_css  # noqa: SLF001
+
+    # Toggle on via the panel signal → flag flips, content re-renders.
+    window.custom_panel.disable_css_switch.set_checked(True)
+    qtbot.wait(0)
+    assert window.content_area._disable_css  # noqa: SLF001
+
+    # Toggle back off → flag clears, re-render happens again.
+    window.custom_panel.disable_css_switch.set_checked(False)
+    qtbot.wait(0)
+    assert not window.content_area._disable_css  # noqa: SLF001
+
+    window.close()
+    context.close()
+
+
 def test_novel_reader_resumes_from_saved_chapter(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
