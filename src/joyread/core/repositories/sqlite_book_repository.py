@@ -55,13 +55,9 @@ class SqliteBookRepository(BookRepository):
         self._thumbnails_root = thumbnails_root.resolve() if thumbnails_root is not None else None
 
     def list_books(self) -> list[Book]:
-        def read(connection: sqlite3.Connection) -> list[Book]:
-            # Refresh missing/healthy state before listing so the bookshelf
-            # reflects on-disk changes without manual repair.
-            _refresh_book_file_states(connection)
-            return _list_books(connection)
-
-        return self._database.execute(read, DatabasePriority.HIGH)
+        # State refresh runs only on the user-action ``get_book`` path
+        # so a shelf load doesn't pay a per-book ``Path.exists()`` stat.
+        return self._database.execute(_list_books, DatabasePriority.HIGH)
 
     def list_collections(self) -> list[Collection]:
         return self._database.execute(_list_collections, DatabasePriority.HIGH)
@@ -78,6 +74,12 @@ class SqliteBookRepository(BookRepository):
             return []
 
         def read(connection: sqlite3.Connection) -> list[BookExportRecord]:
+            # Export is a manual per-book user action — same category
+            # as open/detail — so refresh state for the targeted books
+            # first. Without this, an EXPORT against a moved/deleted
+            # file would report a per-book failure but leave the row's
+            # ``state`` stale, so the shelf still shows the book as
+            # healthy until the user later clicks it.
             _refresh_book_file_states(connection, target_ids)
             placeholders = ", ".join("?" for _book_id in target_ids)
             rows = connection.execute(

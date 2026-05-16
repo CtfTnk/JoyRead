@@ -271,7 +271,7 @@ class ShelfViewModel:
         if book is None:
             return
         if book.is_missing:
-            self.missing_book_requested.emit(book_uuid)
+            self._emit_missing(book_uuid, "show_detail")
             return
         self._set_detail_book_uuid(book_uuid)
         self._emit_state()
@@ -287,7 +287,7 @@ class ShelfViewModel:
         if book is None:
             return
         if book.is_missing:
-            self.missing_book_requested.emit(book_uuid)
+            self._emit_missing(book_uuid, "open_book")
             return
         self.book_open_requested.emit(book_uuid)
 
@@ -296,7 +296,7 @@ class ShelfViewModel:
         if book is None:
             return
         if book.is_missing:
-            self.missing_book_requested.emit(book_uuid)
+            self._emit_missing(book_uuid, "open_book_at")
             return
         normalized_index = max(0, page_index)
         self.book_open_at_requested.emit(book_uuid, normalized_index)
@@ -763,6 +763,12 @@ class ShelfViewModel:
 
     def _book_by_uuid(self, book_uuid: str) -> Book | None:
         return next((book for book in self.books if book.uuid == book_uuid), None)
+
+    def _emit_missing(self, book_uuid: str, action: str) -> None:
+        # Single emission site so every missing-book user-action path
+        # leaves a matching trace line behind for log triage.
+        logger.debug("missing_book_requested action=%s book=%s", action, book_uuid)
+        self.missing_book_requested.emit(book_uuid)
 
     def _refresh_book_state(self, book_uuid: str) -> Book | None:
         # Query the repository on demand so actions reflect missing files

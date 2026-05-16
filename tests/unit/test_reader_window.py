@@ -615,6 +615,41 @@ def test_shelf_reader_reloads_saved_per_book_settings(qtbot, tmp_path: Path, mon
     context.close()
 
 
+def test_main_window_missing_book_dialog_delete_button_triggers_deletion(qtbot, tmp_path: Path, monkeypatch) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+
+    # Confirm path runs the destructive lambda.
+    window._show_missing_book_dialog(book.uuid)
+    accept = window.dialog_overlay._on_accept
+    assert accept is not None
+    accept()
+    qtbot.waitUntil(lambda: not any(b.uuid == book.uuid for b in context.shelf_viewmodel.books), timeout=2000)
+
+    window.close()
+    context.close()
+
+
+def test_main_window_missing_book_dialog_cancel_keeps_book(qtbot, tmp_path: Path, monkeypatch) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+
+    # Cancel path is wired to None — pressing Esc / clicking outside
+    # must not delete the book.
+    window._show_missing_book_dialog(book.uuid)
+    assert window.dialog_overlay._on_reject is None
+    # Dismiss without action; book stays in library.
+    window.dialog_overlay.hide()
+    assert any(b.uuid == book.uuid for b in context.shelf_viewmodel.books)
+
+    window.close()
+    context.close()
+
+
 def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)

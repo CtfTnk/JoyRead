@@ -511,17 +511,22 @@ class MainWindow(QMainWindow):
         if book is None:
             self.dialog_overlay.show_info("Missing File", "The selected book is no longer available.")
             return
+        # Destructive action on Confirm, dismiss on Cancel — matches
+        # ``_confirm_delete_books`` so Esc / click-outside don't
+        # silently delete the book. Unicode quotes survive titles
+        # that contain an apostrophe.
+        title = book.title or "(untitled)"
         message = (
-            f"'{book.title}' cannot be found on disk.\n\n"
-            "Confirm to keep it in your library, or delete it from JoyRead."
+            f"“{title}” cannot be found on disk.\n\n"
+            "Delete it from JoyRead, or keep it in your library?"
         )
         self.dialog_overlay.show_confirm(
             "Missing File",
             message,
-            on_confirm=lambda: None,
-            on_cancel=lambda book_uuid=book_uuid: self._context.shelf_viewmodel.delete_books((book_uuid,)),
-            confirm_text="Confirm",
-            cancel_text="Delete",
+            on_confirm=lambda book_uuid=book_uuid: self._context.shelf_viewmodel.delete_books((book_uuid,)),
+            on_cancel=None,
+            confirm_text="Delete",
+            cancel_text="Keep",
         )
 
     def _select_storage_location(self) -> None:

@@ -81,9 +81,20 @@ class ThumbnailService:
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         signature = self._source_signature(book)
         if signature is None:
-            # Source is missing (or unreadable), so fall back to any cached
-            # cover on disk to keep the bookshelf visually populated.
-            return self._fallback_cover_path(book, size)
+            # Source is missing (or unreadable). Check the fallback
+            # cache first so repeated shelf renders skip the glob; the
+            # entry is only re-resolved when the cached path no longer
+            # exists on disk.
+            fallback_key = self._cover_fallback_key(book, size)
+            cached_fallback = self._cache_service.cover_index.get(fallback_key)
+            if cached_fallback:
+                cached_path = Path(cached_fallback)
+                if cached_path.exists():
+                    return cached_path
+            resolved = self._fallback_cover_path(book, size)
+            if resolved is not None:
+                self._cache_service.cover_index.put(fallback_key, str(resolved))
+            return resolved
 
         cache_key = self._cover_cache_key(book, signature, size)
         cached = self._cache_service.cover_index.get(cache_key)
@@ -300,6 +311,12 @@ class ThumbnailService:
 
     def _cover_cache_key(self, book: Book, signature: str, size: SizeTuple) -> str:
         return f"cover:{book.uuid}:{signature}:{size[0]}x{size[1]}"
+
+    def _cover_fallback_key(self, book: Book, size: SizeTuple) -> str:
+        # Distinct prefix so the live-cover path's
+        # ``cover:<uuid>:<signature>:<size>`` keys never collide with
+        # the missing-source fallback record.
+        return f"cover-fallback:{book.uuid}:{size[0]}x{size[1]}"
 
     @staticmethod
     def _detail_cache_key(page_index: int, size: SizeTuple) -> tuple[int, int, int]:

@@ -89,6 +89,14 @@ def test_thumbnail_service_uses_cached_cover_when_source_missing(tmp_path: Path)
     resolved = service.existing_cover_path(missing, (200, 284))
 
     assert resolved == cached
+    # Second call hits the cover_index cache (no need to re-glob).
+    fallback_key = service._cover_fallback_key(missing, (200, 284))
+    assert service._cache_service.cover_index.get(fallback_key) == str(cached)
+    assert service.existing_cover_path(missing, (200, 284)) == cached
+    # When the cached path itself disappears, the next lookup re-globs
+    # and either finds another candidate or returns None.
+    cached.unlink()
+    assert service.existing_cover_path(missing, (200, 284)) is None
 
 
 def test_thumbnail_service_generates_pdf_cover_and_detail_thumbnail(tmp_path: Path, qtbot) -> None:  # noqa: ARG001

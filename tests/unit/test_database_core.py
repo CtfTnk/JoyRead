@@ -317,8 +317,14 @@ def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # no
     database.close()
 
 
-def test_list_books_marks_missing_when_file_deleted(tmp_path: Path) -> None:
-    source = tmp_path / "source" / "Missing File.cbz"
+def test_list_books_preserves_persisted_state_without_refresh(tmp_path: Path) -> None:
+    # State refresh runs only on the user-action ``get_book`` path. The
+    # shelf load (``list_books``) returns whatever was last persisted —
+    # the file disappearing between load and click does not flip the
+    # row until a user action fetches it. This test pins that contract
+    # so a future regression cannot reintroduce the per-shelf-load
+    # ``Path.exists()`` stat.
+    source = tmp_path / "source" / "Persisted File.cbz"
     source.parent.mkdir()
     _write_cbz(source)
     service, database, _paths = _import_service(tmp_path)
@@ -332,8 +338,8 @@ def test_list_books_marks_missing_when_file_deleted(tmp_path: Path) -> None:
         lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
     )
 
-    assert refreshed.is_missing is True
-    assert state == "missing"
+    assert refreshed.is_missing is False
+    assert state == "healthy"
     database.close()
 
 
@@ -354,6 +360,31 @@ def test_get_book_marks_missing_when_file_deleted(tmp_path: Path) -> None:
 
     assert refreshed is not None
     assert refreshed.is_missing is True
+    assert state == "missing"
+    database.close()
+
+
+def test_get_export_records_marks_missing_when_file_deleted(tmp_path: Path) -> None:
+    # Export is a manual user action; if a targeted file has been moved
+    # or deleted, the row should flip to ``missing`` so the shelf and
+    # the export failure surface agree without waiting for the user to
+    # click the book separately.
+    source = tmp_path / "source" / "Missing Export.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    records = repository.get_export_records((book.uuid,))
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert len(records) == 1
+    assert records[0].is_missing is True
     assert state == "missing"
     database.close()
 
