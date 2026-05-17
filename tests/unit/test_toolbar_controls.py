@@ -66,7 +66,7 @@ def test_search_panel_collapses_expands_and_submits_only_on_action(qtbot) -> Non
     assert collapse_button is not None
     assert expand_button is not None
     assert submit_button is not None
-    assert panel.width() == Theme.search_panel_width
+    assert panel.width() == Theme.toolbar_button_size
 
     search_bar = panel.findChild(QFrame, "FigmaSearchBar")
     assert search_bar is not None

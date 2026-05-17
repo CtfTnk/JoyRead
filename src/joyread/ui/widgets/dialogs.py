@@ -349,8 +349,12 @@ class DialogCollectionChoiceRow(QFrame):
             icon = QLabel()
             icon.setObjectName("DialogCollectionChoiceIcon")
             icon.setFixedSize(Theme.icon_size, Theme.icon_size)
+            # Match the sidebar treatment: hidable collections show the
+            # strike-eye variant so the Add-to dialog can't visually
+            # confuse a hidable target with a normal one.
+            icon_name = "icon_collection_hiden.svg" if collection.is_hidable else "icon_collection.svg"
             icon.setPixmap(
-                QIcon(str(resources.icon_path("icon_collection.svg"))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
+                QIcon(str(resources.icon_path(icon_name))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
             )
             layout.addWidget(icon)
 
@@ -576,8 +580,16 @@ class JoyReadDialogPanel(QFrame):
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(((button_text, self.accepted.emit),))
 
-    def set_confirm(self, title: str, message: str, cancel_text: str, confirm_text: str) -> None:
-        self._set_title(title)
+    def set_confirm(
+        self,
+        title: str,
+        message: str,
+        cancel_text: str,
+        confirm_text: str,
+        *,
+        destructive: bool = False,
+    ) -> None:
+        self._set_title(title, destructive=destructive)
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(
             (
@@ -605,8 +617,15 @@ class JoyReadDialogPanel(QFrame):
     def refresh_size(self) -> None:
         self._refresh_size()
 
-    def _set_title(self, title: str) -> None:
+    def _set_title(self, title: str, *, destructive: bool = False) -> None:
         self._title_label.setText(title)
+        # ``destructive`` property pairs with the QSS rule
+        # ``QLabel[class="JoyReadDialogTitle"][destructive="true"]`` so the
+        # title goes red whenever a Reset/Erase-style dialog reuses this
+        # panel; resetting the property keeps subsequent dialogs neutral.
+        self._title_label.setProperty("destructive", "true" if destructive else "false")
+        self._title_label.style().unpolish(self._title_label)
+        self._title_label.style().polish(self._title_label)
 
     def _set_buttons(self, buttons: tuple[tuple[str, Callable[[], None]], ...]) -> None:
         while self._option_layout.count():
@@ -725,12 +744,14 @@ class JoyReadDialogOverlay(QWidget):
         on_cancel: Callable[[], None] | None = None,
         confirm_text: str = "Confirm",
         cancel_text: str = "Cancel",
-        ) -> None:
+        *,
+        destructive: bool = False,
+    ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_confirm(title, message, cancel_text, confirm_text)
+        self._panel.set_confirm(title, message, cancel_text, confirm_text, destructive=destructive)
         self._show_centered()
 
     def show_input(

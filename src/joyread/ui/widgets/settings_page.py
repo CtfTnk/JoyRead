@@ -474,8 +474,10 @@ class SettingsButtonItem(SettingsOptionItem):
     """Label + right-aligned push button row (Figma node I231:1711;509:3236).
 
     Used for the Hidden Space rows (Change Password, Revert all, Reset and
-    Erase). When ``destructive=True`` the label and button text are tinted
-    red to match the Figma "Reset and Erase / Proceed" treatment.
+    Erase). When ``destructive=True`` the ``destructive`` property is set
+    on both the row frame and the push button so the QSS rule under
+    ``QFrame[class="SettingsItem"][destructive="true"]`` tints the label
+    and the caption red — no inline stylesheets.
     """
 
     clicked = QtSignal()
@@ -490,15 +492,16 @@ class SettingsButtonItem(SettingsOptionItem):
     ) -> None:
         self.button = SettingsPushButton(button_text)
         if destructive:
-            # Mirror the Figma `text-[#bf0c0c]` treatment on the destructive
-            # variant. The QSS theme picks up ``destructive=true`` to swap
-            # both the label and the button caption colour.
             self.button.setProperty("destructive", "true")
         super().__init__(name, self.button, parent)
         if destructive:
             self.setProperty("destructive", "true")
+            # Property changes after construction need a polish pass for
+            # QSS attribute selectors to recompute.
             self.style().unpolish(self)
             self.style().polish(self)
+            self.button.style().unpolish(self.button)
+            self.button.style().polish(self.button)
         self.button.clicked.connect(self.clicked.emit)
 
     def set_enabled(self, enabled: bool) -> None:

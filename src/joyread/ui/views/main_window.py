@@ -156,9 +156,12 @@ class MainWindow(QMainWindow):
         # Launch-time Hidden Space gate. If the user closed the previous
         # session with "Show Collections" still on, the shelf is hidden
         # behind an #ECECEC lock overlay until they verify the password
-        # (or press Hide to flip the toggle off).
+        # (or press Hide to flip the toggle off). Read both flags from
+        # the ViewModel so the View layer doesn't reach into Service /
+        # settings directly.
         self._lock_overlay: HiddenSpaceLockOverlay | None = None
-        if context.settings.show_hidden_collection and context.hidden_space_service.is_initialized:
+        settings_vm = context.settings_viewmodel
+        if settings_vm.show_hidden_collection and settings_vm.hidden_space_initialized:
             self._show_hidden_space_lock_overlay(root)
 
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
@@ -700,6 +703,7 @@ class MainWindow(QMainWindow):
             on_cancel=None,
             confirm_text="Erase",
             cancel_text="Cancel",
+            destructive=True,
         )
 
     def _select_storage_location(self) -> None:
@@ -805,7 +809,10 @@ class MainWindow(QMainWindow):
         )
 
     def _show_add_to_collection_dialog(self, book_uuids: tuple[str, ...]) -> None:
-        collections = list(self._context.shelf_viewmodel.collections)
+        # ``visible_collections`` already filters hidable rows out when
+        # the Privacy toggle is off, so the Add-to dialog can't expose
+        # hidable targets while the feature is dormant.
+        collections = list(self._context.shelf_viewmodel.visible_collections)
         if not collections:
             self.dialog_overlay.show_info("Add to Collection", "Create a collection before adding books.")
             return
@@ -930,8 +937,8 @@ class MainWindow(QMainWindow):
         # overlay swallows all input so the user can't reach it.
         self._lock_overlay = HiddenSpaceLockOverlay(
             root,
-            hint=self._context.settings.hidden_space_password_hint,
-            verify=self._context.hidden_space_service.verify,
+            hint=self._context.settings_viewmodel.hidden_space_hint,
+            verify=self._context.settings_viewmodel.verify_hidden_space_password,
         )
         self._lock_overlay.verified.connect(self._unlock_hidden_space)
         self._lock_overlay.dismissed.connect(self._dismiss_hidden_space)

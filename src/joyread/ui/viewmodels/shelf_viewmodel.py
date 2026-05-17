@@ -376,6 +376,25 @@ class ShelfViewModel:
         if not target_ids:
             return
 
+        # Hidden books are intentionally not allowed in Favourites — the
+        # cascade in ``hide_book`` clears the flag, so re-favouriting here
+        # would resurrect a stale row that pops back into Favourites the
+        # moment the book is unhidden. Block the action and surface the
+        # rule so the user understands why the toggle didn't take.
+        if is_favourite:
+            blocked = [
+                book.uuid for book in self.books if book.uuid in target_ids and book.is_hidden
+            ]
+            if blocked:
+                logger.warning(
+                    "set_favourite blocked: hidden books cannot be favourited books=%s",
+                    blocked,
+                )
+                self.favourite_failed.emit(
+                    "Hidden books cannot be added to Favourites. Unhide them first."
+                )
+                return
+
         if self._task_service is None:
             try:
                 self._library_service.set_favourites(target_ids, is_favourite)
@@ -557,6 +576,32 @@ class ShelfViewModel:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
         if not target_ids:
             return
+
+        # Normal collections must never contain hidden books — the
+        # visibility filter would silently swallow them after the insert,
+        # which looks like "nothing happened". Surface the constraint up
+        # front so the user can either unhide first or make the target
+        # collection hidable.
+        target_collection = next(
+            (collection for collection in self.collections if collection.uuid == collection_uuid),
+            None,
+        )
+        if target_collection is not None and not target_collection.is_hidable:
+            hidden_targets = [
+                book.uuid for book in self.books if book.uuid in target_ids and book.is_hidden
+            ]
+            if hidden_targets:
+                logger.warning(
+                    "add_books_to_collection blocked: hidden books cannot join a normal collection "
+                    "books=%s collection=%s",
+                    hidden_targets,
+                    collection_uuid,
+                )
+                self.collection_failed.emit(
+                    "Hidden books cannot be added to a normal collection. "
+                    "Unhide them first, or make the collection hidable."
+                )
+                return
 
         if self._task_service is None:
             try:

@@ -697,3 +697,46 @@ def test_unhide_books_restores_visibility_on_all_shelf() -> None:
 
     vm.unhide_books(["mock-book-03"])
     assert "mock-book-03" in {book.uuid for book in vm.visible_books}
+
+
+def test_hidden_books_cannot_be_favourited() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.hide_books(["mock-book-04"])
+    errors: list[str] = []
+    vm.favourite_failed.connect(errors.append)
+
+    vm.set_favourite(["mock-book-04"], True)
+
+    refreshed = next(book for book in vm.books if book.uuid == "mock-book-04")
+    assert refreshed.is_favourite is False
+    assert errors and "Hidden" in errors[0]
+
+
+def test_hidden_books_blocked_from_normal_collections_with_error_message() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.hide_books(["mock-book-04"])
+    errors: list[str] = []
+    vm.collection_failed.connect(errors.append)
+
+    # ``collection-a`` is a normal (non-hidable) collection in the
+    # in-memory fixture; the add must be rejected with a clear message
+    # rather than silently inserted and filtered away later.
+    vm.add_books_to_collection(["mock-book-04"], "collection-a")
+
+    refreshed = next(book for book in vm.books if book.uuid == "mock-book-04")
+    assert "collection-a" not in refreshed.collection_ids
+    assert errors and "hidden" in errors[0].lower()
+
+
+def test_hidden_books_can_be_added_to_hidable_collections() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_collection_hidable("collection-a", True)
+    vm.hide_books(["mock-book-04"])
+
+    vm.add_books_to_collection(["mock-book-04"], "collection-a")
+
+    refreshed = next(book for book in vm.books if book.uuid == "mock-book-04")
+    assert "collection-a" in refreshed.collection_ids

@@ -1210,3 +1210,35 @@ QLabel[class="StateBody"] {
     color: #6d6d6d;
     font-size: 14px;
 }
+
+/* Hidden Space launch lock overlay */
+QWidget#HiddenSpaceLockOverlay {
+    background: __READER_BACKGROUND__;
+    border-radius: __WINDOW_RADIUS__;
+}
+
+QLabel#HiddenSpaceLockHint {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __SIDEBAR_ITEM_FONT_SIZE__;
+}
+
+QLabel#HiddenSpaceLockState {
+    color: __MENU_DESTRUCTIVE__;
+    font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
+}
+
+QLabel[class="HiddenSpaceLockButtonText"] {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_INPUT_HEADER_FONT_SIZE__;
+    font-weight: 600;
+}
+
+/* Destructive variants reuse the menu red token. */
+QLabel[class="JoyReadDialogTitle"][destructive="true"] {
+    color: __MENU_DESTRUCTIVE__;
+}
+
+QFrame[class="SettingsItem"][destructive="true"] QLabel[class="SettingsItemNameText"],
+QToolButton[class="SettingsPushButton"][destructive="true"] {
+    color: __MENU_DESTRUCTIVE__;
+}

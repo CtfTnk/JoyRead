@@ -360,7 +360,14 @@ def build_book_context_menu(
     menu = _figma_menu(parent)
 
     menu.add_item("Read", lambda: on_read(book.uuid))
-    menu.add_item("Unfavourite" if book.is_favourite else "Favourite", lambda: on_favourite(book.uuid))
+    # Hidden books cannot be favourited (Favourites is one of the
+    # surfaces that hidden books vanish from); skip the row entirely so
+    # the menu doesn't surface a no-op action.
+    if not book.is_hidden:
+        menu.add_item(
+            "Unfavourite" if book.is_favourite else "Favourite",
+            lambda: on_favourite(book.uuid),
+        )
     menu.add_item("Detail", lambda: on_detail(book.uuid))
     menu.add_item("Add to...", lambda: on_add_to_collection(book.uuid))
     menu.add_item("Export", lambda: on_export(book.uuid))

@@ -809,11 +809,13 @@ def test_reader_footer_updates_progress_slider_direction(qtbot, tmp_path: Path) 
 def _initialised_hidden_space_context(tmp_path: Path, monkeypatch) -> object:
     # Mirrors ``_context_with_imported_book`` but also primes the Hidden
     # Space service so the next ``MainWindow`` construction has to gate
-    # the shelf behind the lock overlay.
+    # the shelf behind the lock overlay. The setup goes through the
+    # SettingsViewModel so the in-memory ``show_hidden_collection`` /
+    # ``hidden_space_initialized`` mirrors stay in sync with the
+    # persisted state (which MainWindow now reads from the VM, not the
+    # raw settings dataclass).
     context = _context_with_imported_book(tmp_path, monkeypatch)
-    context.hidden_space_service.initialize("Pass1234", "Pass1234", "remember the dog")
-    # Refresh the in-memory settings snapshot since update() returns a new
-    # dataclass; AppContext otherwise keeps the pre-init value.
+    context.settings_viewmodel.initialize_hidden_space("Pass1234", "Pass1234", "remember the dog")
     context.settings = context.settings_store.load()
     return context
 
@@ -883,7 +885,9 @@ def test_main_window_skips_lock_overlay_when_show_collections_is_off(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
     context = _initialised_hidden_space_context(tmp_path, monkeypatch)
-    context.settings_store.update(show_hidden_collection=False)
+    # Flip the toggle off through the VM so the persisted state and the
+    # VM mirror stay in sync (MainWindow reads the latter).
+    context.settings_viewmodel.set_show_hidden_collection(False)
     context.settings = context.settings_store.load()
     window = MainWindow(context)
     qtbot.addWidget(window)
