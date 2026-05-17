@@ -615,6 +615,50 @@ def test_shelf_reader_reloads_saved_per_book_settings(qtbot, tmp_path: Path, mon
     context.close()
 
 
+def test_main_window_restored_book_opens_after_click(qtbot, tmp_path: Path, monkeypatch) -> None:
+    # Patch B contract: a book whose file disappears and then comes
+    # back must open on the next click without showing the missing
+    # dialog. The shelf-click path runs the VM's
+    # ``_refresh_book_state``, which flips the row back to healthy
+    # the moment storage_path exists again.
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+    file_path = Path(book.file_path)
+
+    # Delete the file, click once → VM detects missing → dialog.
+    backup = tmp_path / "backup.bytes"
+    backup.write_bytes(file_path.read_bytes())
+    file_path.unlink()
+    context.shelf_viewmodel.open_book(book.uuid)
+    qtbot.waitUntil(lambda: any(b.uuid == book.uuid and b.is_missing for b in context.shelf_viewmodel.books), timeout=2000)
+
+    # Restore the file. Next click heals the row and opens the reader.
+    file_path.write_bytes(backup.read_bytes())
+    context.shelf_viewmodel.open_book(book.uuid)
+    qtbot.waitUntil(lambda: any(b.uuid == book.uuid and not b.is_missing for b in context.shelf_viewmodel.books), timeout=2000)
+    qtbot.waitUntil(lambda: window._embedded_reader is not None, timeout=2000)
+
+    window.close()
+    context.close()
+
+
+def test_main_window_shelf_view_no_longer_re_emits_open_signals(qtbot, tmp_path: Path, monkeypatch) -> None:
+    # The shelf view used to relay ``book_open_requested`` through
+    # ``read_book_requested``. Patch B removed the relay; MainWindow
+    # subscribes to the VM directly so the relay isn't even defined.
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert not hasattr(window.shelf_view, "read_book_requested")
+    assert not hasattr(window.shelf_view, "read_book_at_requested")
+
+    window.close()
+    context.close()
+
+
 def test_main_window_missing_book_dialog_delete_button_triggers_deletion(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
     window = MainWindow(context)

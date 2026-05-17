@@ -29,8 +29,11 @@ class ShelfView(QWidget):
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
-    read_book_requested = QtSignal(str)
-    read_book_at_requested = QtSignal(str, int)
+    # ``read_book_*`` decisions are emitted by ShelfViewModel directly
+    # (``book_open_requested`` / ``book_open_at_requested``). MainWindow
+    # subscribes to the VM so every open is gated by the VM's
+    # ``_refresh_book_state`` check, and we don't need a view-layer
+    # relay to bridge them.
     open_file_requested = QtSignal(bool)
 
     def __init__(
@@ -113,8 +116,6 @@ class ShelfView(QWidget):
         self._escape_shortcut.activated.connect(self._viewmodel.hide_detail)
 
         self._viewmodel.state_changed.connect(self.render)
-        self._viewmodel.book_open_requested.connect(self.read_book_requested.emit)
-        self._viewmodel.book_open_at_requested.connect(self.read_book_at_requested.emit)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
         self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)

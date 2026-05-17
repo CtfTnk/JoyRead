@@ -102,8 +102,6 @@ class MainWindow(QMainWindow):
         self.shelf_view.delete_books_requested.connect(self._confirm_delete_books)
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
-        self.shelf_view.read_book_requested.connect(self.open_reader_for_book)
-        self.shelf_view.read_book_at_requested.connect(self.open_reader_for_book_at)
         self.shelf_view.open_file_requested.connect(self._select_reader_file)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
@@ -111,6 +109,15 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
         context.shelf_viewmodel.books_deleted.connect(self._handle_books_deleted)
         context.shelf_viewmodel.collections_changed.connect(self._handle_collections_changed)
+        # Shelf clicks travel through the viewmodel (book_card →
+        # shelf_view → vm.open_book) so every "open" is gated by
+        # ``_refresh_book_state`` — that re-validates the
+        # ``is_missing`` snapshot per click and heals a stale row
+        # (e.g. user restored a deleted file). MainWindow only sees
+        # the VM's *decision* signals and never reads
+        # ``book.is_missing`` directly.
+        context.shelf_viewmodel.book_open_requested.connect(self.open_reader_for_book)
+        context.shelf_viewmodel.book_open_at_requested.connect(self.open_reader_for_book_at)
         context.shelf_viewmodel.missing_book_requested.connect(self._show_missing_book_dialog)
         context.shelf_viewmodel.delete_failed.connect(
             lambda message: self.dialog_overlay.show_info("Delete Failed", message)
@@ -132,13 +139,14 @@ class MainWindow(QMainWindow):
         self.shelf_view.render()
 
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
+        # Invoked via ``shelf_viewmodel.book_open_requested`` — the VM
+        # has already refreshed file state and gated on ``is_missing``,
+        # so we only defend against the race where the book row was
+        # deleted between the VM check and this slot.
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
             logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
             self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
-            return
-        if book.is_missing:
-            self._show_missing_book_dialog(book_uuid)
             return
         individual = self._settings_for_reader_launch().individual_read_window
         source_path = Path(book.file_path)
