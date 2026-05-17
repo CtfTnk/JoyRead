@@ -36,6 +36,14 @@ class AppSettings:
     archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
     import_folder_max_depth: int = 1
     archive_internal_max_depth: int = 2
+    # Hidden Space (soft visibility layer for books + user collections).
+    # ``hidden_space_password_hash is None`` is the sentinel for the
+    # uninitiated state — the feature is only "armed" once the user
+    # completes the password-setup dialog.
+    hidden_space_password_hash: str | None = None
+    hidden_space_password_salt: str | None = None
+    hidden_space_password_hint: str | None = None
+    show_hidden_collection: bool = False
 
 
 class SettingsStore:
@@ -111,6 +119,10 @@ class SettingsStore:
                 minimum=1,
                 maximum=5,
             ),
+            hidden_space_password_hash=_coerce_optional_str(raw.get("hidden_space_password_hash")),
+            hidden_space_password_salt=_coerce_optional_str(raw.get("hidden_space_password_salt")),
+            hidden_space_password_hint=_coerce_optional_str(raw.get("hidden_space_password_hint")),
+            show_hidden_collection=bool(raw.get("show_hidden_collection", False)),
         )
 
     def save(self, settings: AppSettings) -> None:
@@ -163,6 +175,13 @@ def _coerce_positive_int(value: object, *, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return coerced if coerced > 0 else default
+
+
+def _coerce_optional_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _coerce_int_in_range(value: object, *, default: int, minimum: int, maximum: int) -> int:

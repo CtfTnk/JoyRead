@@ -258,6 +258,21 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ADD COLUMN vertical_fit_width INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        9,
+        """
+        ALTER TABLE books
+            ADD COLUMN is_hidden INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE collections
+            ADD COLUMN is_hidable INTEGER NOT NULL DEFAULT 0;
+
+        CREATE INDEX IF NOT EXISTS idx_books_is_hidden
+            ON books(is_hidden);
+        CREATE INDEX IF NOT EXISTS idx_collections_is_hidable
+            ON collections(is_hidable);
+        """,
+    ),
 )
 
 

@@ -162,6 +162,10 @@ class ShelfView(QWidget):
             return
         target_ids = self._menu_target_ids(book_uuid)
         next_favourite_state = not book.is_favourite
+        show_hide_action = (
+            self._viewmodel.hidden_space_initialized
+            and self._viewmodel.show_hidden_collection
+        )
         menu = build_book_context_menu(
             self,
             book,
@@ -173,6 +177,9 @@ class ShelfView(QWidget):
             on_remove=lambda _uuid: self._viewmodel.remove_books_from_current_shelf(target_ids),
             on_delete=lambda _uuid: self.delete_books_requested.emit(target_ids),
             show_remove=self._viewmodel.can_remove_from_current_shelf,
+            on_hide=lambda _uuid: self._viewmodel.hide_books(target_ids),
+            on_unhide=lambda _uuid: self._viewmodel.unhide_books(target_ids),
+            show_hide_action=show_hide_action,
         )
         self._exec_interaction_popup(menu, global_pos)
 

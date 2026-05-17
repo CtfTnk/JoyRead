@@ -12,6 +12,10 @@ from joyread.core.models.cache import (
     ArchiveCacheStrategy,
     normalize_archive_cache_strategy,
 )
+from joyread.core.services.hidden_space_service import (
+    HiddenSpacePasswordError,
+    HiddenSpaceService,
+)
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.signals import Signal
 
@@ -22,7 +26,7 @@ logger = logging.getLogger(__name__)
 class SettingsSectionKey(StrEnum):
     GENERAL = "general"
     TAGS = "tags"
-    PRIVATE_SPACE = "private_space"
+    PRIVACY = "privacy"
     ABOUT = "about"
 
 
@@ -49,7 +53,12 @@ ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
 
 class SettingsViewModel:
-    def __init__(self, settings: AppSettings | None = None, settings_store: SettingsStore | None = None) -> None:
+    def __init__(
+        self,
+        settings: AppSettings | None = None,
+        settings_store: SettingsStore | None = None,
+        hidden_space_service: HiddenSpaceService | None = None,
+    ) -> None:
         settings = settings or AppSettings(storage_location="~/Documents/JoyRead")
         self.state_changed: Signal[None] = Signal()
         # The cache fields are user-tunable and surface "Clear archive cache"
@@ -58,13 +67,19 @@ class SettingsViewModel:
         # current-usage label via ``refresh_archive_pool_usage``.
         self.cache_budgets_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
+        # Hidden Space side effects: surface password-setup outcome and
+        # reset/revert events so MainWindow can refresh the shelf + sidebar
+        # without poking VM internals.
+        self.hidden_space_changed: Signal[None] = Signal()
+        self.hidden_space_error: Signal[str] = Signal()
 
         self._settings_store = settings_store
+        self._hidden_space_service = hidden_space_service
         self._archive_pool_bytes_provider: Callable[[], int] | None = None
         self.sections = (
             SettingsSection(SettingsSectionKey.GENERAL, "General"),
             SettingsSection(SettingsSectionKey.TAGS, "Tags"),
-            SettingsSection(SettingsSectionKey.PRIVATE_SPACE, "Private Space"),
+            SettingsSection(SettingsSectionKey.PRIVACY, "Privacy"),
             SettingsSection(SettingsSectionKey.ABOUT, "About", lower_group=True),
         )
         self.current_section = SettingsSectionKey.GENERAL
@@ -101,6 +116,11 @@ class SettingsViewModel:
             ARCHIVE_INTERNAL_DEPTH_MAX,
         )
         self.archive_pool_current_bytes = 0
+        # Hidden Space surface state. The service is the source of truth;
+        # mirroring these on the VM keeps the settings page renders synchronous.
+        self.hidden_space_initialized = settings.hidden_space_password_hash is not None
+        self.show_hidden_collection = bool(settings.show_hidden_collection)
+        self.hidden_space_hint = settings.hidden_space_password_hint
 
     @property
     def archive_cache_strategy_label(self) -> str:
@@ -219,6 +239,94 @@ class SettingsViewModel:
             return
         self.archive_pool_current_bytes = usage
         self.state_changed.emit()
+
+    def set_hidden_space_service(self, service: HiddenSpaceService | None) -> None:
+        # Storage reconfiguration rebuilds the service; the VM holds a
+        # reference so the settings page can still call methods after a
+        # storage swap without re-binding the widget tree.
+        self._hidden_space_service = service
+
+    def initialize_hidden_space(self, password: str, confirm: str, hint: str | None) -> bool:
+        service = self._require_hidden_space_service()
+        if service is None:
+            return False
+        try:
+            service.initialize(password, confirm, hint)
+        except HiddenSpacePasswordError as exc:
+            self.hidden_space_error.emit(str(exc))
+            return False
+        self._refresh_hidden_space_state()
+        self.hidden_space_changed.emit()
+        return True
+
+    def verify_hidden_space_password(self, password: str) -> bool:
+        service = self._require_hidden_space_service()
+        if service is None:
+            return False
+        return service.verify(password)
+
+    def change_hidden_space_password(
+        self,
+        old_password: str,
+        new_password: str,
+        confirm: str,
+        hint: str | None = None,
+    ) -> bool:
+        service = self._require_hidden_space_service()
+        if service is None:
+            return False
+        try:
+            service.change_password(old_password, new_password, confirm, hint)
+        except HiddenSpacePasswordError as exc:
+            self.hidden_space_error.emit(str(exc))
+            return False
+        self._refresh_hidden_space_state()
+        self.hidden_space_changed.emit()
+        return True
+
+    def set_show_hidden_collection(self, enabled: bool) -> None:
+        # Caller (settings page) is responsible for password gating before
+        # turning the toggle on. We just persist + mirror here. No
+        # early-return on "same value" because the mirrored ``self.show_hidden_collection``
+        # can lag the persisted state (e.g. when the service was initialised
+        # after VM construction); cheap settings_store.update is preferable
+        # to a stale-cache no-op.
+        service = self._require_hidden_space_service()
+        if service is None:
+            return
+        service.set_show_hidden_collection(bool(enabled))
+        self._refresh_hidden_space_state()
+        self.hidden_space_changed.emit()
+
+    def revert_hidden_space(self) -> None:
+        service = self._require_hidden_space_service()
+        if service is None:
+            return
+        service.revert_all()
+        self.hidden_space_changed.emit()
+
+    def reset_hidden_space(self) -> None:
+        service = self._require_hidden_space_service()
+        if service is None:
+            return
+        service.reset_and_erase()
+        self._refresh_hidden_space_state()
+        self.hidden_space_changed.emit()
+
+    def _refresh_hidden_space_state(self) -> None:
+        if self._settings_store is None:
+            return
+        current = self._settings_store.load()
+        self.hidden_space_initialized = current.hidden_space_password_hash is not None
+        self.show_hidden_collection = bool(current.show_hidden_collection)
+        self.hidden_space_hint = current.hidden_space_password_hint
+        self.state_changed.emit()
+
+    def _require_hidden_space_service(self) -> HiddenSpaceService | None:
+        if self._hidden_space_service is None:
+            logger.warning("HiddenSpaceService not wired to SettingsViewModel; ignoring request")
+            return None
+        return self._hidden_space_service
 
     def _persist(self, **changes: object) -> None:
         if self._settings_store is not None:

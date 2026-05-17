@@ -13,3 +13,4 @@ class Collection:
     is_private: bool
     created_at: datetime
     updated_at: datetime
+    is_hidable: bool = False

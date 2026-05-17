@@ -22,6 +22,7 @@ class Book:
     last_read_at: datetime | None
     is_favourite: bool
     is_missing: bool = False
+    is_hidden: bool = False
     collection_ids: tuple[str, ...] = ()
     page_count: int = 14
     language_name: str | None = None

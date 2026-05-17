@@ -800,3 +800,95 @@ def test_reader_footer_updates_progress_slider_direction(qtbot, tmp_path: Path) 
 
     window.close()
     context.close()
+
+
+# ---------------------------------------------------------------------------
+# Hidden Space launch lock overlay
+
+
+def _initialised_hidden_space_context(tmp_path: Path, monkeypatch) -> object:
+    # Mirrors ``_context_with_imported_book`` but also primes the Hidden
+    # Space service so the next ``MainWindow`` construction has to gate
+    # the shelf behind the lock overlay.
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    context.hidden_space_service.initialize("Pass1234", "Pass1234", "remember the dog")
+    # Refresh the in-memory settings snapshot since update() returns a new
+    # dataclass; AppContext otherwise keeps the pre-init value.
+    context.settings = context.settings_store.load()
+    return context
+
+
+def test_main_window_shows_hidden_space_lock_when_show_collections_persisted(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert window._lock_overlay is not None
+    # ``isVisible`` returns False until the parent window is shown, which
+    # we deliberately skip in tests; ``isHidden`` is the visibility-state
+    # check that doesn't require an actual window-server.
+    assert window._lock_overlay.isHidden() is False
+
+    window.close()
+    context.close()
+
+
+def test_main_window_lock_overlay_verifies_password_and_reveals_shelf(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    assert window._lock_overlay is not None
+
+    # Wrong password leaves the overlay in place.
+    window._lock_overlay._password.setText("WrongPass")
+    window._lock_overlay._on_verify_clicked()
+    assert window._lock_overlay is not None
+    assert window._lock_overlay.isHidden() is False
+
+    # Correct password tears the overlay down and keeps the toggle on.
+    window._lock_overlay._password.setText("Pass1234")
+    window._lock_overlay._on_verify_clicked()
+    assert window._lock_overlay is None
+    assert context.settings_store.load().show_hidden_collection is True
+
+    window.close()
+    context.close()
+
+
+def test_main_window_lock_overlay_hide_button_disables_toggle_without_password(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    assert window._lock_overlay is not None
+
+    window._lock_overlay._on_hide_clicked()
+
+    assert window._lock_overlay is None
+    # Hide flips the persisted toggle off; the password stays configured.
+    settings = context.settings_store.load()
+    assert settings.show_hidden_collection is False
+    assert settings.hidden_space_password_hash is not None
+
+    window.close()
+    context.close()
+
+
+def test_main_window_skips_lock_overlay_when_show_collections_is_off(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    context.settings_store.update(show_hidden_collection=False)
+    context.settings = context.settings_store.load()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert window._lock_overlay is None
+
+    window.close()
+    context.close()

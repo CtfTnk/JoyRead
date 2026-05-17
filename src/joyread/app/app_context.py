@@ -20,6 +20,7 @@ from joyread.core.services.archive_extraction_pool import (
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
+from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.storage_migration_service import StorageMigrationService
@@ -59,6 +60,7 @@ class AppContext:
     export_service: ExportService
     storage_migration_service: StorageMigrationService
     thumbnail_service: ThumbnailService
+    hidden_space_service: HiddenSpaceService
     main_window_viewmodel: MainWindowViewModel
     shelf_viewmodel: ShelfViewModel
     settings_viewmodel: SettingsViewModel
@@ -94,6 +96,10 @@ class AppContext:
         self.database_interpreter = _create_database_interpreter(self.paths)
         self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
         self.library_service = LibraryService(self.book_repository)
+        # Hidden Space caches the library service reference, so it has to
+        # follow the storage rebuild — otherwise its operations would still
+        # hit the old (closed) database.
+        self.hidden_space_service = HiddenSpaceService(self.settings_store, self.library_service)
         self.thumbnail_service = ThumbnailService(
             self.paths,
             self.archive_image_service,
@@ -109,6 +115,7 @@ class AppContext:
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
+        self.settings_viewmodel.set_hidden_space_service(self.hidden_space_service)
         self.settings_viewmodel.set_storage_location(self.settings.storage_location)
         self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
         self._refresh_settings_pool_usage()
@@ -226,6 +233,7 @@ def create_app_context() -> AppContext:
     export_service = ExportService(book_repository, hash_service)
     storage_migration_service = StorageMigrationService(settings_store)
     thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service, reader_session_service)
+    hidden_space_service = HiddenSpaceService(settings_store, library_service)
     main_window_viewmodel = MainWindowViewModel()
     shelf_viewmodel = ShelfViewModel(
         library_service,
@@ -235,7 +243,7 @@ def create_app_context() -> AppContext:
         settings=settings,
         settings_store=settings_store,
     )
-    settings_viewmodel = SettingsViewModel(settings, settings_store)
+    settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space_service)
 
     context = AppContext(
         config=config,
@@ -256,6 +264,7 @@ def create_app_context() -> AppContext:
         export_service=export_service,
         storage_migration_service=storage_migration_service,
         thumbnail_service=thumbnail_service,
+        hidden_space_service=hidden_space_service,
         main_window_viewmodel=main_window_viewmodel,
         shelf_viewmodel=shelf_viewmodel,
         settings_viewmodel=settings_viewmodel,

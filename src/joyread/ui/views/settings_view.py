@@ -16,6 +16,11 @@ class SettingsView(QWidget):
     close_requested = QtSignal()
     info_requested = QtSignal(str, str)
     storage_change_requested = QtSignal()
+    hidden_space_setup_requested = QtSignal()
+    hidden_space_verify_requested = QtSignal()
+    hidden_space_change_password_requested = QtSignal()
+    hidden_space_revert_requested = QtSignal()
+    hidden_space_reset_requested = QtSignal()
 
     def __init__(
         self,
@@ -30,6 +35,13 @@ class SettingsView(QWidget):
 
         self.page = SettingsPageWidget(viewmodel, resources, self)
         self.page.storage_change_requested.connect(self.storage_change_requested.emit)
+        self.page.hidden_space_setup_requested.connect(self.hidden_space_setup_requested.emit)
+        self.page.hidden_space_verify_requested.connect(self.hidden_space_verify_requested.emit)
+        self.page.hidden_space_change_password_requested.connect(
+            self.hidden_space_change_password_requested.emit
+        )
+        self.page.hidden_space_revert_requested.connect(self.hidden_space_revert_requested.emit)
+        self.page.hidden_space_reset_requested.connect(self.hidden_space_reset_requested.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)

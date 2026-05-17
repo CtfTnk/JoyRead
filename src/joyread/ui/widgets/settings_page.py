@@ -42,6 +42,14 @@ from joyread.ui.widgets.section_banner import SectionBanner
 
 class SettingsPageWidget(QFrame):
     storage_change_requested = QtSignal()
+    # Hidden Space user-actions that need a dialog overlay. SettingsView
+    # forwards them so MainWindow (which owns the overlay) can drive the
+    # dialog flow and call the relevant VM methods.
+    hidden_space_setup_requested = QtSignal()
+    hidden_space_verify_requested = QtSignal()
+    hidden_space_change_password_requested = QtSignal()
+    hidden_space_revert_requested = QtSignal()
+    hidden_space_reset_requested = QtSignal()
 
     def __init__(
         self,
@@ -91,7 +99,57 @@ class SettingsPageWidget(QFrame):
     def _items_for_current_section(self) -> list[QWidget]:
         if self._viewmodel.current_section == SettingsSectionKey.GENERAL:
             return self._general_items()
+        if self._viewmodel.current_section == SettingsSectionKey.PRIVACY:
+            return self._privacy_items()
         return []
+
+    def _privacy_items(self) -> list[QWidget]:
+        # Hidden Space surface. The switch row drives the dialog flow via
+        # ``hidden_space_setup_requested`` / ``hidden_space_verify_requested``
+        # — the VM only flips the persisted toggle off; turning it on
+        # requires a password and is owned by MainWindow.
+        hidden_banner = SectionBanner("Hidden Space", self._resources)
+
+        show_switch = SettingsSwitchItem(
+            "Show Collections",
+            self._viewmodel.show_hidden_collection,
+        )
+        show_switch.toggled.connect(self._handle_show_hidden_toggled)
+
+        change_password = SettingsButtonItem("Change Password", "Change")
+        change_password.clicked.connect(self.hidden_space_change_password_requested.emit)
+        # Hidden Space hasn't been set up yet → no password to change.
+        change_password.set_enabled(self._viewmodel.hidden_space_initialized)
+
+        revert = SettingsButtonItem("Revert all", "Proceed")
+        revert.clicked.connect(self.hidden_space_revert_requested.emit)
+        revert.set_enabled(self._viewmodel.hidden_space_initialized)
+
+        reset = SettingsButtonItem("Reset and Erase", "Proceed", destructive=True)
+        reset.clicked.connect(self.hidden_space_reset_requested.emit)
+        reset.set_enabled(self._viewmodel.hidden_space_initialized)
+
+        return [hidden_banner, show_switch, change_password, revert, reset]
+
+    def _handle_show_hidden_toggled(self, enabled: bool) -> None:
+        if enabled:
+            # The switch flips visually before the dialog appears; we revert
+            # it on failure inside the dialog handlers. Setup vs. verify is
+            # decided by whether the feature has been initialised.
+            if self._viewmodel.hidden_space_initialized:
+                self.hidden_space_verify_requested.emit()
+            else:
+                self.hidden_space_setup_requested.emit()
+        else:
+            # Turning off the toggle is unprivileged — books stay marked
+            # hidden in storage, just not displayed.
+            self._viewmodel.set_show_hidden_collection(False)
+
+    def revert_show_hidden_switch(self) -> None:
+        # Re-render the Privacy items so the switch reflects the persisted
+        # ``show_hidden_collection`` value again — used when the password
+        # dialog is cancelled or verification fails.
+        self.render()
 
     def _general_items(self) -> list[QWidget]:
         # General sub-group: existing settings, headed by the same banner
@@ -410,6 +468,41 @@ class SettingsSwitchItem(SettingsOptionItem):
         option_layout.addWidget(self.switch)
         super().__init__(name, option, parent)
         self.switch.toggled.connect(self.toggled.emit)
+
+
+class SettingsButtonItem(SettingsOptionItem):
+    """Label + right-aligned push button row (Figma node I231:1711;509:3236).
+
+    Used for the Hidden Space rows (Change Password, Revert all, Reset and
+    Erase). When ``destructive=True`` the label and button text are tinted
+    red to match the Figma "Reset and Erase / Proceed" treatment.
+    """
+
+    clicked = QtSignal()
+
+    def __init__(
+        self,
+        name: str,
+        button_text: str,
+        *,
+        destructive: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
+        self.button = SettingsPushButton(button_text)
+        if destructive:
+            # Mirror the Figma `text-[#bf0c0c]` treatment on the destructive
+            # variant. The QSS theme picks up ``destructive=true`` to swap
+            # both the label and the button caption colour.
+            self.button.setProperty("destructive", "true")
+        super().__init__(name, self.button, parent)
+        if destructive:
+            self.setProperty("destructive", "true")
+            self.style().unpolish(self)
+            self.style().polish(self)
+        self.button.clicked.connect(self.clicked.emit)
+
+    def set_enabled(self, enabled: bool) -> None:
+        self.button.setEnabled(enabled)
 
 
 class SettingsAddressItem(QFrame):

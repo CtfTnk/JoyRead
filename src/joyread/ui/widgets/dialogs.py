@@ -254,10 +254,15 @@ class DialogPasswordContent(QWidget):
     def __init__(
         self,
         headers: tuple[str, ...] = ("Old Password", "New Password", "Confirm New Password"),
+        echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogPasswordContent")
+        if echo_modes is None:
+            echo_modes = tuple(QLineEdit.EchoMode.Password for _ in headers)
+        if len(echo_modes) != len(headers):
+            raise ValueError("echo_modes length must match headers length")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -282,8 +287,8 @@ class DialogPasswordContent(QWidget):
         input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.fields: list[DialogInputFieldWithHeader] = []
-        for header in headers:
-            field = DialogInputFieldWithHeader(header, echo_mode=QLineEdit.EchoMode.Password)
+        for header, echo_mode in zip(headers, echo_modes):
+            field = DialogInputFieldWithHeader(header, echo_mode=echo_mode)
             self.fields.append(field)
             input_layout.addWidget(field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
@@ -803,6 +808,45 @@ class JoyReadDialogOverlay(QWidget):
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
         self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
+
+    def show_multi_password_input(
+        self,
+        title: str,
+        headers: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+        *,
+        echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
+        confirm_text: str = "Confirm",
+        cancel_text: str = "Cancel",
+        validator: Callable[[tuple[str, ...]], str | None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        # Multi-field password panel used by Hidden Space setup (Password /
+        # Confirm / Hint) and Change Password (Old / New / Confirm). The
+        # validator returns ``None`` on success or a user-visible error
+        # string that gets piped into ``set_state_prompt`` so the panel
+        # stays open on validation failure.
+        content = DialogPasswordContent(headers=headers, echo_modes=echo_modes)
+
+        def before_accept() -> bool:
+            if validator is None:
+                return True
+            error = validator(content.values)
+            if error is None:
+                return True
+            content.set_state_prompt(error)
+            self._panel.refresh_size()
+            self._position_panel()
+            return False
+
+        self._before_accept = before_accept
+        self._on_accept = lambda: on_confirm(content.values)
+        self._on_reject = on_cancel
+        self._on_skip = None
+        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._show_centered()
+        if content.fields:
+            self._focus_line_edit_deferred(content.fields[0].line_edit, select_all_text="")
 
     def show_collection_select(
         self,

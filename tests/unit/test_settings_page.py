@@ -100,7 +100,7 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     assert sidebar_item_positions["Tags"] - sidebar_item_positions["General"] == (
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
-    assert sidebar_item_positions["Private Space"] - sidebar_item_positions["Tags"] == (
+    assert sidebar_item_positions["Privacy"] - sidebar_item_positions["Tags"] == (
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
@@ -310,3 +310,105 @@ def test_stylesheet_resolves_settings_tokens() -> None:
     assert "__SETTINGS_SWITCH_KNOB__" not in stylesheet
     assert "QFrame[class=\"SettingsPanel\"]" in stylesheet
     assert "QScrollArea#SettingsRightScrollArea QScrollBar:vertical" in stylesheet
+
+
+# ---------------------------------------------------------------------------
+# Privacy tab — Hidden Space rows
+
+
+def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    button_items = page.findChildren(SettingsButtonItem)
+    switch_items = page.findChildren(SettingsSwitchItem)
+    labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+
+    assert any("Show Collections" in label for label in labels)
+    assert {"Change Password", "Revert all", "Reset and Erase"}.issubset(set(labels))
+    # Three button rows.
+    assert len(button_items) == 3
+    # All three buttons disabled until the feature is initialised.
+    for item in button_items:
+        assert item.button.isEnabled() is False
+    # The Show Collections switch is the only switch on this tab.
+    assert len(switch_items) == 1
+
+
+def test_privacy_show_collections_toggle_emits_setup_request_when_uninitialised(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    emitted: list[str] = []
+    page.hidden_space_setup_requested.connect(lambda: emitted.append("setup"))
+    page.hidden_space_verify_requested.connect(lambda: emitted.append("verify"))
+
+    switch = page.findChildren(SettingsSwitchItem)[0].switch
+    switch.set_checked(True)
+
+    assert emitted == ["setup"]
+
+
+def test_privacy_show_collections_toggle_off_persists_immediately(qtbot, tmp_path) -> None:
+    apply_theme()
+    from joyread.core.services.hidden_space_service import HiddenSpaceService
+    from joyread.core.services.library_service import LibraryService
+    from joyread.infrastructure.config.settings_store import SettingsStore
+    from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.load()
+    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
+    service.initialize("Pass1234", "Pass1234", None)
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store, service)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+    assert viewmodel.show_hidden_collection is True
+
+    switch = page.findChildren(SettingsSwitchItem)[0].switch
+    switch.set_checked(False)
+    QApplication.processEvents()
+
+    assert viewmodel.show_hidden_collection is False
+    assert store.load().show_hidden_collection is False
+
+
+def test_privacy_buttons_enable_once_hidden_space_initialised(qtbot, tmp_path) -> None:
+    apply_theme()
+    from joyread.core.services.hidden_space_service import HiddenSpaceService
+    from joyread.core.services.library_service import LibraryService
+    from joyread.infrastructure.config.settings_store import SettingsStore
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+    from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.load()
+    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
+    service.initialize("Pass1234", "Pass1234", None)
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store, service)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    button_items = page.findChildren(SettingsButtonItem)
+    for item in button_items:
+        assert item.button.isEnabled() is True

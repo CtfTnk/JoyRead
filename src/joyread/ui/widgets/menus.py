@@ -353,6 +353,9 @@ def build_book_context_menu(
     on_delete: Callable[[str], None],
     *,
     show_remove: bool = True,
+    on_hide: Callable[[str], None] | None = None,
+    on_unhide: Callable[[str], None] | None = None,
+    show_hide_action: bool = False,
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
@@ -363,6 +366,14 @@ def build_book_context_menu(
     menu.add_item("Export", lambda: on_export(book.uuid))
     if show_remove:
         menu.add_item("Remove", lambda: on_remove(book.uuid))
+    # The Hide/Unhide row is only built when the Privacy toggle is on AND
+    # the feature is initialised — both gates are owned by the caller. The
+    # menu code itself doesn't reach into settings/state.
+    if show_hide_action and on_hide is not None and on_unhide is not None:
+        if book.is_hidden:
+            menu.add_item("Unhide", lambda: on_unhide(book.uuid))
+        else:
+            menu.add_item("Hide", lambda: on_hide(book.uuid))
     menu.add_item("Delete", lambda: on_delete(book.uuid), destructive=True)
 
     return menu
@@ -388,10 +399,19 @@ def build_collection_context_menu(
     collection_uuid: str,
     on_rename: Callable[[str], None],
     on_delete: Callable[[str], None],
+    *,
+    is_hidable: bool = False,
+    on_set_hidable: Callable[[str, bool], None] | None = None,
+    show_hide_action: bool = False,
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
     menu.add_item("Rename", lambda: on_rename(collection_uuid))
+    if show_hide_action and on_set_hidable is not None:
+        if is_hidable:
+            menu.add_item("Make normal", lambda: on_set_hidable(collection_uuid, False))
+        else:
+            menu.add_item("Make hidable", lambda: on_set_hidable(collection_uuid, True))
     menu.add_item("Delete", lambda: on_delete(collection_uuid), destructive=True)
 
     return menu

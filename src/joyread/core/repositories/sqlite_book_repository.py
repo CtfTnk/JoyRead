@@ -166,6 +166,103 @@ class SqliteBookRepository(BookRepository):
             DatabasePriority.NORMAL,
         )
 
+    def set_book_hidden(self, book_id: str, hidden: bool) -> None:
+        logger.debug("set_book_hidden book=%s value=%s", book_id, hidden)
+        now = _now()
+
+        def write(connection: sqlite3.Connection) -> None:
+            if hidden:
+                # Hiding a book is a "move to Hidden" operation: clear the
+                # favourite flag, drop it from Recent, and detach from every
+                # non-hidable collection. Hidable collections are the one
+                # place where hidden + non-hidden books coexist, so we leave
+                # those memberships alone.
+                connection.execute(
+                    "UPDATE books SET is_hidden = 1, is_favourite = 0, updated_at = ? WHERE book_id = ?",
+                    (now, book_id),
+                )
+                connection.execute("DELETE FROM recent_books WHERE book_id = ?", (book_id,))
+                connection.execute(
+                    """
+                    DELETE FROM collection_books
+                    WHERE book_id = ?
+                      AND collection_id IN (
+                          SELECT collection_id FROM collections WHERE is_hidable = 0
+                      )
+                    """,
+                    (book_id,),
+                )
+            else:
+                connection.execute(
+                    "UPDATE books SET is_hidden = 0, updated_at = ? WHERE book_id = ?",
+                    (now, book_id),
+                )
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
+    def set_collection_hidable(self, collection_id: str, hidable: bool) -> None:
+        logger.debug("set_collection_hidable collection=%s value=%s", collection_id, hidable)
+        now = _now()
+
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE collections SET is_hidable = ?, updated_at = ? WHERE collection_id = ?",
+                (1 if hidable else 0, now, collection_id),
+            )
+            if not hidable:
+                # Demoting a hidable collection back to normal: a normal
+                # collection must never contain hidden books, so detach any
+                # hidden members. The books themselves stay hidden (still
+                # visible only under the Hidden shelf).
+                connection.execute(
+                    """
+                    DELETE FROM collection_books
+                    WHERE collection_id = ?
+                      AND book_id IN (SELECT book_id FROM books WHERE is_hidden = 1)
+                    """,
+                    (collection_id,),
+                )
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
+    def revert_hidden_state(self) -> None:
+        logger.info("revert_hidden_state: clearing is_hidden + is_hidable across the library")
+        now = _now()
+
+        def write(connection: sqlite3.Connection) -> None:
+            connection.execute(
+                "UPDATE books SET is_hidden = 0, updated_at = ? WHERE is_hidden = 1",
+                (now,),
+            )
+            connection.execute(
+                "UPDATE collections SET is_hidable = 0, updated_at = ? WHERE is_hidable = 1",
+                (now,),
+            )
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
+    def list_hidden_book_ids(self) -> list[str]:
+        return self._database.execute(
+            lambda connection: [
+                row["book_id"]
+                for row in connection.execute(
+                    "SELECT book_id FROM books WHERE is_hidden = 1"
+                ).fetchall()
+            ],
+            DatabasePriority.HIGH,
+        )
+
+    def list_hidable_collection_ids(self) -> list[str]:
+        return self._database.execute(
+            lambda connection: [
+                row["collection_id"]
+                for row in connection.execute(
+                    "SELECT collection_id FROM collections WHERE is_hidable = 1"
+                ).fetchall()
+            ],
+            DatabasePriority.HIGH,
+        )
+
     def delete_book(self, book_id: str) -> None:
         logger.info("delete_book %s", book_id)
         cleanup = self._database.execute(
@@ -688,6 +785,7 @@ def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> l
             books.book_type,
             books.cover_path,
             books.is_favourite,
+            books.is_hidden,
             books.created_at,
             books.updated_at,
             book_files.storage_path,
@@ -767,7 +865,7 @@ def _refresh_book_file_states(connection: sqlite3.Connection, book_ids: tuple[st
 def _list_collections(connection: sqlite3.Connection) -> list[Collection]:
     rows = connection.execute(
         """
-        SELECT collection_id, name, created_at, updated_at
+        SELECT collection_id, name, created_at, updated_at, is_hidable
         FROM collections
         ORDER BY name COLLATE NOCASE ASC
         """
@@ -779,6 +877,7 @@ def _list_collections(connection: sqlite3.Connection) -> list[Collection]:
             is_private=False,
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
+            is_hidable=bool(row["is_hidable"]),
         )
         for row in rows
     ]
@@ -826,6 +925,7 @@ def _book_from_row(row: sqlite3.Row) -> Book:
         ),
         is_favourite=bool(row["is_favourite"]),
         is_missing=row["state"] == "missing",
+        is_hidden=bool(row["is_hidden"]),
         collection_ids=collection_ids,
         page_count=0,
         original_file_name=_original_file_name_from_row(row),

@@ -32,6 +32,9 @@ class SidebarWidget(QWidget):
         self.setObjectName("Sidebar")
         self.setFixedWidth(Theme.sidebar_width)
         self._buttons: dict[str, SidebarItemWidget] = {}
+        # ``_hidden_item`` is built up-front but visibility is gated on the
+        # "Show Hidden Collection" setting toggled from the Privacy page.
+        self._hidden_item: SidebarItemWidget | None = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(
@@ -56,16 +59,7 @@ class SidebarWidget(QWidget):
         upper_layout.setContentsMargins(0, 0, 0, 0)
         upper_layout.setSpacing(Theme.sidebar_gap)
 
-        upper_layout.addWidget(
-            self._section(
-                "Book Shelf",
-                (
-                    ("All", ShelfKey.ALL.value, "icon_book_all.svg", True),
-                    ("Recent", ShelfKey.RECENT.value, "icon_recent.svg", False),
-                    ("Favourites", ShelfKey.FAVOURITES.value, "icon_favourite_enabled.svg", False),
-                ),
-            )
-        )
+        upper_layout.addWidget(self._build_book_shelf_section())
         self._collections_section = QWidget()
         self._collections_section.setObjectName("SidebarSectionGroup")
         collections_layout = QVBoxLayout(self._collections_section)
@@ -107,17 +101,44 @@ class SidebarWidget(QWidget):
 
         for collection in collections:
             key = collection_shelf_key(collection.uuid)
+            # Hidable collections get the strike-through eye icon so users
+            # can tell at a glance which collections belong to Hidden Space
+            # while the toggle is on.
+            icon = "icon_collection_hiden.svg" if collection.is_hidable else "icon_collection.svg"
             button = self._item(
                 collection.name,
                 key,
-                "icon_collection.svg",
+                icon,
                 allow_context_menu=True,
             )
             self._collections_layout.addWidget(button)
 
+    def set_hidden_visible(self, visible: bool) -> None:
+        if self._hidden_item is not None:
+            self._hidden_item.setVisible(visible)
+
     def set_active(self, key: str) -> None:
         for item_key, button in self._buttons.items():
             button.set_checked(item_key == key)
+
+    def _build_book_shelf_section(self) -> QWidget:
+        # The fixed Book Shelf section, plus a Hidden row that the Privacy
+        # toggle reveals. Built inline (rather than via ``_section``) so the
+        # Hidden row reference survives for later visibility toggling.
+        section = QWidget()
+        section.setObjectName("SidebarSectionGroup")
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Theme.sidebar_gap)
+
+        layout.addWidget(SidebarSectionBanner("Book Shelf", self._resources))
+        layout.addWidget(self._item("All", ShelfKey.ALL.value, "icon_book_all.svg", checked=True))
+        layout.addWidget(self._item("Recent", ShelfKey.RECENT.value, "icon_recent.svg"))
+        layout.addWidget(self._item("Favourites", ShelfKey.FAVOURITES.value, "icon_favourite_enabled.svg"))
+        self._hidden_item = self._item("Hidden", ShelfKey.HIDDEN.value, "icon_hidden_collection.svg")
+        self._hidden_item.setVisible(False)
+        layout.addWidget(self._hidden_item)
+        return section
 
     def _section(self, title: str, items: tuple[tuple[str, str, str, bool], ...]) -> QWidget:
         section = QWidget()

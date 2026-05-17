@@ -799,3 +799,125 @@ def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeyp
     assert context.archive_extraction_pool.directory.name == ".archive_image_pages"
     assert not any(path.is_file() for path in old_directory.rglob("*"))
     context.close()
+
+
+def test_migration_9_adds_is_hidden_and_is_hidable_columns(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    book_columns = database.execute(
+        lambda connection: {
+            row["name"] for row in connection.execute("PRAGMA table_info(books)").fetchall()
+        }
+    )
+    collection_columns = database.execute(
+        lambda connection: {
+            row["name"] for row in connection.execute("PRAGMA table_info(collections)").fetchall()
+        }
+    )
+    indexes = database.execute(
+        lambda connection: {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+        }
+    )
+
+    assert "is_hidden" in book_columns
+    assert "is_hidable" in collection_columns
+    assert "idx_books_is_hidden" in indexes
+    assert "idx_collections_is_hidable" in indexes
+    database.close()
+
+
+def test_set_book_hidden_clears_favourite_recent_and_normal_collection(tmp_path: Path) -> None:
+    source = tmp_path / "to-hide.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    repository.set_favourite(book.uuid, True)
+    repository.set_progress(book.uuid, page_index=5, progress_percent=50.0)
+    normal = repository.create_collection("Reading Queue")
+    hidable = repository.create_collection("Hidden Stash")
+    repository.add_book_to_collection(book.uuid, normal.uuid)
+    repository.add_book_to_collection(book.uuid, hidable.uuid)
+    repository.set_collection_hidable(hidable.uuid, True)
+
+    repository.set_book_hidden(book.uuid, True)
+    refreshed = repository.get_book(book.uuid)
+
+    assert refreshed is not None
+    assert refreshed.is_hidden is True
+    assert refreshed.is_favourite is False
+    assert refreshed.last_read_at is None
+    # Hidden books leave normal collections but stay in hidable ones.
+    assert normal.uuid not in refreshed.collection_ids
+    assert hidable.uuid in refreshed.collection_ids
+    database.close()
+
+
+def test_set_collection_hidable_demotion_drops_hidden_members(tmp_path: Path) -> None:
+    source = tmp_path / "demote.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    hidable = repository.create_collection("Hidable")
+    repository.set_collection_hidable(hidable.uuid, True)
+    repository.add_book_to_collection(book.uuid, hidable.uuid)
+    repository.set_book_hidden(book.uuid, True)
+
+    repository.set_collection_hidable(hidable.uuid, False)
+    refreshed = repository.get_book(book.uuid)
+
+    assert refreshed is not None
+    # Book stays hidden but is detached from the now-normal collection.
+    assert refreshed.is_hidden is True
+    assert hidable.uuid not in refreshed.collection_ids
+    database.close()
+
+
+def test_revert_hidden_state_clears_flags_without_deleting_rows(tmp_path: Path) -> None:
+    source = tmp_path / "revert.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    hidable = repository.create_collection("Hidable")
+    repository.set_collection_hidable(hidable.uuid, True)
+    repository.set_book_hidden(book.uuid, True)
+
+    repository.revert_hidden_state()
+
+    assert repository.list_hidden_book_ids() == []
+    assert repository.list_hidable_collection_ids() == []
+    refreshed = repository.get_book(book.uuid)
+    assert refreshed is not None
+    assert refreshed.is_hidden is False
+    # Row counts unchanged: revert is a flag clear, not a delete.
+    counts = database.execute(
+        lambda connection: {
+            "books": connection.execute("SELECT COUNT(*) AS c FROM books").fetchone()["c"],
+            "collections": connection.execute("SELECT COUNT(*) AS c FROM collections").fetchone()["c"],
+        }
+    )
+    assert counts == {"books": 1, "collections": 1}
+    database.close()
+
+
+def test_app_settings_round_trips_hidden_space_fields(tmp_path: Path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+
+    store.update(
+        hidden_space_password_hash="deadbeef",
+        hidden_space_password_salt="c2FsdA==",
+        hidden_space_password_hint="dog name",
+        show_hidden_collection=True,
+    )
+    loaded = store.load()
+
+    assert loaded.hidden_space_password_hash == "deadbeef"
+    assert loaded.hidden_space_password_salt == "c2FsdA=="
+    assert loaded.hidden_space_password_hint == "dog name"
+    assert loaded.show_hidden_collection is True

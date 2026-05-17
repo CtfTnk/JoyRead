@@ -597,3 +597,103 @@ def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:
     task_service.complete(0)
 
     assert emitted == []
+
+
+# ---------------------------------------------------------------------------
+# Hidden Space surface
+
+
+def test_hidden_books_are_excluded_from_all_recent_favourites_and_normal_collections() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    # mock-book-03 is favourited, has a last_read_at, and sits in
+    # ``collection-a`` (a normal user collection) — three different filter
+    # surfaces that should all exclude it once hidden.
+    vm.hide_books(["mock-book-03"])
+
+    visible_all = {book.uuid for book in vm.visible_books}
+    assert "mock-book-03" not in visible_all
+
+    vm.set_current_shelf(ShelfKey.RECENT.value)
+    assert all(book.uuid != "mock-book-03" for book in vm.visible_books)
+
+    vm.set_current_shelf(ShelfKey.FAVOURITES.value)
+    assert all(book.uuid != "mock-book-03" for book in vm.visible_books)
+
+    vm.set_current_shelf(collection_shelf_key("collection-a"))
+    assert all(book.uuid != "mock-book-03" for book in vm.visible_books)
+
+
+def test_hidden_shelf_shows_only_hidden_books() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.hide_books(["mock-book-03", "mock-book-06"])
+
+    vm.set_current_shelf(ShelfKey.HIDDEN.value)
+    visible = {book.uuid for book in vm.visible_books}
+    assert visible == {"mock-book-03", "mock-book-06"}
+    assert vm.page_title == "Hidden"
+
+
+def test_hidable_collection_keeps_hidden_books_visible_when_navigated_into() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    # Mark collection-a hidable first so the cascade in ``hide_books``
+    # keeps the membership.
+    vm.set_collection_hidable("collection-a", True)
+    vm.hide_books(["mock-book-03"])
+
+    vm.set_current_shelf(collection_shelf_key("collection-a"))
+    visible = {book.uuid for book in vm.visible_books}
+    assert "mock-book-03" in visible
+
+
+def test_visible_collections_drops_hidable_when_toggle_is_off() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_collection_hidable("collection-a", True)
+
+    # Toggle defaults to False: hidable collections should disappear from
+    # the sidebar entirely.
+    assert vm.show_hidden_collection is False
+    assert all(not collection.is_hidable for collection in vm.visible_collections)
+
+    vm.set_show_hidden_collection(True)
+    visible_ids = {collection.uuid for collection in vm.visible_collections}
+    assert "collection-a" in visible_ids
+
+
+def test_set_show_hidden_collection_off_redirects_away_from_hidden_shelf() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_show_hidden_collection(True)
+    vm.set_current_shelf(ShelfKey.HIDDEN.value)
+    assert vm.current_shelf == ShelfKey.HIDDEN.value
+
+    vm.set_show_hidden_collection(False)
+
+    # Sitting on the Hidden shelf when the toggle flips off would leave
+    # an empty page; the VM redirects to All.
+    assert vm.current_shelf == ShelfKey.ALL.value
+
+
+def test_set_show_hidden_collection_off_redirects_away_from_hidable_collection() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_show_hidden_collection(True)
+    vm.set_collection_hidable("collection-a", True)
+    vm.set_current_shelf(collection_shelf_key("collection-a"))
+
+    vm.set_show_hidden_collection(False)
+
+    assert vm.current_shelf == ShelfKey.ALL.value
+
+
+def test_unhide_books_restores_visibility_on_all_shelf() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.hide_books(["mock-book-03"])
+    assert "mock-book-03" not in {book.uuid for book in vm.visible_books}
+
+    vm.unhide_books(["mock-book-03"])
+    assert "mock-book-03" in {book.uuid for book in vm.visible_books}

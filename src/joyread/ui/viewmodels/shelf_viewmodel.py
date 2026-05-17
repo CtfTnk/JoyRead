@@ -52,6 +52,7 @@ class ShelfKey(StrEnum):
     ALL = "all"
     RECENT = "recent"
     FAVOURITES = "favourites"
+    HIDDEN = "hidden"
 
 
 class ShelfViewModel:
@@ -103,6 +104,10 @@ class ShelfViewModel:
         self.file_filter = _coerce_file_filter(settings.shelf_file_filter if settings is not None else None)
         self.view_mode = _coerce_view_mode(settings.shelf_view_mode if settings is not None else None)
         self.current_shelf = ShelfKey.ALL.value
+        self.show_hidden_collection = bool(settings.show_hidden_collection) if settings is not None else False
+        self.hidden_space_initialized = bool(
+            settings is not None and settings.hidden_space_password_hash is not None
+        )
         self.selected_book_ids: set[str] = set()
         self.detail_book_uuid: str | None = None
         self.is_loading = False
@@ -140,6 +145,8 @@ class ShelfViewModel:
             return "Recent"
         if self.current_shelf == ShelfKey.FAVOURITES:
             return "Favourites"
+        if self.current_shelf == ShelfKey.HIDDEN:
+            return "Hidden"
         collection_uuid = self._collection_uuid_from_shelf(self.current_shelf)
         for collection in self.collections:
             if collection.uuid == collection_uuid:
@@ -158,6 +165,16 @@ class ShelfViewModel:
                 reverse=True,
             )
         return sorted(books, key=self._sort_key, reverse=not self.sort_ascending)
+
+    @property
+    def visible_collections(self) -> list[Collection]:
+        # Hidable collections are part of the Hidden Space surface. They are
+        # filtered out of the sidebar whenever the "Show Collections" toggle
+        # is off so a hidable collection can't leak the existence of hidden
+        # content while the feature is dormant.
+        if self.show_hidden_collection:
+            return list(self.collections)
+        return [collection for collection in self.collections if not collection.is_hidable]
 
     @property
     def can_remove_from_current_shelf(self) -> bool:
@@ -200,6 +217,31 @@ class ShelfViewModel:
         self._cover_paths.clear()
         self._pending_cover_ids.clear()
         self._set_detail_book_uuid(None)
+
+    def set_show_hidden_collection(self, enabled: bool) -> None:
+        # Settings layer is the single source of truth; the VM mirrors it
+        # so the filtering rules don't need to touch SettingsStore on every
+        # render. Caller is responsible for persistence (HiddenSpaceService
+        # handles that as part of the password-protected toggle flow).
+        normalized = bool(enabled)
+        if normalized == self.show_hidden_collection:
+            return
+        self.show_hidden_collection = normalized
+        if not normalized and (
+            self.current_shelf == ShelfKey.HIDDEN.value
+            or self._is_hidable_collection_shelf(self.current_shelf)
+        ):
+            # Switching off the toggle while sitting on a now-invisible
+            # shelf would leave the view stuck on an empty page; redirect
+            # to All so the user sees something coherent.
+            self.current_shelf = ShelfKey.ALL.value
+            self.clear_selection(emit_state=False)
+            self._set_detail_book_uuid(None)
+        self._emit_state()
+
+    def set_hidden_space_initialized(self, initialized: bool) -> None:
+        self.hidden_space_initialized = bool(initialized)
+        self._emit_state()
 
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
@@ -542,6 +584,71 @@ class ShelfViewModel:
         logger.warning("Collection %s task failed: %s", operation, error)
         self.collection_failed.emit(str(error))
 
+    def hide_books(self, book_uuids: Iterable[str]) -> None:
+        self._set_books_hidden(book_uuids, hidden=True)
+
+    def unhide_books(self, book_uuids: Iterable[str]) -> None:
+        self._set_books_hidden(book_uuids, hidden=False)
+
+    def _set_books_hidden(self, book_uuids: Iterable[str], *, hidden: bool) -> None:
+        target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
+        if not target_ids:
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.set_books_hidden(target_ids, hidden)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning(
+                    "set_books_hidden failed books=%s value=%s: %s",
+                    target_ids,
+                    hidden,
+                    exc,
+                    exc_info=True,
+                )
+                return
+            self._handle_hidden_change()
+            return
+
+        self._task_service.submit(
+            "set-books-hidden",
+            lambda target_ids=target_ids: self._library_service.set_books_hidden(target_ids, hidden),
+            on_success=lambda _result: self._handle_hidden_change(),
+            on_failure=lambda error: logger.warning("set_books_hidden task failed: %s", error),
+        )
+
+    def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
+        if self._task_service is None:
+            try:
+                self._library_service.set_collection_hidable(collection_uuid, hidable)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                logger.warning(
+                    "set_collection_hidable failed collection=%s value=%s: %s",
+                    collection_uuid,
+                    hidable,
+                    exc,
+                    exc_info=True,
+                )
+                self.collection_failed.emit(str(exc))
+                return
+            self._handle_hidden_change()
+            return
+
+        self._task_service.submit(
+            "set-collection-hidable",
+            lambda: self._library_service.set_collection_hidable(collection_uuid, hidable),
+            on_success=lambda _result: self._handle_hidden_change(),
+            on_failure=lambda error: self._emit_collection_failed("set-hidable", error),
+        )
+
+    def _handle_hidden_change(self) -> None:
+        # Hiding/unhiding mutates several derived columns (is_favourite,
+        # recent_books, collection memberships) so the simplest correct
+        # refresh is a full reload — matches the favourites/collection
+        # mutation pattern above.
+        self.load_books()
+        self.collections_changed.emit(self.current_shelf)
+
     def remove_books_from_current_shelf(self, book_uuids: Iterable[str]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
         if not target_ids or not self.can_remove_from_current_shelf:
@@ -734,6 +841,15 @@ class ShelfViewModel:
         )
 
     def _book_in_current_shelf(self, book: Book) -> bool:
+        if self.current_shelf == ShelfKey.HIDDEN:
+            # The Hidden shelf is the only built-in surface that shows
+            # ``is_hidden`` books at all.
+            return book.is_hidden
+        if book.is_hidden and not self._is_hidable_collection_shelf(self.current_shelf):
+            # Hidden books vanish from ALL/Recent/Favourites and from
+            # normal (non-hidable) user collections. The hidable-collection
+            # branch below opts back in.
+            return False
         if self.current_shelf == ShelfKey.ALL:
             return True
         if self.current_shelf == ShelfKey.RECENT:
@@ -742,6 +858,15 @@ class ShelfViewModel:
             return book.is_favourite
         collection_uuid = self._collection_uuid_from_shelf(self.current_shelf)
         return collection_uuid in book.collection_ids
+
+    def _is_hidable_collection_shelf(self, shelf: str) -> bool:
+        if not shelf.startswith("collection:"):
+            return False
+        collection_uuid = self._collection_uuid_from_shelf(shelf)
+        for collection in self.collections:
+            if collection.uuid == collection_uuid:
+                return collection.is_hidable
+        return False
 
     def _book_matches_filter(self, book: Book) -> bool:
         if self.file_filter == FileFilter.ALL:
