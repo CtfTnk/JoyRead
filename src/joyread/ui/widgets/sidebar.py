@@ -19,6 +19,7 @@ from joyread.core.models.collection import Collection
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
+from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.section_banner import SectionBanner, SidebarSectionBanner
 
 
@@ -52,6 +53,7 @@ class SidebarWidget(QWidget):
         scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         scroll_area.viewport().setObjectName("SidebarScrollViewport")
         scroll_area.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._scroll_handle = AutoHideScrollHandle(scroll_area, parent=self)
 
         upper_part = QWidget()
         upper_part.setObjectName("SidebarUpperPart")

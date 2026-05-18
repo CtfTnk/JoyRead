@@ -599,6 +599,25 @@ def test_collection_delete_and_private_move_keep_public_books_consistent(tmp_pat
     database.close()
 
 
+def test_list_collections_orders_newest_first(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = SqliteBookRepository(database)
+
+    def _insert(connection, collection_id: str, name: str, when: str) -> None:
+        connection.execute(
+            "INSERT INTO collections(collection_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (collection_id, name, when, when),
+        )
+
+    database.execute(lambda c: _insert(c, "old", "Old Collection", "2026-01-01T00:00:00.000000"))
+    database.execute(lambda c: _insert(c, "mid", "Mid Collection", "2026-02-01T00:00:00.000000"))
+    database.execute(lambda c: _insert(c, "new", "New Collection", "2026-03-01T00:00:00.000000"))
+
+    ordered = [collection.uuid for collection in repository.list_collections()]
+    assert ordered == ["new", "mid", "old"]
+    database.close()
+
+
 def test_internal_book_operations_and_bookmarks_are_app_only_repository_methods(tmp_path: Path) -> None:
     source = tmp_path / "ops.cbz"
     _write_cbz(source)

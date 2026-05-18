@@ -867,7 +867,7 @@ def _list_collections(connection: sqlite3.Connection) -> list[Collection]:
         """
         SELECT collection_id, name, created_at, updated_at, is_hidable
         FROM collections
-        ORDER BY name COLLATE NOCASE ASC
+        ORDER BY created_at DESC, name COLLATE NOCASE ASC
         """
     ).fetchall()
     return [

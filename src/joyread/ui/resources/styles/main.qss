@@ -457,6 +457,10 @@ QScrollArea#SidebarScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
+QScrollArea#SidebarScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
 QScrollArea#SidebarScrollArea QScrollBar::add-line:vertical,
 QScrollArea#SidebarScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
