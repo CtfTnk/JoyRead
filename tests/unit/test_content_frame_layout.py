@@ -269,7 +269,8 @@ def test_two_line_elided_label_reserves_two_lines_and_tooltips_when_clipped(qtbo
 
     assert label.max_lines == 2
     assert label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
-    assert len(label.text().splitlines()) <= 2
+    assert label.text().count("\n") == 1
+    assert len(label.text().splitlines()) == 2
     assert label.text() != long_title
     assert label.toolTip() == long_title
 
@@ -280,12 +281,27 @@ def test_two_line_elided_label_reserves_two_lines_and_tooltips_when_clipped(qtbo
 
     assert label.text() == short_title
     assert label.toolTip() == ""
+    # Short content shrinks the label to a single-line height even though
+    # max_lines=2 — that's how the list row / detail panel push the author
+    # label up directly under short titles.
+    assert label.height() == label.fontMetrics().lineSpacing() + Theme.elided_label_clip_guard
 
 
-def test_book_title_surfaces_reserve_two_lines(qtbot) -> None:
+def test_two_line_elided_label_reserves_full_height_when_requested(qtbot) -> None:
+    label = ElidedLabel("Short", max_lines=2, reserve_full_height=True)
+    qtbot.addWidget(label)
+    label.resize(400, 100)
+    label.show()
+    QApplication.processEvents()
+
+    assert label.text() == "Short"
+    assert label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
+
+
+def test_book_title_surfaces_height_matches_actual_lines(qtbot) -> None:
     apply_theme()
     now = datetime(2026, 1, 1)
-    book = Book(
+    long_book = Book(
         uuid="long-title",
         title="A Very Long JoyRead Title That Should Use The Two Line Display Space",
         author="Author",
@@ -300,30 +316,58 @@ def test_book_title_surfaces_reserve_two_lines(qtbot) -> None:
         last_read_at=None,
         is_favourite=False,
     )
-    card = BookCardWidget(book, ResourceLoader())
-    row = BookListRowWidget(book, ResourceLoader())
+    short_book = replace(long_book, uuid="short-title", title="Short")
+
+    card = BookCardWidget(long_book, ResourceLoader())
+    row = BookListRowWidget(long_book, ResourceLoader())
     detail = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(card)
     qtbot.addWidget(row)
     qtbot.addWidget(detail)
-    detail.set_book(book)
+    detail.set_book(long_book)
     for widget in (card, row, detail):
         widget.show()
     QApplication.processEvents()
 
-    title_labels = [
-        label
-        for widget in (card, row, detail)
-        for label in widget.findChildren(ElidedLabel)
-        if label.property("class") in {"BookTitle", "BookDetailTitle"}
-    ]
+    def _title_label(widget) -> ElidedLabel:
+        return next(
+            label
+            for label in widget.findChildren(ElidedLabel)
+            if label.property("class") in {"BookTitle", "BookDetailTitle"}
+        )
 
-    assert len(title_labels) == 3
-    assert all(label.max_lines == 2 for label in title_labels)
-    assert all(
-        label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
-        for label in title_labels
-    )
+    card_title = _title_label(card)
+    row_title = _title_label(row)
+    detail_title = _title_label(detail)
+    guard = Theme.elided_label_clip_guard
+
+    def expected(label: ElidedLabel, lines: int) -> int:
+        return (label.fontMetrics().lineSpacing() * lines) + guard
+
+    # Grid card always reserves two-line height so its control bar lines up
+    # across cards regardless of title length.
+    assert card_title.height() == expected(card_title, 2)
+
+    # List row and detail panel shrink to fit when the title is short and
+    # expand to two lines when the title wraps.
+    assert row_title.height() == expected(row_title, 2)
+    assert detail_title.height() == expected(detail_title, 2)
+
+    card.set_book(short_book)
+    # BookListRowWidget builds its title in __init__; instantiate a fresh
+    # row for the short book instead of mutating the existing one.
+    short_row = BookListRowWidget(short_book, ResourceLoader())
+    qtbot.addWidget(short_row)
+    short_row.show()
+    detail.set_book(short_book)
+    QApplication.processEvents()
+
+    short_card_title = _title_label(card)
+    short_row_title = _title_label(short_row)
+    short_detail_title = _title_label(detail)
+    assert short_card_title.height() == expected(short_card_title, 2)
+    assert short_row_title.height() == expected(short_row_title, 1)
+    assert short_detail_title.height() == expected(short_detail_title, 1)
     assert card.height() == Theme.book_card_height
 
 

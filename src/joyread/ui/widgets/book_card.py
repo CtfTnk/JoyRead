@@ -67,7 +67,7 @@ class BookCardWidget(QFrame):
         self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
         layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
 
-        self._title = ElidedLabel(book.title, max_lines=2)
+        self._title = ElidedLabel(book.title, max_lines=2, reserve_full_height=True)
         self._title.setProperty("class", "BookTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self._title)
