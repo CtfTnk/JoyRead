@@ -713,7 +713,17 @@ class ReaderViewModel:
         if self._primary_index <= 0 and self._vertical_scroll_y > 0:
             self._vertical_scroll_y = 0.0
         if self._primary_index >= self._page_count - 1 and self._vertical_scroll_y < 0:
-            self._vertical_scroll_y = 0.0
+            # On the last page there's no further page to transition into,
+            # so the natural floor is "page bottom meets viewport bottom".
+            # Only the *lower* bound is clamped here: positive scroll_y
+            # has to keep flowing so the backward-transition loop above
+            # can commit to the previous page once the user scrolls up
+            # past a full page step. When the last page fits the viewport
+            # ``_last_page_min_scroll`` returns 0, recovering the previous
+            # "lock at page top" behaviour.
+            min_scroll = self._last_page_min_scroll()
+            if self._vertical_scroll_y < min_scroll:
+                self._vertical_scroll_y = min_scroll
 
         if changed_page:
             self._save_progress()
@@ -1248,6 +1258,21 @@ class ReaderViewModel:
             else 1.0
         )
         return (self._viewport_size.height * zoom) + gap
+
+    def _last_page_min_scroll(self) -> float:
+        # Lower bound for ``_vertical_scroll_y`` on the last page: a
+        # negative offset that lets the page's bottom edge land at the
+        # viewport's bottom edge. Returns ``0.0`` (no scroll past page
+        # top) when the page is short enough to fit the viewport, so a
+        # short last page still anchors at the top.
+        if self._page_count <= 0 or self._viewport_size.height <= 0:
+            return 0.0
+        last_index = self._page_count - 1
+        gap = float(self.settings.page_spacing if self.settings.vertical_custom_enabled else 0)
+        page_height = max(0.0, self._vertical_step(last_index) - gap)
+        if page_height <= 0:
+            return 0.0
+        return min(0.0, self._viewport_size.height - page_height)
 
     def _sync_wide_pan_for_layout(self, result: ReaderLayoutResult) -> None:
         if not result.supports_horizontal_pan:

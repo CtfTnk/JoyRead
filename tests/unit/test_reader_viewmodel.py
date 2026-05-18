@@ -585,6 +585,66 @@ def test_reader_viewmodel_vertical_fit_width_uses_page_width_for_scroll_step(tmp
     assert viewmodel.current_index == 1
 
 
+def test_reader_viewmodel_vertical_last_page_can_scroll_until_bottom_aligns(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+    # Custom + 200% zoom makes every page render at 1600px tall, so the
+    # last page can't fit the 800px viewport without scrolling down past
+    # the page top.
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_zoom_percent(200)
+
+    last_index = viewmodel.page_count - 1
+    viewmodel.seek(last_index)
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == 0.0
+
+    # Scroll well past the natural floor — the clamp should land at
+    # ``viewport_height - page_height`` so the page bottom sits at the
+    # viewport bottom.
+    assert viewmodel.handle_vertical_scroll(-10_000) is True
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == -800.0
+    last_draw = next(
+        draw for draw in viewmodel.layout_result.page_draws if draw.page_index == last_index
+    )
+    # rect.y is the page-top offset; page_top + page_height should equal
+    # viewport_height when the bottom is flush.
+    assert last_draw.rect.y + last_draw.rect.height == 800
+
+    # Scrolling up by a small amount keeps the anchor on the last page
+    # but accumulates positive scroll_y so the backward transition can
+    # eventually fire. (A previous, over-eager clamp pinned scroll_y to
+    # ``<= 0`` here and prevented escape from the last page.)
+    assert viewmodel.handle_vertical_scroll(400) is True
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == -400.0
+
+    # A large upward scroll has to walk back through every page step
+    # and land on the first page at the natural top clamp.
+    assert viewmodel.handle_vertical_scroll(100_000) is True
+    assert viewmodel.current_index == 0
+    assert viewmodel._vertical_scroll_y == 0.0
+
+
+def test_reader_viewmodel_vertical_last_page_short_enough_keeps_anchor_at_top(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+
+    last_index = viewmodel.page_count - 1
+    viewmodel.seek(last_index)
+    # Default zoom keeps the page exactly viewport-tall; the new clamp
+    # must not let the user scroll past the page top in that case.
+    assert viewmodel.handle_vertical_scroll(-5_000) is True
+    assert viewmodel._vertical_scroll_y == 0.0
+
+
 def test_reader_settings_saves_latest_per_book_when_changes_overlap(tmp_path: Path) -> None:
     library = _FakeLibraryService()
     task_service = _DeferredSettingsTaskService()
