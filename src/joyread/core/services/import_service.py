@@ -15,6 +15,7 @@ from joyread.core.archive import ArchiveImageService, ArchivePasswordPolicy, Arc
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 from joyread.core.services.hash_service import HashService
+from joyread.core.services.tag_service import TagService
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
 
@@ -66,6 +67,7 @@ class ImportService:
         hash_service: HashService,
         hash_algorithm: str = "sha256",
         pdf_service: PdfImageService | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -73,6 +75,7 @@ class ImportService:
         self._pdf_service = pdf_service or PdfImageService()
         self._hash_service = hash_service
         self._hash_algorithm = hash_algorithm
+        self._tag_service = tag_service
 
     def import_manifest(
         self,
@@ -189,6 +192,15 @@ class ImportService:
                 result.status,
                 result.book_id,
             )
+            # Tag association: applies once the row exists (imported or
+            # duplicate); skipped for failed/skipped statuses so we don't
+            # tag a book that does not own a stable book_id yet.
+            if (
+                self._tag_service is not None
+                and result.book_id is not None
+                and result.status in {"imported", "duplicate"}
+            ):
+                self._apply_manifest_tags(result.book_id, item.get("tags"))
             results.append(result)
 
         completed_at = _now()
@@ -221,6 +233,46 @@ class ImportService:
             batch_result.failed_count,
         )
         return batch_result
+
+    def _apply_manifest_tags(self, book_id: str, raw_tags: object) -> None:
+        if not isinstance(raw_tags, list):
+            return
+        tag_service = self._tag_service
+        if tag_service is None:
+            return
+        created_or_reused = 0
+        rejected = 0
+        for entry in raw_tags:
+            if not isinstance(entry, str):
+                rejected += 1
+                continue
+            tag = tag_service.find_or_create(entry)
+            if tag is None:
+                rejected += 1
+                continue
+            try:
+                tag_service.link_book(tag.tag_id, book_id)
+            except Exception:
+                logger.exception(
+                    "Failed to link tag tag_id=%s to book_id=%s",
+                    tag.tag_id,
+                    book_id,
+                )
+                continue
+            created_or_reused += 1
+        if rejected:
+            logger.warning(
+                "Import tags for book=%s: linked=%d rejected=%d",
+                book_id,
+                created_or_reused,
+                rejected,
+            )
+        else:
+            logger.debug(
+                "Import tags for book=%s: linked=%d",
+                book_id,
+                created_or_reused,
+            )
 
     def _import_one(
         self,

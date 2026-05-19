@@ -37,6 +37,7 @@ def test_app_context_closes_tasks_before_database() -> None:
         resources=None,  # type: ignore[arg-type]
         database_interpreter=_RecordingDatabase(calls),  # type: ignore[arg-type]
         book_repository=None,  # type: ignore[arg-type]
+        tag_repository=None,  # type: ignore[arg-type]
         archive_extraction_pool=None,  # type: ignore[arg-type]
         archive_image_service=None,  # type: ignore[arg-type]
         reader_session_service=None,  # type: ignore[arg-type]
@@ -44,6 +45,7 @@ def test_app_context_closes_tasks_before_database() -> None:
         task_service=_RecordingTaskService(calls),  # type: ignore[arg-type]
         cache_service=None,  # type: ignore[arg-type]
         hash_service=None,  # type: ignore[arg-type]
+        tag_service=None,  # type: ignore[arg-type]
         import_service=None,  # type: ignore[arg-type]
         export_service=None,  # type: ignore[arg-type]
         storage_migration_service=None,  # type: ignore[arg-type]
@@ -52,6 +54,7 @@ def test_app_context_closes_tasks_before_database() -> None:
         main_window_viewmodel=None,  # type: ignore[arg-type]
         shelf_viewmodel=None,  # type: ignore[arg-type]
         settings_viewmodel=None,  # type: ignore[arg-type]
+        tag_management_viewmodel=None,  # type: ignore[arg-type]
     )
 
     context.close()

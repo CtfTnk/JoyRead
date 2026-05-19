@@ -35,6 +35,7 @@ from joyread.ui.viewmodels.settings_viewmodel import (
     SettingsSectionKey,
     SettingsViewModel,
 )
+from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.section_banner import SectionBanner
@@ -50,16 +51,23 @@ class SettingsPageWidget(QFrame):
     hidden_space_change_password_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
+    # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
+    tag_operation_completed = QtSignal(bool, str, str)
 
     def __init__(
         self,
         viewmodel: SettingsViewModel,
         resources: ResourceLoader,
         parent: QWidget | None = None,
+        *,
+        tag_viewmodel: TagManagementViewModel | None = None,
     ) -> None:
         super().__init__(parent)
         self._viewmodel = viewmodel
         self._resources = resources
+        self._tag_viewmodel = tag_viewmodel
+        self._tag_page = None  # cached TagManagementPage, lazily created
+        self._disposed = False
         self._sidebar_items: dict[SettingsSectionKey, SettingsSidebarItem] = {}
         self.setProperty("class", "SettingsPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -87,21 +95,66 @@ class SettingsPageWidget(QFrame):
         layout.addWidget(self._content, stretch=1)
 
         self._viewmodel.state_changed.connect(self.render)
+        self.destroyed.connect(self._handle_destroyed)
         self.render()
 
     def sizeHint(self) -> QSize:
         return QSize(Theme.settings_panel_width, Theme.settings_panel_height)
 
+    def dispose(self) -> None:
+        if self._disposed:
+            return
+        self._disposed = True
+        self._viewmodel.state_changed.disconnect(self.render)
+        if self._tag_page is not None:
+            self._tag_page.dispose()
+            self._tag_page = None
+
     def render(self) -> None:
+        if self._disposed:
+            return
         self._sidebar.set_active(self._viewmodel.current_section)
+        # Leaving the Tags section clears any chip selection so revisiting
+        # the page starts in a clean state (and the inline rename input,
+        # if it was open, is dropped).
+        if (
+            self._tag_viewmodel is not None
+            and self._viewmodel.current_section != SettingsSectionKey.TAGS
+        ):
+            self._tag_viewmodel.clear_selection()
         self._content.set_items(self._items_for_current_section())
+
+    def _handle_destroyed(self, _obj: object | None = None) -> None:
+        self.dispose()
 
     def _items_for_current_section(self) -> list[QWidget]:
         if self._viewmodel.current_section == SettingsSectionKey.GENERAL:
             return self._general_items()
         if self._viewmodel.current_section == SettingsSectionKey.PRIVACY:
             return self._privacy_items()
+        if self._viewmodel.current_section == SettingsSectionKey.TAGS:
+            return self._tags_items()
         return []
+
+    def _tags_items(self) -> list[QWidget]:
+        # Lazy import to avoid a circular dependency between the settings
+        # page and the tag management page (which imports SettingsPushButton
+        # from this module).
+        from joyread.ui.widgets.tag_management_page import TagManagementPage
+
+        banner = SectionBanner("Book Tag", self._resources)
+        if self._tag_viewmodel is None:
+            return [banner]
+        # Cache the page across section navigations. SettingsContentPanel
+        # honours the ``persistent="true"`` property and skips deleteLater,
+        # so the same page (and its viewmodel subscription) is reused.
+        if self._tag_page is None:
+            page = TagManagementPage(self._tag_viewmodel)
+            page.setProperty("persistent", "true")
+            page.tag_operation_completed.connect(self.tag_operation_completed.emit)
+            self._tag_page = page
+        self._tag_viewmodel.refresh()
+        return [banner, self._tag_page]
 
     def _privacy_items(self) -> list[QWidget]:
         # Hidden Space surface. The switch row drives the dialog flow via
@@ -400,7 +453,13 @@ class SettingsContentPanel(QScrollArea):
             widget = item.widget()
             if widget is not None:
                 widget.setParent(None)
-                widget.deleteLater()
+                # Persistent widgets (currently: TagManagementPage) keep
+                # a viewmodel subscription and re-render on demand, so we
+                # cannot deleteLater them on every section nav — their
+                # cached subscription would fire against a destroyed
+                # FlowLayout on the next visit.
+                if widget.property("persistent") != "true":
+                    widget.deleteLater()
         for item in items:
             self._layout.addWidget(item)
         self._layout.addStretch(1)

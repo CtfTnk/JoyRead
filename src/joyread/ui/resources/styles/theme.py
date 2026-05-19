@@ -272,6 +272,27 @@ class Theme:
     settings_switch_knob_size = 12
     settings_switch_knob_radius = 6
 
+    # Tags management page (Figma node 688:3630).
+    tag_manager_padding = 10
+    tag_manager_gap = 10
+    tag_manager_radius = 8
+    tag_chip_min_width = 60
+    tag_chip_max_width = 200
+    tag_chip_height = 26
+    tag_chip_border_width = 1
+    tag_chip_radius = 6
+    tag_chip_padding_horizontal = 7
+    tag_chip_padding_vertical = 4
+    tag_chip_gap = 4
+    tag_chip_font_size = 14
+    tag_control_bar_height = 40
+    tag_control_button_width = 100
+    tag_control_button_height = 28
+    tag_control_button_radius = 6
+    tag_input_field_width = 192
+    tag_disabled_opacity = 0.6
+    color_tag_manager_background = "#f3f3f3"
+
     # General popup dialog from Figma node 483:1989.
     dialog_width = 400
     dialog_height = 220
@@ -592,6 +613,12 @@ class Theme:
             "__SHELF_SCROLLBAR_HANDLE_HIDDEN__": cls._rgba_qss(cls.color_scrollbar_handle_hidden_rgba),
             "__SHELF_SCROLLBAR_HANDLE__": cls._rgba_qss(cls.color_scrollbar_handle_rgba),
             "__SHELF_SCROLLBAR_HANDLE_HOVER__": cls._rgba_qss(cls.color_scrollbar_handle_hover_rgba),
+            "__TAG_MANAGER_BACKGROUND__": cls.color_tag_manager_background,
+            "__TAG_MANAGER_RADIUS__": f"{cls.tag_manager_radius}px",
+            "__TAG_CHIP_BORDER_WIDTH__": f"{cls.tag_chip_border_width}px",
+            "__TAG_CHIP_RADIUS__": f"{cls.tag_chip_radius}px",
+            "__TAG_CHIP_FONT_SIZE__": f"{cls.tag_chip_font_size}px",
+            "__TAG_BUTTON_RADIUS__": f"{cls.tag_control_button_radius}px",
         }
 
     @staticmethod

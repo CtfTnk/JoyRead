@@ -1253,3 +1253,60 @@ QFrame[class="SettingsItem"][destructive="true"] QLabel[class="SettingsItemNameT
 QToolButton[class="SettingsPushButton"][destructive="true"] {
     color: __MENU_DESTRUCTIVE__;
 }
+
+/* Tag management page (Figma node 688:3630). */
+QFrame#TagManager {
+    background: __TAG_MANAGER_BACKGROUND__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_MANAGER_RADIUS__;
+}
+
+QScrollArea#TagListScrollArea,
+QWidget#TagListViewport,
+QWidget#TagListHost {
+    background: transparent;
+    border: none;
+}
+
+QFrame[class="TagChip"] {
+    background: __WINDOW_COLOR__;
+    border: __TAG_CHIP_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_CHIP_RADIUS__;
+}
+
+QFrame[class="TagChip"][selected="true"] {
+    background: __SELECTED_COLOR__;
+}
+
+QFrame[class="TagChip"] QLabel[class="TagChipLabel"] {
+    color: __TEXT_COLOR__;
+    font-size: __TAG_CHIP_FONT_SIZE__;
+    font-weight: 500;
+    background: transparent;
+}
+
+QLineEdit[class="TagInputField"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_BUTTON_RADIUS__;
+    padding: __DIALOG_INPUT_FIELD_PADDING__;
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_CONTROL_FONT_SIZE__;
+}
+
+/* Tag-page push buttons override the default Settings 4px radius with the
+   Figma 6px radius, and supply an explicit faded-disabled treatment so
+   Qt's default disabled palette doesn't leave them looking interactive. */
+QToolButton[class="SettingsPushButton"][variant="tag"] {
+    border-radius: __TAG_BUTTON_RADIUS__;
+}
+
+QToolButton[class="SettingsPushButton"][variant="tag"]:disabled {
+    color: rgba(0, 0, 0, 102);
+    background: rgba(255, 255, 255, 153);
+    border: 1px solid rgba(224, 224, 224, 153);
+}
+
+QToolButton[class="SettingsPushButton"][variant="tag"][destructive="true"]:disabled {
+    color: rgba(191, 12, 12, 102);
+}

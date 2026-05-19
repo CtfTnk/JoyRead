@@ -78,8 +78,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.content_stack, stretch=1)
         root_layout.addWidget(view_panel, stretch=1)
 
-        self.settings_view = SettingsView(context.settings_viewmodel, context.resources, root)
+        self.settings_view = SettingsView(
+            context.settings_viewmodel,
+            context.resources,
+            root,
+            tag_viewmodel=context.tag_management_viewmodel,
+        )
         self.settings_view.close_requested.connect(self._hide_settings_page)
+        self.settings_view.tag_operation_completed.connect(self._handle_tag_operation_result)
         self.settings_view.hide()
 
         self._resize_grip = QSizeGrip(root)
@@ -705,6 +711,12 @@ class MainWindow(QMainWindow):
             cancel_text="Cancel",
             destructive=True,
         )
+
+    def _handle_tag_operation_result(self, success: bool, title: str, message: str) -> None:
+        # Both success and failure flow through ``show_info`` so the user
+        # always sees an explicit outcome for tag CRUD.
+        _ = success  # success/failure styling is identical for now.
+        self.dialog_overlay.show_info(title, message)
 
     def _select_storage_location(self) -> None:
         directory = QFileDialog.getExistingDirectory(

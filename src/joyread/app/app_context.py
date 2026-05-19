@@ -11,6 +11,8 @@ from joyread.core.archive import ArchiveImageService
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
+from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
+from joyread.core.repositories.tag_repository import TagRepository
 from joyread.core.reader import ReaderSessionService
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionCache,
@@ -24,6 +26,7 @@ from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.core.services.tag_service import TagService
 from joyread.core.services.task_service import TaskService
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
@@ -35,6 +38,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
 from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
+from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +53,7 @@ class AppContext:
     resources: ResourceLoader
     database_interpreter: DatabaseInterpreter
     book_repository: BookRepository
+    tag_repository: TagRepository
     archive_extraction_pool: ArchiveExtractionCache
     archive_image_service: ArchiveImageService
     reader_session_service: ReaderSessionService
@@ -56,6 +61,7 @@ class AppContext:
     task_service: TaskService
     cache_service: CacheService
     hash_service: HashService
+    tag_service: TagService
     import_service: ImportService
     export_service: ExportService
     storage_migration_service: StorageMigrationService
@@ -64,6 +70,7 @@ class AppContext:
     main_window_viewmodel: MainWindowViewModel
     shelf_viewmodel: ShelfViewModel
     settings_viewmodel: SettingsViewModel
+    tag_management_viewmodel: TagManagementViewModel
 
     def close(self) -> None:
         logger.info("AppContext shutting down: cancelling tasks then closing database")
@@ -95,6 +102,8 @@ class AppContext:
         self._rebuild_archive_reading_services()
         self.database_interpreter = _create_database_interpreter(self.paths)
         self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
+        self.tag_repository = SqliteTagRepository(self.database_interpreter)
+        self.tag_service = TagService(self.tag_repository)
         self.library_service = LibraryService(self.book_repository)
         # Hidden Space caches the library service reference, so it has to
         # follow the storage rebuild — otherwise its operations would still
@@ -112,12 +121,16 @@ class AppContext:
             self.archive_image_service,
             self.hash_service,
             self.settings.hash_algorithm,
+            tag_service=self.tag_service,
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
         self.settings_viewmodel.set_hidden_space_service(self.hidden_space_service)
         self.settings_viewmodel.set_storage_location(self.settings.storage_location)
         self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
+        # Tag VM holds the service reference and re-reads the DB on refresh,
+        # so swap the underlying service to the rebuilt one.
+        self.tag_management_viewmodel.replace_service(self.tag_service)
         self._refresh_settings_pool_usage()
 
     def apply_cache_settings(self) -> None:
@@ -161,6 +174,7 @@ class AppContext:
                 self.archive_image_service,
                 self.hash_service,
                 self.settings.hash_algorithm,
+                tag_service=self.tag_service,
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
@@ -212,6 +226,8 @@ def create_app_context() -> AppContext:
     resources = ResourceLoader()
     database_interpreter = _create_database_interpreter(paths)
     book_repository: BookRepository = _create_sqlite_book_repository(database_interpreter, paths)
+    tag_repository: TagRepository = SqliteTagRepository(database_interpreter)
+    tag_service = TagService(tag_repository)
     archive_extraction_pool = _create_archive_extraction_cache(paths, settings)
     archive_image_service = ArchiveImageService(extraction_pool=archive_extraction_pool)
     reader_session_service = ReaderSessionService(archive_image_service)
@@ -229,6 +245,7 @@ def create_app_context() -> AppContext:
         archive_image_service,
         hash_service,
         settings.hash_algorithm,
+        tag_service=tag_service,
     )
     export_service = ExportService(book_repository, hash_service)
     storage_migration_service = StorageMigrationService(settings_store)
@@ -244,6 +261,7 @@ def create_app_context() -> AppContext:
         settings_store=settings_store,
     )
     settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space_service)
+    tag_management_viewmodel = TagManagementViewModel(tag_service)
 
     context = AppContext(
         config=config,
@@ -253,6 +271,7 @@ def create_app_context() -> AppContext:
         resources=resources,
         database_interpreter=database_interpreter,
         book_repository=book_repository,
+        tag_repository=tag_repository,
         archive_extraction_pool=archive_extraction_pool,
         archive_image_service=archive_image_service,
         reader_session_service=reader_session_service,
@@ -260,6 +279,7 @@ def create_app_context() -> AppContext:
         task_service=task_service,
         cache_service=cache_service,
         hash_service=hash_service,
+        tag_service=tag_service,
         import_service=import_service,
         export_service=export_service,
         storage_migration_service=storage_migration_service,
@@ -268,6 +288,7 @@ def create_app_context() -> AppContext:
         main_window_viewmodel=main_window_viewmodel,
         shelf_viewmodel=shelf_viewmodel,
         settings_viewmodel=settings_viewmodel,
+        tag_management_viewmodel=tag_management_viewmodel,
     )
     # The settings panel renders a live "used / budget" label for the disk
     # pool; provide it a thin lambda so the viewmodel can poll the current

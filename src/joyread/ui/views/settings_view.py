@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QWidget
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
+from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 from joyread.ui.widgets.settings_page import SettingsPageWidget
 
 
@@ -21,19 +22,22 @@ class SettingsView(QWidget):
     hidden_space_change_password_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
+    tag_operation_completed = QtSignal(bool, str, str)
 
     def __init__(
         self,
         viewmodel: SettingsViewModel,
         resources: ResourceLoader,
         parent: QWidget | None = None,
+        *,
+        tag_viewmodel: TagManagementViewModel | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("SettingsOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
-        self.page = SettingsPageWidget(viewmodel, resources, self)
+        self.page = SettingsPageWidget(viewmodel, resources, self, tag_viewmodel=tag_viewmodel)
         self.page.storage_change_requested.connect(self.storage_change_requested.emit)
         self.page.hidden_space_setup_requested.connect(self.hidden_space_setup_requested.emit)
         self.page.hidden_space_verify_requested.connect(self.hidden_space_verify_requested.emit)
@@ -42,6 +46,7 @@ class SettingsView(QWidget):
         )
         self.page.hidden_space_revert_requested.connect(self.hidden_space_revert_requested.emit)
         self.page.hidden_space_reset_requested.connect(self.hidden_space_reset_requested.emit)
+        self.page.tag_operation_completed.connect(self.tag_operation_completed.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)

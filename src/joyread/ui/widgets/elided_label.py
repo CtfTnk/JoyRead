@@ -65,8 +65,12 @@ class ElidedLabel(QLabel):
         metrics = QFontMetrics(self.font())
         available_width = max(0, self.contentsRect().width())
         if self._max_lines == 1:
-            display_text = metrics.elidedText(self._full_text, self._elide_mode, available_width)
-            is_clipped = display_text != self._full_text
+            if metrics.horizontalAdvance(self._full_text) <= available_width:
+                display_text = self._full_text
+                is_clipped = False
+            else:
+                display_text = metrics.elidedText(self._full_text, self._elide_mode, available_width)
+                is_clipped = display_text != self._full_text
             used_lines = 1
         else:
             display_text, is_clipped, used_lines = self._multi_line_elided_text(metrics, available_width)

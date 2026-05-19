@@ -273,6 +273,27 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             ON collections(is_hidable);
         """,
     ),
+    (
+        10,
+        """
+        CREATE TABLE IF NOT EXISTS tags (
+            tag_id          TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            name_normalized TEXT NOT NULL UNIQUE,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS book_tags (
+            tag_id     TEXT NOT NULL REFERENCES tags(tag_id) ON DELETE CASCADE,
+            book_id    TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (tag_id, book_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
+        """,
+    ),
 )
 
 
