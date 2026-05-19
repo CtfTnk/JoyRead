@@ -280,6 +280,10 @@ QFrame[class="ReaderSettingsSmallSwitch"] {
     border-radius: __SETTINGS_SWITCH_RADIUS__;
 }
 
+QFrame[class="ReaderSettingsSmallSwitch"][checked="true"] {
+    background: __WINDOW_COLOR__;
+}
+
 QFrame[class="ReaderSettingsSmallSwitchKnob"] {
     background: __SETTINGS_SWITCH_KNOB__;
     border: none;
@@ -811,7 +815,6 @@ QWidget#SettingsRightViewport,
 QWidget#SettingsRightContent,
 QWidget#SettingsItemName,
 QWidget#SettingsItemOption,
-QWidget#SettingsSwitchOption,
 QWidget#SettingsAddressOption,
 QWidget#SettingsDropdownIndicator {
     background: transparent;
@@ -904,6 +907,10 @@ QFrame[class="SettingsSwitch"] {
     background: __SETTINGS_SWITCH_BACKGROUND__;
     border: 1px solid __BUTTON_INNER_EDGE__;
     border-radius: __SETTINGS_SWITCH_RADIUS__;
+}
+
+QFrame[class="SettingsSwitch"][checked="true"] {
+    background: __WINDOW_COLOR__;
 }
 
 QFrame[class="SettingsSwitchKnob"] {

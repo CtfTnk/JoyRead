@@ -72,7 +72,7 @@ class SmartLayoutEngine:
 
         single = self._single_result(viewport_size, page1_size, settings, page1_index=page1_index)
         if (
-            settings.always_one_page
+            _effective_always_one_page(settings)
             or page2_size is None
             or not page2_size.is_valid
             or page2_index is None
@@ -238,6 +238,14 @@ def _effective_fit_mode(settings: ReaderLayoutSettings) -> ReaderFitMode:
     if settings.custom_enabled and settings.fit_mode != ReaderFitMode.AUTO:
         return settings.fit_mode
     return ReaderFitMode.FIT_PAGE
+
+
+def _effective_always_one_page(settings: ReaderLayoutSettings) -> bool:
+    # ``always_one_page`` is a horizontal custom setting — turning the
+    # "Enable Custom" master switch off must neutralise it, otherwise the
+    # value persists invisibly behind a greyed-out row and forces single
+    # page mode even though the user thinks they're back on auto-spreads.
+    return settings.custom_enabled and settings.always_one_page
 
 
 def _scale_for_mode(viewport: SizeF, content: SizeF, fit_mode: ReaderFitMode) -> float:

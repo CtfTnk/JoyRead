@@ -265,7 +265,6 @@ class Theme:
     settings_path_height = 20
     settings_switch_width = 28
     settings_switch_height = 16
-    settings_switch_option_padding_horizontal = 6
     settings_switch_border_width = 1
     settings_switch_visual_padding = 2
     settings_switch_layout_margin = settings_switch_visual_padding - settings_switch_border_width

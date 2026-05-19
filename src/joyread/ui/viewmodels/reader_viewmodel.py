@@ -444,16 +444,25 @@ class ReaderViewModel:
             return
         page1 = self._pages.get(indices[0])
         if page1 is None:
+            # ``_request_page`` may resolve synchronously from the LRU
+            # cache, in which case it already recursed into
+            # ``recalculate_layout`` and emitted a layout. Re-check before
+            # falling through to the wait state to avoid clobbering that
+            # layout with a "loading" placeholder.
             self._request_page(indices[0])
-            self._wait_for_layout_pages((indices[0],), status_index=indices[0])
-            return
+            page1 = self._pages.get(indices[0])
+            if page1 is None:
+                self._wait_for_layout_pages((indices[0],), status_index=indices[0])
+                return
         page2 = self._pages.get(indices[1]) if len(indices) > 1 else None
         if len(indices) > 1 and page2 is None:
             self._request_page(indices[1])
-            if indices[1] not in self._unavailable_pages:
-                self._wait_for_layout_pages(indices, status_index=indices[0])
-                return
-            self._companion_index = None
+            page2 = self._pages.get(indices[1])
+            if page2 is None:
+                if indices[1] not in self._unavailable_pages:
+                    self._wait_for_layout_pages(indices, status_index=indices[0])
+                    return
+                self._companion_index = None
 
         result = self._layout_engine.calculate(
             self._viewport_size,
@@ -485,8 +494,10 @@ class ReaderViewModel:
         primary = self._pages.get(self._primary_index)
         if primary is None:
             self._request_page(self._primary_index)
-            self._wait_for_layout_pages((self._primary_index,), status_index=self._primary_index)
-            return
+            primary = self._pages.get(self._primary_index)
+            if primary is None:
+                self._wait_for_layout_pages((self._primary_index,), status_index=self._primary_index)
+                return
 
         pages: list[tuple[int, SizeF]] = []
         primary_size = SizeF(float(primary.dimensions[0]), float(primary.dimensions[1]))
@@ -645,6 +656,10 @@ class ReaderViewModel:
 
     def set_custom_enabled(self, enabled: bool) -> None:
         self.settings = replace(self.settings, custom_enabled=enabled)
+        # When the master toggle flips, ``always_one_page`` may go from
+        # active (force single page) to neutralised (allow spreads) or the
+        # other way round, so the companion slot needs to follow.
+        self._refresh_companion_for_primary()
         self._persist_settings()
         self.recalculate_layout()
         self._emit_state()
@@ -748,9 +763,13 @@ class ReaderViewModel:
         self._wide_pan_user_panned = False
 
     def _can_use_companion(self) -> bool:
+        # ``always_one_page`` only forces the single-page slot when the
+        # master "Enable Custom" toggle is on, matching how the layout
+        # engine reads the same flag.
+        force_single = self.settings.custom_enabled and self.settings.always_one_page
         return (
             self._page_count > 1
-            and not self.settings.always_one_page
+            and not force_single
             and self.settings.direction != ReaderDirection.TOP_TO_BOTTOM
         )
 

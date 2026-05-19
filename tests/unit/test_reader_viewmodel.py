@@ -1118,6 +1118,71 @@ def test_reader_viewmodel_rtl_swaps_prefetch_window(tmp_path: Path) -> None:
         assert namespace.get(index) is not None, f"page {index} should be prefetched"
 
 
+def test_reader_viewmodel_disabling_always_one_page_recovers_double_spread_from_lru(tmp_path: Path) -> None:
+    # Repro for the post-revert "stuck on loading" bug: when "always one
+    # page" was on we ran in single-page mode, but the prefetch warmed the
+    # companion page into the shared LRU cache. Flipping the toggle off
+    # used to call ``_request_page`` which synchronously resolved the
+    # companion from the LRU, then ``recalculate_layout`` would still fall
+    # through to ``_wait_for_layout_pages`` and clobber the freshly-built
+    # spread with a loading placeholder. Now the re-check picks up the
+    # synchronously-stored page and the spread lands without a resize.
+    vm = _viewmodel(
+        tmp_path,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    # LTR so the directional prefetch window points to the *next* archive
+    # index — the future companion if the user disables Always One Page.
+    vm.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm.set_custom_enabled(True)
+    vm.set_always_one_page(True)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(1600, 900)
+
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.SINGLE
+    # Companion lives in LRU only, not in the layout-resident page set.
+    assert 1 not in vm._pages
+    assert vm._page_cache.get(1) is not None
+
+    vm.set_always_one_page(False)
+
+    assert vm.loading_page_index is None
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.DOUBLE
+    assert vm.current_display_indices == (0, 1)
+
+
+def test_reader_viewmodel_disabling_custom_neutralises_always_one_page(tmp_path: Path) -> None:
+    # The horizontal "Always one page" row is gated behind the master
+    # "Enable Custom" toggle in the UI; the engine must mirror that.
+    # Otherwise the orphaned ``always_one_page=True`` value persists
+    # silently and keeps forcing single-page mode even with custom off.
+    vm = _viewmodel(
+        tmp_path,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    vm.set_custom_enabled(True)
+    vm.set_always_one_page(True)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(1600, 900)
+
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.SINGLE
+
+    vm.set_custom_enabled(False)
+
+    assert vm.loading_page_index is None
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.DOUBLE
+    assert vm.current_display_indices == (0, 1)
+    # The stored value remains True — only the *effective* gating changes.
+    assert vm.settings.always_one_page is True
+    assert vm.settings.custom_enabled is False
+
+
 def _png_bytes() -> bytes:
     from io import BytesIO
 

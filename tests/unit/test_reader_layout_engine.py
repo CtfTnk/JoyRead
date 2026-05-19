@@ -109,6 +109,22 @@ def test_custom_always_one_page_prevents_double_spread() -> None:
     assert result.mode == ReaderDisplayMode.SINGLE
 
 
+def test_always_one_page_is_ignored_when_custom_disabled() -> None:
+    # The horizontal "Always one page" setting only takes effect while the
+    # master "Enable Custom" toggle is on. With custom off, the layout
+    # engine should pick the double-spread regardless of the orphaned flag.
+    result = SmartLayoutEngine().calculate(
+        SizeF(1600, 900),
+        SizeF(600, 900),
+        SizeF(600, 900),
+        ReaderLayoutSettings(custom_enabled=False, always_one_page=True),
+        page1_index=0,
+        page2_index=1,
+    )
+
+    assert result.mode == ReaderDisplayMode.DOUBLE
+
+
 def test_custom_fit_height_changes_single_scale() -> None:
     result = SmartLayoutEngine().calculate(
         SizeF(1000, 800),

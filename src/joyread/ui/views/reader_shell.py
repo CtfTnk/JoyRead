@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
@@ -478,6 +478,13 @@ class ReaderShellWidget(QWidget):
         # See ``NovelReaderShellWidget._is_custom_safe_click`` for why
         # ``windowType()`` is used instead of a bitwise AND against the
         # Popup flag.
+        #
+        # Geometric guard: a click on a blank panel area (no child widget)
+        # propagates up to the shell. The filter fires again with watched=shell,
+        # so the ancestor-chain walk misses the panel. Check cursor position
+        # first to catch that propagated re-delivery.
+        if QRect(self.settings_panel.mapToGlobal(QPoint(0, 0)), self.settings_panel.size()).contains(QCursor.pos()):
+            return True
         while widget is not None:
             if widget in {self.settings_panel, self.footer.settings_button}:
                 return True
@@ -487,6 +494,8 @@ class ReaderShellWidget(QWidget):
         return False
 
     def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
+        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(QCursor.pos()):
+            return True
         while widget is not None:
             if widget in {
                 self.topic_panel,

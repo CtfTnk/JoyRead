@@ -221,6 +221,7 @@ class _SmallSwitch(QFrame):
         self._knob.setProperty("class", "ReaderSettingsSmallSwitchKnob")
         self._knob.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._knob.setFixedSize(Theme.settings_switch_knob_size, Theme.settings_switch_knob_size)
+        self._sync_checked_property()
         self._position_knob()
 
     @property
@@ -231,9 +232,17 @@ class _SmallSwitch(QFrame):
         if checked == self._checked:
             return
         self._checked = checked
+        self._sync_checked_property()
         self._position_knob()
         if emit:
             self.toggled.emit(checked)
+
+    def _sync_checked_property(self) -> None:
+        # Mirrors the settings-page switch: the QSS attribute selector
+        # paints the "on" track white, matching the Figma small switch.
+        self.setProperty("checked", "true" if self._checked else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)

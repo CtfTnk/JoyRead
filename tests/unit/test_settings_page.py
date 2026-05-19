@@ -154,6 +154,28 @@ def test_settings_overlay_resizes_panel_within_figma_min_max(qtbot) -> None:
     assert overlay.page.geometry().center() == overlay.rect().center()
 
 
+def test_settings_switch_and_button_items_share_right_gutter(qtbot) -> None:
+    # Privacy + General show switches and buttons in the same column; the
+    # Figma right-aligns every option control to a common gutter, so the
+    # switch row must not add extra horizontal padding around the switch.
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    panel = SettingsContentPanel()
+    qtbot.addWidget(panel)
+    switch_item = SettingsSwitchItem("Switch", False)
+    button_item = SettingsButtonItem("Button", "Change")
+    panel.set_items([switch_item, button_item])
+    panel.resize(420, 200)
+    panel.show()
+    QApplication.processEvents()
+
+    switch_right = switch_item.switch.mapTo(panel, switch_item.switch.rect().topRight()).x()
+    button_right = button_item.button.mapTo(panel, button_item.button.rect().topRight()).x()
+
+    assert switch_right == button_right
+
+
 def test_settings_switch_control_toggles_and_keeps_figma_knob_size(qtbot) -> None:
     apply_theme()
     switch = SettingsSwitchControl(False)
@@ -167,12 +189,17 @@ def test_settings_switch_control_toggles_and_keeps_figma_knob_size(qtbot) -> Non
     assert switch.size().height() == Theme.settings_switch_height
     assert knob.size().width() == Theme.settings_switch_knob_size
     assert knob.x() == Theme.settings_switch_layout_margin
+    # Off state: QSS attribute selector picks the gray track variant.
+    assert switch.property("checked") == "false"
 
     qtbot.mouseClick(switch, Qt.MouseButton.LeftButton)
 
     assert switch.checked is True
     assert emitted == [True]
     assert knob.x() == switch.width() - Theme.settings_switch_layout_margin - Theme.settings_switch_knob_size
+    # On state flips the dynamic property so the white-track QSS rule
+    # applies — the Figma small switch fills its track when on.
+    assert switch.property("checked") == "true"
 
 
 def test_settings_spin_button_small_matches_figma_geometry_and_steps(qtbot) -> None:

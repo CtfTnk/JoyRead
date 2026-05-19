@@ -455,18 +455,10 @@ class SettingsSwitchItem(SettingsOptionItem):
 
     def __init__(self, name: str, checked: bool, parent: QWidget | None = None) -> None:
         self.switch = SettingsSwitchControl(checked)
-        option = QWidget()
-        option.setObjectName("SettingsSwitchOption")
-        option_layout = QHBoxLayout(option)
-        option_layout.setContentsMargins(
-            Theme.settings_switch_option_padding_horizontal,
-            0,
-            Theme.settings_switch_option_padding_horizontal,
-            0,
-        )
-        option_layout.setSpacing(0)
-        option_layout.addWidget(self.switch)
-        super().__init__(name, option, parent)
+        # Pass the switch directly (no wrapper) so its right edge lines up
+        # with the buttons / dropdowns / spinners in the column — the Figma
+        # right-aligns every option control to the same gutter.
+        super().__init__(name, self.switch, parent)
         self.switch.toggled.connect(self.toggled.emit)
 
 
@@ -661,6 +653,7 @@ class SettingsSwitchControl(QFrame):
         self._knob.setProperty("class", "SettingsSwitchKnob")
         self._knob.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._knob.setFixedSize(Theme.settings_switch_knob_size, Theme.settings_switch_knob_size)
+        self._sync_checked_property()
         self._position_knob()
 
     @property
@@ -671,8 +664,16 @@ class SettingsSwitchControl(QFrame):
         if checked == self._checked:
             return
         self._checked = checked
+        self._sync_checked_property()
         self._position_knob()
         self.toggled.emit(checked)
+
+    def _sync_checked_property(self) -> None:
+        # Drives the QSS attribute selector that paints the "on" state
+        # with the Figma white track instead of the gray-track default.
+        self.setProperty("checked", "true" if self._checked else "false")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)

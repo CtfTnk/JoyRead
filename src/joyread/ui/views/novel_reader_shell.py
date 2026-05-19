@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -391,6 +391,10 @@ class NovelReaderShellWidget(QWidget):
         # ``windowType()`` returns the WindowType after masking; bitwise
         # AND against the Popup flag is buggy because every Window has
         # overlapping bits, so the AND read True for every click.
+        #
+        # Geometric guard: see ReaderShellWidget._is_settings_safe_click.
+        if QRect(self.custom_panel.mapToGlobal(QPoint(0, 0)), self.custom_panel.size()).contains(QCursor.pos()):
+            return True
         targets = {self.custom_panel, self.header.custom_button}
         while widget is not None:
             if widget in targets:
@@ -401,6 +405,8 @@ class NovelReaderShellWidget(QWidget):
         return False
 
     def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
+        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(QCursor.pos()):
+            return True
         targets = {
             self.topic_panel,
             self.header.topic_button_group,
