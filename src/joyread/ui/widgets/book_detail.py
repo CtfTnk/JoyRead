@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -23,12 +24,14 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.book import Book
+from joyread.core.models.tag import Tag
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
+from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
 
 class DetailReadButton(QFrame):
@@ -103,6 +106,58 @@ class DetailReadButton(QFrame):
         super().keyPressEvent(event)
 
 
+class BookDetailTagBox(QFrame):
+    """Figma's 160px detail tag box with the shared tag-chip scroll flow."""
+
+    tag_clicked = QtSignal(str)
+    allocation_requested = QtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("BookDetailTagBox")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.setFixedHeight(Theme.detail_tag_box_height)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.detail_tag_box_layout_margin,
+            Theme.detail_tag_box_layout_margin,
+            Theme.detail_tag_box_layout_margin,
+            Theme.detail_tag_box_layout_margin,
+        )
+        layout.setSpacing(0)
+
+        self._scroll_area = QScrollArea(self)
+        self._scroll_area.setObjectName("BookDetailTagScrollArea")
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.viewport().setObjectName("BookDetailTagViewport")
+        self._scroll_area.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        layout.addWidget(self._scroll_area)
+
+        self._chip_flow = TagChipFlowWidget(object_name="BookDetailTagListHost")
+        self._chip_flow.tag_clicked.connect(lambda tag_id, _additive: self.tag_clicked.emit(tag_id))
+        self._chip_flow.add_clicked.connect(self.allocation_requested.emit)
+        self._scroll_area.setWidget(self._chip_flow)
+        self._scroll_handle = AutoHideScrollHandle(self._scroll_area, parent=self)
+
+    @property
+    def chip_flow(self) -> TagChipFlowWidget:
+        return self._chip_flow
+
+    def set_tags(self, tags: Iterable[Tag]) -> None:
+        self._chip_flow.set_tags(tags, include_add_chip=True)
+
+    def set_compact_title_mode(self, compact: bool) -> None:
+        height = Theme.detail_tag_box_compact_height if compact else Theme.detail_tag_box_height
+        if self.height() == height:
+            return
+        self.setFixedHeight(height)
+
+
 class BookDetailPanel(QFrame):
     read_requested = QtSignal(str)
     read_at_index_requested = QtSignal(str, int)
@@ -113,6 +168,8 @@ class BookDetailPanel(QFrame):
     title_change_requested = QtSignal(str, str)
     author_change_requested = QtSignal(str, str)
     language_menu_requested = QtSignal(str, QPoint)
+    tag_filter_requested = QtSignal(str, str)
+    tag_allocation_requested = QtSignal(str)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -162,11 +219,17 @@ class BookDetailPanel(QFrame):
 
         self._scroll.setWidget(content)
 
-    def set_book(self, book: Book, cover_path: Path | None = None) -> None:
+    def set_book(
+        self,
+        book: Book,
+        cover_path: Path | None = None,
+        tags: Iterable[Tag] = (),
+    ) -> None:
         book_changed = self._book is None or self._book.uuid != book.uuid
         self._book = book
         self._title_field.set_value(book.title)
         self._author_field.set_value(book.author or "None")
+        self._tag_box.set_tags(tags)
         self._language_label.setText(f"Language: {self._language_display_name(book)}")
         self._book_type_label.setText(f"Book Type: {book.file_format.upper()}")
         self._progress.set_progress(book.progress_percent)
@@ -186,6 +249,8 @@ class BookDetailPanel(QFrame):
             self._cover.set_pixmap(_placeholder_cover())
         if book_changed:
             self._thumbnail_grid.reset_unknown()
+        self._sync_tag_box_height()
+        QTimer.singleShot(0, self._sync_tag_box_height)
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
@@ -284,10 +349,17 @@ class BookDetailPanel(QFrame):
         self._author_field.committed.connect(self._emit_author_change_requested)
         name_author_layout.addWidget(self._author_field)
         meta_layout.addWidget(name_author)
-        meta_layout.addStretch(1)
+        meta_layout.addSpacing(Theme.detail_tag_box_gap)
+
+        self._tag_box = BookDetailTagBox()
+        self._tag_box.tag_clicked.connect(self._emit_tag_filter_requested)
+        self._tag_box.allocation_requested.connect(self._emit_tag_allocation_requested)
+        meta_layout.addWidget(self._tag_box)
+        meta_layout.addSpacing(Theme.detail_tag_box_gap)
 
         attributes = QWidget()
         attributes.setObjectName("BookDetailAttributes")
+        attributes.setFixedHeight(Theme.detail_attribute_height)
         attributes_layout = QHBoxLayout(attributes)
         attributes_layout.setContentsMargins(Theme.detail_attribute_padding_horizontal, 0, 0, 0)
         attributes_layout.setSpacing(Theme.detail_attribute_gap)
@@ -392,6 +464,23 @@ class BookDetailPanel(QFrame):
                 self._language_pill.mapToGlobal(QPoint(0, self._language_pill.height())),
             )
 
+    def _emit_tag_filter_requested(self, tag_id: str) -> None:
+        if self._book is not None:
+            self.tag_filter_requested.emit(self._book.uuid, tag_id)
+
+    def _emit_tag_allocation_requested(self) -> None:
+        if self._book is not None:
+            self.tag_allocation_requested.emit(self._book.uuid)
+
+    def _sync_tag_box_height(self) -> None:
+        if not hasattr(self, "_tag_box"):
+            return
+        self._tag_box.set_compact_title_mode(self._title_field.display_line_count > 1)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._sync_tag_box_height)
+
     def _language_display_name(self, book: Book) -> str:
         if book.language_name:
             return book.language_name
@@ -439,6 +528,10 @@ class InlineEditableText(QWidget):
         self._label.setText(f"{self._display_prefix}{value}")
         self._editor.setText(value)
         self._stack.setCurrentWidget(self._label)
+
+    @property
+    def display_line_count(self) -> int:
+        return max(1, self._label.text().count("\n") + 1)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched is self._editor and event.type() == QEvent.Type.FocusOut:

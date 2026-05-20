@@ -242,6 +242,45 @@ def test_bulk_list_tag_ids_for_books_empty_input_returns_empty(tmp_path: Path) -
     assert ids == {}
 
 
+def test_set_book_tag_ids_replaces_links_and_deduplicates(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    try:
+        repo = SqliteTagRepository(database)
+        action = repo.create("Action")
+        comedy = repo.create("Comedy")
+        drama = repo.create("Drama")
+        _insert_book(database, "book-1")
+        repo.link_book(action.tag_id, "book-1")
+        repo.link_book(comedy.tag_id, "book-1")
+
+        repo.set_book_tag_ids("book-1", (drama.tag_id, drama.tag_id, action.tag_id))
+
+        ids = repo.list_tag_ids_for_book("book-1")
+    finally:
+        database.close()
+
+    assert ids == [action.tag_id, drama.tag_id]
+
+
+def test_set_book_tag_ids_empty_selection_removes_all_links(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    try:
+        repo = SqliteTagRepository(database)
+        action = repo.create("Action")
+        comedy = repo.create("Comedy")
+        _insert_book(database, "book-1")
+        repo.link_book(action.tag_id, "book-1")
+        repo.link_book(comedy.tag_id, "book-1")
+
+        repo.set_book_tag_ids("book-1", ())
+
+        ids = repo.list_tag_ids_for_books(("book-1",))
+    finally:
+        database.close()
+
+    assert ids == {"book-1": ()}
+
+
 def test_unlink_removes_only_one_join(tmp_path: Path) -> None:
     database = _database(tmp_path)
     try:

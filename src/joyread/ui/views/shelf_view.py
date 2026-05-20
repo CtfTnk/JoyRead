@@ -30,6 +30,8 @@ class ShelfView(QWidget):
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
     tag_filter_requested = QtSignal()
+    detail_tag_filter_requested = QtSignal(str, str)
+    detail_tag_allocation_requested = QtSignal(str)
     # ``read_book_*`` decisions are emitted by ShelfViewModel directly
     # (``book_open_requested`` / ``book_open_at_requested``). MainWindow
     # subscribes to the VM so every open is gated by the VM's
@@ -112,6 +114,8 @@ class ShelfView(QWidget):
         self.detail_panel.title_change_requested.connect(self._viewmodel.update_book_title)
         self.detail_panel.author_change_requested.connect(self._viewmodel.update_book_author)
         self.detail_panel.language_menu_requested.connect(self._show_language_menu)
+        self.detail_panel.tag_filter_requested.connect(self.detail_tag_filter_requested.emit)
+        self.detail_panel.tag_allocation_requested.connect(self.detail_tag_allocation_requested.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -301,7 +305,11 @@ class ShelfView(QWidget):
         if book is None:
             self.detail_panel.hide()
             return
-        self.detail_panel.set_book(book, self._viewmodel.cover_paths.get(book.uuid))
+        self.detail_panel.set_book(
+            book,
+            self._viewmodel.cover_paths.get(book.uuid),
+            self._viewmodel.tags_for_book(book.uuid),
+        )
         self._position_detail_panel()
         self.detail_panel.show()
         self.detail_panel.raise_()

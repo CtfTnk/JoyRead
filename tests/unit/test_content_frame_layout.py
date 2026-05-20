@@ -4,10 +4,11 @@ from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QLineEdit, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QLineEdit, QScrollArea, QToolButton, QWidget
 from PIL import Image
 
 from joyread.core.models.book import Book
+from joyread.core.models.tag import Tag
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -25,6 +26,7 @@ from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
+from joyread.ui.widgets.tag_chip import TagChipWidget
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, collection_shelf_key
 from joyread.ui.views.shelf_view import ShelfView
@@ -485,6 +487,8 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     cover_panel = panel.findChild(QWidget, "BookDetailCoverPanel")
     cover = panel.findChild(QWidget, "BookCover")
     read_button = panel.findChild(DetailReadButton)
+    tag_box = panel.findChild(QFrame, "BookDetailTagBox")
+    tag_scroll = panel.findChild(QScrollArea, "BookDetailTagScrollArea")
     thumbnails = panel.findChildren(DetailThumbnailWidget)
 
     assert title_labels[0].text() == book.title
@@ -508,6 +512,10 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     assert progress_unit.geometry().center().x() == cover.geometry().center().x()
     assert progress is not None
     assert progress.width() == Theme.detail_progress_width
+    assert tag_box is not None
+    assert tag_box.height() == Theme.detail_tag_box_height
+    assert tag_scroll is not None
+    assert tag_box.findChildren(AutoHideScrollHandle)
     assert read_button is not None
     assert read_button.size() == QSize(Theme.detail_read_button_width, Theme.detail_button_size)
     read_shadow = read_button.graphicsEffect()
@@ -529,6 +537,54 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     panel.read_requested.connect(emitted.append)
     qtbot.mouseClick(read_button, Qt.MouseButton.LeftButton)
     assert emitted == [book.uuid]
+
+
+def test_book_detail_tag_box_shrinks_when_title_uses_two_rows(qtbot) -> None:
+    apply_theme()
+    book = replace(
+        InMemoryBookRepository().list_books()[1],
+        title="A Very Long Manga Title That Must Wrap Onto Two Rows In The Detail Panel",
+    )
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(520, 760)
+    panel.set_book(book)
+    panel.show()
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    tag_box = panel.findChild(QFrame, "BookDetailTagBox")
+
+    assert tag_box is not None
+    assert tag_box.height() == Theme.detail_tag_box_compact_height
+
+
+def test_book_detail_tag_chips_emit_filter_and_allocation_requests(qtbot) -> None:
+    apply_theme()
+    book = InMemoryBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(876, 760)
+    panel.set_book(
+        book,
+        tags=(Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")),
+    )
+    panel.show()
+    QApplication.processEvents()
+
+    filter_requests: list[tuple[str, str]] = []
+    allocation_requests: list[str] = []
+    panel.tag_filter_requested.connect(lambda book_uuid, tag_id: filter_requests.append((book_uuid, tag_id)))
+    panel.tag_allocation_requested.connect(allocation_requests.append)
+    chips = panel.findChildren(TagChipWidget)
+    tag_chip = next(chip for chip in chips if chip.tag_id == "tag-action")
+    add_chip = next(chip for chip in chips if chip.is_add_chip)
+
+    qtbot.mouseClick(tag_chip, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(add_chip, Qt.MouseButton.LeftButton)
+
+    assert filter_requests == [(book.uuid, "tag-action")]
+    assert allocation_requests == [book.uuid]
 
 
 def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
@@ -996,9 +1052,14 @@ def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:
     assert "__PROGRESS_BACKGROUND__" not in stylesheet
     assert "__DETAIL_PANEL_BACKGROUND__" not in stylesheet
     assert "__DETAIL_PANEL_RADIUS__" not in stylesheet
+    assert "__DETAIL_TAG_BOX_BACKGROUND__" not in stylesheet
     assert "__SHELF_SCROLLBAR_WIDTH__" not in stylesheet
     assert "__SHELF_SCROLLBAR_BOTTOM_MARGIN__" not in stylesheet
     assert "__SHELF_SCROLLBAR_HANDLE_HIDDEN__" not in stylesheet
+    assert (
+        f"background: {Theme._hex_rgba_qss(Theme.color_window, Theme.detail_tag_box_background_opacity)};"
+        in stylesheet
+    )
     assert 'QWidget#ShelfContent[sidebarVisible="false"]' in stylesheet
     assert f"border-bottom-left-radius: {Theme.window_corner_radius}px;" in stylesheet
     assert "QScrollArea[class=\"ShelfScrollArea\"] QScrollBar:vertical" in stylesheet

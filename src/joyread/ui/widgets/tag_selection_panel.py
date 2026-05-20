@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import Qt, Signal as QtSignal
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
 from joyread.core.models.tag import Tag
@@ -18,6 +19,7 @@ class TagChipFlowWidget(QWidget):
 
     tag_clicked = QtSignal(str, bool)
     add_clicked = QtSignal()
+    blank_clicked = QtSignal(bool)
 
     def __init__(self, parent: QWidget | None = None, *, object_name: str = "TagListHost") -> None:
         super().__init__(parent)
@@ -25,6 +27,7 @@ class TagChipFlowWidget(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tags: tuple[Tag, ...] = ()
         self._selected_tag_ids: set[str] = set()
+        self._pressed_inside = False
         self._flow_layout = FlowLayout(
             self,
             margin=0,
@@ -84,3 +87,22 @@ class TagChipFlowWidget(QWidget):
 
     def clear_selection(self) -> None:
         self.set_selected_tag_ids(())
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_inside = True
+            event.accept()
+            return
+        self._pressed_inside = False
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton and self._pressed_inside:
+            self._pressed_inside = False
+            event.accept()
+            if self.rect().contains(event.position().toPoint()):
+                additive = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                self.blank_clicked.emit(additive)
+            return
+        self._pressed_inside = False
+        super().mouseReleaseEvent(event)

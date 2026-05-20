@@ -77,6 +77,15 @@ class Theme:
     detail_content_padding = 4
     detail_meta_height = 252
     detail_meta_name_gap = 10
+    detail_tag_box_height = 144
+    detail_tag_box_compact_height = 120
+    detail_tag_box_gap = 8
+    detail_tag_box_radius = 8
+    detail_tag_box_border_width = 1
+    detail_tag_box_background_opacity = 0.6
+    detail_tag_box_visual_padding = 10
+    detail_tag_box_layout_margin = detail_tag_box_visual_padding - detail_tag_box_border_width
+    detail_attribute_height = 25
     detail_attribute_padding_horizontal = 6
     detail_attribute_gap = 10
     detail_attribute_border_width = 1
@@ -605,6 +614,11 @@ class Theme:
             "__DETAIL_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_menu_background_rgba),
             "__DETAIL_PANEL_BORDER_WIDTH__": f"{cls.detail_panel_border_width}px",
             "__DETAIL_PANEL_RADIUS__": f"{cls.detail_panel_radius}px",
+            "__DETAIL_TAG_BOX_BACKGROUND__": cls._hex_rgba_qss(
+                cls.color_window, cls.detail_tag_box_background_opacity
+            ),
+            "__DETAIL_TAG_BOX_BORDER_WIDTH__": f"{cls.detail_tag_box_border_width}px",
+            "__DETAIL_TAG_BOX_RADIUS__": f"{cls.detail_tag_box_radius}px",
             "__DETAIL_ATTRIBUTE_RADIUS__": f"{cls.detail_attribute_radius}px",
             "__DETAIL_BUTTON_BORDER_WIDTH__": f"{cls.detail_button_border_width}px",
             "__DETAIL_BUTTON_LAYOUT_MARGIN__": f"{cls.detail_button_layout_margin}px",
@@ -630,3 +644,14 @@ class Theme:
     @staticmethod
     def _rgba_qss(value: tuple[int, int, int, int]) -> str:
         return f"rgba({value[0]}, {value[1]}, {value[2]}, {value[3]})"
+
+    @staticmethod
+    def _hex_rgba_qss(hex_color: str, opacity: float) -> str:
+        value = hex_color.removeprefix("#")
+        if len(value) != 6:
+            raise ValueError(f"Expected #rrggbb color, got {hex_color!r}")
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+        alpha = max(0, min(255, int((opacity * 255) + 0.5)))
+        return f"rgba({red}, {green}, {blue}, {alpha})"

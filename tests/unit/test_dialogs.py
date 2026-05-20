@@ -9,9 +9,11 @@ from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
 from joyread.core.services.import_service import ImportPreflightResult
+from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
+from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.widgets.dialogs import (
     DialogCollectionSelectContent,
@@ -25,12 +27,28 @@ from joyread.ui.widgets.dialogs import (
 )
 from joyread.ui.widgets.tag_chip import TagChipWidget
 from joyread.ui.widgets.tag_management_page import TagManagementPage
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 
 
 def apply_theme() -> None:
     app = QApplication.instance()
     assert app is not None
     app.setStyleSheet(ResourceLoader().load_stylesheet())
+
+
+class _DialogFakeTagService:
+    def __init__(self, tags: tuple[Tag, ...], links: dict[str, tuple[str, ...]]) -> None:
+        self._tags = tags
+        self._links = dict(links)
+
+    def list_tags(self) -> list[Tag]:
+        return sorted(self._tags, key=lambda tag: tag.name_normalized)
+
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        return {book_id: self._links.get(book_id, ()) for book_id in book_ids}
+
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        self._links[book_id] = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
 
 
 def test_dialog_panel_matches_figma_frame_and_button_geometry(qtbot) -> None:
@@ -362,6 +380,87 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
     QApplication.processEvents()
     assert confirmed == [()]
+
+
+def test_tag_allocation_dialog_uses_replace_set_selection_rules(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_allocation("Assign Tags", tags, ("tag-action",), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+    flow = overlay.panel.findChild(QWidget, "DialogTagFilterListHost")
+
+    assert content is not None
+    assert flow is not None
+    assert [button.text for button in buttons] == ["Cancel", "Reset", "Confirm"]
+    assert [chip.tag_id for chip in chips if chip.selected] == ["tag-action"]
+
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-comedy",)
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-comedy",)
+
+    qtbot.mouseClick(
+        flow,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        pos=QPoint(flow.width() - 2, flow.height() - 2),
+    )
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ()
+
+    qtbot.mouseClick(buttons[2], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == [()]
+
+
+def test_tag_allocation_cancel_discards_selection_and_no_tag_hint(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_allocation("Assign Tags", [Tag("tag-action", "Action")], (), confirmed.append)
+    QApplication.processEvents()
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == []
+
+    overlay.show_tag_allocation("Assign Tags", [], (), confirmed.append)
+    QApplication.processEvents()
+    hint = overlay.panel.findChild(QLabel, "DialogTagEmptyHint")
+
+    assert hint is not None
+    assert hint.text() == "No tags yet. Add or edit tags in Settings > Tags."
 
 
 def test_dialog_overlay_centers_panel_and_tracks_resize(qtbot) -> None:
@@ -708,6 +807,151 @@ def test_main_window_confirms_tag_delete_before_deleting(
 
     assert context.tag_service.list_tags() == []
     context.close()
+
+
+def test_detail_tag_click_activates_all_shelf_filter_and_closes_detail(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"),),
+            {"mock-book-01": ("tag-action",)},
+        )
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.show_detail("mock-book-01")
+        QApplication.processEvents()
+
+        chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.tag_id == "tag-action"
+        )
+        qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert context.shelf_viewmodel.current_shelf == ShelfKey.ALL.value
+        assert context.shelf_viewmodel.tag_filter_ids == ("tag-action",)
+        assert context.shelf_viewmodel.detail_book_uuid is None
+        assert window.shelf_view.detail_panel.isHidden()
+    finally:
+        context.close()
+
+
+def test_detail_tag_click_activates_hidden_shelf_for_hidden_book(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        repo.set_book_hidden("mock-book-03", True)
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"),),
+            {"mock-book-03": ("tag-action",)},
+        )
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.set_current_shelf(ShelfKey.HIDDEN.value)
+        context.shelf_viewmodel.show_detail("mock-book-03")
+        QApplication.processEvents()
+
+        chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.tag_id == "tag-action"
+        )
+        qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert context.shelf_viewmodel.current_shelf == ShelfKey.HIDDEN.value
+        assert context.shelf_viewmodel.tag_filter_ids == ("tag-action",)
+        assert context.shelf_viewmodel.detail_book_uuid is None
+        assert window.shelf_view.detail_panel.isHidden()
+    finally:
+        context.close()
+
+
+def test_detail_plus_opens_allocation_and_confirm_updates_detail_tags(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")),
+            {"mock-book-01": ("tag-action",)},
+        )
+        context.tag_service = tag_service  # type: ignore[assignment]
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.show_detail("mock-book-01")
+        QApplication.processEvents()
+
+        add_chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.is_add_chip
+        )
+        qtbot.mouseClick(add_chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        dialog_chips = [
+            chip
+            for chip in window.dialog_overlay.panel.findChildren(TagChipWidget)
+            if not chip.is_add_chip
+        ]
+        buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
+        assert window.dialog_overlay.isVisible()
+        assert [chip.tag_id for chip in dialog_chips if chip.selected] == ["tag-action"]
+
+        comedy_chip = next(chip for chip in dialog_chips if chip.tag_id == "tag-comedy")
+        qtbot.mouseClick(comedy_chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+        qtbot.mouseClick(buttons[2], Qt.MouseButton.LeftButton)
+
+        qtbot.waitUntil(
+            lambda: context.shelf_viewmodel.tag_ids_for_book("mock-book-01") == (
+                "tag-action",
+                "tag-comedy",
+            ),
+            timeout=2000,
+        )
+        QApplication.processEvents()
+
+        detail_tag_ids = {
+            chip.tag_id
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if not chip.is_add_chip
+        }
+        assert detail_tag_ids == {"tag-action", "tag-comedy"}
+    finally:
+        context.close()
 
 
 def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, tmp_path: Path) -> None:

@@ -53,6 +53,10 @@ class TagRepository(Protocol):
     def unlink_book(self, tag_id: str, book_id: str) -> None:
         ...
 
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        """Replace all tag links for ``book_id`` with ``tag_ids``."""
+        ...
+
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         ...
 

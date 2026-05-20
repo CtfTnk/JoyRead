@@ -12,6 +12,7 @@ from pathlib import Path
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
+from joyread.core.models.tag import Tag
 from joyread.core.services.cache_service import BoundedByteCache
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.tag_service import TagService
@@ -90,6 +91,7 @@ class ShelfViewModel:
         self.collection_failed: Signal[str] = Signal()
         self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
         self.remove_failed: Signal[str] = Signal()
+        self.book_tags_failed: Signal[str] = Signal()
 
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
@@ -101,6 +103,7 @@ class ShelfViewModel:
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.languages: list[Language] = []
+        self.available_tags: list[Tag] = []
         self._book_tag_ids_by_book: dict[str, tuple[str, ...]] = {}
         self._tag_filter_ids: tuple[str, ...] = ()
         self.search_query = ""
@@ -210,6 +213,7 @@ class ShelfViewModel:
             self.books = []
             self.collections = []
             self.languages = []
+            self.available_tags = []
             self._book_tag_ids_by_book = {}
         finally:
             self.is_loading = False
@@ -309,6 +313,43 @@ class ShelfViewModel:
 
     def clear_tag_filter(self) -> None:
         self.set_tag_filter_ids(())
+
+    def tag_ids_for_book(self, book_uuid: str) -> tuple[str, ...]:
+        return self._book_tag_ids_by_book.get(book_uuid, ())
+
+    def tags_for_book(self, book_uuid: str) -> tuple[Tag, ...]:
+        assigned_ids = set(self.tag_ids_for_book(book_uuid))
+        return tuple(tag for tag in self.available_tags if tag.tag_id in assigned_ids)
+
+    def set_book_tag_ids(self, book_uuid: str, tag_ids: Iterable[str]) -> None:
+        if self._tag_service is None:
+            self.book_tags_failed.emit("Tag service is unavailable.")
+            return
+        book = self._book_by_uuid(book_uuid)
+        if book is None:
+            self.book_tags_failed.emit("The selected book is no longer available.")
+            return
+        normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        if normalized_ids == self.tag_ids_for_book(book_uuid):
+            return
+        if self._task_service is None:
+            try:
+                self._tag_service.set_book_tag_ids(book_uuid, normalized_ids)
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self._handle_book_tags_failure(book_uuid, exc)
+                return
+            self._handle_book_tags_success(book_uuid)
+            return
+
+        self._task_service.submit(
+            "set-book-tags",
+            lambda book_uuid=book_uuid, tag_ids=normalized_ids: self._tag_service.set_book_tag_ids(
+                book_uuid,
+                tag_ids,
+            ),
+            on_success=lambda _result, book_uuid=book_uuid: self._handle_book_tags_success(book_uuid),
+            on_failure=lambda error, book_uuid=book_uuid: self._handle_book_tags_failure(book_uuid, error),
+        )
 
     def set_view_mode(self, mode: str) -> None:
         normalized_mode = ViewMode(mode)
@@ -958,14 +999,34 @@ class ShelfViewModel:
 
     def _refresh_book_tag_index(self) -> None:
         book_ids = tuple(book.uuid for book in self.books)
-        if self._tag_service is None or not book_ids:
+        if self._tag_service is None:
+            self.available_tags = []
             self._book_tag_ids_by_book = {book_id: () for book_id in book_ids}
             return
         try:
-            self._book_tag_ids_by_book = self._tag_service.list_tag_ids_for_books(book_ids)
+            self.available_tags = self._tag_service.list_tags()
         except Exception as exc:  # pragma: no cover - repository-specific failure path.
-            logger.warning("Shelf tag lookup failed: %s", exc, exc_info=True)
+            logger.warning("Shelf tag list lookup failed: %s", exc, exc_info=True)
+            self.available_tags = []
+        try:
+            self._book_tag_ids_by_book = (
+                self._tag_service.list_tag_ids_for_books(book_ids)
+                if book_ids
+                else {}
+            )
+        except Exception as exc:  # pragma: no cover - repository-specific failure path.
+            logger.warning("Shelf book tag lookup failed: %s", exc, exc_info=True)
             self._book_tag_ids_by_book = {book_id: () for book_id in book_ids}
+
+    def _handle_book_tags_success(self, book_uuid: str) -> None:
+        logger.info("Book tags assigned book=%s", book_uuid)
+        self._refresh_book_tag_index()
+        self._emit_state()
+
+    def _handle_book_tags_failure(self, book_uuid: str, error: Exception) -> None:
+        logger.warning("set_book_tag_ids failed book=%s: %s", book_uuid, error, exc_info=True)
+        self._refresh_book_tag_index()
+        self.book_tags_failed.emit(str(error))
 
     def _sort_key(self, book: Book) -> tuple[object, str]:
         if self.current_shelf == ShelfKey.RECENT:

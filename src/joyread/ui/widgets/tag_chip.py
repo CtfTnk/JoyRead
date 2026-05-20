@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QFontMetrics, QMouseEvent
+from PySide6.QtGui import QFontMetrics, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from joyread.ui.resources.styles.theme import Theme
@@ -42,6 +42,7 @@ class TagChipWidget(QFrame):
             self.setProperty("addChip", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
         self.setMinimumWidth(Theme.tag_chip_min_width)
         self.setMaximumWidth(Theme.tag_chip_max_width)
@@ -147,3 +148,14 @@ class TagChipWidget(QFrame):
             return
         self._pressed_inside = False
         super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space):
+            if self._is_add_chip:
+                self.add_clicked.emit()
+            else:
+                additive = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+                self.chip_clicked.emit(self._tag_id, additive)
+            event.accept()
+            return
+        super().keyPressEvent(event)

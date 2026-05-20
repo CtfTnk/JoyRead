@@ -511,11 +511,15 @@ class DialogTagFilterContent(QWidget):
         tags: list[Tag],
         selected_tag_ids: tuple[str, ...] = (),
         parent: QWidget | None = None,
+        *,
+        allocation_mode: bool = False,
+        empty_hint: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogTagFilterContent")
         self._tags = tuple(tags)
         self._selected_tag_ids = set(selected_tag_ids)
+        self._allocation_mode = allocation_mode
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(self)
@@ -566,8 +570,18 @@ class DialogTagFilterContent(QWidget):
         self._chip_flow = TagChipFlowWidget(object_name="DialogTagFilterListHost")
         self._chip_flow.setMinimumHeight(scroll_height)
         self._chip_flow.tag_clicked.connect(self._handle_tag_clicked)
+        self._chip_flow.blank_clicked.connect(self._handle_blank_clicked)
         self._chip_flow.set_tags(self._tags, self._selected_tag_ids, include_add_chip=False)
-        self._row_scroll.setWidget(self._chip_flow)
+        if self._tags:
+            self._row_scroll.setWidget(self._chip_flow)
+        else:
+            hint = QLabel(empty_hint or "")
+            hint.setObjectName("DialogTagEmptyHint")
+            hint.setProperty("class", "JoyReadDialogContent")
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setWordWrap(True)
+            hint.setMinimumHeight(scroll_height)
+            self._row_scroll.setWidget(hint)
         self._row_scroll.setFixedHeight(scroll_height)
         panel_layout.addWidget(self._row_scroll)
         input_layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -587,8 +601,20 @@ class DialogTagFilterContent(QWidget):
         self._row_scroll.verticalScrollBar().setValue(0)
 
     def _handle_tag_clicked(self, tag_id: str, additive: bool) -> None:
-        self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
+        if self._allocation_mode:
+            if additive:
+                self._selected_tag_ids = {tag_id}
+            elif tag_id in self._selected_tag_ids:
+                self._selected_tag_ids.remove(tag_id)
+            else:
+                self._selected_tag_ids.add(tag_id)
+        else:
+            self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
         self._chip_flow.set_selected_tag_ids(self._selected_tag_ids)
+
+    def _handle_blank_clicked(self, additive: bool) -> None:
+        if self._allocation_mode and additive:
+            self.clear_selection()
 
 
 class JoyReadDialogPanel(QFrame):
@@ -705,15 +731,25 @@ class JoyReadDialogPanel(QFrame):
         buttons.append((confirm_text, self.accepted.emit))
         self._set_buttons(tuple(buttons))
 
-    def set_tag_filter_content(self, title: str, content: DialogTagFilterContent) -> None:
+    def set_tag_filter_content(
+        self,
+        title: str,
+        content: DialogTagFilterContent,
+        *,
+        include_cancel: bool = False,
+    ) -> None:
         self._set_title(title)
         self._set_content_widget(content)
-        self._set_buttons(
+        buttons: list[tuple[str, Callable[[], None]]] = []
+        if include_cancel:
+            buttons.append(("Cancel", self.rejected.emit))
+        buttons.extend(
             (
                 ("Reset", content.clear_selection),
                 ("Confirm", self.accepted.emit),
             )
         )
+        self._set_buttons(tuple(buttons))
 
     def refresh_size(self) -> None:
         self._refresh_size()
@@ -1005,6 +1041,26 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject = None
         self._on_skip = None
         self._panel.set_tag_filter_content(title, content)
+        self._show_centered()
+
+    def show_tag_allocation(
+        self,
+        title: str,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+    ) -> None:
+        content = DialogTagFilterContent(
+            tags,
+            selected_tag_ids,
+            allocation_mode=True,
+            empty_hint="No tags yet. Add or edit tags in Settings > Tags.",
+        )
+        self._before_accept = None
+        self._on_accept = lambda: on_confirm(content.selected_tag_ids)
+        self._on_reject = None
+        self._on_skip = None
+        self._panel.set_tag_filter_content(title, content, include_cancel=True)
         self._show_centered()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:

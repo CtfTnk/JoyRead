@@ -82,6 +82,11 @@ class _FakeTagRepository:
     def unlink_book(self, tag_id: str, book_id: str) -> None:
         self.linked.discard((tag_id, book_id))
 
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        self.linked = {(tag, book) for tag, book in self.linked if book != book_id}
+        self.linked.update((tag_id, book_id) for tag_id in normalized_ids)
+
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         return [tag for tag, book in self.linked if book == book_id]
 
@@ -186,4 +191,20 @@ def test_tag_service_lists_tag_ids_for_books() -> None:
         "book-1": (action.tag_id, comedy.tag_id),
         "book-2": (comedy.tag_id,),
         "book-3": (),
+    }
+
+
+def test_tag_service_replaces_book_tags() -> None:
+    repo = _FakeTagRepository()
+    service = TagService(repo)
+    action = service.create("Action")
+    comedy = service.create("Comedy")
+    drama = service.create("Drama")
+    service.link_book(action.tag_id, "book-1")
+    service.link_book(comedy.tag_id, "book-1")
+
+    service.set_book_tag_ids("book-1", (drama.tag_id, drama.tag_id, action.tag_id))
+
+    assert service.list_tag_ids_for_books(("book-1",)) == {
+        "book-1": (action.tag_id, drama.tag_id),
     }

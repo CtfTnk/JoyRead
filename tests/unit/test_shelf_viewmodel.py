@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+from joyread.core.models.tag import Tag
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
@@ -24,9 +25,20 @@ def make_viewmodel() -> ShelfViewModel:
 class _FakeShelfTagService:
     def __init__(self, links: dict[str, tuple[str, ...]]) -> None:
         self._links = links
+        tag_ids = sorted({tag_id for tag_ids in links.values() for tag_id in tag_ids})
+        self._tags = [Tag(tag_id, tag_id.removeprefix("tag-").title()) for tag_id in tag_ids]
+
+    def list_tags(self) -> list[Tag]:
+        return sorted(self._tags, key=lambda tag: tag.name_normalized)
 
     def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
         return {book_id: self._links.get(book_id, ()) for book_id in book_ids}
+
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        self._links[book_id] = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        known_ids = {tag.tag_id for tag in self._tags}
+        missing_ids = [tag_id for tag_id in self._links[book_id] if tag_id not in known_ids]
+        self._tags.extend(Tag(tag_id, tag_id.removeprefix("tag-").title()) for tag_id in missing_ids)
 
 
 def make_viewmodel_with_tag_links(links: dict[str, tuple[str, ...]]) -> ShelfViewModel:
@@ -112,6 +124,61 @@ def test_tag_filter_composes_with_hidden_shelf() -> None:
     vm.set_tag_filter_ids(("tag-action",))
 
     assert {book.uuid for book in vm.visible_books} == {"mock-book-03"}
+
+
+def test_tags_for_book_returns_available_tags_in_tag_sort_order() -> None:
+    vm = make_viewmodel_with_tag_links(
+        {
+            "mock-book-01": ("tag-comedy", "tag-action"),
+        }
+    )
+    vm.load_books()
+
+    assert [tag.name for tag in vm.available_tags] == ["Action", "Comedy"]
+    assert [tag.name for tag in vm.tags_for_book("mock-book-01")] == ["Action", "Comedy"]
+    assert vm.tag_ids_for_book("mock-book-01") == ("tag-comedy", "tag-action")
+
+
+def test_set_book_tag_ids_updates_visible_detail_tags() -> None:
+    vm = make_viewmodel_with_tag_links({"mock-book-01": ("tag-action",)})
+    vm.load_books()
+
+    vm.set_book_tag_ids("mock-book-01", ("tag-comedy", "tag-action", "tag-comedy"))
+
+    assert vm.tag_ids_for_book("mock-book-01") == ("tag-comedy", "tag-action")
+    assert [tag.name for tag in vm.tags_for_book("mock-book-01")] == ["Action", "Comedy"]
+
+
+def test_set_book_tag_ids_composes_with_active_filter_and_hides_detail() -> None:
+    vm = make_viewmodel_with_tag_links({"mock-book-01": ("tag-action",)})
+    vm.load_books()
+    vm.show_detail("mock-book-01")
+    vm.set_tag_filter_ids(("tag-action",))
+
+    vm.set_book_tag_ids("mock-book-01", ())
+
+    assert "mock-book-01" not in {book.uuid for book in vm.visible_books}
+    assert vm.detail_book_uuid is None
+
+
+def test_set_book_tag_ids_failure_is_logged_and_emitted() -> None:
+    class FailingTagService(_FakeShelfTagService):
+        def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+            raise RuntimeError("tag write failed")
+
+    service = FailingTagService({"mock-book-01": ("tag-action",)})
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        tag_service=service,  # type: ignore[arg-type]
+    )
+    emitted: list[str] = []
+    vm.book_tags_failed.connect(emitted.append)
+    vm.load_books()
+
+    vm.set_book_tag_ids("mock-book-01", ("tag-comedy",))
+
+    assert emitted == ["tag write failed"]
+    assert vm.tag_ids_for_book("mock-book-01") == ("tag-action",)
 
 
 def test_tag_filter_is_not_persisted_in_shelf_preferences(tmp_path: Path) -> None:

@@ -174,6 +174,29 @@ class SqliteTagRepository(TagRepository):
             DatabasePriority.NORMAL,
         )
 
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+
+        def write(connection: sqlite3.Connection) -> None:
+            now = _now()
+            connection.execute("BEGIN")
+            try:
+                connection.execute("DELETE FROM book_tags WHERE book_id = ?", (book_id,))
+                connection.executemany(
+                    """
+                    INSERT INTO book_tags(tag_id, book_id, created_at)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(tag_id, book_id) DO NOTHING
+                    """,
+                    ((tag_id, book_id, now) for tag_id in normalized_ids),
+                )
+            except Exception:
+                connection.execute("ROLLBACK")
+                raise
+            connection.execute("COMMIT")
+
+        self._database.execute(write, DatabasePriority.NORMAL)
+
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         return self._database.execute(
             lambda connection: [

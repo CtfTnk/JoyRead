@@ -114,6 +114,8 @@ class MainWindow(QMainWindow):
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
         self.shelf_view.open_file_requested.connect(self._select_reader_file)
         self.shelf_view.tag_filter_requested.connect(self._show_tag_filter_dialog)
+        self.shelf_view.detail_tag_filter_requested.connect(self._activate_detail_tag_filter)
+        self.shelf_view.detail_tag_allocation_requested.connect(self._show_book_tag_allocation_dialog)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
@@ -152,6 +154,9 @@ class MainWindow(QMainWindow):
         )
         context.shelf_viewmodel.book_metadata_failed.connect(
             lambda message: self.dialog_overlay.show_info("Book Detail", message)
+        )
+        context.shelf_viewmodel.book_tags_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Book Tags", message)
         )
         context.shelf_viewmodel.collection_failed.connect(
             lambda message: self.dialog_overlay.show_info("Collection", message)
@@ -882,6 +887,38 @@ class MainWindow(QMainWindow):
             tags,
             self._context.shelf_viewmodel.tag_filter_ids,
             apply_filter,
+        )
+
+    def _activate_detail_tag_filter(self, book_uuid: str, tag_id: str) -> None:
+        book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+        tag = next((tag for tag in self._context.shelf_viewmodel.available_tags if tag.tag_id == tag_id), None)
+        if book is None or tag is None:
+            logger.warning("Detail tag filter request ignored book=%s tag=%s", book_uuid, tag_id)
+            return
+        target_shelf = ShelfKey.HIDDEN.value if book.is_hidden else ShelfKey.ALL.value
+        self._context.shelf_viewmodel.hide_detail()
+        self.activate_tag_filter((tag,), target_shelf=target_shelf)
+
+    def _show_book_tag_allocation_dialog(self, book_uuid: str) -> None:
+        book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+        if book is None:
+            self.dialog_overlay.show_info("Book Tags", "The selected book is no longer available.")
+            return
+        try:
+            tags = self._context.tag_service.list_tags()
+        except Exception as exc:  # pragma: no cover - repository-specific failure path.
+            logger.exception("Opening book tag allocation failed: %s", exc)
+            self.dialog_overlay.show_info("Book Tags", "Could not load tags.")
+            return
+
+        def assign_tags(tag_ids: tuple[str, ...]) -> None:
+            self._context.shelf_viewmodel.set_book_tag_ids(book_uuid, tag_ids)
+
+        self.dialog_overlay.show_tag_allocation(
+            "Assign Tags",
+            tags,
+            self._context.shelf_viewmodel.tag_ids_for_book(book_uuid),
+            assign_tags,
         )
 
     def _collection_by_uuid(self, collection_uuid: str) -> Collection | None:

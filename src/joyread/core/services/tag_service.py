@@ -69,3 +69,6 @@ class TagService:
 
     def unlink_book(self, tag_id: str, book_id: str) -> None:
         self._repository.unlink_book(tag_id, book_id)
+
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        self._repository.set_book_tag_ids(book_id, tag_ids)

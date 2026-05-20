@@ -1133,41 +1133,58 @@ QWidget#BookDetailNameAuthor,
 QWidget#BookDetailAttributes,
 QWidget#BookDetailControlPanel,
 QWidget#BookDetailControlLeftSide,
-QWidget#BookDetailThumbnails {
+QWidget#BookDetailThumbnails,
+QScrollArea#BookDetailTagScrollArea,
+QWidget#BookDetailTagViewport,
+QWidget#BookDetailTagListHost {
     background: transparent;
     border: none;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar:vertical {
+QFrame#BookDetailTagBox {
+    background: __DETAIL_TAG_BOX_BACKGROUND__;
+    border: __DETAIL_TAG_BOX_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __DETAIL_TAG_BOX_RADIUS__;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
     border-radius: __SHELF_SCROLLBAR_RADIUS__;
     min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover {
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#BookDetailTagScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
 }
 
 QScrollArea#BookDetailScrollArea QScrollBar::add-line:vertical,
-QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::add-line:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
     border: none;
     height: 0;
 }
 
 QScrollArea#BookDetailScrollArea QScrollBar::add-page:vertical,
-QScrollArea#BookDetailScrollArea QScrollBar::sub-page:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::add-page:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
