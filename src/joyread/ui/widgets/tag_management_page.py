@@ -23,9 +23,9 @@ from joyread.ui.viewmodels.tag_management_viewmodel import (
     TagOperationResult,
 )
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
-from joyread.ui.widgets.flow_layout import FlowLayout
 from joyread.ui.widgets.settings_page import SettingsPushButton
 from joyread.ui.widgets.tag_chip import TagChipWidget
+from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
 
 class _TagInputLineEdit(QLineEdit):
@@ -83,16 +83,10 @@ class TagManagementPage(QWidget):
         self._scroll_area.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         manager_layout.addWidget(self._scroll_area, stretch=1)
 
-        self._chip_host = QWidget()
-        self._chip_host.setObjectName("TagListHost")
-        self._chip_host.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._flow_layout = FlowLayout(
-            self._chip_host,
-            margin=0,
-            horizontal_spacing=Theme.tag_chip_gap,
-            vertical_spacing=Theme.tag_chip_gap,
-        )
-        self._scroll_area.setWidget(self._chip_host)
+        self._chip_flow = TagChipFlowWidget(object_name="TagListHost")
+        self._chip_flow.tag_clicked.connect(self._handle_chip_clicked)
+        self._chip_flow.add_clicked.connect(self._viewmodel.begin_create)
+        self._scroll_area.setWidget(self._chip_flow)
         self._scroll_handle = AutoHideScrollHandle(self._scroll_area, parent=self)
 
         # Control bar — QStackedLayout with [0] button row, [1] input row.
@@ -151,12 +145,7 @@ class TagManagementPage(QWidget):
 
     @property
     def chip_widgets(self) -> tuple[TagChipWidget, ...]:
-        return tuple(
-            self._flow_layout.itemAt(index).widget()  # type: ignore[union-attr]
-            for index in range(self._flow_layout.count())
-            if self._flow_layout.itemAt(index) is not None
-            and isinstance(self._flow_layout.itemAt(index).widget(), TagChipWidget)
-        )
+        return self._chip_flow.chip_widgets
 
     @property
     def rename_button(self) -> SettingsPushButton:
@@ -184,27 +173,11 @@ class TagManagementPage(QWidget):
     def _render(self) -> None:
         if self._disposed:
             return
-        # Rebuild the chip flow from the current VM state. The chip count
-        # is small (tens at most) so a full rebuild is cheap and avoids
-        # complicating the layout's identity tracking.
-        while self._flow_layout.count():
-            item = self._flow_layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
-        for tag in self._viewmodel.tags:
-            chip = TagChipWidget(tag.tag_id, tag.name)
-            chip.set_selected(tag.tag_id in self._viewmodel.selected_tag_ids)
-            chip.chip_clicked.connect(self._handle_chip_clicked)
-            self._flow_layout.addWidget(chip)
-        add_chip = TagChipWidget.as_add_chip()
-        add_chip.add_clicked.connect(self._viewmodel.begin_create)
-        self._flow_layout.addWidget(add_chip)
-        # FlowLayout's height depends on width — kick a re-layout so the
-        # scroll area sees the latest measurement.
-        self._chip_host.adjustSize()
+        self._chip_flow.set_tags(
+            self._viewmodel.tags,
+            self._viewmodel.selected_tag_ids,
+            include_add_chip=True,
+        )
 
         in_input_mode = self._viewmodel.input_mode != TagInputMode.BUTTONS
         if in_input_mode:

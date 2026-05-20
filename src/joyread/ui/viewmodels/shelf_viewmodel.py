@@ -14,6 +14,7 @@ from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
 from joyread.core.services.cache_service import BoundedByteCache
 from joyread.core.services.library_service import LibraryService
+from joyread.core.services.tag_service import TagService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
@@ -65,6 +66,7 @@ class ShelfViewModel:
         settings: AppSettings | None = None,
         settings_store: SettingsStore | None = None,
         detail_thumbnail_cache_mb: int | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
@@ -92,12 +94,15 @@ class ShelfViewModel:
         self._library_service = library_service
         self._thumbnail_service = thumbnail_service
         self._task_service = task_service
+        self._tag_service = tag_service
         self._cover_size = cover_size
         self._settings_store = settings_store
         self._detail_batch_size = 14
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.languages: list[Language] = []
+        self._book_tag_ids_by_book: dict[str, tuple[str, ...]] = {}
+        self._tag_filter_ids: tuple[str, ...] = ()
         self.search_query = ""
         self.sort_field = _coerce_sort_field(settings.shelf_sort_field if settings is not None else None)
         self.sort_ascending = bool(settings.shelf_sort_ascending) if settings is not None else False
@@ -138,6 +143,14 @@ class ShelfViewModel:
         return dict(self._cover_paths)
 
     @property
+    def tag_filter_ids(self) -> tuple[str, ...]:
+        return self._tag_filter_ids
+
+    @property
+    def tag_filter_active(self) -> bool:
+        return bool(self._tag_filter_ids)
+
+    @property
     def page_title(self) -> str:
         if self.current_shelf == ShelfKey.ALL:
             return "All"
@@ -158,6 +171,7 @@ class ShelfViewModel:
         books = [book for book in self.books if self._book_in_current_shelf(book)]
         books = [book for book in books if book.matches_query(self.search_query)]
         books = [book for book in books if self._book_matches_filter(book)]
+        books = [book for book in books if self._book_matches_tag_filter(book)]
         if self.current_shelf == ShelfKey.RECENT:
             return sorted(
                 books,
@@ -189,12 +203,14 @@ class ShelfViewModel:
             self.books = self._library_service.list_books()
             self.collections = self._library_service.list_collections()
             self.languages = self._library_service.list_languages()
+            self._refresh_book_tag_index()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
             logger.warning("Shelf load_books failed: %s", exc, exc_info=True)
             self.error_message = str(exc)
             self.books = []
             self.collections = []
             self.languages = []
+            self._book_tag_ids_by_book = {}
         finally:
             self.is_loading = False
             logger.debug(
@@ -210,12 +226,16 @@ class ShelfViewModel:
         self,
         library_service: LibraryService,
         thumbnail_service: ThumbnailService | None = None,
+        tag_service: TagService | None = None,
     ) -> None:
         self._library_service = library_service
         if thumbnail_service is not None:
             self._thumbnail_service = thumbnail_service
+        if tag_service is not None:
+            self._tag_service = tag_service
         self._cover_paths.clear()
         self._pending_cover_ids.clear()
+        self._refresh_book_tag_index()
         self._set_detail_book_uuid(None)
 
     def set_show_hidden_collection(self, enabled: bool) -> None:
@@ -277,6 +297,18 @@ class ShelfViewModel:
         self.clear_selection(emit_state=False)
         self._save_shelf_preferences()
         self._emit_state()
+
+    def set_tag_filter_ids(self, tag_ids: Iterable[str]) -> None:
+        normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        if normalized_ids == self._tag_filter_ids:
+            return
+        self._tag_filter_ids = normalized_ids
+        self.clear_selection(emit_state=False)
+        self._refresh_book_tag_index()
+        self._emit_state()
+
+    def clear_tag_filter(self) -> None:
+        self.set_tag_filter_ids(())
 
     def set_view_mode(self, mode: str) -> None:
         normalized_mode = ViewMode(mode)
@@ -917,6 +949,23 @@ class ShelfViewModel:
         if self.file_filter == FileFilter.ALL:
             return True
         return book.file_format.upper() == self.file_filter.value.upper()
+
+    def _book_matches_tag_filter(self, book: Book) -> bool:
+        if not self._tag_filter_ids:
+            return True
+        book_tag_ids = set(self._book_tag_ids_by_book.get(book.uuid, ()))
+        return set(self._tag_filter_ids).issubset(book_tag_ids)
+
+    def _refresh_book_tag_index(self) -> None:
+        book_ids = tuple(book.uuid for book in self.books)
+        if self._tag_service is None or not book_ids:
+            self._book_tag_ids_by_book = {book_id: () for book_id in book_ids}
+            return
+        try:
+            self._book_tag_ids_by_book = self._tag_service.list_tag_ids_for_books(book_ids)
+        except Exception as exc:  # pragma: no cover - repository-specific failure path.
+            logger.warning("Shelf tag lookup failed: %s", exc, exc_info=True)
+            self._book_tag_ids_by_book = {book_id: () for book_id in book_ids}
 
     def _sort_key(self, book: Book) -> tuple[object, str]:
         if self.current_shelf == ShelfKey.RECENT:

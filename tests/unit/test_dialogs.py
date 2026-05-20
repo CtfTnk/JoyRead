@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWid
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.tag import Tag
 from joyread.core.services.import_service import ImportPreflightResult
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -17,6 +18,7 @@ from joyread.ui.widgets.dialogs import (
     DialogInputContent,
     DialogInputFieldWithHeader,
     DialogPasswordContent,
+    DialogTagFilterContent,
     DialogTextButton,
     JoyReadDialogOverlay,
     JoyReadDialogPanel,
@@ -74,8 +76,17 @@ def test_dialog_panel_matches_figma_frame_and_button_geometry(qtbot) -> None:
     assert {(button.width(), button.height()) for button in buttons} == {
         (Theme.dialog_button_width, Theme.dialog_button_height)
     }
+    for button in buttons:
+        effect = button.graphicsEffect()
+        assert effect is not None
+        assert effect.offset().x() == 0
+        assert effect.offset().y() == Theme.dialog_button_shadow_offset
     assert buttons[1].x() > buttons[0].x()
     assert buttons[0].y() == buttons[1].y()
+    button_group_left = min(button.x() for button in buttons)
+    button_group_right = max(button.geometry().right() for button in buttons)
+    button_group_center = (button_group_left + button_group_right) // 2
+    assert abs(button_group_center - option_area.rect().center().x()) <= 1
 
 
 def test_dialog_content_grows_to_max_viewport_then_scrolls(qtbot) -> None:
@@ -292,6 +303,65 @@ def test_dialog_openings_reset_collection_scroll_state(qtbot) -> None:
     assert inner_scroll is not None
     assert inner_scroll.verticalScrollBar().value() == 0
     assert overlay.panel.height() < tall_panel_height
+
+
+def test_tag_filter_dialog_allows_empty_tag_panel_and_confirm_off_state(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_filter("Tag Filter", [], (), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    buttons = overlay.panel.findChildren(DialogTextButton)
+    scroll_panel = overlay.panel.findChild(QWidget, "DialogTagFilterScrollPanel")
+
+    assert content is not None
+    assert scroll_panel is not None
+    assert scroll_panel.width() == Theme.dialog_collection_scroll_width
+    assert scroll_panel.height() == Theme.dialog_tag_filter_panel_height
+    assert [button.text for button in buttons] == ["Reset", "Confirm"]
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == [()]
+
+
+def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_filter("Tag Filter", tags, ("tag-action",), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+
+    assert content is not None
+    assert [chip.tag_id for chip in chips if chip.selected] == ["tag-action"]
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert overlay.isVisible()
+    assert content.selected_tag_ids == ()
+    assert all(not chip.selected for chip in chips)
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert confirmed == [()]
 
 
 def test_dialog_overlay_centers_panel_and_tracks_resize(qtbot) -> None:

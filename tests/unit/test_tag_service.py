@@ -85,6 +85,16 @@ class _FakeTagRepository:
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         return [tag for tag, book in self.linked if book == book_id]
 
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        def ordered_tags_for(book_id: str) -> tuple[str, ...]:
+            tag_ids = [tag for tag, linked_book_id in self.linked if linked_book_id == book_id]
+            return tuple(sorted(tag_ids, key=lambda tag_id: self._tags[tag_id].name_normalized))
+
+        return {
+            book_id: ordered_tags_for(book_id)
+            for book_id in book_ids
+        }
+
 
 def test_normalize_tag_name_caps_first_character() -> None:
     assert normalize_tag_name("  comedy  ") == "Comedy"
@@ -161,3 +171,19 @@ def test_tag_service_delete_returns_linked_count() -> None:
     service.link_book(tag.tag_id, "book-2")
     assert service.delete(tag.tag_id) == 2
     assert service.list_tags() == []
+
+
+def test_tag_service_lists_tag_ids_for_books() -> None:
+    repo = _FakeTagRepository()
+    service = TagService(repo)
+    action = service.create("Action")
+    comedy = service.create("Comedy")
+    service.link_book(action.tag_id, "book-1")
+    service.link_book(comedy.tag_id, "book-1")
+    service.link_book(comedy.tag_id, "book-2")
+
+    assert service.list_tag_ids_for_books(("book-1", "book-2", "book-3")) == {
+        "book-1": (action.tag_id, comedy.tag_id),
+        "book-2": (comedy.tag_id,),
+        "book-3": (),
+    }

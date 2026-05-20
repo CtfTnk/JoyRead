@@ -29,6 +29,7 @@ class ShelfView(QWidget):
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
+    tag_filter_requested = QtSignal()
     # ``read_book_*`` decisions are emitted by ShelfViewModel directly
     # (``book_open_requested`` / ``book_open_at_requested``). MainWindow
     # subscribes to the VM so every open is gated by the VM's
@@ -69,6 +70,7 @@ class ShelfView(QWidget):
         self.toolbar = TopToolbarWidget(resources)
         self.toolbar.search_changed.connect(self._viewmodel.set_search_query)
         self.toolbar.filter_changed.connect(self._viewmodel.set_filter)
+        self.toolbar.tag_filter_requested.connect(self.tag_filter_requested.emit)
         layout.addWidget(self.toolbar)
 
         self.stack = QStackedWidget()
@@ -123,6 +125,7 @@ class ShelfView(QWidget):
     def render(self) -> None:
         self.toolbar.set_title(self._viewmodel.page_title)
         self.toolbar.set_filter(self._viewmodel.file_filter.value)
+        self.toolbar.set_tag_filter_active(self._viewmodel.tag_filter_active)
 
         if self._viewmodel.is_loading:
             self.stack.setCurrentWidget(self.loading_state)
@@ -210,7 +213,11 @@ class ShelfView(QWidget):
         return None
 
     def _update_empty_state_copy(self) -> None:
-        if self._viewmodel.search_query or self._viewmodel.file_filter.value != "ALL":
+        if (
+            self._viewmodel.search_query
+            or self._viewmodel.file_filter.value != "ALL"
+            or self._viewmodel.tag_filter_active
+        ):
             self.empty_state.set_text("No matching books", "Try adjusting your search or filter.")
             return
         if self._viewmodel.current_shelf == ShelfKey.ALL.value:

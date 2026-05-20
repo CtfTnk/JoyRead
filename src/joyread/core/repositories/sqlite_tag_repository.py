@@ -192,6 +192,30 @@ class SqliteTagRepository(TagRepository):
             DatabasePriority.HIGH,
         )
 
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        normalized_ids = tuple(dict.fromkeys(book_id for book_id in book_ids if book_id))
+        if not normalized_ids:
+            return {}
+
+        def read(connection: sqlite3.Connection) -> dict[str, tuple[str, ...]]:
+            placeholders = ", ".join("?" for _book_id in normalized_ids)
+            result: dict[str, list[str]] = {book_id: [] for book_id in normalized_ids}
+            rows = connection.execute(
+                f"""
+                SELECT book_tags.book_id, book_tags.tag_id
+                FROM book_tags
+                JOIN tags ON tags.tag_id = book_tags.tag_id
+                WHERE book_tags.book_id IN ({placeholders})
+                ORDER BY book_tags.book_id ASC, tags.name_normalized COLLATE NOCASE ASC
+                """,
+                normalized_ids,
+            ).fetchall()
+            for row in rows:
+                result.setdefault(row["book_id"], []).append(row["tag_id"])
+            return {book_id: tuple(tag_ids) for book_id, tag_ids in result.items()}
+
+        return self._database.execute(read, DatabasePriority.HIGH)
+
 
 def _list_tags(connection: sqlite3.Connection) -> list[Tag]:
     rows = connection.execute(

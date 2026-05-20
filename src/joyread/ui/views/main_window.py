@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
@@ -10,6 +11,7 @@ from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
 from joyread.core.models.collection import Collection
@@ -111,6 +113,7 @@ class MainWindow(QMainWindow):
         self.shelf_view.add_to_collection_requested.connect(self._show_add_to_collection_dialog)
         self.shelf_view.export_books_requested.connect(self._select_export_folder)
         self.shelf_view.open_file_requested.connect(self._select_reader_file)
+        self.shelf_view.tag_filter_requested.connect(self._show_tag_filter_dialog)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
@@ -204,6 +207,14 @@ class MainWindow(QMainWindow):
 
     def open_reader_for_book_at(self, book_uuid: str, page_index: int) -> None:
         self.open_reader_for_book(book_uuid, page_index)
+
+    def activate_tag_filter(self, tags: Iterable[Tag], target_shelf: str | None = None) -> None:
+        self._hide_settings_page()
+        if target_shelf is not None:
+            self._context.shelf_viewmodel.set_current_shelf(target_shelf)
+        tag_ids = tuple(dict.fromkeys(tag.tag_id for tag in tags if tag.tag_id))
+        self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
+        self.shelf_view.render()
 
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
@@ -849,6 +860,28 @@ class MainWindow(QMainWindow):
             on_confirm=add_to_collection,
             confirm_text="Add",
             cancel_text="Cancel",
+        )
+
+    def _show_tag_filter_dialog(self) -> None:
+        try:
+            tags = self._context.tag_service.list_tags()
+        except Exception as exc:  # pragma: no cover - repository-specific failure path.
+            logger.exception("Opening tag filter failed: %s", exc)
+            self.dialog_overlay.show_info("Tag Filter", "Could not load tags.")
+            return
+
+        def apply_filter(tag_ids: tuple[str, ...]) -> None:
+            try:
+                self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
+            except Exception as exc:  # pragma: no cover - defensive UI boundary.
+                logger.exception("Applying tag filter failed: %s", exc)
+                self.dialog_overlay.show_info("Tag Filter", "Could not apply tag filter.")
+
+        self.dialog_overlay.show_tag_filter(
+            "Tag Filter",
+            tags,
+            self._context.shelf_viewmodel.tag_filter_ids,
+            apply_filter,
         )
 
     def _collection_by_uuid(self, collection_uuid: str) -> Collection | None:

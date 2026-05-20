@@ -207,6 +207,41 @@ def test_link_and_list_tag_ids_for_book(tmp_path: Path) -> None:
     assert ids == [action.tag_id, comedy.tag_id]
 
 
+def test_bulk_list_tag_ids_for_books_includes_empty_books(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    try:
+        repo = SqliteTagRepository(database)
+        action = repo.create("Action")
+        comedy = repo.create("Comedy")
+        _insert_book(database, "book-1")
+        _insert_book(database, "book-2")
+        _insert_book(database, "book-3")
+        repo.link_book(comedy.tag_id, "book-1")
+        repo.link_book(action.tag_id, "book-1")
+        repo.link_book(comedy.tag_id, "book-2")
+
+        ids = repo.list_tag_ids_for_books(("book-1", "book-2", "book-3"))
+    finally:
+        database.close()
+
+    assert ids == {
+        "book-1": (action.tag_id, comedy.tag_id),
+        "book-2": (comedy.tag_id,),
+        "book-3": (),
+    }
+
+
+def test_bulk_list_tag_ids_for_books_empty_input_returns_empty(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    try:
+        repo = SqliteTagRepository(database)
+        ids = repo.list_tag_ids_for_books(())
+    finally:
+        database.close()
+
+    assert ids == {}
+
+
 def test_unlink_removes_only_one_join(tmp_path: Path) -> None:
     database = _database(tmp_path)
     try:

@@ -87,6 +87,9 @@ class _FakeRepository:
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         return []
 
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        return {book_id: () for book_id in book_ids}
+
 
 def _viewmodel_with_tags(*names: str) -> TagManagementViewModel:
     repo = _FakeRepository()

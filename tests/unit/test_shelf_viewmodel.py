@@ -21,6 +21,21 @@ def make_viewmodel() -> ShelfViewModel:
     return ShelfViewModel(LibraryService(InMemoryBookRepository()))
 
 
+class _FakeShelfTagService:
+    def __init__(self, links: dict[str, tuple[str, ...]]) -> None:
+        self._links = links
+
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        return {book_id: self._links.get(book_id, ()) for book_id in book_ids}
+
+
+def make_viewmodel_with_tag_links(links: dict[str, tuple[str, ...]]) -> ShelfViewModel:
+    return ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        tag_service=_FakeShelfTagService(links),  # type: ignore[arg-type]
+    )
+
+
 def test_load_books_populates_books_and_collections() -> None:
     vm = make_viewmodel()
 
@@ -52,6 +67,74 @@ def test_search_filter_and_sort_affect_visible_books() -> None:
     vm.set_sort(SortField.TITLE.value, ascending=True)
     titles = [book.title for book in vm.visible_books]
     assert titles == sorted(titles, key=str.lower)
+
+
+def test_tag_filter_requires_all_selected_tags() -> None:
+    vm = make_viewmodel_with_tag_links(
+        {
+            "mock-book-01": ("tag-action", "tag-comedy"),
+            "mock-book-03": ("tag-action",),
+            "mock-book-09": ("tag-comedy",),
+        }
+    )
+    vm.load_books()
+
+    vm.set_tag_filter_ids(("tag-action", "tag-comedy"))
+
+    assert vm.tag_filter_active is True
+    assert {book.uuid for book in vm.visible_books} == {"mock-book-01"}
+
+
+def test_tag_filter_composes_with_current_collection() -> None:
+    vm = make_viewmodel_with_tag_links(
+        {
+            "mock-book-01": ("tag-comedy",),
+            "mock-book-03": ("tag-action",),
+            "mock-book-09": ("tag-comedy",),
+            "mock-book-02": ("tag-comedy",),
+        }
+    )
+    vm.load_books()
+    vm.set_current_shelf(collection_shelf_key("collection-a"))
+
+    vm.set_tag_filter_ids(("tag-comedy",))
+
+    assert {book.uuid for book in vm.visible_books} == {"mock-book-01", "mock-book-09"}
+
+
+def test_tag_filter_composes_with_hidden_shelf() -> None:
+    vm = make_viewmodel_with_tag_links({"mock-book-03": ("tag-action",), "mock-book-04": ("tag-comedy",)})
+    vm.load_books()
+    vm.hide_books(["mock-book-03"])
+    vm.hide_books(["mock-book-04"])
+    vm.set_current_shelf(ShelfKey.HIDDEN.value)
+
+    vm.set_tag_filter_ids(("tag-action",))
+
+    assert {book.uuid for book in vm.visible_books} == {"mock-book-03"}
+
+
+def test_tag_filter_is_not_persisted_in_shelf_preferences(tmp_path: Path) -> None:
+    store = SettingsStore("JoyReadTest", "JoyRead", support_root=tmp_path / "support")
+    settings = store.load()
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        settings=settings,
+        settings_store=store,
+        tag_service=_FakeShelfTagService({"mock-book-01": ("tag-action",)}),  # type: ignore[arg-type]
+    )
+    vm.load_books()
+
+    vm.set_tag_filter_ids(("tag-action",))
+    fresh = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        settings=store.load(),
+        settings_store=store,
+        tag_service=_FakeShelfTagService({"mock-book-01": ("tag-action",)}),  # type: ignore[arg-type]
+    )
+
+    assert vm.tag_filter_active is True
+    assert fresh.tag_filter_active is False
 
 
 def test_shelf_filters_recent_favourites_and_collection() -> None:

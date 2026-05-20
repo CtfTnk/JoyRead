@@ -41,6 +41,9 @@ class TagService:
     def list_tags(self) -> list[Tag]:
         return self._repository.list_tags()
 
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        return self._repository.list_tag_ids_for_books(book_ids)
+
     def create(self, raw_name: str) -> Tag:
         # ``normalize_tag_name`` raises ``ValueError`` on empty / overlong.
         return self._repository.create(raw_name)

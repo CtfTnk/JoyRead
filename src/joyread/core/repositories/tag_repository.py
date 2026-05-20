@@ -55,3 +55,6 @@ class TagRepository(Protocol):
 
     def list_tag_ids_for_book(self, book_id: str) -> list[str]:
         ...
+
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        ...

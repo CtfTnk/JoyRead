@@ -49,7 +49,7 @@ class DetailReadButton(QFrame):
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(4)
-        shadow.setOffset(0, 0)
+        shadow.setOffset(0, 1)
         shadow.setColor(QColor(0, 0, 0, 64))
         self.setGraphicsEffect(shadow)
 

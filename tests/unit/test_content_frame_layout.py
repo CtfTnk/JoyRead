@@ -510,6 +510,10 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     assert progress.width() == Theme.detail_progress_width
     assert read_button is not None
     assert read_button.size() == QSize(Theme.detail_read_button_width, Theme.detail_button_size)
+    read_shadow = read_button.graphicsEffect()
+    assert read_shadow is not None
+    assert read_shadow.offset().x() == 0
+    assert read_shadow.offset().y() == 1
     read_margins = read_button.layout().contentsMargins()
     assert (read_margins.left(), read_margins.top(), read_margins.right(), read_margins.bottom()) == (
         Theme.detail_button_layout_margin,

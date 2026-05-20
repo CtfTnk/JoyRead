@@ -19,9 +19,12 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.collection import Collection
+from joyread.core.models.tag import Tag
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.selection import toggle_selection
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
 
 class DialogTextButton(QFrame):
@@ -41,7 +44,7 @@ class DialogTextButton(QFrame):
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(Theme.dialog_button_shadow_blur)
-        shadow.setOffset(Theme.dialog_button_shadow_offset, Theme.dialog_button_shadow_offset)
+        shadow.setOffset(0, Theme.dialog_button_shadow_offset)
         shadow.setColor(QColor(*Theme.color_shadow_rgba))
         self.setGraphicsEffect(shadow)
 
@@ -500,6 +503,94 @@ class DialogCollectionSelectContent(QWidget):
             row.set_selected(row_uuid == collection_uuid)
 
 
+class DialogTagFilterContent(QWidget):
+    """Figma tag-filter content with a fixed 260px tag list panel."""
+
+    def __init__(
+        self,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...] = (),
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogTagFilterContent")
+        self._tags = tuple(tags)
+        self._selected_tag_ids = set(selected_tag_ids)
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+        )
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        input_area = QWidget()
+        input_area.setObjectName("DialogInputArea")
+        input_layout = QVBoxLayout(input_area)
+        input_layout.setContentsMargins(
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+        )
+        input_layout.setSpacing(0)
+        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        panel = QFrame()
+        panel.setObjectName("DialogTagFilterScrollPanel")
+        panel.setFixedSize(Theme.dialog_collection_scroll_width, Theme.dialog_tag_filter_panel_height)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+        )
+        panel_layout.setSpacing(0)
+
+        self._row_scroll = QScrollArea()
+        self._row_scroll.setObjectName("DialogTagFilterInnerScrollArea")
+        self._row_scroll.setWidgetResizable(True)
+        self._row_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._row_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._row_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._row_scroll.viewport().setObjectName("DialogTagFilterInnerViewport")
+        self._row_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        scroll_height = max(0, Theme.dialog_tag_filter_panel_height - (Theme.dialog_collection_scroll_layout_margin * 2))
+        self._chip_flow = TagChipFlowWidget(object_name="DialogTagFilterListHost")
+        self._chip_flow.setMinimumHeight(scroll_height)
+        self._chip_flow.tag_clicked.connect(self._handle_tag_clicked)
+        self._chip_flow.set_tags(self._tags, self._selected_tag_ids, include_add_chip=False)
+        self._row_scroll.setWidget(self._chip_flow)
+        self._row_scroll.setFixedHeight(scroll_height)
+        panel_layout.addWidget(self._row_scroll)
+        input_layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(input_area)
+        self.setFixedHeight(Theme.dialog_content_max_height)
+
+    @property
+    def selected_tag_ids(self) -> tuple[str, ...]:
+        return tuple(tag.tag_id for tag in self._tags if tag.tag_id in self._selected_tag_ids)
+
+    def clear_selection(self) -> None:
+        self._selected_tag_ids = set()
+        self._chip_flow.clear_selection()
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+        self._row_scroll.verticalScrollBar().setValue(0)
+
+    def _handle_tag_clicked(self, tag_id: str, additive: bool) -> None:
+        self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
+        self._chip_flow.set_selected_tag_ids(self._selected_tag_ids)
+
+
 class JoyReadDialogPanel(QFrame):
     """Figma's 400px popup panel with dynamic content up to 215px."""
 
@@ -569,7 +660,7 @@ class JoyReadDialogPanel(QFrame):
         self._option_layout = QHBoxLayout(self._option_area)
         self._option_layout.setContentsMargins(0, 0, 0, 0)
         self._option_layout.setSpacing(Theme.dialog_option_gap)
-        self._option_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self._option_layout.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom)
         root_layout.addWidget(self._option_area)
 
     def sizeHint(self) -> QSize:
@@ -614,6 +705,16 @@ class JoyReadDialogPanel(QFrame):
         buttons.append((confirm_text, self.accepted.emit))
         self._set_buttons(tuple(buttons))
 
+    def set_tag_filter_content(self, title: str, content: DialogTagFilterContent) -> None:
+        self._set_title(title)
+        self._set_content_widget(content)
+        self._set_buttons(
+            (
+                ("Reset", content.clear_selection),
+                ("Confirm", self.accepted.emit),
+            )
+        )
+
     def refresh_size(self) -> None:
         self._refresh_size()
 
@@ -640,6 +741,7 @@ class JoyReadDialogPanel(QFrame):
             button = DialogTextButton(label, self)
             button.clicked.connect(callback)
             self._option_layout.addWidget(button)
+        self._option_layout.addStretch(1)
         self._refresh_size()
 
     def _set_content_widget(self, widget: QWidget) -> None:
@@ -888,6 +990,21 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject = None
         self._on_skip = None
         self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._show_centered()
+
+    def show_tag_filter(
+        self,
+        title: str,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+    ) -> None:
+        content = DialogTagFilterContent(tags, selected_tag_ids)
+        self._before_accept = None
+        self._on_accept = lambda: on_confirm(content.selected_tag_ids)
+        self._on_reject = None
+        self._on_skip = None
+        self._panel.set_tag_filter_content(title, content)
         self._show_centered()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:

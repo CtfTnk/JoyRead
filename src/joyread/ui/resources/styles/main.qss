@@ -521,6 +521,7 @@ QWidget#DialogMessageContent,
 QWidget#DialogInputContent,
 QWidget#DialogPasswordContent,
 QWidget#DialogCollectionSelectContent,
+QWidget#DialogTagFilterContent,
 QWidget#DialogInputArea {
     background: transparent;
     border: none;
@@ -530,7 +531,10 @@ QScrollArea#JoyReadDialogContentScrollArea,
 QWidget#JoyReadDialogContentViewport,
 QScrollArea#DialogCollectionInnerScrollArea,
 QWidget#DialogCollectionInnerViewport,
-QWidget#DialogCollectionRowContent {
+QWidget#DialogCollectionRowContent,
+QScrollArea#DialogTagFilterInnerScrollArea,
+QWidget#DialogTagFilterInnerViewport,
+QWidget#DialogTagFilterListHost {
     background: transparent;
     border: none;
 }
@@ -581,7 +585,8 @@ QLabel#DialogDetailPrompt {
     font-weight: 400;
 }
 
-QFrame#DialogCollectionScrollPanel {
+QFrame#DialogCollectionScrollPanel,
+QFrame#DialogTagFilterScrollPanel {
     background: __WINDOW_COLOR__;
     border: __DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
     border-radius: __DIALOG_COLLECTION_SCROLL_RADIUS__;
@@ -641,33 +646,40 @@ QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
     margin: __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 2px __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 0;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
     border-radius: __SHELF_SCROLLBAR_RADIUS__;
     min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-line:vertical,
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-line:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
     border: none;
     height: 0;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-page:vertical,
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-page:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
@@ -682,13 +694,16 @@ QFrame[class="SearchPanel"] {
 
 QFrame[class="FigmaDropdownButton"],
 QFrame[class="FigmaSearchBar"],
-QToolButton[class="FigmaSearchOuterButton"] {
+QToolButton[class="FigmaSearchOuterButton"],
+QFrame[class="FigmaTagFilterButton"] {
     background: __WINDOW_COLOR__;
     border: 1px solid __BUTTON_EDGE__;
     border-radius: __CONTROL_RADIUS__;
 }
 
-QToolButton[class="FigmaSearchOuterButton"]:hover {
+QToolButton[class="FigmaSearchOuterButton"]:hover,
+QFrame[class="FigmaTagFilterButton"]:hover,
+QFrame[class="FigmaTagFilterButton"][active="true"] {
     background: __SELECTED_COLOR__;
 }
 
@@ -725,6 +740,10 @@ QToolButton[class="FigmaSearchInnerButton"] {
 
 QToolButton[class="FigmaSearchInnerButton"]:hover {
     background: __SELECTED_COLOR__;
+}
+
+QLabel#TagFilterButtonIcon {
+    background: transparent;
 }
 
 QFrame#ToolbarSpacer {

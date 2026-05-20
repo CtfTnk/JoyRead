@@ -325,6 +325,11 @@ class Theme:
     dialog_collection_scroll_layout_margin = dialog_collection_scroll_visual_padding - dialog_collection_scroll_border_width
     dialog_collection_scrollbar_margin = dialog_collection_scroll_radius
     dialog_collection_item_gap = 2
+    dialog_tag_filter_panel_height = (
+        dialog_content_max_height
+        - (dialog_content_outer_padding * 2)
+        - (dialog_input_area_padding * 2)
+    )
     dialog_option_gap = 10
     dialog_button_width = 100
     dialog_button_height = 28
@@ -333,7 +338,7 @@ class Theme:
     dialog_button_layout_margin = dialog_button_visual_padding - dialog_button_border_width
     dialog_button_radius = 10
     dialog_button_shadow_blur = 4
-    dialog_button_shadow_offset = 0
+    dialog_button_shadow_offset = 1
     dialog_font_size = 12
     tooltip_radius = 2
     tooltip_padding = 4

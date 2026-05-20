@@ -124,7 +124,7 @@ class AppContext:
             tag_service=self.tag_service,
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
-        self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
+        self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
         self.settings_viewmodel.set_hidden_space_service(self.hidden_space_service)
         self.settings_viewmodel.set_storage_location(self.settings.storage_location)
         self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
@@ -177,7 +177,7 @@ class AppContext:
                 tag_service=self.tag_service,
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
-            self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service)
+            self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
             self.cache_service.apply_cache_budgets(
                 reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
             )
@@ -259,6 +259,7 @@ def create_app_context() -> AppContext:
         cover_size=(Theme.detail_cover_width, Theme.detail_cover_height),
         settings=settings,
         settings_store=settings_store,
+        tag_service=tag_service,
     )
     settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space_service)
     tag_management_viewmodel = TagManagementViewModel(tag_service)
