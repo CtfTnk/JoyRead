@@ -417,6 +417,64 @@ def test_clicking_selected_tag_chip_clears_single_selection(qtbot) -> None:
     assert vm.selected_tag_ids == set()
 
 
+def test_delete_button_requests_confirmation_without_deleting(qtbot) -> None:
+    _apply_theme()
+    vm = _viewmodel_with_tags("Comedy")
+    page = TagManagementPage(vm)
+    qtbot.addWidget(page)
+    page.show()
+    QApplication.processEvents()
+
+    requests: list[tuple[str, str]] = []
+    page.tag_delete_requested.connect(lambda title, message: requests.append((title, message)))
+    vm.toggle_select(vm.tags[0].tag_id, additive=False)
+    QApplication.processEvents()
+
+    qtbot.mouseClick(page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert [tag.name for tag in vm.tags] == ["Comedy"]
+    assert requests == [
+        (
+            "Delete Tag",
+            (
+                "Delete tag 'Comedy'?\n\n"
+                "This removes the tag from every linked book. Books are not deleted. "
+                "This cannot be undone."
+            ),
+        )
+    ]
+
+
+def test_delete_button_confirmation_copy_handles_multiple_tags(qtbot) -> None:
+    _apply_theme()
+    vm = _viewmodel_with_tags("Action", "Comedy")
+    page = TagManagementPage(vm)
+    qtbot.addWidget(page)
+    page.show()
+    QApplication.processEvents()
+
+    requests: list[tuple[str, str]] = []
+    page.tag_delete_requested.connect(lambda title, message: requests.append((title, message)))
+    vm.toggle_select(vm.tags[0].tag_id, additive=False)
+    vm.toggle_select(vm.tags[1].tag_id, additive=True)
+    QApplication.processEvents()
+
+    qtbot.mouseClick(page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert requests == [
+        (
+            "Delete Tags",
+            (
+                "Delete 2 tags?\n\n"
+                "This removes these tags from every linked book. Books are not deleted. "
+                "This cannot be undone."
+            ),
+        )
+    ]
+
+
 def test_tag_chip_shift_click_toggles_selection(qtbot) -> None:
     _apply_theme()
     vm = _viewmodel_with_tags("Action", "Comedy")

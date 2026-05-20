@@ -53,6 +53,7 @@ class SettingsPageWidget(QFrame):
     hidden_space_reset_requested = QtSignal()
     # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
     tag_operation_completed = QtSignal(bool, str, str)
+    tag_delete_requested = QtSignal(str, str)
 
     def __init__(
         self,
@@ -152,6 +153,7 @@ class SettingsPageWidget(QFrame):
             page = TagManagementPage(self._tag_viewmodel)
             page.setProperty("persistent", "true")
             page.tag_operation_completed.connect(self.tag_operation_completed.emit)
+            page.tag_delete_requested.connect(self.tag_delete_requested.emit)
             self._tag_page = page
         self._tag_viewmodel.refresh()
         return [banner, self._tag_page]

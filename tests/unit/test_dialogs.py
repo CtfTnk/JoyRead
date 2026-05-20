@@ -10,6 +10,7 @@ from joyread.core.models.collection import Collection
 from joyread.core.services.import_service import ImportPreflightResult
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.widgets.dialogs import (
     DialogCollectionSelectContent,
@@ -20,6 +21,8 @@ from joyread.ui.widgets.dialogs import (
     JoyReadDialogOverlay,
     JoyReadDialogPanel,
 )
+from joyread.ui.widgets.tag_chip import TagChipWidget
+from joyread.ui.widgets.tag_management_page import TagManagementPage
 
 
 def apply_theme() -> None:
@@ -581,6 +584,59 @@ def test_main_window_uses_global_confirm_dialog_for_delete(qtbot) -> None:
     assert window.dialog_overlay.isVisible()
     assert title_labels == ["Delete Book"]
     assert buttons == ["Cancel", "Delete"]
+    context.close()
+
+
+def test_main_window_confirms_tag_delete_before_deleting(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    context.tag_service.create("Comedy")
+    context.tag_management_viewmodel.refresh()
+    window._handle_navigation("settings")
+    context.settings_viewmodel.set_section(SettingsSectionKey.TAGS)
+    QApplication.processEvents()
+
+    tag_page = window.settings_view.page.findChild(TagManagementPage)
+    assert tag_page is not None
+    chip = next(chip for chip in tag_page.findChildren(TagChipWidget) if not chip.is_add_chip)
+    qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(tag_page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    title_labels = [
+        label.text()
+        for label in window.dialog_overlay.panel.findChildren(QLabel)
+        if label.property("class") == "JoyReadDialogTitle"
+    ]
+    buttons = [button.text for button in window.dialog_overlay.panel.findChildren(DialogTextButton)]
+
+    assert window.dialog_overlay.isVisible()
+    assert title_labels == ["Delete Tag"]
+    assert buttons == ["Cancel", "Delete"]
+    assert [tag.name for tag in context.tag_service.list_tags()] == ["Comedy"]
+
+    qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert [tag.name for tag in context.tag_service.list_tags()] == ["Comedy"]
+
+    qtbot.mouseClick(tag_page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert context.tag_service.list_tags() == []
     context.close()
 
 

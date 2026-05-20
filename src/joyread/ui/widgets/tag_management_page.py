@@ -45,6 +45,7 @@ class TagManagementPage(QWidget):
     """The container body inside the Settings page for the Tags surface."""
 
     tag_operation_completed = QtSignal(bool, str, str)
+    tag_delete_requested = QtSignal(str, str)
 
     def __init__(self, viewmodel: TagManagementViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -224,13 +225,38 @@ class TagManagementPage(QWidget):
         self._viewmodel.begin_rename()
 
     def _handle_delete_clicked(self) -> None:
-        self._viewmodel.delete_selected()
+        if not self._viewmodel.can_delete:
+            return
+        title, message = self._delete_confirmation_text()
+        self.tag_delete_requested.emit(title, message)
 
     def _handle_submit_clicked(self) -> None:
         self._viewmodel.submit_input(self._line_edit.text())
 
     def _handle_operation_result(self, result: TagOperationResult) -> None:
         self.tag_operation_completed.emit(result.success, result.title, result.message)
+
+    def _delete_confirmation_text(self) -> tuple[str, str]:
+        selected_names = [
+            tag.name for tag in self._viewmodel.tags if tag.tag_id in self._viewmodel.selected_tag_ids
+        ]
+        if len(selected_names) == 1:
+            return (
+                "Delete Tag",
+                (
+                    f"Delete tag '{selected_names[0]}'?\n\n"
+                    "This removes the tag from every linked book. Books are not deleted. "
+                    "This cannot be undone."
+                ),
+            )
+        return (
+            "Delete Tags",
+            (
+                f"Delete {len(selected_names)} tags?\n\n"
+                "This removes these tags from every linked book. Books are not deleted. "
+                "This cannot be undone."
+            ),
+        )
 
     def _handle_destroyed(self, _obj: object | None = None) -> None:
         self.dispose()

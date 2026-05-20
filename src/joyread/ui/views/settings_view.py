@@ -23,6 +23,7 @@ class SettingsView(QWidget):
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
     tag_operation_completed = QtSignal(bool, str, str)
+    tag_delete_requested = QtSignal(str, str)
 
     def __init__(
         self,
@@ -47,6 +48,7 @@ class SettingsView(QWidget):
         self.page.hidden_space_revert_requested.connect(self.hidden_space_revert_requested.emit)
         self.page.hidden_space_reset_requested.connect(self.hidden_space_reset_requested.emit)
         self.page.tag_operation_completed.connect(self.tag_operation_completed.emit)
+        self.page.tag_delete_requested.connect(self.tag_delete_requested.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)

@@ -86,6 +86,7 @@ class MainWindow(QMainWindow):
         )
         self.settings_view.close_requested.connect(self._hide_settings_page)
         self.settings_view.tag_operation_completed.connect(self._handle_tag_operation_result)
+        self.settings_view.tag_delete_requested.connect(self._confirm_delete_tags)
         self.settings_view.hide()
 
         self._resize_grip = QSizeGrip(root)
@@ -717,6 +718,16 @@ class MainWindow(QMainWindow):
         # always sees an explicit outcome for tag CRUD.
         _ = success  # success/failure styling is identical for now.
         self.dialog_overlay.show_info(title, message)
+
+    def _confirm_delete_tags(self, title: str, message: str) -> None:
+        self.dialog_overlay.show_confirm(
+            title,
+            message,
+            on_confirm=self._context.tag_management_viewmodel.delete_selected,
+            confirm_text="Delete",
+            cancel_text="Cancel",
+            destructive=True,
+        )
 
     def _select_storage_location(self) -> None:
         directory = QFileDialog.getExistingDirectory(
