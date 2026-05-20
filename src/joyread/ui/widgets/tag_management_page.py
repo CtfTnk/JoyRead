@@ -50,7 +50,8 @@ class TagManagementPage(QWidget):
         super().__init__(parent)
         self._viewmodel = viewmodel
         self._disposed = False
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self.setFixedHeight(Theme.tag_manager_height)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         outer_layout = QVBoxLayout(self)
         outer_layout.setContentsMargins(0, 0, 0, 0)
@@ -59,7 +60,8 @@ class TagManagementPage(QWidget):
         self._manager_frame = QFrame(self)
         self._manager_frame.setObjectName("TagManager")
         self._manager_frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._manager_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._manager_frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._manager_frame.setFixedHeight(Theme.tag_manager_height)
         outer_layout.addWidget(self._manager_frame, stretch=1)
 
         manager_layout = QVBoxLayout(self._manager_frame)

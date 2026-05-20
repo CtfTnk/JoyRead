@@ -103,6 +103,39 @@ def test_toggle_select_replaces_selection_without_shift() -> None:
     assert vm.selected_tag_ids == {second.tag_id}
 
 
+def test_toggle_select_clears_single_selection_without_shift() -> None:
+    vm, _, _ = _viewmodel_with_tags("Action")
+    tag = vm.tags[0]
+
+    vm.toggle_select(tag.tag_id, additive=False)
+    vm.toggle_select(tag.tag_id, additive=False)
+
+    assert vm.selected_tag_ids == set()
+
+
+def test_toggle_select_keeps_clicked_member_from_multi_selection_without_shift() -> None:
+    vm, _, _ = _viewmodel_with_tags("Action", "Comedy", "Drama")
+    first, second, third = vm.tags
+
+    vm.toggle_select(first.tag_id, additive=False)
+    vm.toggle_select(second.tag_id, additive=True)
+    vm.toggle_select(third.tag_id, additive=True)
+    vm.toggle_select(second.tag_id, additive=False)
+
+    assert vm.selected_tag_ids == {second.tag_id}
+
+
+def test_toggle_select_replaces_multi_selection_with_unselected_without_shift() -> None:
+    vm, _, _ = _viewmodel_with_tags("Action", "Comedy", "Drama")
+    first, second, third = vm.tags
+
+    vm.toggle_select(first.tag_id, additive=False)
+    vm.toggle_select(second.tag_id, additive=True)
+    vm.toggle_select(third.tag_id, additive=False)
+
+    assert vm.selected_tag_ids == {third.tag_id}
+
+
 def test_toggle_select_additive_toggles_membership() -> None:
     vm, _, _ = _viewmodel_with_tags("Action", "Comedy", "Drama")
     first, second, third = vm.tags

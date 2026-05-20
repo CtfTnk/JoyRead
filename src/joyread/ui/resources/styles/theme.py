@@ -273,6 +273,7 @@ class Theme:
     settings_switch_knob_radius = 6
 
     # Tags management page (Figma node 688:3630).
+    tag_manager_height = 360
     tag_manager_padding = 10
     tag_manager_gap = 10
     tag_manager_radius = 8

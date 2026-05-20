@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QCoreApplication, QEvent, QPoint, Qt
 from PySide6.QtGui import QFontMetrics
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QFrame
 
 from joyread.core.models.tag import Tag
 from joyread.core.repositories.tag_repository import TagNameConflictError
@@ -16,7 +16,7 @@ from joyread.ui.viewmodels.tag_management_viewmodel import (
     TagInputMode,
     TagManagementViewModel,
 )
-from joyread.ui.widgets.settings_page import SettingsPageWidget
+from joyread.ui.widgets.settings_page import SettingsContentPanel, SettingsPageWidget
 from joyread.ui.widgets.tag_chip import TagChipWidget
 from joyread.ui.widgets.tag_management_page import TagManagementPage
 
@@ -215,6 +215,33 @@ def test_settings_page_routes_tag_section_through_viewmodel(qtbot) -> None:
     assert len(tag_pages) == 1
 
 
+def test_settings_page_tag_manager_matches_figma_fixed_height(qtbot) -> None:
+    _apply_theme()
+    settings_vm = SettingsViewModel()
+    tag_vm = _viewmodel_with_tags("Comedy")
+    page = SettingsPageWidget(
+        settings_vm,
+        ResourceLoader(),
+        tag_viewmodel=tag_vm,
+    )
+    qtbot.addWidget(page)
+    page.resize(Theme.settings_panel_width, Theme.settings_panel_height)
+    page.show()
+    QApplication.processEvents()
+
+    settings_vm.set_section(SettingsSectionKey.TAGS)
+    QApplication.processEvents()
+
+    content = page.findChild(SettingsContentPanel)
+    tag_page = page.findChild(TagManagementPage)
+
+    assert content is not None
+    assert tag_page is not None
+    assert content.widget().layout().count() == 3  # banner + fixed tag manager + stretch
+    assert tag_page.height() == Theme.tag_manager_height
+    assert tag_page.findChild(QFrame, "TagManager").height() == Theme.tag_manager_height
+
+
 def test_tag_chip_sizes_to_content_width_clamped_to_max(qtbot) -> None:
     _apply_theme()
     # Use the max allowed length to push the chip past 200 px.
@@ -366,6 +393,25 @@ def test_clicking_blank_area_in_tag_manager_clears_selection(qtbot) -> None:
     # The bottom-right corner of the manager frame is reliably empty.
     blank = page.rect().bottomRight() - QPoint(20, 60)
     qtbot.mouseClick(page, Qt.MouseButton.LeftButton, pos=blank)
+    QApplication.processEvents()
+
+    assert vm.selected_tag_ids == set()
+
+
+def test_clicking_selected_tag_chip_clears_single_selection(qtbot) -> None:
+    _apply_theme()
+    vm = _viewmodel_with_tags("Comedy")
+    page = TagManagementPage(vm)
+    qtbot.addWidget(page)
+    page.show()
+    QApplication.processEvents()
+
+    chip = next(chip for chip in page.findChildren(TagChipWidget) if not chip.is_add_chip)
+    qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert vm.selected_tag_ids == {vm.tags[0].tag_id}
+
+    qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
 
     assert vm.selected_tag_ids == set()

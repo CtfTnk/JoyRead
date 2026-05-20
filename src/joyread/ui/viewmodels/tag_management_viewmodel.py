@@ -12,6 +12,7 @@ from joyread.core.services.tag_service import (
     TagNotFoundError,
     TagService,
 )
+from joyread.ui.viewmodels.selection import toggle_selection
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -100,13 +101,11 @@ class TagManagementViewModel:
             self.selected_tag_ids = {tag_id}
             self.state_changed.emit()
             return
-        if additive:
-            if tag_id in self.selected_tag_ids:
-                self.selected_tag_ids.discard(tag_id)
-            else:
-                self.selected_tag_ids.add(tag_id)
-        else:
-            self.selected_tag_ids = {tag_id}
+        self.selected_tag_ids = toggle_selection(
+            self.selected_tag_ids,
+            tag_id,
+            additive=additive,
+        )
         self.state_changed.emit()
 
     def begin_create(self) -> None:
