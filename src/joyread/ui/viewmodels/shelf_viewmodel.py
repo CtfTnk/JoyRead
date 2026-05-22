@@ -87,6 +87,8 @@ class ShelfViewModel:
         self.delete_failed: Signal[str] = Signal()
         self.favourite_failed: Signal[str] = Signal()
         self.book_metadata_failed: Signal[str] = Signal()
+        self.book_cover_updated: Signal[tuple[str, Path]] = Signal()
+        self.book_cover_failed: Signal[str] = Signal()
         self.collections_changed: Signal[str | None] = Signal()
         self.collection_failed: Signal[str] = Signal()
         self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
@@ -575,6 +577,32 @@ class ShelfViewModel:
             on_failure=lambda error: self._handle_book_metadata_failure(error),
         )
 
+    def set_book_cover_path(self, book_uuid: str, cover_path: Path | str) -> None:
+        path = Path(cover_path)
+        book = next((book for book in self.books if book.uuid == book_uuid), None)
+        if book is None:
+            self.book_cover_failed.emit("The selected book is no longer available.")
+            return
+
+        if self._task_service is None:
+            try:
+                self._library_service.set_book_cover_path(book_uuid, str(path))
+            except Exception as exc:  # pragma: no cover - repository-specific failure path.
+                self._handle_book_cover_failure(exc)
+                return
+            self._handle_book_cover_success(book_uuid, path)
+            return
+
+        self._task_service.submit(
+            "set-book-cover",
+            lambda: self._library_service.set_book_cover_path(book_uuid, str(path)),
+            on_success=lambda _result, book_uuid=book_uuid, path=path: self._handle_book_cover_success(
+                book_uuid,
+                path,
+            ),
+            on_failure=lambda error: self._handle_book_cover_failure(error),
+        )
+
     def create_collection(self, name: str) -> None:
         normalized_name = _normalize_collection_name(name)
         if normalized_name is None:
@@ -838,6 +866,23 @@ class ShelfViewModel:
         logger.warning("update_book_metadata failed: %s", error)
         self.load_books()
         self.book_metadata_failed.emit(str(error))
+
+    def _handle_book_cover_success(self, book_uuid: str, path: Path) -> None:
+        path_text = str(path)
+        self.books = [
+            replace(book, cover_thumbnail_path=path_text, updated_at=datetime.now())
+            if book.uuid == book_uuid
+            else book
+            for book in self.books
+        ]
+        self._record_cover(book_uuid, path, force=True)
+        self._emit_state()
+        self.book_cover_updated.emit(book_uuid, path)
+
+    def _handle_book_cover_failure(self, error: Exception) -> None:
+        logger.warning("set_book_cover_path failed: %s", error, exc_info=True)
+        self.load_books()
+        self.book_cover_failed.emit(str(error))
 
     def _handle_collection_created(self, collection: Collection) -> None:
         next_shelf = collection_shelf_key(collection.uuid)
@@ -1112,8 +1157,8 @@ class ShelfViewModel:
         self.selection_changed.emit(set(self.selected_book_ids))
         self.delete_failed.emit(str(error))
 
-    def _record_cover(self, book_uuid: str, path: Path) -> None:
-        if self._cover_paths.get(book_uuid) == path:
+    def _record_cover(self, book_uuid: str, path: Path, *, force: bool = False) -> None:
+        if not force and self._cover_paths.get(book_uuid) == path:
             return
         self._cover_paths[book_uuid] = path
         self.cover_ready.emit(book_uuid, path)

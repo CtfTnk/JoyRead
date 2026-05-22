@@ -11,6 +11,7 @@ from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
@@ -23,6 +24,7 @@ from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
+from joyread.ui.widgets.cover_editor import CoverEditorOverlay
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
@@ -48,6 +50,7 @@ class MainWindow(QMainWindow):
         self._context = context
         self._reader_windows: list[ReaderWindow | NovelReaderWindow] = []
         self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
+        self._cover_editor_book_uuid: str | None = None
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
@@ -96,9 +99,12 @@ class MainWindow(QMainWindow):
         self._resize_grip.setObjectName("ResizeGrip")
         self._resize_grip.raise_()
 
+        self.cover_editor_overlay = CoverEditorOverlay(context.resources, root)
+        self.cover_editor_overlay.hide()
         self.dialog_overlay = JoyReadDialogOverlay(root, context.resources)
         self.dialog_overlay.hide()
         self.setCentralWidget(root)
+        self._position_cover_editor_overlay()
         self._position_dialog_overlay()
 
         self.chrome.set_action_menu(self.shelf_view.create_action_menu())
@@ -116,6 +122,12 @@ class MainWindow(QMainWindow):
         self.shelf_view.tag_filter_requested.connect(self._show_tag_filter_dialog)
         self.shelf_view.detail_tag_filter_requested.connect(self._activate_detail_tag_filter)
         self.shelf_view.detail_tag_allocation_requested.connect(self._show_book_tag_allocation_dialog)
+        self.shelf_view.cover_edit_requested.connect(self._show_cover_editor)
+        self.cover_editor_overlay.import_requested.connect(self._select_cover_editor_image)
+        self.cover_editor_overlay.thumbnail_batch_requested.connect(self._request_cover_editor_thumbnail_batch)
+        self.cover_editor_overlay.thumbnail_selected.connect(self._load_cover_editor_thumbnail_source)
+        self.cover_editor_overlay.save_requested.connect(self._confirm_cover_editor_save)
+        self.cover_editor_overlay.closed.connect(self._clear_cover_editor_book_uuid)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_change_requested.connect(self._select_storage_location)
         self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
@@ -154,6 +166,10 @@ class MainWindow(QMainWindow):
         )
         context.shelf_viewmodel.book_metadata_failed.connect(
             lambda message: self.dialog_overlay.show_info("Book Detail", message)
+        )
+        context.shelf_viewmodel.book_cover_updated.connect(self._handle_book_cover_updated)
+        context.shelf_viewmodel.book_cover_failed.connect(
+            lambda message: self.dialog_overlay.show_info("Cover Editor", message)
         )
         context.shelf_viewmodel.book_tags_failed.connect(
             lambda message: self.dialog_overlay.show_info("Book Tags", message)
@@ -921,6 +937,210 @@ class MainWindow(QMainWindow):
             assign_tags,
         )
 
+    def _show_cover_editor(self, book_uuid: str) -> None:
+        book = self._book_by_uuid(book_uuid)
+        if book is None:
+            self.dialog_overlay.show_info("Cover Editor", "The selected book is no longer available.")
+            return
+        if not self._context.thumbnail_service.can_generate_from(book):
+            logger.info("Cover editor unavailable for book=%s path=%s", book_uuid, book.file_path)
+            self.dialog_overlay.show_info(
+                "Cover Editor",
+                "Cover editing is available for archive and PDF books with available source files.",
+            )
+            return
+
+        self._cover_editor_book_uuid = book_uuid
+        self._context.task_service.submit(
+            "cover-editor-source",
+            lambda book=book: self._context.thumbnail_service.load_cover_source_page(book, 0),
+            on_success=lambda source, book_uuid=book_uuid: self._handle_cover_editor_source_loaded(
+                book_uuid,
+                source,
+                "page:1",
+                opening=True,
+            ),
+            on_failure=lambda error: self._handle_cover_editor_source_failed(error),
+        )
+
+    def _select_cover_editor_image(self) -> None:
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
+            self,
+            "Import Cover Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
+        )
+        if not file_path:
+            return
+        image_path = Path(file_path)
+        self._context.task_service.submit(
+            "cover-editor-import",
+            image_path.read_bytes,
+            on_success=lambda source, image_path=image_path: self._handle_cover_editor_import_loaded(
+                image_path,
+                source,
+            ),
+            on_failure=lambda error: self._handle_cover_editor_source_failed(error),
+        )
+
+    def _request_cover_editor_thumbnail_batch(
+        self,
+        start_index: int,
+        batch_size: int,
+        size: tuple[int, int],
+    ) -> None:
+        book = self._cover_editor_book()
+        if book is None:
+            return
+        self._context.task_service.submit(
+            "cover-editor-thumbnails",
+            lambda book=book, start_index=start_index, batch_size=batch_size, size=size: (
+                self._context.thumbnail_service.generate_detail_thumbnail_batch(
+                    book,
+                    start_index,
+                    batch_size,
+                    size,
+                )
+            ),
+            on_success=lambda batch, book_uuid=book.uuid: self._handle_cover_editor_thumbnail_batch(
+                book_uuid,
+                batch,
+            ),
+            on_failure=lambda error: self._handle_cover_editor_source_failed(error),
+        )
+
+    def _load_cover_editor_thumbnail_source(self, page_index: int) -> None:
+        book = self._cover_editor_book()
+        if book is None:
+            return
+        self._context.task_service.submit(
+            "cover-editor-thumbnail-source",
+            lambda book=book, page_index=page_index: self._context.thumbnail_service.load_cover_source_page(
+                book,
+                page_index,
+            ),
+            on_success=lambda source, book_uuid=book.uuid, page_index=page_index: (
+                self._handle_cover_editor_source_loaded(
+                    book_uuid,
+                    source,
+                    f"page:{page_index + 1}",
+                    opening=False,
+                )
+            ),
+            on_failure=lambda error: self._handle_cover_editor_source_failed(error),
+        )
+
+    def _confirm_cover_editor_save(self, source_bytes: bytes, crop_state) -> None:  # noqa: ANN001
+        book_uuid = self._cover_editor_book_uuid
+        if book_uuid is None:
+            return
+        self.dialog_overlay.show_confirm(
+            "Replace Cover",
+            "Replace this book cover with the edited image?",
+            on_confirm=lambda book_uuid=book_uuid, source_bytes=source_bytes, crop_state=crop_state: (
+                self._save_cover_editor_cover(book_uuid, source_bytes, crop_state)
+            ),
+            confirm_text="Confirm",
+            cancel_text="Cancel",
+        )
+
+    def _save_cover_editor_cover(self, book_uuid: str, source_bytes: bytes, crop_state) -> None:  # noqa: ANN001
+        book = self._book_by_uuid(book_uuid)
+        if book is None:
+            self.dialog_overlay.show_info("Cover Editor", "The selected book is no longer available.")
+            return
+        self._context.task_service.submit(
+            "save-edited-cover",
+            lambda book=book, source_bytes=source_bytes, crop_state=crop_state: (
+                self._context.thumbnail_service.save_edited_cover(
+                    book,
+                    source_bytes,
+                    crop_state,
+                    (Theme.cover_width, Theme.cover_height),
+                )
+            ),
+            on_success=lambda path, book_uuid=book_uuid: self._context.shelf_viewmodel.set_book_cover_path(
+                book_uuid,
+                path,
+            ),
+            on_failure=lambda error: self._handle_cover_editor_save_failed(error),
+        )
+
+    def _handle_cover_editor_source_loaded(
+        self,
+        book_uuid: str,
+        source_bytes: bytes | None,
+        source_id: str,
+        *,
+        opening: bool,
+    ) -> None:
+        if self._cover_editor_book_uuid != book_uuid:
+            return
+        if source_bytes is None:
+            logger.warning("Cover editor source unavailable book=%s source=%s", book_uuid, source_id)
+            self.dialog_overlay.show_info("Cover Editor", "Could not load a cover image from this book.")
+            if opening:
+                self._clear_cover_editor_book_uuid()
+            return
+
+        updated = (
+            self.cover_editor_overlay.open_editor(source_bytes, source_id)
+            if opening
+            else self.cover_editor_overlay.set_source(source_bytes, source_id)
+        )
+        if not updated:
+            logger.warning("Cover editor rejected image bytes book=%s source=%s", book_uuid, source_id)
+            self.dialog_overlay.show_info("Cover Editor", "Could not load that image as a cover source.")
+            if opening:
+                self._clear_cover_editor_book_uuid()
+            return
+        self._position_cover_editor_overlay()
+
+    def _handle_cover_editor_import_loaded(self, image_path: Path, source_bytes: bytes) -> None:
+        if self._cover_editor_book_uuid is None:
+            return
+        if not self.cover_editor_overlay.set_source(source_bytes, f"import:{image_path.name}"):
+            logger.warning("Cover editor rejected imported image path=%s", image_path)
+            self.dialog_overlay.show_info("Cover Editor", "Could not load that image.")
+
+    def _handle_cover_editor_thumbnail_batch(self, book_uuid: str, batch) -> None:  # noqa: ANN001
+        if self._cover_editor_book_uuid != book_uuid:
+            return
+        self.cover_editor_overlay.apply_thumbnail_batch(batch)
+
+    def _handle_cover_editor_source_failed(self, error: Exception) -> None:
+        logger.warning(
+            "Cover editor source load failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self.dialog_overlay.show_info("Cover Editor", "Could not load the cover source.")
+
+    def _handle_cover_editor_save_failed(self, error: Exception) -> None:
+        logger.warning(
+            "Cover editor save failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self.dialog_overlay.show_info("Cover Editor", "Could not save the edited cover.")
+
+    def _handle_book_cover_updated(self, book_uuid: str, _path: Path) -> None:
+        if self._cover_editor_book_uuid == book_uuid:
+            self.cover_editor_overlay.hide()
+            self._cover_editor_book_uuid = None
+
+    def _clear_cover_editor_book_uuid(self) -> None:
+        if not self.cover_editor_overlay.isVisible():
+            self._cover_editor_book_uuid = None
+
+    def _book_by_uuid(self, book_uuid: str) -> Book | None:
+        return next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+
+    def _cover_editor_book(self) -> Book | None:
+        if self._cover_editor_book_uuid is None:
+            return None
+        return self._book_by_uuid(self._cover_editor_book_uuid)
+
     def _collection_by_uuid(self, collection_uuid: str) -> Collection | None:
         return next(
             (
@@ -1019,6 +1239,17 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.setGeometry(0, 0, root.width(), root.height())
         self._raise_dialog_overlay_if_visible()
 
+    def _position_cover_editor_overlay(self) -> None:
+        if not hasattr(self, "cover_editor_overlay"):
+            return
+        root = self.centralWidget()
+        if root is None:
+            return
+        self.cover_editor_overlay.setGeometry(0, 0, root.width(), root.height())
+        if self.cover_editor_overlay.isVisible():
+            self.cover_editor_overlay.raise_()
+        self._raise_dialog_overlay_if_visible()
+
     def _raise_dialog_overlay_if_visible(self) -> None:
         if hasattr(self, "dialog_overlay") and self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
@@ -1072,6 +1303,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._position_settings_overlay()
+        self._position_cover_editor_overlay()
         self._position_dialog_overlay()
         self._position_lock_overlay()
         if self._embedded_reader is not None and self.centralWidget() is not None:

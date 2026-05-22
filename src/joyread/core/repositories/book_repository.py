@@ -56,6 +56,9 @@ class BookRepository(Protocol):
     ) -> None:
         ...
 
+    def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
+        ...
+
     def delete_book(self, book_id: str) -> None:
         ...
 

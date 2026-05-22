@@ -112,6 +112,37 @@ class Theme:
     detail_thumbnail_gap = 20
     detail_thumbnail_row_gap = 10
     detail_thumbnail_min_width = 400
+
+    # Cover editor dialog from Figma node 734:4133.
+    cover_editor_width = 360
+    cover_editor_height = 500
+    cover_editor_border_width = 1
+    cover_editor_radius = 8
+    cover_editor_visual_padding = 10
+    cover_editor_layout_margin = cover_editor_visual_padding - cover_editor_border_width
+    cover_editor_section_padding = 10
+    cover_editor_gap = 10
+    cover_editor_adjust_height = 310
+    cover_editor_controls_gap = 16
+    cover_editor_import_row_gap = 10
+    cover_editor_import_button_width = 100
+    cover_editor_import_button_height = 28
+    cover_editor_import_button_radius = 6
+    cover_editor_icon_button_size = 28
+    cover_editor_icon_size = 24
+    cover_editor_icon_button_padding = 1
+    cover_editor_icon_button_gap = 30
+    cover_editor_zoom_step = 5
+    cover_editor_max_zoom_percent = 400
+    cover_editor_outside_opacity = 0.6
+    cover_editor_thumbnail_min_width_extra = 2
+    cover_editor_thumbnail_min_width = (
+        (detail_thumbnail_width * 2)
+        + detail_thumbnail_gap
+        + ((detail_thumbnail_frame_padding + detail_thumbnail_row_padding_horizontal) * 2)
+        + cover_editor_thumbnail_min_width_extra
+    )
+
     grid_min_gap = 20
     grid_gap = grid_min_gap
     grid_top_padding = 4
@@ -626,6 +657,10 @@ class Theme:
             "__DETAIL_TITLE_FONT_SIZE__": f"{cls.detail_title_font_size}px",
             "__DETAIL_META_FONT_SIZE__": f"{cls.detail_meta_font_size}px",
             "__DETAIL_READ_FONT_SIZE__": f"{cls.detail_read_font_size}px",
+            "__COVER_EDITOR_BORDER_WIDTH__": f"{cls.cover_editor_border_width}px",
+            "__COVER_EDITOR_RADIUS__": f"{cls.cover_editor_radius}px",
+            "__COVER_EDITOR_IMPORT_RADIUS__": f"{cls.cover_editor_import_button_radius}px",
+            "__COVER_EDITOR_ICON_BUTTON_PADDING__": f"{cls.cover_editor_icon_button_padding}px",
             "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",

@@ -155,6 +155,16 @@ class SqliteBookRepository(BookRepository):
             DatabasePriority.NORMAL,
         )
 
+    def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
+        logger.debug("set_book_cover_path book=%s path=%s", book_id, cover_path)
+        self._database.execute(
+            lambda connection: connection.execute(
+                "UPDATE books SET cover_path = ?, updated_at = ? WHERE book_id = ?",
+                (cover_path, _now(), book_id),
+            ),
+            DatabasePriority.NORMAL,
+        )
+
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
         logger.debug("set_favourite book=%s value=%s", book_id, is_favourite)
         now = _now()

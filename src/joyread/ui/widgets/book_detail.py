@@ -602,11 +602,16 @@ class DetailCoverWidget(BookCoverWidget):
 class DetailThumbnailGrid(QWidget):
     thumbnail_clicked = QtSignal(int)
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None, *, minimum_width: int | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("BookDetailThumbnails")
-        self.setMinimumWidth(Theme.detail_thumbnail_min_width)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setMinimumWidth(minimum_width or Theme.detail_thumbnail_min_width)
+        horizontal_policy = (
+            QSizePolicy.Policy.Expanding
+            if minimum_width is None
+            else QSizePolicy.Policy.Minimum
+        )
+        self.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Minimum)
         self._thumbnail_order: list[int] = []
         self._thumbnails: dict[int, DetailThumbnailWidget] = {}
         self._columns = 0

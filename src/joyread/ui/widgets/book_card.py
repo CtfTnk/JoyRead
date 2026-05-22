@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPixmap,
+    QPixmapCache,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -188,6 +189,7 @@ class BookCoverWidget(QFrame):
         self.update()
 
     def set_pixmap_from_path(self, path: Path) -> None:
+        QPixmapCache.remove(str(path))
         pixmap = QPixmap(str(path))
         self.set_pixmap(pixmap)
 

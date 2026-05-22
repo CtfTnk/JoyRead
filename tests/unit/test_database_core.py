@@ -302,6 +302,22 @@ def test_duplicate_manifest_import_reuses_existing_book(tmp_path: Path) -> None:
     database.close()
 
 
+def test_sqlite_repository_persists_book_cover_path(tmp_path: Path) -> None:
+    source = tmp_path / "cover-path.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    cover_path = paths.paths.thumbnails / "covers" / "custom-cover.png"
+
+    repository.set_book_cover_path(book.uuid, str(cover_path))
+
+    refreshed = repository.list_books()[0]
+    assert refreshed.cover_thumbnail_path == str(cover_path)
+    database.close()
+
+
 def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
     source = tmp_path / "Readable PDF.pdf"
     _write_pdf(source)

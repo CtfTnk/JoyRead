@@ -652,6 +652,23 @@ def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books(
     assert sorted(task_service.submitted) == ["cover-mock-book-01", "cover-mock-book-15"]
 
 
+def test_set_book_cover_path_updates_state_and_emits_cover_even_for_same_path() -> None:
+    repo = InMemoryBookRepository()
+    vm = ShelfViewModel(LibraryService(repo))
+    vm.load_books()
+    emitted: list[tuple[str, Path]] = []
+    vm.cover_ready.connect(lambda book_uuid, path: emitted.append((book_uuid, path)))
+    cover_path = Path("/tmp/mock-book-01-custom-170x241.png")
+
+    vm.set_book_cover_path("mock-book-01", cover_path)
+    vm.set_book_cover_path("mock-book-01", cover_path)
+
+    book = next(book for book in vm.books if book.uuid == "mock-book-01")
+    assert book.cover_thumbnail_path == str(cover_path)
+    assert repo.get_book("mock-book-01").cover_thumbnail_path == str(cover_path)
+    assert emitted == [("mock-book-01", cover_path), ("mock-book-01", cover_path)]
+
+
 def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(

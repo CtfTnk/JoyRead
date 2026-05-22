@@ -67,6 +67,9 @@ class LibraryService:
             language_tag=language_tag,
         )
 
+    def set_book_cover_path(self, book_uuid: str, cover_path: str) -> None:
+        self._book_repository.set_book_cover_path(book_uuid, cover_path)
+
     def delete_book(self, book_uuid: str) -> None:
         self._book_repository.delete_book(book_uuid)
 

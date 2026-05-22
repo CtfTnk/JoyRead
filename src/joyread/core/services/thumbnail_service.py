@@ -47,6 +47,15 @@ class DetailThumbnailBatch:
     items: tuple[DetailThumbnailItem, ...]
 
 
+@dataclass(frozen=True)
+class CoverCropState:
+    source_id: str
+    zoom_percent: float
+    pan_x: float
+    pan_y: float
+    crop_size: SizeTuple
+
+
 class ThumbnailService:
     """Generates cached cover files and transient detail-page thumbnails."""
 
@@ -79,6 +88,10 @@ class ThumbnailService:
         )
 
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
+        explicit = self._explicit_cover_path(book, size)
+        if explicit is not None:
+            return explicit
+
         signature = self._source_signature(book)
         if signature is None:
             # Source is missing (or unreadable). Check the fallback
@@ -108,6 +121,45 @@ class ThumbnailService:
             self._cache_service.cover_index.put(cache_key, str(cover_path))
             return cover_path
         return None
+
+    def load_cover_source_page(self, book: Book, page_index: int) -> bytes | None:
+        if page_index < 0 or not self.can_generate_from(book):
+            return None
+
+        signature = self._source_signature(book)
+        if signature is None:
+            return None
+
+        try:
+            session = self._session_for(book, signature)
+            page = session.get_page(page_index)
+        except (ArchiveError, PdfError, OSError) as exc:
+            logger.warning("Cover source load failed for book=%s page=%d: %s", book.uuid, page_index, exc)
+            return None
+        return None if page is None else page.image_bytes
+
+    def save_edited_cover(
+        self,
+        book: Book,
+        source_bytes: bytes,
+        crop_state: CoverCropState,
+        size: SizeTuple,
+    ) -> Path:
+        rendered = render_cover_crop(source_bytes, crop_state, size)
+        cover_path = self._editable_cover_path(book, size)
+        cover_path.parent.mkdir(parents=True, exist_ok=True)
+        cover_path.write_bytes(rendered)
+        self.invalidate_cover_cache(book.uuid)
+        return cover_path
+
+    def invalidate_cover_cache(self, book_uuid: str) -> int:
+        return self._cache_service.cover_index.purge(
+            lambda key: (
+                key.startswith(f"cover:{book_uuid}:")
+                or key.startswith(f"cover-fallback:{book_uuid}:")
+                or key.startswith(f"cover-explicit:{book_uuid}:")
+            )
+        )
 
     def generate_cover(self, book: Book, size: SizeTuple) -> Path | None:
         existing = self.existing_cover_path(book, size)
@@ -289,6 +341,39 @@ class ThumbnailService:
     def _cover_path(self, book: Book, signature: str, size: SizeTuple) -> Path:
         return self._covers_dir() / f"{self._safe_book_uuid(book.uuid)}-{signature}-{size[0]}x{size[1]}.png"
 
+    def _explicit_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
+        if not book.cover_thumbnail_path:
+            return None
+        cache_key = self._cover_explicit_key(book, size)
+        cached = self._cache_service.cover_index.get(cache_key)
+        if cached:
+            cached_path = Path(cached)
+            if cached_path.exists():
+                return cached_path
+
+        cover_path = Path(book.cover_thumbnail_path)
+        if not cover_path.exists():
+            return None
+        self._cache_service.cover_index.put(cache_key, str(cover_path))
+        return cover_path
+
+    def _editable_cover_path(self, book: Book, size: SizeTuple) -> Path:
+        if book.cover_thumbnail_path:
+            current = Path(book.cover_thumbnail_path)
+            if self._is_managed_cover_path(current):
+                return current
+        return self._custom_cover_path(book, size)
+
+    def _custom_cover_path(self, book: Book, size: SizeTuple) -> Path:
+        return self._covers_dir() / f"{self._safe_book_uuid(book.uuid)}-custom-{size[0]}x{size[1]}.png"
+
+    def _is_managed_cover_path(self, path: Path) -> bool:
+        try:
+            path.resolve().relative_to(self._covers_dir().resolve())
+        except (OSError, ValueError):
+            return False
+        return True
+
     def _covers_dir(self) -> Path:
         return self._paths.paths.thumbnails / "covers"
 
@@ -317,6 +402,9 @@ class ThumbnailService:
         # ``cover:<uuid>:<signature>:<size>`` keys never collide with
         # the missing-source fallback record.
         return f"cover-fallback:{book.uuid}:{size[0]}x{size[1]}"
+
+    def _cover_explicit_key(self, book: Book, size: SizeTuple) -> str:
+        return f"cover-explicit:{book.uuid}:{size[0]}x{size[1]}"
 
     @staticmethod
     def _detail_cache_key(page_index: int, size: SizeTuple) -> tuple[int, int, int]:
@@ -352,6 +440,40 @@ def render_contain_blur_thumbnail(image_bytes: bytes, size: SizeTuple) -> bytes:
     y = (height - foreground.height) // 2
     background = background.convert("RGBA")
     background.alpha_composite(foreground, dest=(x, y))
+
+    output = BytesIO()
+    background.save(output, format="PNG")
+    return output.getvalue()
+
+
+def render_cover_crop(image_bytes: bytes, crop_state: CoverCropState, size: SizeTuple) -> bytes:
+    width, height = size
+    if width <= 0 or height <= 0:
+        raise ValueError("Cover size must be positive.")
+
+    with Image.open(BytesIO(image_bytes)) as source_image:
+        image = ImageOps.exif_transpose(source_image)
+        foreground_source = image.convert("RGBA")
+        background_source = image.convert("RGB")
+
+    background = _resize_to_fill(background_source, size)
+    background = background.filter(ImageFilter.GaussianBlur(radius=max(8, min(width, height) // 12)))
+    background = background.convert("RGBA")
+
+    fill_scale = max(width / foreground_source.width, height / foreground_source.height)
+    scale = fill_scale * max(1, crop_state.zoom_percent) / 100.0
+    resized = foreground_source.resize(
+        (
+            max(1, round(foreground_source.width * scale)),
+            max(1, round(foreground_source.height * scale)),
+        ),
+        Image.Resampling.LANCZOS,
+    )
+    x = ((width - resized.width) // 2) + round(crop_state.pan_x)
+    y = ((height - resized.height) // 2) + round(crop_state.pan_y)
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    overlay.alpha_composite(resized, dest=(x, y))
+    background.alpha_composite(overlay)
 
     output = BytesIO()
     background.save(output, format="PNG")

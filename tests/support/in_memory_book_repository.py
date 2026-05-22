@@ -163,6 +163,14 @@ class InMemoryBookRepository:
             for book in self._books
         ]
 
+    def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
+        self._books = [
+            replace(book, cover_thumbnail_path=cover_path, updated_at=datetime.now())
+            if book.uuid == book_id
+            else book
+            for book in self._books
+        ]
+
     def delete_book(self, book_id: str) -> None:
         self._books = [book for book in self._books if book.uuid != book_id]
 

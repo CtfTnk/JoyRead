@@ -647,7 +647,8 @@ QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-page:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical {
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
     margin: __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 2px __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 0;
@@ -655,7 +656,8 @@ QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical {
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
     border-radius: __SHELF_SCROLLBAR_RADIUS__;
@@ -663,14 +665,17 @@ QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical:hover {
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-line:vertical,
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical,
 QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-line:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical {
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::add-line:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
     border: none;
     height: 0;
@@ -679,7 +684,9 @@ QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical {
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-page:vertical,
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical,
 QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-page:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-page:vertical {
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::add-page:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
@@ -705,6 +712,52 @@ QToolButton[class="FigmaSearchOuterButton"]:hover,
 QFrame[class="FigmaTagFilterButton"]:hover,
 QFrame[class="FigmaTagFilterButton"][active="true"] {
     background: __SELECTED_COLOR__;
+}
+
+QFrame#CoverEditorPanel {
+    background: __WINDOW_COLOR__;
+    border: __COVER_EDITOR_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_RADIUS__;
+}
+
+QFrame#CoverEditorAdjustArea,
+QWidget#CoverEditorEditArea,
+QWidget#CoverEditorControls,
+QWidget#CoverEditorImportRow,
+QWidget#CoverEditorActionRow,
+QWidget#CoverThumbnailPickerPage,
+QScrollArea#CoverThumbnailScrollArea,
+QScrollArea#CoverThumbnailScrollArea QWidget#CoverThumbnailViewport {
+    background: transparent;
+    border: none;
+}
+
+QFrame#CoverEditorImportButton {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_IMPORT_RADIUS__;
+}
+
+QFrame#CoverEditorImportButton:hover,
+QToolButton#CoverEditorBrowseButton:hover,
+QToolButton#CoverEditorCancelButton:hover,
+QToolButton#CoverEditorConfirmButton:hover {
+    background: __SELECTED_COLOR__;
+}
+
+QLabel#CoverEditorImportText {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QToolButton#CoverEditorBrowseButton,
+QToolButton#CoverEditorCancelButton,
+QToolButton#CoverEditorConfirmButton {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_IMPORT_RADIUS__;
+    padding: __COVER_EDITOR_ICON_BUTTON_PADDING__;
 }
 
 QLabel[class="FigmaDropdownText"] {

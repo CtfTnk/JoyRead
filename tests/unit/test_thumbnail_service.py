@@ -12,7 +12,12 @@ from joyread.core.models.book import Book
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import BoundedByteCache, CacheService
-from joyread.core.services.thumbnail_service import ThumbnailService, render_contain_blur_thumbnail
+from joyread.core.services.thumbnail_service import (
+    CoverCropState,
+    ThumbnailService,
+    render_contain_blur_thumbnail,
+    render_cover_crop,
+)
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
@@ -97,6 +102,61 @@ def test_thumbnail_service_uses_cached_cover_when_source_missing(tmp_path: Path)
     # and either finds another candidate or returns None.
     cached.unlink()
     assert service.existing_cover_path(missing, (200, 284)) is None
+
+
+def test_thumbnail_service_prefers_explicit_cover_path(tmp_path: Path) -> None:
+    service = _thumbnail_service(tmp_path)
+    explicit = tmp_path / "external-cover.png"
+    explicit.write_bytes(_png_bytes((10, 20), "#445566"))
+    book = Book(**{**_sample_book().__dict__, "cover_thumbnail_path": str(explicit)})
+
+    resolved = service.existing_cover_path(book, (200, 284))
+
+    assert resolved == explicit
+
+
+def test_thumbnail_service_save_edited_cover_uses_stable_managed_path(tmp_path: Path) -> None:
+    service = _thumbnail_service(tmp_path)
+    book = Book(**{**_sample_book().__dict__, "uuid": "custom cover/book"})
+    state = CoverCropState("import:test", 100, 0, 0, (170, 241))
+
+    first = service.save_edited_cover(book, _png_bytes((90, 120), "#aa2244"), state, (170, 241))
+    managed_book = Book(**{**book.__dict__, "cover_thumbnail_path": str(first)})
+    second = service.save_edited_cover(managed_book, _png_bytes((90, 120), "#22aa44"), state, (170, 241))
+
+    assert first == second
+    assert first.name == "custom_cover_book-custom-170x241.png"
+    assert first.exists()
+    assert service._paths.paths.thumbnails / "covers" in first.parents
+    with Image.open(first) as image:
+        assert image.size == (170, 241)
+
+
+def test_cover_crop_fit_center_matches_default_contain_blur_renderer() -> None:
+    source = _png_bytes((320, 80), "#cc2222")
+    size = (170, 241)
+    fill = max(size[0] / 320, size[1] / 80)
+    contain = min(size[0] / 320, size[1] / 80)
+    state = CoverCropState("page:1", (contain / fill) * 100.0, 0, 0, size)
+
+    assert render_cover_crop(source, state, size) == render_contain_blur_thumbnail(source, size)
+
+
+def test_thumbnail_service_loads_cover_source_pages_for_archive_and_pdf(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
+    service = _thumbnail_service(tmp_path)
+    archive_book = _sample_book()
+    pdf_path = tmp_path / "source.pdf"
+    _write_pdf(pdf_path)
+    pdf_book = Book(**{**archive_book.__dict__, "uuid": "pdf-source", "file_path": str(pdf_path), "file_format": "PDF"})
+    unsupported_path = tmp_path / "source.epub"
+    unsupported_path.write_bytes(b"epub placeholder")
+    unsupported_book = Book(
+        **{**archive_book.__dict__, "uuid": "epub-source", "file_path": str(unsupported_path), "file_format": "EPUB"}
+    )
+
+    assert service.load_cover_source_page(archive_book, 0) is not None
+    assert service.load_cover_source_page(pdf_book, 0) is not None
+    assert service.load_cover_source_page(unsupported_book, 0) is None
 
 
 def test_thumbnail_service_generates_pdf_cover_and_detail_thumbnail(tmp_path: Path, qtbot) -> None:  # noqa: ARG001

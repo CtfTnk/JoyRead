@@ -1,14 +1,25 @@
 from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
+from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QLineEdit, QScrollArea, QToolButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
+    QToolButton,
+    QWidget,
+)
 from PIL import Image
 
 from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
+from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -24,6 +35,7 @@ from joyread.ui.widgets.book_detail import (
 )
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
+from joyread.ui.widgets.cover_editor import CoverEditorOverlay, CoverEditorWidget, CoverZoomSpinButton
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.tag_chip import TagChipWidget
@@ -46,6 +58,117 @@ def make_test_image_bytes(size: tuple[int, int] = (40, 60), color: str = "#cc442
     buffer = BytesIO()
     Image.new("RGB", size, color).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def test_cover_editor_matches_figma_geometry_and_zoom_bounds(qtbot) -> None:
+    apply_theme()
+    editor = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(editor)
+    editor.show()
+    assert editor.set_source(make_test_image_bytes((320, 80)), "page:1")
+    QApplication.processEvents()
+
+    crop_rect = editor.canvas._crop_rect()
+
+    assert editor.size().toTuple() == (Theme.cover_editor_width, Theme.cover_editor_height)
+    assert editor.canvas.width() == Theme.cover_editor_width - (Theme.cover_editor_border_width * 2)
+    assert editor.canvas.height() == Theme.cover_editor_adjust_height
+    assert crop_rect.width() == Theme.cover_width
+    assert crop_rect.height() == Theme.cover_height
+    assert editor.canvas.zoom_percent == 100
+    assert editor.zoom_spin.value == 100
+
+    editor.canvas.set_zoom_percent(1)
+    assert editor.canvas.zoom_percent == round(editor.canvas.minimum_zoom_percent)
+    editor.canvas.set_zoom_percent(999)
+    assert editor.canvas.zoom_percent == Theme.cover_editor_max_zoom_percent
+    editor.zoom_spin.set_value(ceil(editor.canvas.minimum_zoom_percent))
+    assert editor.canvas.crop_state().zoom_percent == editor.canvas.minimum_zoom_percent
+
+
+def test_cover_editor_drag_changes_pan_and_confirm_emits_crop_state(qtbot) -> None:
+    apply_theme()
+    overlay = CoverEditorOverlay(ResourceLoader())
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    source = make_test_image_bytes((320, 80))
+    emitted: list[tuple[bytes, object]] = []
+    overlay.save_requested.connect(lambda image_bytes, crop_state: emitted.append((image_bytes, crop_state)))
+
+    assert overlay.open_editor(source, "page:1")
+    QApplication.processEvents()
+    canvas = overlay.editor.canvas
+    center = canvas._crop_rect().center().toPoint()
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=center)
+    qtbot.mouseMove(canvas, pos=center + QPoint(20, 0))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=center + QPoint(20, 0))
+    confirm_button = overlay.editor.findChild(QToolButton, "CoverEditorConfirmButton")
+    assert confirm_button is not None
+    assert confirm_button.iconSize() == QSize(Theme.cover_editor_icon_size, Theme.cover_editor_icon_size)
+    qtbot.mouseClick(confirm_button, Qt.MouseButton.LeftButton)
+
+    assert canvas.crop_state().pan_x > 0
+    assert len(emitted) == 1
+    assert emitted[0][0] == source
+    assert emitted[0][1].source_id == "page:1"
+
+
+def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
+    apply_theme()
+    overlay = CoverEditorOverlay(ResourceLoader())
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    requested: list[tuple[int, int, tuple[int, int]]] = []
+    selected: list[int] = []
+    overlay.thumbnail_batch_requested.connect(
+        lambda start, batch_size, size: requested.append((start, batch_size, size))
+    )
+    overlay.thumbnail_selected.connect(selected.append)
+
+    assert overlay.open_editor(make_test_image_bytes((80, 120)), "page:1")
+    browse_button = overlay.editor.findChild(QToolButton, "CoverEditorBrowseButton")
+    assert browse_button is not None
+    qtbot.mouseClick(browse_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    overlay.apply_thumbnail_batch(
+        DetailThumbnailBatch(
+            book_uuid="book-1",
+            start_index=0,
+            next_index=3,
+            has_more=False,
+            items=tuple(
+                DetailThumbnailItem(index, make_test_image_bytes((40, 60)))
+                for index in range(3)
+            ),
+        )
+    )
+    QApplication.processEvents()
+    thumbnail = overlay.picker.findChild(DetailThumbnailWidget)
+    assert thumbnail is not None
+    qtbot.mouseClick(thumbnail, Qt.MouseButton.LeftButton)
+
+    assert overlay.picker._grid.minimumWidth() == Theme.cover_editor_thumbnail_min_width
+    assert overlay.picker._grid._calculate_columns() == 2
+    assert overlay.picker._grid.width() < Theme.detail_thumbnail_min_width
+    assert requested == [
+        (
+            0,
+            Theme.reader_topic_thumbnail_batch_size,
+            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+        )
+    ]
+    assert selected == [0]
+
+
+def test_cover_zoom_spin_steps_by_editor_theme_amount(qtbot) -> None:
+    apply_theme()
+    spin = CoverZoomSpinButton(100, 1, Theme.cover_editor_max_zoom_percent, "%", ResourceLoader())
+    qtbot.addWidget(spin)
+
+    spin.step_by(Theme.cover_editor_zoom_step)
+    assert spin.value == 100 + Theme.cover_editor_zoom_step
+    spin.set_range(120, Theme.cover_editor_max_zoom_percent)
+    assert spin.value == 120
 
 
 def test_toolbar_uses_figma_content_frame_padding(qtbot) -> None:

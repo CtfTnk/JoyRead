@@ -1,8 +1,10 @@
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QToolButton, QWidget
+from PIL import Image
 
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
@@ -34,6 +36,12 @@ def apply_theme() -> None:
     app = QApplication.instance()
     assert app is not None
     app.setStyleSheet(ResourceLoader().load_stylesheet())
+
+
+def _png_bytes(size: tuple[int, int] = (80, 120), color: str = "#336699") -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 class _DialogFakeTagService:
@@ -950,6 +958,107 @@ def test_detail_plus_opens_allocation_and_confirm_updates_detail_tags(qtbot, mon
             if not chip.is_add_chip
         }
         assert detail_tag_ids == {"tag-action", "tag-comedy"}
+    finally:
+        context.close()
+
+
+def test_detail_cover_editor_opens_and_confirm_save_calls_viewmodel(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        source = _png_bytes((320, 80))
+        book = Book(
+            uuid="book-cover",
+            title="Cover Book",
+            author=None,
+            language_tag="en",
+            book_type="Comic",
+            file_format="CBZ",
+            file_path=str(tmp_path / "cover.cbz"),
+            progress=0.0,
+            cover_thumbnail_path=None,
+            added_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1),
+            last_read_at=None,
+            is_favourite=False,
+        )
+        context.shelf_viewmodel.books = [book]
+        saved: list[tuple[str, Path]] = []
+        target_path = tmp_path / "edited-cover.png"
+        monkeypatch.setattr(context.thumbnail_service, "can_generate_from", lambda _book: True)
+        monkeypatch.setattr(context.thumbnail_service, "load_cover_source_page", lambda _book, _page_index: source)
+        monkeypatch.setattr(context.thumbnail_service, "save_edited_cover", lambda *_args: target_path)
+        monkeypatch.setattr(
+            context.shelf_viewmodel,
+            "set_book_cover_path",
+            lambda book_uuid, path: saved.append((book_uuid, Path(path))),
+        )
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+
+        window._show_cover_editor(book.uuid)
+        qtbot.waitUntil(window.cover_editor_overlay.isVisible, timeout=2000)
+        confirm_button = window.cover_editor_overlay.editor.findChild(QToolButton, "CoverEditorConfirmButton")
+        assert confirm_button is not None
+        qtbot.mouseClick(confirm_button, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert window.dialog_overlay.isVisible()
+        assert [
+            label.text()
+            for label in window.dialog_overlay.panel.findChildren(QLabel)
+            if label.property("class") == "JoyReadDialogTitle"
+        ] == ["Replace Cover"]
+
+        qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: saved == [(book.uuid, target_path)], timeout=2000)
+    finally:
+        context.close()
+
+
+def test_unsupported_book_cover_editor_shows_info_dialog(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        book = Book(
+            uuid="book-epub",
+            title="Novel",
+            author=None,
+            language_tag="en",
+            book_type="Novel",
+            file_format="EPUB",
+            file_path=str(tmp_path / "novel.epub"),
+            progress=0.0,
+            cover_thumbnail_path=None,
+            added_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1),
+            last_read_at=None,
+            is_favourite=False,
+        )
+        context.shelf_viewmodel.books = [book]
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+
+        window._show_cover_editor(book.uuid)
+        QApplication.processEvents()
+
+        assert window.cover_editor_overlay.isHidden()
+        assert window.dialog_overlay.isVisible()
+        assert [
+            label.text()
+            for label in window.dialog_overlay.panel.findChildren(QLabel)
+            if label.property("class") == "JoyReadDialogTitle"
+        ] == ["Cover Editor"]
     finally:
         context.close()
 
