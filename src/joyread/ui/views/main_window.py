@@ -394,6 +394,7 @@ class MainWindow(QMainWindow):
         self._embedded_reader.show()
         self._embedded_reader.raise_()
         self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
         if hasattr(self, "_resize_grip"):
             self._resize_grip.hide()
 
@@ -439,6 +440,7 @@ class MainWindow(QMainWindow):
         self._embedded_reader.show()
         self._embedded_reader.raise_()
         self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
+        self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
         if hasattr(self, "_resize_grip"):
             self._resize_grip.hide()
 
@@ -450,6 +452,7 @@ class MainWindow(QMainWindow):
         reader.cancel()
         reader.hide()
         reader.deleteLater()
+        self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
         if hasattr(self, "_resize_grip"):
             self._resize_grip.show()
             self._resize_grip.raise_()

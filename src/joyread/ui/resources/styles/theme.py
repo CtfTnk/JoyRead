@@ -20,7 +20,7 @@ class Theme:
     # Window and page layout
     window_width = 1200
     window_height = 860
-    window_min_width = 900
+    window_min_width = 700
     window_min_height = 600
     window_corner_radius = 18
     sidebar_width = 260
@@ -43,7 +43,7 @@ class Theme:
     cover_width = 170
     cover_height = 241
     cover_radius = 6
-    book_list_row_width = 400
+    book_list_row_width = 360
     book_list_row_height = 120
     book_list_cover_width = 71
     book_list_cover_height = 100
@@ -111,7 +111,8 @@ class Theme:
     detail_thumbnail_row_padding_vertical = 5
     detail_thumbnail_gap = 20
     detail_thumbnail_row_gap = 10
-    detail_thumbnail_min_width = 400
+    detail_description_narrow_threshold = 550
+    detail_thumbnail_min_width = 360
 
     # Cover editor dialog from Figma node 734:4133.
     cover_editor_width = 360

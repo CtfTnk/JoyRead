@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
+    QBoxLayout,
     QFrame,
     QGridLayout,
     QGraphicsDropShadowEffect,
@@ -271,7 +272,7 @@ class BookDetailPanel(QFrame):
     def _build_description(self) -> QWidget:
         frame = QWidget()
         frame.setObjectName("BookDetailDescription")
-        layout = QHBoxLayout(frame)
+        layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, frame)
         layout.setContentsMargins(
             Theme.detail_description_padding_horizontal,
             Theme.detail_description_padding_vertical,
@@ -280,6 +281,8 @@ class BookDetailPanel(QFrame):
         )
         layout.setSpacing(Theme.detail_description_gap)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+        self._description_layout = layout
+        self._description_narrow = False
 
         cover_panel = QWidget()
         cover_panel.setObjectName("BookDetailCoverPanel")
@@ -311,7 +314,7 @@ class BookDetailPanel(QFrame):
         progress_layout.addWidget(self._progress_percent_label)
         cover_layout.addWidget(progress_unit, alignment=Qt.AlignmentFlag.AlignHCenter)
 
-        layout.addWidget(cover_panel)
+        self._description_cover_panel = cover_panel
 
         content = QWidget()
         content.setObjectName("BookDetailDescriptionContent")
@@ -379,7 +382,9 @@ class BookDetailPanel(QFrame):
         content_layout.addStretch(1)
         content_layout.addWidget(self._build_controls())
 
-        layout.addWidget(content, stretch=1)
+        self._description_content = content
+        layout.addWidget(self._description_cover_panel)
+        layout.addWidget(self._description_content, stretch=1)
         return frame
 
     def _build_controls(self) -> QWidget:
@@ -477,9 +482,28 @@ class BookDetailPanel(QFrame):
             return
         self._tag_box.set_compact_title_mode(self._title_field.display_line_count > 1)
 
+    def _apply_description_layout(self, narrow: bool) -> None:
+        if narrow == self._description_narrow:
+            return
+        self._description_narrow = narrow
+        layout = self._description_layout
+        layout.removeWidget(self._description_cover_panel)
+        layout.removeWidget(self._description_content)
+        if narrow:
+            layout.setDirection(QBoxLayout.Direction.TopToBottom)
+            layout.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
+            layout.addWidget(self._description_cover_panel, 0, Qt.AlignmentFlag.AlignHCenter)
+            layout.addWidget(self._description_content, 0)
+        else:
+            layout.setDirection(QBoxLayout.Direction.LeftToRight)
+            layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(self._description_cover_panel, 0)
+            layout.addWidget(self._description_content, 1)
+
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         QTimer.singleShot(0, self._sync_tag_box_height)
+        self._apply_description_layout(self.width() < Theme.detail_description_narrow_threshold)
 
     def _language_display_name(self, book: Book) -> str:
         if book.language_name:

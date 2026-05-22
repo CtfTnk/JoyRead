@@ -246,13 +246,17 @@ class ReaderHeader(QWidget):
         left_edge = self.topic_button_group.geometry().right() + 12 if self.topic_button_group.width() else 160
         right_edge = 52 + 12
         safe_side = max(left_edge, right_edge)
-        max_width = max(80, self.width() - (safe_side * 2))
+        available = self.width() - (safe_side * 2)
+        if available < 40:
+            self.title.hide()
+            return
         metrics = QFontMetrics(self.title.font())
-        self.title.setFixedWidth(max_width)
-        self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, max_width))
+        self.title.setFixedWidth(available)
+        self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, available))
         self.title.setToolTip(self._full_title if self.title.text() != self._full_title else "")
         self.title.move((self.width() - self.title.width()) // 2, (self.height() - self.title.height()) // 2)
         self.title.raise_()
+        self.title.show()
 
     def _toggle_zoom(self) -> None:
         window = self.window()
