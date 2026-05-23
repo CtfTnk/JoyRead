@@ -54,11 +54,38 @@ class ImportPreflightResult:
 
 @dataclass(frozen=True)
 class _ValidationFailure:
+    """Internal signal that a single source file cannot be imported.
+
+    Carries the reported ``status`` (``failed`` / ``skipped`` / etc.) and a
+    user-facing ``message``. ``ImportService`` raises this instead of a
+    generic exception so the batch loop can record a per-item result
+    without aborting the rest of the batch.
+    """
+
     status: str
     message: str
 
 
 class ImportService:
+    """Orchestrates the multi-step process of importing books into the library.
+
+    Each import (whether triggered from a file dialog, a folder scan, or a
+    JSON manifest) walks the same pipeline: validate source, hash content,
+    check for duplicates, copy file into the managed ``Books/`` directory,
+    insert the database rows (``book_files`` + ``books`` + ``import_items``),
+    and report a per-item result. The service depends on
+    :class:`HashService` for content hashing,
+    :class:`ArchiveImageService` / :class:`PdfImageService` for validating
+    that the file is actually openable, and a :class:`DatabaseInterpreter`
+    for serialized writes.
+
+    Why hashing happens before copying: duplicate detection uses the content
+    hash, so we cannot decide whether the copy is needed until the hash is
+    known. The trade-off is that large duplicates are read twice (hash, then
+    copy), but the alternative (copy speculatively and unlink on duplicate)
+    leaves stray files when the process crashes mid-import.
+    """
+
     def __init__(
         self,
         paths: PathService,
@@ -83,7 +110,17 @@ class ImportService:
         *,
         archive_internal_max_depth: int | None = None,
     ) -> ImportBatchResult:
+        """Import every entry in a JSON manifest file.
+
+        Manifests are JoyRead's machine-readable batch import format used by
+        scripts and the "Import from manifest" UI option. The version field
+        is checked because format v1 hard-codes the schema for ``items``;
+        bumping the version is a deliberate breaking change and we'd rather
+        fail loudly than silently misread an unfamiliar shape.
+        """
+
         path = Path(manifest_path).expanduser()
+        logger.debug("Reading import manifest path=%s", path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         if int(raw.get("version", 0)) != 1:
             raise ValueError("Unsupported import manifest version.")
@@ -102,6 +139,14 @@ class ImportService:
         *,
         archive_internal_max_depth: int | None = None,
     ) -> ImportBatchResult:
+        """Import a list of explicit source paths chosen by the user.
+
+        Convenience wrapper around :meth:`import_items` for the most common
+        case: the user picked one or more files in a file dialog. No manifest
+        is involved, so per-item metadata defaults are used.
+        """
+
+        logger.info("Import files requested count=%d max_depth=%s", len(paths), archive_internal_max_depth)
         return self.import_items(
             [{"source_path": str(path)} for path in paths],
             manifest_path=None,
@@ -114,15 +159,32 @@ class ImportService:
         *,
         archive_internal_max_depth: int | None = None,
     ) -> ImportPreflightResult:
+        """Validate a source without copying or inserting any rows.
+
+        Used by the "Open & Import" flow: before the reader opens the file,
+        the UI submits a preflight to ``TaskService`` so it can either start
+        the real import in the background or surface the failure dialog
+        synchronously. Cheap because it only stats and inspects the source,
+        no hashing or copying.
+        """
+
         source_path = Path(path).expanduser()
+        logger.debug("Import preflight start path=%s max_depth=%s", source_path, archive_internal_max_depth)
         failure = self._validate_source(source_path, archive_internal_max_depth)
         if failure is not None:
+            logger.debug(
+                "Import preflight rejected path=%s status=%s message=%s",
+                source_path,
+                failure.status,
+                failure.message,
+            )
             return ImportPreflightResult(
                 source_path=str(source_path),
                 can_import=False,
                 status=failure.status,
                 message=failure.message,
             )
+        logger.debug("Import preflight ok path=%s", source_path)
         return ImportPreflightResult(str(source_path), True, "importable")
 
     def import_folder(
@@ -134,6 +196,7 @@ class ImportService:
     ) -> ImportBatchResult:
         folder = Path(path).expanduser()
         files = _supported_files_within_depth(folder, max_depth=max_depth)
+        logger.info("Import folder requested path=%s depth=%d matched=%d", folder, max_depth, len(files))
         return self.import_files(files, archive_internal_max_depth=archive_internal_max_depth)
 
     def import_items(
@@ -143,6 +206,16 @@ class ImportService:
         manifest_path: Path | None,
         archive_internal_max_depth: int | None = None,
     ) -> ImportBatchResult:
+        """Core import loop: validate, hash, copy, insert per item.
+
+        Each entry in ``items`` is a dict with at least ``source_path``;
+        optional keys (``title``, ``author``, ``language_tag``, ``tag_ids``,
+        etc.) come from the manifest format. Failures on individual items
+        are recorded as :class:`ImportItemResult` rows in the returned batch
+        so the caller can show a per-file outcome instead of just
+        "the import failed".
+        """
+
         batch_id = str(uuid4())
         started_at = _now()
         manifest_display = str(manifest_path) if manifest_path is not None else None
@@ -285,6 +358,12 @@ class ImportService:
     ) -> ImportItemResult:
         failure = self._validate_source(source_path, archive_internal_max_depth)
         if failure is not None:
+            logger.debug(
+                "Import item rejected source=%s status=%s message=%s",
+                source_path,
+                failure.status,
+                failure.message,
+            )
             return self._record_item(
                 batch_id,
                 source_display,
@@ -293,9 +372,11 @@ class ImportService:
                 message=failure.message,
             )
 
+        logger.debug("Import item hashing source=%s algorithm=%s", source_path, self._hash_algorithm)
         content_hash = self._hash_service.compute(source_path, self._hash_algorithm)
         duplicate = self._find_duplicate(content_hash)
         if duplicate is not None:
+            logger.info("Import duplicate detected source=%s book_id=%s", source_path, duplicate["book_id"])
             return self._record_item(
                 batch_id,
                 source_display,
@@ -307,6 +388,7 @@ class ImportService:
             )
 
         storage_path = self._copy_to_books(source_path, content_hash)
+        logger.debug("Import item copied source=%s target=%s", source_path, storage_path)
         copied_hash = self._hash_service.compute(storage_path, self._hash_algorithm)
         if copied_hash != content_hash:
             storage_path.unlink(missing_ok=True)
@@ -354,6 +436,7 @@ class ImportService:
         )
 
     def _validate_source(self, source_path: Path, archive_internal_max_depth: int | None) -> _ValidationFailure | None:
+        logger.debug("Validating import source path=%s", source_path)
         if not source_path.exists():
             return _ValidationFailure("failed", f"Source file does not exist: {source_path}")
         if not source_path.is_file():
@@ -362,10 +445,20 @@ class ImportService:
         if suffix not in BOOK_EXTENSIONS:
             return _ValidationFailure("failed", f"Unsupported book format: {suffix or source_path.name}")
         if suffix in ARCHIVE_EXTENSIONS:
+            # Import validation decodes the first archive page through the
+            # archive service. That is intentionally slower than suffix checks:
+            # it prevents creating a DB row for an archive the reader cannot
+            # actually extract later.
             validation = self._archive_service.validate_archive(
                 source_path,
                 password_policy=ArchivePasswordPolicy.FORBID,
                 max_depth=archive_internal_max_depth if archive_internal_max_depth is not None else 2,
+            )
+            logger.debug(
+                "Archive import validation path=%s code=%s pages=%s",
+                source_path,
+                validation.code.value,
+                validation.page_count,
             )
             if validation.code != ArchiveValidationCode.OK:
                 if validation.code in {ArchiveValidationCode.PASSWORD_REQUIRED, ArchiveValidationCode.PASSWORD_REJECTED}:
@@ -373,6 +466,7 @@ class ImportService:
                 return _ValidationFailure("failed", validation.message)
         if suffix in PDF_EXTENSIONS:
             validation = self._pdf_service.validate_pdf(source_path)
+            logger.debug("PDF import validation path=%s valid=%s", source_path, validation.is_valid)
             if not validation.is_valid:
                 return _ValidationFailure("failed", validation.message)
         return None
@@ -383,8 +477,10 @@ class ImportService:
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{content_hash}{suffix}"
         if target.exists():
+            logger.debug("Import copy target already exists: %s", target)
             return target
         temp = target.with_suffix(f"{target.suffix}.tmp-{uuid4().hex}")
+        logger.debug("Copying import source via temp file source=%s temp=%s target=%s", source_path, temp, target)
         shutil.copy2(source_path, temp)
         temp.replace(target)
         return target

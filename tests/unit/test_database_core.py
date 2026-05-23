@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import logging
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -229,6 +230,29 @@ def test_database_interpreter_respects_priority_before_start(tmp_path: Path) -> 
 
     assert seen == ["high", "low"]
     database.close()
+
+
+def test_database_interpreter_debug_logs_callback_name(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    database = DatabaseInterpreter(tmp_path / "callback-trace.sqlite3", autostart=False)
+
+    def trace_callback(connection) -> int:  # noqa: ANN001 - sqlite connection type is evident from caller.
+        return connection.execute("SELECT 1").fetchone()[0]
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="joyread.infrastructure.database.database_interpreter"):
+            future = database.submit(trace_callback, DatabasePriority.NORMAL)
+            database.start()
+            assert future.result(timeout=2) == 1
+    finally:
+        database.close()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("DB request queued" in message and "trace_callback" in message for message in messages)
+    assert any("DB request starting" in message and "trace_callback" in message for message in messages)
+    assert any("DB request completed" in message and "trace_callback" in message for message in messages)
 
 
 def test_settings_config_is_outside_storage_root(tmp_path: Path) -> None:

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import platform
 import sys
 from pathlib import Path
 
@@ -26,7 +28,13 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     # visible. Once the writable logs path is known we upgrade to the rotating
     # file handler. Both configure calls are idempotent on the root logger.
     configure_early_logging()
-    logger.info("JoyRead starting; argv=%s", argv[1:])
+    logger.info(
+        "JoyRead starting pid=%d platform=%s python=%s argv=%s",
+        os.getpid(),
+        platform.platform(),
+        platform.python_version(),
+        argv[1:],
+    )
     app = QApplication.instance() or QApplication(argv)
     app.setQuitOnLastWindowClosed(True)
     context = create_app_context()

@@ -24,7 +24,9 @@ class SqliteTagRepository(TagRepository):
         self._database = database
 
     def list_tags(self) -> list[Tag]:
-        return self._database.execute(_list_tags, DatabasePriority.HIGH)
+        tags = self._database.execute(_list_tags, DatabasePriority.HIGH)
+        logger.debug("list_tags returned count=%d", len(tags))
+        return tags
 
     def get_tag(self, tag_id: str) -> Tag | None:
         return self._database.execute(
@@ -152,6 +154,8 @@ class SqliteTagRepository(TagRepository):
         return self._database.execute(write, DatabasePriority.NORMAL)
 
     def link_book(self, tag_id: str, book_id: str) -> None:
+        logger.debug("link_book tag=%s book=%s", tag_id, book_id)
+
         def write(connection: sqlite3.Connection) -> None:
             now = _now()
             connection.execute(
@@ -166,6 +170,7 @@ class SqliteTagRepository(TagRepository):
         self._database.execute(write, DatabasePriority.NORMAL)
 
     def unlink_book(self, tag_id: str, book_id: str) -> None:
+        logger.debug("unlink_book tag=%s book=%s", tag_id, book_id)
         self._database.execute(
             lambda connection: connection.execute(
                 "DELETE FROM book_tags WHERE tag_id = ? AND book_id = ?",
@@ -176,6 +181,9 @@ class SqliteTagRepository(TagRepository):
 
     def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
         normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
+        logger.debug(
+            "set_book_tag_ids book=%s tag_count=%d", book_id, len(normalized_ids)
+        )
 
         def write(connection: sqlite3.Connection) -> None:
             now = _now()

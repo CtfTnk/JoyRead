@@ -24,6 +24,15 @@ SUPPORTED_READER_EXTENSIONS = ARCHIVE_EXTENSIONS | PDF_EXTENSIONS | EPUB_EXTENSI
 
 
 class ReaderImageSession(Protocol):
+    """Common interface every image-style reader session implements.
+
+    Archive (CBZ/CBR/ZIP/RAR/7Z) and PDF sessions both expose the same
+    surface: a flat ``page_count``, an indexable ``get_page`` for a single
+    page, and ``get_pages`` for batched fetches. The ViewModel only knows
+    the protocol — concrete implementations live in
+    :mod:`joyread.core.archive` and :mod:`joyread.core.reader.pdf_session`.
+    """
+
     page_count: int
 
     def get_page(self, index: int):  # noqa: ANN201 - archive and PDF page models share attributes.
@@ -37,7 +46,14 @@ class ReaderImageSession(Protocol):
 
 
 class ReaderSessionService:
-    """Opens supported reader documents and loads bounded page payloads."""
+    """Opens supported reader documents and loads bounded page payloads.
+
+    Acts as a polymorphic dispatch layer: given any supported source
+    path, it picks the archive or PDF backend and returns a session that
+    speaks :class:`ReaderImageSession`. EPUB has its own session type
+    handled by :class:`EpubSessionService` because the page model is
+    different (DOM-based, not image-based).
+    """
 
     def __init__(
         self,

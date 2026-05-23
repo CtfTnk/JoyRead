@@ -619,6 +619,10 @@ class NovelReaderShellWidget(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        logger.info(
+            "NovelReaderShellWidget close: book=%s",
+            getattr(self.viewmodel, "book_uuid", None),
+        )
         self.cancel()
         self.panel_filter.deactivate_all()
         super().closeEvent(event)

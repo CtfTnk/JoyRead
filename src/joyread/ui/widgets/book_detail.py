@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from math import ceil
 from pathlib import Path
@@ -33,6 +34,9 @@ from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class DetailReadButton(QFrame):
@@ -227,6 +231,8 @@ class BookDetailPanel(QFrame):
         tags: Iterable[Tag] = (),
     ) -> None:
         book_changed = self._book is None or self._book.uuid != book.uuid
+        if book_changed:
+            logger.debug("BookDetailPanel set_book book=%s title=%r", book.uuid, book.title)
         self._book = book
         self._title_field.set_value(book.title)
         self._author_field.set_value(book.author or "None")
@@ -485,6 +491,11 @@ class BookDetailPanel(QFrame):
     def _apply_description_layout(self, narrow: bool) -> None:
         if narrow == self._description_narrow:
             return
+        logger.debug(
+            "BookDetailPanel layout direction=%s width=%d",
+            "vertical" if narrow else "horizontal",
+            self.width(),
+        )
         self._description_narrow = narrow
         layout = self._description_layout
         layout.removeWidget(self._description_cover_panel)

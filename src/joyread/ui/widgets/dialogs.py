@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal as QtSignal
@@ -25,6 +26,9 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class DialogTextButton(QFrame):
@@ -692,6 +696,10 @@ class JoyReadDialogPanel(QFrame):
     def sizeHint(self) -> QSize:
         return QSize(Theme.dialog_width, self._preferred_height or self.layout().sizeHint().height())
 
+    @property
+    def title_text(self) -> str:
+        return self._title_label.text()
+
     def set_info(self, title: str, message: str, button_text: str) -> None:
         self._set_title(title)
         self._set_content_widget(DialogMessageContent(message))
@@ -1137,12 +1145,14 @@ class JoyReadDialogOverlay(QWidget):
         if self._before_accept is not None and not self._before_accept():
             return
         callback = self._on_accept
+        logger.info("Dialog accepted title=%r", self._panel.title_text)
         self._clear_and_hide()
         if callback is not None:
             callback()
 
     def _reject(self) -> None:
         callback = self._on_reject
+        logger.info("Dialog rejected title=%r", self._panel.title_text)
         self._clear_and_hide()
         if callback is not None:
             callback()

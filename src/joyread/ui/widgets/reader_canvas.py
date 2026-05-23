@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import (
     QColor,
@@ -20,6 +22,9 @@ from PySide6.QtWidgets import QWidget
 
 from joyread.core.reader import ReaderLayoutResult, ReaderPageImage
 from joyread.ui.resources.styles.theme import Theme
+
+
+logger = logging.getLogger(__name__)
 
 
 # Spinner geometry expressed as a fraction of the placeholder rect's shorter
@@ -76,6 +81,7 @@ class ReaderCanvas(QWidget):
         # on top of the new one for a frame. The same defence catches
         # out-of-order arrivals from the worker pool.
         if self._layout_result is not None and not self._layout_draws_page(image.page_index):
+            logger.debug("ReaderCanvas drop stale page=%d", image.page_index)
             return
         existing = self._pixmaps.get(image.page_index)
         if existing is not None and not existing.isNull():
@@ -85,6 +91,13 @@ class ReaderCanvas(QWidget):
             self._pixmaps[image.page_index] = pixmap
             self._refresh_spinner_state()
             self.update()
+            logger.debug("ReaderCanvas accept page=%d", image.page_index)
+        else:
+            logger.warning(
+                "ReaderCanvas failed to decode page=%d bytes=%d",
+                image.page_index,
+                len(image.image_bytes),
+            )
 
     def clear_pages(self) -> None:
         self._layout_result = None

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QPoint, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
@@ -21,6 +23,9 @@ from joyread.ui.widgets.menus import (
 )
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class ShelfView(QWidget):
@@ -47,6 +52,7 @@ class ShelfView(QWidget):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        logger.info("ShelfView init")
         self.setObjectName("ShelfContent")
         self.setProperty("sidebarVisible", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -343,11 +349,17 @@ class ShelfView(QWidget):
             return
         self._apply_detail_thumbnail_batch_finished(book_uuid, has_more)
 
-    def _apply_detail_thumbnail_batch_finished(self, book_uuid: str, has_more: bool) -> None:
+    def _apply_detail_thumbnail_batch_finished(
+        self,
+        book_uuid: str,
+        has_more: bool,
+        *,
+        force_next: bool = False,
+    ) -> None:
         if not has_more:
             self.detail_panel.mark_thumbnail_complete(book_uuid)
             return
-        if self.detail_panel.isVisible() and self.detail_panel.is_near_thumbnail_bottom():
+        if force_next or (self.detail_panel.isVisible() and self.detail_panel.is_near_thumbnail_bottom()):
             QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
 
     def _request_next_detail_thumbnail_batch(self, book_uuid: str) -> None:
@@ -393,7 +405,10 @@ class ShelfView(QWidget):
         if not current_finishes:
             return False
         _, has_more = current_finishes[-1]
-        self._apply_detail_thumbnail_batch_finished(current_book_uuid, has_more)
+        # The batch-finished signal already decided there is more thumbnail
+        # work; it was only held back because a popup was open. Queue the next
+        # batch once the popup closes so the detail panel does not stall.
+        self._apply_detail_thumbnail_batch_finished(current_book_uuid, has_more, force_next=True)
         return True
 
     def _resume_detail_thumbnail_loading_if_needed(self) -> None:

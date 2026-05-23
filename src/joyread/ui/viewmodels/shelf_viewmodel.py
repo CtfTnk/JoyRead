@@ -13,6 +13,13 @@ from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.language import Language
 from joyread.core.models.tag import Tag
+from joyread.core.search import (
+    BookSearchDocument,
+    BookSearchQuery,
+    build_book_search_document,
+    matches_book_search,
+    parse_book_search_query,
+)
 from joyread.core.services.cache_service import BoundedByteCache
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.tag_service import TagService
@@ -58,6 +65,34 @@ class ShelfKey(StrEnum):
 
 
 class ShelfViewModel:
+    """ViewModel for the bookshelf grid/list and detail panel.
+
+    Owns the shelf's UI state — the current section (All / Recent /
+    Favourites / Hidden / a collection / a tag filter), the search query,
+    the active sort and file filter, the selection set, and the in-memory
+    list of :class:`Book` rows.
+
+    **Threading contract.** Most callers (View slots, ``set_filter``,
+    ``open_book``) run on the Qt UI thread and update state synchronously,
+    then fire ``state_changed`` so the view repaints. Three signals,
+    however, are emitted from inside a :class:`TaskService` worker thread:
+
+    - ``cover_ready``
+    - ``page_thumbnail_ready``
+    - ``detail_thumbnail_batch_finished``
+
+    These are produced by thumbnail jobs running off-UI. Receivers that
+    touch widgets (paint, layout) MUST re-marshal back onto the Qt UI
+    thread, typically via ``QTimer.singleShot(0, ...)`` or by routing
+    through a Qt signal. Treat anything not on this short list as UI-thread.
+
+    The token ``_detail_load_token`` exists to defeat race conditions when
+    the user opens detail panel for book A, then quickly switches to book B
+    before A's thumbnail batch finishes. Each detail-panel open bumps the
+    token; late batches compare against the captured token and drop their
+    result if they're stale.
+    """
+
     def __init__(
         self,
         library_service: LibraryService,
@@ -105,6 +140,7 @@ class ShelfViewModel:
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.languages: list[Language] = []
+        self._search_documents_by_book_id: dict[str, BookSearchDocument] = {}
         self.available_tags: list[Tag] = []
         self._book_tag_ids_by_book: dict[str, tuple[str, ...]] = {}
         self._tag_filter_ids: tuple[str, ...] = ()
@@ -174,7 +210,9 @@ class ShelfViewModel:
     @property
     def visible_books(self) -> list[Book]:
         books = [book for book in self.books if self._book_in_current_shelf(book)]
-        books = [book for book in books if book.matches_query(self.search_query)]
+        search_query = parse_book_search_query(self.search_query)
+        if not search_query.is_empty:
+            books = [book for book in books if self._book_matches_search(book, search_query)]
         books = [book for book in books if self._book_matches_filter(book)]
         books = [book for book in books if self._book_matches_tag_filter(book)]
         if self.current_shelf == ShelfKey.RECENT:
@@ -200,6 +238,15 @@ class ShelfViewModel:
         return self.current_shelf == ShelfKey.RECENT.value or self.current_shelf.startswith("collection:")
 
     def load_books(self) -> None:
+        """Refresh every shelf-backing list from the library service.
+
+        Reloads books, collections, languages, search documents, and the
+        book → tag-ids index in one shot. Called on app start, after an
+        import, after a tag rename/delete, and after any operation that
+        changes the underlying database. The view flashes through
+        ``is_loading=True`` so the spinner state shows for slow refreshes.
+        """
+
         logger.debug("Shelf load_books")
         self.is_loading = True
         self.error_message = None
@@ -208,6 +255,7 @@ class ShelfViewModel:
             self.books = self._library_service.list_books()
             self.collections = self._library_service.list_collections()
             self.languages = self._library_service.list_languages()
+            self._refresh_search_documents()
             self._refresh_book_tag_index()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
             logger.warning("Shelf load_books failed: %s", exc, exc_info=True)
@@ -215,6 +263,7 @@ class ShelfViewModel:
             self.books = []
             self.collections = []
             self.languages = []
+            self._search_documents_by_book_id = {}
             self.available_tags = []
             self._book_tag_ids_by_book = {}
         finally:
@@ -272,6 +321,7 @@ class ShelfViewModel:
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
             return
+        logger.debug("Shelf current_shelf changed %s -> %s", self.current_shelf, shelf)
         self.current_shelf = shelf
         self.clear_selection(emit_state=False)
         self._set_detail_book_uuid(None)
@@ -280,6 +330,7 @@ class ShelfViewModel:
     def set_search_query(self, query: str) -> None:
         if query == self.search_query:
             return
+        logger.debug("Shelf search query changed length=%d", len(query))
         self.search_query = query
         self.clear_selection(emit_state=False)
         self._emit_state()
@@ -292,6 +343,7 @@ class ShelfViewModel:
             self.sort_ascending = ascending
             changed = True
         if changed:
+            logger.debug("Shelf sort changed field=%s ascending=%s", self.sort_field.value, self.sort_ascending)
             self._save_shelf_preferences()
             self._emit_state()
 
@@ -300,6 +352,7 @@ class ShelfViewModel:
         if normalized_filter == self.file_filter:
             return
         self.file_filter = normalized_filter
+        logger.debug("Shelf file filter changed filter=%s", self.file_filter.value)
         self.clear_selection(emit_state=False)
         self._save_shelf_preferences()
         self._emit_state()
@@ -309,6 +362,7 @@ class ShelfViewModel:
         if normalized_ids == self._tag_filter_ids:
             return
         self._tag_filter_ids = normalized_ids
+        logger.debug("Shelf tag filter changed count=%d", len(normalized_ids))
         self.clear_selection(emit_state=False)
         self._refresh_book_tag_index()
         self._emit_state()
@@ -358,6 +412,7 @@ class ShelfViewModel:
         if normalized_mode == self.view_mode:
             return
         self.view_mode = normalized_mode
+        logger.debug("Shelf view mode changed mode=%s", self.view_mode.value)
         self._save_shelf_preferences()
         self._emit_state()
 
@@ -419,26 +474,39 @@ class ShelfViewModel:
         self.book_open_at_requested.emit(book_uuid, normalized_index)
 
     def apply_reader_progress(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        """Optimistically reflect reader progress on the shelf row.
+
+        Called when the reader emits a progress update. Updates the in-memory
+        ``Book`` row's ``progress`` and ``last_read_at`` so the shelf can
+        repaint immediately. The actual database write is performed
+        separately by the reader through ``LibraryService.set_progress``;
+        if the disk write fails, the next ``load_books`` will overwrite the
+        optimistic value. ``page_index`` is accepted for symmetry with the
+        reader signal but is not stored at the shelf level.
+        """
+
         del page_index
         now = datetime.now()
         changed = False
+        changed_books: list[Book] = []
         next_books: list[Book] = []
         normalized_progress = max(0.0, min(100.0, progress_percent)) / 100.0
         for book in self.books:
             if book.uuid == book_uuid:
-                next_books.append(
-                    replace(
-                        book,
-                        progress=normalized_progress,
-                        last_read_at=now,
-                        updated_at=now,
-                    )
+                updated = replace(
+                    book,
+                    progress=normalized_progress,
+                    last_read_at=now,
+                    updated_at=now,
                 )
+                next_books.append(updated)
+                changed_books.append(updated)
                 changed = True
             else:
                 next_books.append(book)
         if changed:
             self.books = next_books
+            self._record_search_documents(changed_books)
             self._emit_state()
 
     def toggle_favourite(self, book_uuid: str) -> None:
@@ -828,15 +896,19 @@ class ShelfViewModel:
 
     def _handle_favourite_success(self, target_ids: tuple[str, ...], is_favourite: bool) -> None:
         changed = False
+        changed_books: list[Book] = []
         next_books: list[Book] = []
         for book in self.books:
             if book.uuid in target_ids and book.is_favourite != is_favourite:
-                next_books.append(book.with_favourite(is_favourite))
+                updated = book.with_favourite(is_favourite)
+                next_books.append(updated)
+                changed_books.append(updated)
                 changed = True
             else:
                 next_books.append(book)
         if changed:
             self.books = next_books
+            self._record_search_documents(changed_books)
             self._emit_state()
 
     def _handle_book_metadata_success(
@@ -847,19 +919,24 @@ class ShelfViewModel:
         language_tag: str | None,
         language_name: str | None,
     ) -> None:
-        self.books = [
-            replace(
-                book,
-                title=title,
-                author=author,
-                language_tag=language_tag,
-                language_name=language_name,
-                updated_at=datetime.now(),
-            )
-            if book.uuid == book_uuid
-            else book
-            for book in self.books
-        ]
+        updated_book: Book | None = None
+        next_books: list[Book] = []
+        for book in self.books:
+            if book.uuid == book_uuid:
+                updated_book = replace(
+                    book,
+                    title=title,
+                    author=author,
+                    language_tag=language_tag,
+                    language_name=language_name,
+                    updated_at=datetime.now(),
+                )
+                next_books.append(updated_book)
+            else:
+                next_books.append(book)
+        self.books = next_books
+        if updated_book is not None:
+            self._record_search_documents((updated_book,))
         self._emit_state()
 
     def _handle_book_metadata_failure(self, error: Exception) -> None:
@@ -869,12 +946,17 @@ class ShelfViewModel:
 
     def _handle_book_cover_success(self, book_uuid: str, path: Path) -> None:
         path_text = str(path)
-        self.books = [
-            replace(book, cover_thumbnail_path=path_text, updated_at=datetime.now())
-            if book.uuid == book_uuid
-            else book
-            for book in self.books
-        ]
+        updated_book: Book | None = None
+        next_books: list[Book] = []
+        for book in self.books:
+            if book.uuid == book_uuid:
+                updated_book = replace(book, cover_thumbnail_path=path_text, updated_at=datetime.now())
+                next_books.append(updated_book)
+            else:
+                next_books.append(book)
+        self.books = next_books
+        if updated_book is not None:
+            self._record_search_documents((updated_book,))
         self._record_cover(book_uuid, path, force=True)
         self._emit_state()
         self.book_cover_updated.emit(book_uuid, path)
@@ -1036,6 +1118,37 @@ class ShelfViewModel:
             return True
         return book.file_format.upper() == self.file_filter.value.upper()
 
+    def _book_matches_search(self, book: Book, query: BookSearchQuery) -> bool:
+        document = self._search_documents_by_book_id.get(book.uuid)
+        if document is None:
+            # Search documents are cached because ``visible_books`` can be
+            # recomputed many times during one render. Rebuild lazily if a
+            # book appeared through a targeted refresh instead of load_books().
+            document = self._build_search_document(book)
+            self._search_documents_by_book_id[book.uuid] = document
+        return matches_book_search(document, query)
+
+    def _refresh_search_documents(self) -> None:
+        """Pre-build a search document for every book on the shelf.
+
+        Search matching uses tokenized, normalized fields (title/author).
+        Building one document per typed character would be wasted work, so
+        we cache them. This call is invoked after :meth:`load_books`;
+        targeted updates use :meth:`_record_search_documents` instead.
+        """
+
+        self._search_documents_by_book_id = {
+            book.uuid: self._build_search_document(book)
+            for book in self.books
+        }
+
+    def _record_search_documents(self, books: Iterable[Book]) -> None:
+        for book in books:
+            self._search_documents_by_book_id[book.uuid] = self._build_search_document(book)
+
+    def _build_search_document(self, book: Book) -> BookSearchDocument:
+        return build_book_search_document(book.uuid, book.title, book.author)
+
     def _book_matches_tag_filter(self, book: Book) -> bool:
         if not self._tag_filter_ids:
             return True
@@ -1043,6 +1156,14 @@ class ShelfViewModel:
         return set(self._tag_filter_ids).issubset(book_tag_ids)
 
     def _refresh_book_tag_index(self) -> None:
+        """Refresh the book → tag-ids lookup used by the tag filter.
+
+        ``self._book_tag_ids_by_book`` powers :meth:`_book_matches_tag_filter`
+        — keeping it in memory avoids hitting the tag repository per book on
+        every filter pass. Repository failure is degraded (empty index) so
+        the shelf can still render rows, just without tag-based filtering.
+        """
+
         book_ids = tuple(book.uuid for book in self.books)
         if self._tag_service is None:
             self.available_tags = []
@@ -1107,10 +1228,12 @@ class ShelfViewModel:
             return None
         current = self._book_by_uuid(book_uuid)
         if current is None:
+            self._record_search_documents((refreshed,))
             return refreshed
         if current == refreshed:
             return refreshed
         self.books = [refreshed if book.uuid == book_uuid else book for book in self.books]
+        self._record_search_documents((refreshed,))
         self._emit_state()
         return refreshed
 
@@ -1165,12 +1288,23 @@ class ShelfViewModel:
 
     def _handle_cover_result(self, book_uuid: str, path: Path | None) -> None:
         self._pending_cover_ids.discard(book_uuid)
-        if path is None or not any(book.uuid == book_uuid for book in self.books):
+        if path is None:
+            logger.debug("Cover generation returned no path book=%s", book_uuid)
+            return
+        if not any(book.uuid == book_uuid for book in self.books):
+            logger.debug("Cover generation result dropped for stale book=%s path=%s", book_uuid, path)
             return
         self._record_cover(book_uuid, path)
 
     def _handle_detail_thumbnail_batch_result(self, token: int, batch: DetailThumbnailBatch) -> None:
         if token != self._detail_load_token or self.detail_book_uuid != batch.book_uuid:
+            logger.debug(
+                "Detail thumbnail batch dropped token=%d active_token=%d batch_book=%s detail_book=%s",
+                token,
+                self._detail_load_token,
+                batch.book_uuid,
+                self.detail_book_uuid,
+            )
             return
 
         self._detail_batch_pending = False
@@ -1183,6 +1317,11 @@ class ShelfViewModel:
 
     def _handle_detail_thumbnail_batch_failure(self, token: int) -> None:
         if token != self._detail_load_token:
+            logger.debug(
+                "Detail thumbnail failure dropped token=%d active_token=%d",
+                token,
+                self._detail_load_token,
+            )
             return
         self._detail_batch_pending = False
         self._detail_batch_handle = None

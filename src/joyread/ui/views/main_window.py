@@ -265,6 +265,12 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_open_import_preflight(self, source_path: Path, settings, result) -> None:  # noqa: ANN001
+        logger.debug(
+            "Open & Import preflight result path=%s can_import=%s status=%s",
+            source_path,
+            result.can_import,
+            result.status,
+        )
         if result.can_import:
             self._start_open_and_import(source_path, settings)
             return
@@ -283,6 +289,7 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.show_info("Open & Import Failed", result.message or "This file cannot be imported.")
 
     def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
+        logger.info("Open & Import starting path=%s", source_path)
         self._show_reader_window(source_path, title=source_path.stem)
         self._context.task_service.submit(
             "open-and-import-file",
@@ -328,6 +335,7 @@ class MainWindow(QMainWindow):
         if not file_paths:
             return
         settings = self._settings_for_import()
+        logger.info("Import files selected count=%d", len(file_paths))
         self._context.task_service.submit(
             "import-files",
             lambda: self._context.import_service.import_files(
@@ -347,6 +355,7 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         settings = self._settings_for_import()
+        logger.info("Import folder selected path=%s depth=%d", directory, settings.import_folder_max_depth)
         self._context.task_service.submit(
             "import-folder",
             lambda: self._context.import_service.import_folder(
@@ -366,6 +375,7 @@ class MainWindow(QMainWindow):
         title: str | None = None,
         start_page_index: int | None = None,
     ) -> None:  # noqa: ANN001
+        logger.debug("Showing reader window path=%s book=%s start_page=%s", path, getattr(book, "uuid", None), start_page_index)
         reader = ReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
         reader.progress_changed.connect(self._handle_reader_progress_changed)
         reader.closed.connect(lambda reader=reader: self._forget_reader_window(reader))
@@ -447,6 +457,7 @@ class MainWindow(QMainWindow):
     def _close_embedded_reader(self) -> None:
         if self._embedded_reader is None:
             return
+        logger.debug("Closing embedded reader")
         reader = self._embedded_reader
         self._embedded_reader = None
         reader.cancel()
@@ -460,6 +471,7 @@ class MainWindow(QMainWindow):
     def _forget_reader_window(self, reader: ReaderWindow | NovelReaderWindow) -> None:
         if reader in self._reader_windows:
             self._reader_windows.remove(reader)
+            logger.debug("Reader window forgotten active=%d", len(self._reader_windows))
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._close_embedded_reader()
@@ -468,6 +480,12 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
     def _handle_reader_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
+        logger.debug(
+            "Reader progress callback book=%s page=%d percent=%.2f",
+            book_uuid,
+            page_index,
+            progress_percent,
+        )
         self._context.shelf_viewmodel.apply_reader_progress(book_uuid, page_index, progress_percent)
 
     def _settings_for_reader_launch(self):
@@ -479,6 +497,7 @@ class MainWindow(QMainWindow):
         return self._context.settings
 
     def _reload_after_background_import(self) -> None:
+        logger.debug("Reloading shelf after background import")
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
@@ -493,6 +512,7 @@ class MainWindow(QMainWindow):
         if not manifest_path:
             return
         settings = self._settings_for_import()
+        logger.info("Import manifest selected path=%s", manifest_path)
         self._context.task_service.submit(
             "import-manifest",
             lambda: self._context.import_service.import_manifest(
@@ -504,6 +524,13 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_import_finished(self, result) -> None:  # noqa: ANN001
+        logger.info(
+            "Import UI callback finished imported=%d duplicate=%d skipped=%d failed=%d",
+            result.imported_count,
+            result.duplicate_count,
+            getattr(result, "skipped_count", 0),
+            result.failed_count,
+        )
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
@@ -528,6 +555,7 @@ class MainWindow(QMainWindow):
         )
         if not directory:
             return
+        logger.info("Export folder selected count=%d directory=%s", len(target_ids), directory)
         self._context.task_service.submit(
             "export-books",
             lambda: self._context.export_service.export_books(target_ids, directory),
@@ -536,6 +564,12 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_export_finished(self, result) -> None:  # noqa: ANN001
+        logger.info(
+            "Export UI callback finished exported=%d skipped=%d failed=%d",
+            result.exported_count,
+            result.skipped_count,
+            result.failed_count,
+        )
         lines = [
             f"Exported: {result.exported_count}",
             f"Skipped: {result.skipped_count}",
@@ -1078,6 +1112,12 @@ class MainWindow(QMainWindow):
         opening: bool,
     ) -> None:
         if self._cover_editor_book_uuid != book_uuid:
+            logger.debug(
+                "Cover editor source dropped book=%s active_book=%s source=%s",
+                book_uuid,
+                self._cover_editor_book_uuid,
+                source_id,
+            )
             return
         if source_bytes is None:
             logger.warning("Cover editor source unavailable book=%s source=%s", book_uuid, source_id)
@@ -1098,6 +1138,7 @@ class MainWindow(QMainWindow):
                 self._clear_cover_editor_book_uuid()
             return
         self._position_cover_editor_overlay()
+        logger.debug("Cover editor source loaded book=%s source=%s opening=%s", book_uuid, source_id, opening)
 
     def _handle_cover_editor_import_loaded(self, image_path: Path, source_bytes: bytes) -> None:
         if self._cover_editor_book_uuid is None:
@@ -1108,7 +1149,13 @@ class MainWindow(QMainWindow):
 
     def _handle_cover_editor_thumbnail_batch(self, book_uuid: str, batch) -> None:  # noqa: ANN001
         if self._cover_editor_book_uuid != book_uuid:
+            logger.debug(
+                "Cover editor thumbnail batch dropped book=%s active_book=%s",
+                book_uuid,
+                self._cover_editor_book_uuid,
+            )
             return
+        logger.debug("Cover editor thumbnail batch applied book=%s items=%d", book_uuid, len(batch.items))
         self.cover_editor_overlay.apply_thumbnail_batch(batch)
 
     def _handle_cover_editor_source_failed(self, error: Exception) -> None:

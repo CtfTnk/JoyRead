@@ -11,6 +11,7 @@ from typing import Callable, Generic, TypeVar
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal as QtSignal
 
+from joyread.infrastructure.logging import describe_callback
 
 T = TypeVar("T")
 
@@ -27,7 +28,15 @@ class TaskStatus(StrEnum):
 
 @dataclass
 class TaskHandle(Generic[T]):
+    """Mutable status object shared between the submitter and QRunnable.
+
+    Cancellation is cooperative. The worker checks the status before emitting
+    results, and receiver callbacks check it again before mutating ViewModel
+    state.
+    """
+
     task_id: str
+    callback_label: str = ""
     status: TaskStatus = TaskStatus.PENDING
     result: T | None = None
     error: Exception | None = None
@@ -52,11 +61,16 @@ class _Runnable(QRunnable):
         self._signals = signals
 
     def run(self) -> None:
+        callback_label = self._handle.callback_label or "<unknown>"
         if self._handle.status == TaskStatus.CANCELLED:
-            logger.debug("Task %s skipped (cancelled before run)", self._handle.task_id)
-            _safe_emit(self._signals.finished)
+            logger.debug(
+                "Task %s skipped callback=%s (cancelled before run)",
+                self._handle.task_id,
+                callback_label,
+            )
+            _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
             return
-        logger.debug("Task %s starting", self._handle.task_id)
+        logger.debug("Task %s starting callback=%s", self._handle.task_id, callback_label)
         start = time.perf_counter()
         try:
             result = self._callback()
@@ -64,37 +78,59 @@ class _Runnable(QRunnable):
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             if self._handle.status != TaskStatus.CANCELLED:
                 logger.error(
-                    "Task %s failed after %.0f ms: %s",
+                    "Task %s failed callback=%s after %.0f ms: %s",
                     self._handle.task_id,
+                    callback_label,
                     elapsed_ms,
                     exc,
                     exc_info=True,
                 )
-                _safe_emit(self._signals.failed, exc)
+                _safe_emit(
+                    self._signals.failed,
+                    exc,
+                    context=f"task={self._handle.task_id} callback={callback_label}",
+                )
             else:
                 logger.debug(
-                    "Task %s raised after cancellation (suppressed): %s",
+                    "Task %s callback=%s raised after cancellation (suppressed): %s",
                     self._handle.task_id,
+                    callback_label,
                     exc,
                 )
-            _safe_emit(self._signals.finished)
+            _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
             return
 
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         if self._handle.status != TaskStatus.CANCELLED:
-            logger.debug("Task %s completed in %.0f ms", self._handle.task_id, elapsed_ms)
-            _safe_emit(self._signals.completed, result)
-        else:
             logger.debug(
-                "Task %s completed in %.0f ms but was cancelled; dropping result",
+                "Task %s completed callback=%s in %.0f ms",
                 self._handle.task_id,
+                callback_label,
                 elapsed_ms,
             )
-        _safe_emit(self._signals.finished)
+            _safe_emit(
+                self._signals.completed,
+                result,
+                context=f"task={self._handle.task_id} callback={callback_label}",
+            )
+        else:
+            logger.debug(
+                "Task %s completed callback=%s in %.0f ms but was cancelled; dropping result",
+                self._handle.task_id,
+                callback_label,
+                elapsed_ms,
+            )
+        _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
 
 
 class TaskService:
-    """Runs expensive service work off the Qt UI thread."""
+    """Runs expensive service work off the Qt UI thread.
+
+    ViewModels submit business/service callbacks here when work may touch disk,
+    decode images, query SQLite indirectly, or perform other slow operations.
+    ``on_success``/``on_failure`` callbacks are delivered through Qt signals so
+    UI-facing state changes happen from the receiver side of the Qt event loop.
+    """
 
     def __init__(self, max_workers: int, thread_pool: QThreadPool | None = None) -> None:
         self.max_workers = max_workers
@@ -113,16 +149,32 @@ class TaskService:
         on_success: Callable[[T], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
     ) -> TaskHandle[T]:
-        handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
+        callback_label = describe_callback(callback)
+        success_label = describe_callback(on_success) if on_success is not None else None
+        failure_label = describe_callback(on_failure) if on_failure is not None else None
+        handle: TaskHandle[T] = TaskHandle(
+            task_id=f"{name}-{next(self._ids)}",
+            callback_label=callback_label,
+        )
         if self._shutting_down:
             # Hand back a pre-cancelled handle rather than raising. Shutdown
             # happens while many ViewModels are still emitting submits in
             # response to teardown signals; making every caller handle a new
             # exception path during shutdown would be all-pain-no-gain.
-            logger.debug("Task %s rejected: service shutting down", handle.task_id)
+            logger.debug(
+                "Task %s rejected callback=%s: service shutting down",
+                handle.task_id,
+                callback_label,
+            )
             handle.status = TaskStatus.CANCELLED
             return handle
-        logger.debug("Task %s submitted", handle.task_id)
+        logger.debug(
+            "Task %s submitted callback=%s on_success=%s on_failure=%s",
+            handle.task_id,
+            callback_label,
+            success_label or "<none>",
+            failure_label or "<none>",
+        )
         signals = _TaskSignals()
         handle._signals = signals
         self._active_signals.add(signals)
@@ -130,18 +182,30 @@ class TaskService:
 
         def complete(result: object) -> None:
             if handle.status == TaskStatus.CANCELLED:
+                logger.debug(
+                    "Task %s result callback=%s dropped on receiver thread (cancelled)",
+                    handle.task_id,
+                    callback_label,
+                )
                 return
             handle.result = result  # type: ignore[assignment]
             handle.status = TaskStatus.COMPLETED
             if on_success is not None:
+                logger.debug("Task %s invoking on_success=%s", handle.task_id, success_label)
                 on_success(result)  # type: ignore[arg-type]
 
         def fail(error: object) -> None:
             if handle.status == TaskStatus.CANCELLED:
+                logger.debug(
+                    "Task %s failure callback=%s dropped on receiver thread (cancelled)",
+                    handle.task_id,
+                    callback_label,
+                )
                 return
             handle.error = error if isinstance(error, Exception) else Exception(str(error))
             handle.status = TaskStatus.FAILED
             if on_failure is not None:
+                logger.debug("Task %s invoking on_failure=%s", handle.task_id, failure_label)
                 on_failure(handle.error)
 
         def cleanup() -> None:
@@ -182,9 +246,11 @@ class TaskService:
         logger.info("TaskService shutdown complete")
 
     def submit_placeholder(self, name: str, callback: Callable[[], T] | None = None) -> TaskHandle[T]:
-        handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}")
+        callback_label = describe_callback(callback) if callback is not None else "<none>"
+        handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}", callback_label=callback_label)
         if callback is None:
             return handle
+        logger.debug("Task %s placeholder running callback=%s", handle.task_id, callback_label)
         handle.status = TaskStatus.RUNNING
         try:
             handle.result = callback()
@@ -195,11 +261,11 @@ class TaskService:
         return handle
 
 
-def _safe_emit(signal, *args: object) -> None:  # noqa: ANN001
+def _safe_emit(signal, *args: object, context: str = "") -> None:  # noqa: ANN001
     try:
         signal.emit(*args)
     except RuntimeError as exc:
         # A window can be closed while a background QRunnable is finishing.
         # Dropping the late signal is safer than letting shutdown surface a Qt wrapper error.
-        logger.warning("Dropping late task signal: %s", exc)
+        logger.warning("Dropping late task signal%s: %s", f" ({context})" if context else "", exc)
         return

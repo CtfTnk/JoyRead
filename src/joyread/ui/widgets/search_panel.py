@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QPalette
 from PySide6.QtWidgets import (
@@ -16,6 +18,9 @@ from PySide6.QtWidgets import (
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+
+
+logger = logging.getLogger(__name__)
 
 
 class SearchPanelWidget(QFrame):
@@ -69,6 +74,8 @@ class SearchPanelWidget(QFrame):
         return self._input.text()
 
     def set_expanded(self, expanded: bool) -> None:
+        if expanded != self._expanded:
+            logger.debug("SearchPanelWidget expanded=%s", expanded)
         self._expanded = expanded
         self._search_bar.setVisible(expanded)
         self._collapse_button.setVisible(expanded)
@@ -81,7 +88,9 @@ class SearchPanelWidget(QFrame):
             self._input.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def submit(self) -> None:
-        self.search_submitted.emit(self.query)
+        query = self.query
+        logger.debug("SearchPanelWidget submit query=%r len=%d", query, len(query))
+        self.search_submitted.emit(query)
 
     def _build_search_bar(self) -> QFrame:
         frame = QFrame()
@@ -109,7 +118,7 @@ class SearchPanelWidget(QFrame):
 
         self._input = QLineEdit()
         self._input.setObjectName("FigmaSearchInput")
-        self._input.setPlaceholderText("Search anything...")
+        self._input.setPlaceholderText("Search books...")
         self._input.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._input.setFixedHeight(Theme.search_input_height)
         self._input.setMinimumWidth(Theme.search_input_text_width)

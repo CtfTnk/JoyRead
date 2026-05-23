@@ -46,6 +46,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AppContext:
+    """Runtime dependency graph for the application.
+
+    Keep construction here instead of inside widgets. Views receive already
+    wired ViewModels and services, which preserves the MVVM rule that UI code
+    should not know how SQLite, cache directories, or import services are built.
+    """
+
     config: AppConfig
     settings: AppSettings
     settings_store: SettingsStore
@@ -203,6 +210,7 @@ class AppContext:
         self.settings_viewmodel.refresh_archive_pool_usage()
 
     def _rebuild_archive_reading_services(self) -> None:
+        logger.debug("Rebuilding archive reader services for cache=%s", type(self.archive_extraction_pool).__name__)
         self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
         self.reader_session_service = ReaderSessionService(self.archive_image_service)
         self.cache_service.archive_extraction_pool = self.archive_extraction_pool
@@ -321,12 +329,14 @@ def _create_path_service(config: AppConfig, settings_store: SettingsStore, setti
 def _create_archive_extraction_cache(paths: PathService, settings: AppSettings) -> ArchiveExtractionCache:
     strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
     max_bytes = settings.archive_extraction_pool_mb * 1024 * 1024
+    logger.debug("Creating archive extraction cache strategy=%s max_bytes=%d", strategy.value, max_bytes)
     if strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES:
         return HiddenImageExtractionPool(paths.paths.cache / ".archive_image_pages", max_bytes=max_bytes)
     return ArchiveExtractionPool(paths.paths.cache / ".archive_zip_bundles", max_bytes=max_bytes)
 
 
 def _create_database_interpreter(paths: PathService) -> DatabaseInterpreter:
+    logger.debug("Creating database interpreter at %s", paths.paths.database / "joyread.sqlite3")
     database = DatabaseInterpreter(paths.paths.database / "joyread.sqlite3")
     database.execute(apply_migrations, DatabasePriority.CRITICAL)
     return database

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from PySide6.QtCore import Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut, QShowEvent
 from PySide6.QtWidgets import QWidget
@@ -11,6 +13,9 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 from joyread.ui.widgets.settings_page import SettingsPageWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsView(QWidget):
@@ -34,6 +39,7 @@ class SettingsView(QWidget):
         tag_viewmodel: TagManagementViewModel | None = None,
     ) -> None:
         super().__init__(parent)
+        logger.info("SettingsView init")
         self.setObjectName("SettingsOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
+import logging
 from pathlib import Path
 
 try:
     from platformdirs import user_cache_path, user_config_path, user_data_path, user_log_path
 except ImportError:  # pragma: no cover - exercised implicitly when dependency is absent.
     user_cache_path = user_config_path = user_data_path = user_log_path = None
+
+
+logger = logging.getLogger(__name__)
 
 
 class WritableLocation(StrEnum):
@@ -78,8 +82,10 @@ class PathService:
         return tuple(self._paths.as_dict().values())
 
     def ensure_directories(self) -> None:
+        logger.debug("Ensuring JoyRead writable directories count=%d", len(self.required_directories()))
         for directory in self.required_directories():
             directory.mkdir(parents=True, exist_ok=True)
+            logger.debug("Writable directory ready: %s", directory)
 
     def _build_paths(
         self,
@@ -92,6 +98,11 @@ class PathService:
             # `support_root` (config + logs) are split on purpose so that the
             # user can move their library to another disk without losing
             # `settings.json` or the rolling log. Tests pass both equal.
+            logger.debug(
+                "Building paths from storage_root=%s support_root=%s",
+                storage_root,
+                support_root,
+            )
             data_root = storage_root.expanduser().resolve()
             support = support_root.expanduser().resolve() if support_root is not None else data_root
             cache_root = data_root / "Cache"
@@ -99,6 +110,7 @@ class PathService:
             config_root = support / "Config"
             logs_root = support / "Logs"
         elif base_dir is not None:
+            logger.debug("Building development/test paths from base_dir=%s", base_dir)
             root = base_dir.expanduser().resolve()
             data_root = root / "Data"
             cache_root = root / "Cache"
@@ -106,6 +118,7 @@ class PathService:
             config_root = root / "Config"
             logs_root = root / "Logs"
         else:
+            logger.debug("Building platform paths for app=%s author=%s", self._app_name, self._app_author)
             data_root = self._platform_path("data")
             cache_root = self._platform_path("cache")
             thumbnails_root = cache_root / "Thumbnails"

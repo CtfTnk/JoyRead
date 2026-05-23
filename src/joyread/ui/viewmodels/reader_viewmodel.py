@@ -80,7 +80,27 @@ class ReaderTopicThumbnailBatch:
 
 
 class ReaderViewModel:
-    """Coordinates reader state without depending on PySide widgets."""
+    """Coordinates reader state without depending on PySide widgets.
+
+    The reader has two threads in flight at any time:
+
+    1. The Qt UI thread, which calls ``open_path``, ``go_next``,
+       ``set_viewport_size``, etc.
+    2. A :class:`TaskService` worker thread, which opens the document,
+       decodes pages, computes layouts, and persists progress.
+
+    ``_session_lock`` (an :class:`RLock`) protects ``_session`` and the
+    related per-session state (``_page_handles``, ``_archive_passwords``,
+    layout caches). The lock is acquired around any sequence that reads
+    *and* mutates session state — typically: cancelling outstanding work,
+    swapping the session reference, and tearing down caches. The UI thread
+    blocks briefly while a worker is closing/replacing the session.
+
+    All ``Signal`` emissions can run on either thread depending on which
+    method triggered them. Receivers that touch widgets must marshal onto
+    the UI thread before painting; receivers that only update Python state
+    (the shelf VM, for example) can handle the call synchronously.
+    """
 
     def __init__(
         self,

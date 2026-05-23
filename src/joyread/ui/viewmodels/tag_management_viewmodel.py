@@ -35,8 +35,10 @@ class TagOperationResult:
 class TagManagementViewModel:
     def __init__(self, service: TagService) -> None:
         self._service = service
-        self.state_changed: Signal[None] = Signal()
-        self.operation_result: Signal[TagOperationResult] = Signal()
+        self.state_changed: Signal[None] = Signal("tag_management.state_changed")
+        self.operation_result: Signal[TagOperationResult] = Signal(
+            "tag_management.operation_result"
+        )
 
         self.tags: tuple[Tag, ...] = ()
         self.selected_tag_ids: set[str] = set()
@@ -71,6 +73,7 @@ class TagManagementViewModel:
         except Exception:
             logger.exception("TagManagementViewModel.refresh failed")
             self.tags = ()
+        logger.debug("TagManagementViewModel refreshed count=%d", len(self.tags))
         # Drop selections that point at tags no longer present.
         valid_ids = {tag.tag_id for tag in self.tags}
         self.selected_tag_ids = {tag_id for tag_id in self.selected_tag_ids if tag_id in valid_ids}
@@ -109,6 +112,7 @@ class TagManagementViewModel:
         self.state_changed.emit()
 
     def begin_create(self) -> None:
+        logger.debug("TagManagementViewModel begin_create")
         self.selected_tag_ids = set()
         self.input_mode = TagInputMode.CREATE
         self.input_initial_text = ""
@@ -121,6 +125,7 @@ class TagManagementViewModel:
         tag = self._tag_by_id(tag_id)
         if tag is None:
             return
+        logger.debug("TagManagementViewModel begin_rename tag=%s", tag_id)
         self.input_mode = TagInputMode.RENAME
         self.input_initial_text = tag.name
         self.state_changed.emit()
@@ -128,6 +133,7 @@ class TagManagementViewModel:
     def cancel_input(self) -> None:
         if self.input_mode == TagInputMode.BUTTONS:
             return
+        logger.debug("TagManagementViewModel cancel_input from=%s", self.input_mode.value)
         self.input_mode = TagInputMode.BUTTONS
         self.input_initial_text = ""
         self.state_changed.emit()
@@ -149,6 +155,11 @@ class TagManagementViewModel:
         targets = [tag for tag in targets if tag is not None]
         if not targets:
             return
+        logger.info(
+            "TagManagementViewModel delete_selected count=%d ids=%s",
+            len(targets),
+            [tag.tag_id for tag in targets],
+        )
         total_unlinked = 0
         failed_names: list[str] = []
         for tag in targets:

@@ -427,6 +427,11 @@ class ReaderShellWidget(QWidget):
         return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        logger.info(
+            "ReaderShellWidget close: path=%s book=%s",
+            self._source_path,
+            getattr(self.viewmodel, "book_uuid", None),
+        )
         self.cancel()
         self.panel_filter.deactivate_all()
         super().closeEvent(event)

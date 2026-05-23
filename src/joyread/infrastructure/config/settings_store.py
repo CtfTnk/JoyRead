@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +14,9 @@ try:
     from platformdirs import user_config_path, user_data_path
 except ImportError:  # pragma: no cover - platformdirs is a project dependency.
     user_config_path = user_data_path = None
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -89,11 +93,13 @@ class SettingsStore:
             # on-disk shape against a stable JSON document rather than a
             # virtual one. The next `load` short-circuits past this branch.
             settings = self.default_settings()
+            logger.info("Creating default settings file at %s", self.settings_path)
             self.save(settings)
             return settings
 
+        logger.debug("Loading settings from %s", self.settings_path)
         raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        return AppSettings(
+        settings = AppSettings(
             storage_location=str(raw.get("storage_location") or self._default_storage_root),
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
             language=str(raw.get("language") or "English"),
@@ -124,15 +130,24 @@ class SettingsStore:
             hidden_space_password_hint=_coerce_optional_str(raw.get("hidden_space_password_hint")),
             show_hidden_collection=bool(raw.get("show_hidden_collection", False)),
         )
+        logger.debug(
+            "Settings loaded storage=%s reader_cache_mb=%d archive_pool_mb=%d",
+            settings.storage_location,
+            settings.reader_page_cache_mb,
+            settings.archive_extraction_pool_mb,
+        )
+        return settings
 
     def save(self, settings: AppSettings) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
+        logger.debug("Saving settings to %s", self.settings_path)
         self.settings_path.write_text(
             json.dumps(asdict(settings), indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
     def update(self, **changes: Any) -> AppSettings:
+        logger.debug("Updating settings keys=%s", sorted(changes))
         current = self.load()
         next_settings = AppSettings(**{**asdict(current), **changes})
         self.save(next_settings)

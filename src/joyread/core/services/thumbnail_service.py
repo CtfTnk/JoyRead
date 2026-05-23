@@ -90,6 +90,7 @@ class ThumbnailService:
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         explicit = self._explicit_cover_path(book, size)
         if explicit is not None:
+            logger.debug("Cover path resolved from explicit DB value book=%s path=%s", book.uuid, explicit)
             return explicit
 
         signature = self._source_signature(book)
@@ -103,10 +104,12 @@ class ThumbnailService:
             if cached_fallback:
                 cached_path = Path(cached_fallback)
                 if cached_path.exists():
+                    logger.debug("Cover fallback cache hit book=%s path=%s", book.uuid, cached_path)
                     return cached_path
             resolved = self._fallback_cover_path(book, size)
             if resolved is not None:
                 self._cache_service.cover_index.put(fallback_key, str(resolved))
+                logger.debug("Cover fallback resolved book=%s path=%s", book.uuid, resolved)
             return resolved
 
         cache_key = self._cover_cache_key(book, signature, size)
@@ -114,11 +117,13 @@ class ThumbnailService:
         if cached:
             cached_path = Path(cached)
             if cached_path.exists():
+                logger.debug("Cover cache hit book=%s path=%s", book.uuid, cached_path)
                 return cached_path
 
         cover_path = self._cover_path(book, signature, size)
         if cover_path.exists():
             self._cache_service.cover_index.put(cache_key, str(cover_path))
+            logger.debug("Cover file exists book=%s path=%s", book.uuid, cover_path)
             return cover_path
         return None
 
@@ -162,14 +167,17 @@ class ThumbnailService:
         )
 
     def generate_cover(self, book: Book, size: SizeTuple) -> Path | None:
+        logger.debug("Generate cover requested book=%s size=%s", book.uuid, size)
         existing = self.existing_cover_path(book, size)
         if existing is not None:
             return existing
         if not self.can_generate_from(book):
+            logger.debug("Generate cover skipped book=%s: unsupported or missing source", book.uuid)
             return None
 
         signature = self._source_signature(book)
         if signature is None:
+            logger.debug("Generate cover skipped book=%s: source signature unavailable", book.uuid)
             return None
 
         try:
@@ -192,6 +200,7 @@ class ThumbnailService:
         cover_path.write_bytes(rendered)
         self._remove_stale_covers(book, keep=cover_path)
         self._cache_service.cover_index.put(self._cover_cache_key(book, signature, size), str(cover_path))
+        logger.debug("Generate cover complete book=%s path=%s", book.uuid, cover_path)
         return cover_path
 
     def generate_page_thumbnail(
@@ -213,6 +222,7 @@ class ThumbnailService:
         if detail_cache is not None:
             cached = detail_cache.get(cache_key)
             if cached is not None:
+                logger.debug("Page thumbnail cache hit book=%s page=%d size=%s", book.uuid, page_index, size)
                 return cached
 
         try:
@@ -246,6 +256,13 @@ class ThumbnailService:
     ) -> DetailThumbnailBatch:
         start_index = max(0, start_index)
         batch_size = max(1, batch_size)
+        logger.debug(
+            "Detail thumbnail batch requested book=%s start=%d size=%d target_size=%s",
+            book.uuid,
+            start_index,
+            batch_size,
+            size,
+        )
         empty = DetailThumbnailBatch(
             book_uuid=book.uuid,
             start_index=start_index,
@@ -269,6 +286,12 @@ class ThumbnailService:
             return empty
 
         if start_index >= session.page_count:
+            logger.debug(
+                "Detail thumbnail batch empty book=%s start=%d page_count=%d",
+                book.uuid,
+                start_index,
+                session.page_count,
+            )
             return empty
 
         items: list[DetailThumbnailItem] = []
@@ -285,13 +308,22 @@ class ThumbnailService:
                 items.append(DetailThumbnailItem(page_index=rendered_index, image_bytes=rendered))
             page_index += 1
 
-        return DetailThumbnailBatch(
+        batch = DetailThumbnailBatch(
             book_uuid=book.uuid,
             start_index=start_index,
             next_index=end_index,
             has_more=end_index < session.page_count,
             items=tuple(items),
         )
+        logger.debug(
+            "Detail thumbnail batch complete book=%s start=%d next=%d rendered=%d has_more=%s",
+            book.uuid,
+            start_index,
+            end_index,
+            len(items),
+            batch.has_more,
+        )
+        return batch
 
     def _render_detail_thumbnail(
         self,
@@ -304,6 +336,7 @@ class ThumbnailService:
         if detail_cache is not None:
             cached = detail_cache.get(cache_key)
             if cached is not None:
+                logger.debug("Detail thumbnail cache hit page=%d size=%s", page_index, size)
                 return cached
 
         try:
@@ -320,7 +353,13 @@ class ThumbnailService:
         source = Path(book.file_path)
         try:
             stat = source.stat()
-        except OSError:
+        except OSError as exc:
+            logger.debug(
+                "thumbnail source signature unavailable book=%s path=%s: %s",
+                book.uuid,
+                source,
+                exc,
+            )
             return None
         return f"{stat.st_mtime_ns}-{stat.st_size}"
 
@@ -329,10 +368,12 @@ class ThumbnailService:
         with self._session_cache_lock:
             session = self._session_cache.get(cache_key)
         if session is not None:
+            logger.debug("Thumbnail session cache hit book=%s", book.uuid)
             return session
 
         # Source scanning is expensive for large books, so keep a source-stable
         # session around for cover and detail thumbnail batches.
+        logger.debug("Thumbnail session cache miss book=%s source=%s", book.uuid, book.file_path)
         session = self._reader_session_service.open_document(book.file_path)
         with self._session_cache_lock:
             self._session_cache[cache_key] = session
@@ -385,7 +426,12 @@ class ThumbnailService:
             return None
         try:
             return max(candidates, key=lambda path: path.stat().st_mtime)
-        except OSError:
+        except OSError as exc:
+            logger.debug(
+                "thumbnail fallback stat failed book=%s, picking first candidate: %s",
+                book.uuid,
+                exc,
+            )
             return candidates[0]
 
     def _remove_stale_covers(self, book: Book, keep: Path) -> None:

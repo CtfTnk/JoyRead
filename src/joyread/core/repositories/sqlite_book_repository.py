@@ -57,10 +57,14 @@ class SqliteBookRepository(BookRepository):
     def list_books(self) -> list[Book]:
         # State refresh runs only on the user-action ``get_book`` path
         # so a shelf load doesn't pay a per-book ``Path.exists()`` stat.
-        return self._database.execute(_list_books, DatabasePriority.HIGH)
+        books = self._database.execute(_list_books, DatabasePriority.HIGH)
+        logger.debug("list_books returned count=%d", len(books))
+        return books
 
     def list_collections(self) -> list[Collection]:
-        return self._database.execute(_list_collections, DatabasePriority.HIGH)
+        collections = self._database.execute(_list_collections, DatabasePriority.HIGH)
+        logger.debug("list_collections returned count=%d", len(collections))
+        return collections
 
     def list_languages(self) -> list[Language]:
         return self._database.execute(_list_languages, DatabasePriority.HIGH)
@@ -110,7 +114,11 @@ class SqliteBookRepository(BookRepository):
             return _list_books(connection, book_id)
 
         books = self._database.execute(read, DatabasePriority.HIGH)
-        return books[0] if books else None
+        if not books:
+            logger.debug("get_book book=%s miss", book_id)
+            return None
+        logger.debug("get_book book=%s hit", book_id)
+        return books[0]
 
     def update_book_metadata(
         self,
@@ -282,6 +290,7 @@ class SqliteBookRepository(BookRepository):
         self._delete_managed_artifacts(cleanup)
 
     def mark_recent(self, book_id: str) -> None:
+        logger.debug("mark_recent book=%s", book_id)
         now = _now()
 
         def write(connection: sqlite3.Connection) -> None:
@@ -299,6 +308,7 @@ class SqliteBookRepository(BookRepository):
         self._database.execute(write, DatabasePriority.NORMAL)
 
     def remove_book_from_recent(self, book_id: str) -> None:
+        logger.debug("remove_book_from_recent book=%s", book_id)
         self._database.execute(
             lambda connection: connection.execute(
                 "DELETE FROM recent_books WHERE book_id = ?",
@@ -731,6 +741,12 @@ class SqliteBookRepository(BookRepository):
 
     def move_book_to_private(self, book_id: str, private_collection_id: str | None = None) -> str:
         private_book_id = str(uuid4())
+        logger.info(
+            "move_book_to_private book=%s private_id=%s collection=%s",
+            book_id,
+            private_book_id,
+            private_collection_id,
+        )
         now = _now()
 
         def write(connection: sqlite3.Connection) -> str:

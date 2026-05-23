@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
@@ -23,6 +24,9 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
 from joyread.ui.widgets.window_chrome import WindowControlsWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReaderTopicButtonGroup(QFrame):
@@ -218,6 +222,9 @@ class ReaderHeader(QWidget):
         self.topic_button_group.set_bookmarks_enabled(enabled)
 
     def set_topic_active_mode(self, mode: ReaderTopicMode | None) -> None:
+        logger.debug(
+            "ReaderHeader topic mode=%s", mode.value if mode is not None else None
+        )
         self.topic_button_group.set_active_mode(mode)
 
     def clear_topic_active_mode(self) -> None:
@@ -247,7 +254,11 @@ class ReaderHeader(QWidget):
         right_edge = 52 + 12
         safe_side = max(left_edge, right_edge)
         available = self.width() - (safe_side * 2)
+        was_visible = getattr(self, "_title_visible", True)
         if available < 40:
+            if was_visible:
+                logger.debug("ReaderHeader title hidden (header width=%d)", self.width())
+            self._title_visible = False
             self.title.hide()
             return
         metrics = QFontMetrics(self.title.font())
@@ -257,6 +268,9 @@ class ReaderHeader(QWidget):
         self.title.move((self.width() - self.title.width()) // 2, (self.height() - self.title.height()) // 2)
         self.title.raise_()
         self.title.show()
+        if not was_visible:
+            logger.debug("ReaderHeader title shown (header width=%d)", self.width())
+        self._title_visible = True
 
     def _toggle_zoom(self) -> None:
         window = self.window()

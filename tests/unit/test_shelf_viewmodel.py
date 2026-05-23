@@ -71,6 +71,12 @@ def test_search_filter_and_sort_affect_visible_books() -> None:
     vm.set_search_query("spy")
     assert [book.title for book in vm.visible_books] == ["Spy x Family Vol. 1"]
 
+    vm.set_search_query("endo")
+    assert [book.title for book in vm.visible_books] == ["Spy x Family Vol. 1"]
+
+    vm.set_search_query("spy frieren")
+    assert [book.title for book in vm.visible_books] == ["Spy x Family Vol. 1", "Frieren Beyond Journey"]
+
     vm.set_search_query("")
     vm.set_filter(FileFilter.EPUB.value)
     assert {book.file_format for book in vm.visible_books} == {"EPUB"}
@@ -79,6 +85,44 @@ def test_search_filter_and_sort_affect_visible_books() -> None:
     vm.set_sort(SortField.TITLE.value, ascending=True)
     titles = [book.title for book in vm.visible_books]
     assert titles == sorted(titles, key=str.lower)
+
+
+def test_search_uses_only_title_and_author_fields() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+
+    for query in ("cbz", "comic", "english", "1lib"):
+        vm.set_search_query(query)
+        assert vm.visible_books == []
+
+
+def test_search_preserves_current_sort_order() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+
+    vm.set_sort(SortField.TITLE.value, ascending=True)
+    vm.set_search_query("yuki ryoko")
+
+    titles = [book.title for book in vm.visible_books]
+    assert titles == sorted(titles, key=str.lower)
+    assert set(titles) == {
+        "Akane-banashi Story 148",
+        "Delicious in Dungeon v14",
+        "Dungeon Meshi Archive",
+        "Mushishi Volume Notes",
+    }
+
+
+def test_search_cache_refreshes_after_book_metadata_update() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+
+    vm.set_search_query("omega")
+    assert vm.visible_books == []
+
+    vm.update_book_metadata("mock-book-01", title="Omega Search")
+
+    assert [book.uuid for book in vm.visible_books] == ["mock-book-01"]
 
 
 def test_tag_filter_requires_all_selected_tags() -> None:

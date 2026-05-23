@@ -10,6 +10,13 @@ MAX_TAG_NAME_LENGTH = 32
 
 @dataclass(frozen=True)
 class Tag:
+    """User-defined label that can be applied to any book.
+
+    Two forms exist: ``name`` is the display form preserved for the UI;
+    ``name_normalized`` is the case-folded form used for uniqueness checks
+    and lookups (so "Manga" and "manga" are treated as the same tag).
+    """
+
     tag_id: str
     name: str  # Display form. First character is upper-cased; rest is preserved.
 
