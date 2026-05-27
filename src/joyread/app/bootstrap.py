@@ -68,8 +68,25 @@ def _log_about_to_quit() -> None:
 
 def run(argv: list[str] | None = None) -> int:
     app, _context, window = create_application(argv)
+    center_window_on_launch(window)
     window.show()
     return app.exec()
+
+
+def center_window_on_launch(window: QMainWindow) -> None:
+    """Place the initial top-level window in the center of its launch screen."""
+    screen = window.screen() or QApplication.primaryScreen()
+    if screen is None:
+        return
+
+    window_geometry = window.frameGeometry()
+    if window_geometry.isNull() or window_geometry.width() <= 0 or window_geometry.height() <= 0:
+        window_geometry = window.geometry()
+    if window_geometry.isNull() or window_geometry.width() <= 0 or window_geometry.height() <= 0:
+        return
+
+    window_geometry.moveCenter(screen.availableGeometry().center())
+    window.move(window_geometry.topLeft())
 
 
 def _load_application_fonts(resources: ResourceLoader) -> None:

@@ -3,6 +3,8 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
+from PySide6.QtWidgets import QApplication, QMainWindow
+
 from joyread.app import bootstrap
 from joyread.app.app_context import AppContext
 from joyread.app.bootstrap import create_application
@@ -97,6 +99,23 @@ def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) ->
 
     window.close()
     context.close()
+
+
+def test_launch_window_is_centered_on_available_screen(qtbot) -> None:
+    QApplication.instance() or QApplication(["test"])
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    window.resize(320, 200)
+
+    bootstrap.center_window_on_launch(window)
+
+    screen = window.screen() or QApplication.primaryScreen()
+    assert screen is not None
+    screen_center = screen.availableGeometry().center()
+    window_center = window.frameGeometry().center()
+
+    assert abs(window_center.x() - screen_center.x()) <= 1
+    assert abs(window_center.y() - screen_center.y()) <= 1
 
 
 def test_native_file_dialogs_are_kept_for_in_app_picker_paths() -> None:
