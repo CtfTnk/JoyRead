@@ -26,13 +26,18 @@ from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.core.services.storage_recovery_service import StorageRecoveryService
+from joyread.core.services.storage_validation_service import (
+    StorageValidationResult,
+    StorageValidationService,
+)
 from joyread.core.services.tag_service import TagService
 from joyread.core.services.task_service import TaskService
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
-from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
@@ -72,12 +77,17 @@ class AppContext:
     import_service: ImportService
     export_service: ExportService
     storage_migration_service: StorageMigrationService
+    storage_validation_service: StorageValidationService
+    storage_recovery_service: StorageRecoveryService
     thumbnail_service: ThumbnailService
     hidden_space_service: HiddenSpaceService
     main_window_viewmodel: MainWindowViewModel
     shelf_viewmodel: ShelfViewModel
     settings_viewmodel: SettingsViewModel
     tag_management_viewmodel: TagManagementViewModel
+    # Populated when startup recovery had to fall back to another library;
+    # the main window shows it once on launch.
+    storage_startup_notice: str | None = None
 
     def close(self) -> None:
         logger.info("AppContext shutting down: cancelling tasks then closing database")
@@ -85,11 +95,51 @@ class AppContext:
         self.database_interpreter.close()
         logger.info("AppContext shutdown complete")
 
-    def reconfigure_storage(self, new_root: Path) -> None:
+    def move_storage_to_parent(self, target_parent: Path) -> None:
+        """Move the library into ``<target_parent>/JoyRead`` and adopt it.
+
+        Raises ``StorageMigrationError`` (with a user-facing message) if the
+        destination already has a JoyRead folder or the copy fails validation;
+        the old storage is reopened and stays in use.
+        """
+
         old_root = Path(self.settings.storage_location)
-        logger.info("Reconfiguring storage: %s -> %s", old_root, new_root)
+        logger.info("Move storage requested: %s -> parent %s", old_root, target_parent)
         self.database_interpreter.close()
-        self.storage_migration_service.move_storage_location(old_root, new_root)
+        try:
+            self.storage_migration_service.move_to_parent(old_root, target_parent)
+        except Exception:
+            # Settings were not changed; rebuild against the old root so the
+            # app keeps running on the existing library.
+            self.reload_storage_from_settings()
+            raise
+        self.reload_storage_from_settings()
+
+    def select_storage(self, existing_root: Path) -> StorageValidationResult:
+        """Switch to an existing JoyRead library without copying or deleting.
+
+        Validates first; only on success is the database closed and settings
+        re-pointed. On failure the current library keeps running.
+        """
+
+        existing_root = existing_root.expanduser().resolve()
+        logger.info("Select existing library requested: %s", existing_root)
+        result = self.storage_validation_service.validate_full(existing_root)
+        if not result.ok:
+            logger.warning("Select rejected (%s): %s", result.code, result.message)
+            return result
+        self.database_interpreter.close()
+        self.settings_store.update(storage_location=str(existing_root))
+        self.reload_storage_from_settings()
+        return result
+
+    def reset_storage(self) -> None:
+        """Erase the current library and rebuild an empty one in place."""
+
+        root = Path(self.settings.storage_location)
+        logger.info("Reset storage requested at %s", root)
+        self.database_interpreter.close()
+        self.storage_migration_service.reset_library(root)
         self.reload_storage_from_settings()
 
     def reload_storage_from_settings(self) -> None:
@@ -228,7 +278,16 @@ def create_app_context() -> AppContext:
         support_root=support_root,
         default_storage_root=default_storage_root,
     )
-    settings = settings_store.load()
+    # Resolve the storage root before anything is built: first-run init,
+    # daily health check, and recovery all happen here so the rest of the
+    # graph is wired against a known-usable library.
+    storage_validation_service = StorageValidationService()
+    storage_migration_service = StorageMigrationService(settings_store, storage_validation_service)
+    storage_recovery_service = StorageRecoveryService(
+        settings_store, storage_validation_service, storage_migration_service
+    )
+    startup = storage_recovery_service.prepare()
+    settings = startup.settings
     paths = _create_path_service(config, settings_store, settings)
     paths.ensure_directories()
     resources = ResourceLoader()
@@ -256,7 +315,6 @@ def create_app_context() -> AppContext:
         tag_service=tag_service,
     )
     export_service = ExportService(book_repository, hash_service)
-    storage_migration_service = StorageMigrationService(settings_store)
     thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service, reader_session_service)
     hidden_space_service = HiddenSpaceService(settings_store, library_service)
     main_window_viewmodel = MainWindowViewModel()
@@ -292,12 +350,15 @@ def create_app_context() -> AppContext:
         import_service=import_service,
         export_service=export_service,
         storage_migration_service=storage_migration_service,
+        storage_validation_service=storage_validation_service,
+        storage_recovery_service=storage_recovery_service,
         thumbnail_service=thumbnail_service,
         hidden_space_service=hidden_space_service,
         main_window_viewmodel=main_window_viewmodel,
         shelf_viewmodel=shelf_viewmodel,
         settings_viewmodel=settings_viewmodel,
         tag_management_viewmodel=tag_management_viewmodel,
+        storage_startup_notice=startup.notice,
     )
     # The settings panel renders a live "used / budget" label for the disk
     # pool; provide it a thin lambda so the viewmodel can poll the current
@@ -331,8 +392,12 @@ def _create_archive_extraction_cache(paths: PathService, settings: AppSettings) 
     max_bytes = settings.archive_extraction_pool_mb * 1024 * 1024
     logger.debug("Creating archive extraction cache strategy=%s max_bytes=%d", strategy.value, max_bytes)
     if strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES:
-        return HiddenImageExtractionPool(paths.paths.cache / ".archive_image_pages", max_bytes=max_bytes)
-    return ArchiveExtractionPool(paths.paths.cache / ".archive_zip_bundles", max_bytes=max_bytes)
+        return HiddenImageExtractionPool(
+            paths.resolve(WritableLocation.CACHE, ".archive_image_pages"), max_bytes=max_bytes
+        )
+    return ArchiveExtractionPool(
+        paths.resolve(WritableLocation.CACHE, ".archive_zip_bundles"), max_bytes=max_bytes
+    )
 
 
 def _create_database_interpreter(paths: PathService) -> DatabaseInterpreter:
@@ -345,6 +410,7 @@ def _create_database_interpreter(paths: PathService) -> DatabaseInterpreter:
 def _create_sqlite_book_repository(database: DatabaseInterpreter, paths: PathService) -> SqliteBookRepository:
     return SqliteBookRepository(
         database,
+        resolver=paths.resolver,
         managed_books_root=paths.paths.books,
         thumbnails_root=paths.paths.thumbnails,
     )

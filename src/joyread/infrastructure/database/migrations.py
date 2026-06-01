@@ -5,6 +5,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from collections.abc import Callable
+from pathlib import Path
+
+from joyread.infrastructure.filesystem.path_service import StoragePathResolver
 
 
 logger = logging.getLogger(__name__)
@@ -294,11 +298,39 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
         CREATE INDEX IF NOT EXISTS idx_book_tags_book ON book_tags(book_id);
         """,
     ),
+    # Normalize legacy absolute managed paths to storage-relative form so the
+    # library folder can be moved/re-pointed without rewriting rows. The
+    # ``joyread_storage_relative`` function (registered in ``apply_migrations``)
+    # is bound to the current storage root: absolute paths under it become
+    # relative, while paths outside it (or already relative) pass through.
+    (
+        11,
+        """
+        UPDATE book_files
+            SET storage_path = joyread_storage_relative(storage_path);
+
+        UPDATE books
+            SET cover_path = joyread_storage_relative(cover_path)
+            WHERE cover_path IS NOT NULL;
+
+        UPDATE private_books
+            SET cover_path = joyread_storage_relative(cover_path)
+            WHERE cover_path IS NOT NULL;
+        """,
+    ),
 )
+
+
+LATEST_SCHEMA_VERSION: int = max(version for version, _sql in MIGRATIONS)
 
 
 def apply_migrations(connection: sqlite3.Connection) -> None:
     connection.create_function("joyread_basename", 1, _sqlite_basename)
+    connection.create_function(
+        "joyread_storage_relative",
+        1,
+        _make_storage_relativizer(_storage_root_from_connection(connection)),
+    )
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -360,3 +392,39 @@ def _sqlite_basename(value: object) -> str:
     if not normalized:
         return "book"
     return normalized.rsplit("/", 1)[-1] or "book"
+
+
+def _storage_root_from_connection(connection: sqlite3.Connection) -> Path | None:
+    """Derive the storage root from the open database file location.
+
+    The library database lives at ``<storage_root>/Database/joyread.sqlite3``,
+    so its grandparent is the storage root. In-memory or path-less connections
+    (some tests) yield no file, in which case normalization is skipped.
+    """
+
+    try:
+        rows = connection.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    for row in rows:
+        # PRAGMA database_list columns: (seq, name, file).
+        if row[1] == "main" and row[2]:
+            return Path(row[2]).resolve().parent.parent
+    return None
+
+
+def _make_storage_relativizer(storage_root: Path | None) -> Callable[[object], object]:
+    resolver = StoragePathResolver(storage_root) if storage_root is not None else None
+
+    def relativize(value: object) -> object:
+        if value is None or resolver is None:
+            return value
+        try:
+            return resolver.to_storage_relative(str(value))
+        except (ValueError, OSError):
+            # Path is outside the current storage root (legacy/foreign), or an OS
+            # error occurred resolving it (e.g. broken symlink). Leave it unchanged
+            # so it surfaces as missing rather than being rewritten to a bad value.
+            return value
+
+    return relativize

@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 class SettingsView(QWidget):
     close_requested = QtSignal()
     info_requested = QtSignal(str, str)
-    storage_change_requested = QtSignal()
+    storage_move_requested = QtSignal()
+    storage_select_requested = QtSignal()
+    storage_reset_requested = QtSignal()
     hidden_space_setup_requested = QtSignal()
     hidden_space_verify_requested = QtSignal()
     hidden_space_change_password_requested = QtSignal()
@@ -45,7 +47,9 @@ class SettingsView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.page = SettingsPageWidget(viewmodel, resources, self, tag_viewmodel=tag_viewmodel)
-        self.page.storage_change_requested.connect(self.storage_change_requested.emit)
+        self.page.storage_move_requested.connect(self.storage_move_requested.emit)
+        self.page.storage_select_requested.connect(self.storage_select_requested.emit)
+        self.page.storage_reset_requested.connect(self.storage_reset_requested.emit)
         self.page.hidden_space_setup_requested.connect(self.hidden_space_setup_requested.emit)
         self.page.hidden_space_verify_requested.connect(self.hidden_space_verify_requested.emit)
         self.page.hidden_space_change_password_requested.connect(

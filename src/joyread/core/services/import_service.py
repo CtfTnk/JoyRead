@@ -406,6 +406,9 @@ class ImportService:
         now = _now()
         file_format = source_path.suffix.lstrip(".").upper()
         book_type = _book_type_for_suffix(source_path.suffix.lower())
+        # Persist the managed file location relative to the storage root so the
+        # whole library folder can be moved or re-pointed without rewriting rows.
+        relative_storage_path = self._paths.resolver.to_storage_relative(storage_path)
         self._database.execute(
             lambda connection: _insert_imported_book(
                 connection,
@@ -413,7 +416,7 @@ class ImportService:
                 book_id=book_id,
                 original_path=str(source_path),
                 original_file_name=source_path.name,
-                storage_path=str(storage_path),
+                storage_path=relative_storage_path,
                 file_format=file_format,
                 file_size=stat.st_size,
                 mtime_ns=stat.st_mtime_ns,

@@ -22,6 +22,10 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class AppSettings:
     storage_location: str
+    # Last storage root that passed a startup health check. Recovery falls back
+    # to this when ``storage_location`` becomes unavailable. ``None`` until the
+    # first successful startup writes it.
+    last_good_storage_location: str | None = None
     hash_algorithm: str = "sha256"
     language: str = "English"
     import_book_when_opening: bool = False
@@ -78,6 +82,12 @@ class SettingsStore:
         return self._support_root
 
     @property
+    def default_storage_root(self) -> Path:
+        """The app's own default JoyRead library root (recovery's last resort)."""
+
+        return self._default_storage_root
+
+    @property
     def config_dir(self) -> Path:
         return self._support_root / "Config"
 
@@ -101,6 +111,7 @@ class SettingsStore:
         raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
         settings = AppSettings(
             storage_location=str(raw.get("storage_location") or self._default_storage_root),
+            last_good_storage_location=_coerce_optional_str(raw.get("last_good_storage_location")),
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
             language=str(raw.get("language") or "English"),
             import_book_when_opening=bool(raw.get("import_book_when_opening", False)),

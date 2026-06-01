@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
 from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
@@ -129,7 +129,9 @@ class MainWindow(QMainWindow):
         self.cover_editor_overlay.save_requested.connect(self._confirm_cover_editor_save)
         self.cover_editor_overlay.closed.connect(self._clear_cover_editor_book_uuid)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
-        self.settings_view.storage_change_requested.connect(self._select_storage_location)
+        self.settings_view.storage_move_requested.connect(self._request_move_storage)
+        self.settings_view.storage_select_requested.connect(self._request_select_storage)
+        self.settings_view.storage_reset_requested.connect(self._request_reset_storage)
         self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
         self.settings_view.hidden_space_verify_requested.connect(self._show_hidden_space_unlock_dialog)
         self.settings_view.hidden_space_change_password_requested.connect(
@@ -194,6 +196,16 @@ class MainWindow(QMainWindow):
         settings_vm = context.settings_viewmodel
         if settings_vm.show_hidden_collection and settings_vm.hidden_space_initialized:
             self._show_hidden_space_lock_overlay(root)
+
+        # Surface a recovery notice once if startup had to fall back to another
+        # library (configured storage missing, schema unsupported, etc.).
+        if context.storage_startup_notice:
+            QTimer.singleShot(
+                0,
+                lambda message=context.storage_startup_notice: self.dialog_overlay.show_info(
+                    "Storage", message
+                ),
+            )
 
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
         # Invoked via ``shelf_viewmodel.book_open_requested`` — the VM
@@ -798,20 +810,90 @@ class MainWindow(QMainWindow):
             destructive=True,
         )
 
-    def _select_storage_location(self) -> None:
+    def _request_move_storage(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Choose JoyRead Storage Location",
+            "Choose a folder for the new JoyRead library",
             self._context.settings_viewmodel.storage_location,
         )
         if not directory:
             return
         old_root = Path(self._context.settings.storage_location)
-        new_root = Path(directory)
+        target_parent = Path(directory)
+        # The copy can be large, so the filesystem work runs on a worker; the
+        # storage rebuild happens back on the UI thread in the success handler.
         self._context.database_interpreter.close()
         self._context.task_service.submit(
             "move-storage-location",
-            lambda: self._context.storage_migration_service.move_storage_location(old_root, new_root),
+            lambda: self._context.storage_migration_service.move_to_parent(old_root, target_parent),
+            on_success=lambda _result: self._handle_storage_location_changed(),
+            on_failure=lambda error: self._handle_storage_location_failed(error),
+        )
+
+    def _request_select_storage(self) -> None:
+        directory = QFileDialog.getExistingDirectory(
+            self,
+            "Select an existing JoyRead library",
+            self._context.settings_viewmodel.storage_location,
+        )
+        if not directory:
+            return
+        existing_root = Path(directory)
+        # Validate the chosen library off the UI thread; only adopt it if usable.
+        self._context.task_service.submit(
+            "validate-storage-location",
+            lambda: self._context.storage_validation_service.validate_full(existing_root),
+            on_success=lambda result: self._apply_selected_storage(existing_root, result),
+            on_failure=lambda error: self.dialog_overlay.show_info("Storage", str(error)),
+        )
+
+    def _apply_selected_storage(self, existing_root: Path, result: object) -> None:
+        if not getattr(result, "ok", False):
+            message = getattr(result, "message", "") or "The selected folder is not a usable JoyRead library."
+            self.dialog_overlay.show_info(
+                "Storage",
+                f"That folder cannot be used as a JoyRead library.\n\n{message}",
+            )
+            return
+        resolved = str(existing_root.expanduser().resolve())
+        self._context.database_interpreter.close()
+        # Record as last_good so startup recovery can fall back to this library
+        # if a later location becomes unavailable.
+        self._context.settings_store.update(
+            storage_location=resolved,
+            last_good_storage_location=resolved,
+        )
+        self._handle_storage_location_changed()
+
+    def _request_reset_storage(self) -> None:
+        self.dialog_overlay.show_confirm(
+            "Reset JoyRead Directory",
+            (
+                "This permanently deletes all books, covers, reading progress, and "
+                "data in the current JoyRead library. This cannot be undone."
+            ),
+            on_confirm=self._prompt_reset_storage_confirmation,
+            confirm_text="Continue",
+            cancel_text="Cancel",
+            destructive=True,
+        )
+
+    def _prompt_reset_storage_confirmation(self) -> None:
+        self.dialog_overlay.show_input(
+            "Reset JoyRead Directory",
+            "Type delete to confirm",
+            on_confirm=lambda _value: self._execute_reset_storage(),
+            confirm_text="Delete",
+            cancel_text="Cancel",
+            validator=lambda value: None if value.strip().lower() == "delete" else "Type delete to confirm.",
+        )
+
+    def _execute_reset_storage(self) -> None:
+        root = Path(self._context.settings.storage_location)
+        self._context.database_interpreter.close()
+        self._context.task_service.submit(
+            "reset-storage",
+            lambda: self._context.storage_migration_service.reset_library(root),
             on_success=lambda _result: self._handle_storage_location_changed(),
             on_failure=lambda error: self._handle_storage_location_failed(error),
         )
@@ -821,11 +903,11 @@ class MainWindow(QMainWindow):
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
-        self.dialog_overlay.show_info("Storage Location", "JoyRead storage location has been updated.")
+        self.dialog_overlay.show_info("Storage", "Your JoyRead library has been updated.")
 
     def _handle_storage_location_failed(self, error: Exception) -> None:
         self._context.reload_storage_from_settings()
-        self.dialog_overlay.show_info("Storage Location", str(error))
+        self.dialog_overlay.show_info("Storage", str(error))
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":

@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import BytesIO
 import logging
 from pathlib import Path
+import sqlite3
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pyzipper
@@ -17,10 +18,15 @@ from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, 
 from joyread.core.services.archive_extraction_pool import HiddenImageExtractionPool
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
-from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.core.services.storage_migration_service import (
+    StorageMigrationError,
+    StorageMigrationService,
+)
+from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.database.migrations import MIGRATIONS
+from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
@@ -339,6 +345,103 @@ def test_sqlite_repository_persists_book_cover_path(tmp_path: Path) -> None:
 
     refreshed = repository.list_books()[0]
     assert refreshed.cover_thumbnail_path == str(cover_path)
+    database.close()
+
+
+def test_import_persists_relative_storage_path(tmp_path: Path) -> None:
+    source = tmp_path / "relative-storage.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+
+    stored = database.execute(
+        lambda connection: connection.execute("SELECT storage_path FROM book_files").fetchone()[
+            "storage_path"
+        ]
+    )
+    book = SqliteBookRepository(database).list_books()[0]
+
+    # Persisted relative to the storage root, surfaced absolute to callers.
+    assert not Path(stored).is_absolute()
+    assert stored.startswith("Books/")
+    assert Path(book.file_path).is_absolute()
+    assert Path(book.file_path).exists()
+    assert paths.resolver.to_storage_relative(book.file_path) == stored
+    database.close()
+
+
+def test_set_book_cover_path_persists_relative(tmp_path: Path) -> None:
+    source = tmp_path / "cover-relative.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    cover_path = paths.paths.thumbnails / "covers" / "custom-cover.png"
+
+    repository.set_book_cover_path(book.uuid, str(cover_path))
+
+    stored = database.execute(
+        lambda connection: connection.execute("SELECT cover_path FROM books").fetchone()["cover_path"]
+    )
+    refreshed = repository.list_books()[0]
+    assert stored == "Thumbnails/covers/custom-cover.png"
+    assert Path(refreshed.cover_thumbnail_path) == cover_path
+    database.close()
+
+
+def test_migration_normalizes_absolute_managed_paths(tmp_path: Path) -> None:
+    paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
+    paths.ensure_directories()
+    database = _database(paths.paths.database)
+
+    root = paths.storage_root
+    inside = root / "Books" / "ab" / "inside.cbz"
+    outside = tmp_path / "elsewhere" / "outside.cbz"
+    cover_inside = root / "Thumbnails" / "covers" / "c.png"
+
+    def seed(connection: sqlite3.Connection) -> None:
+        for file_id, content_hash, storage_path in (
+            ("f1", "h1", str(inside)),
+            ("f2", "h2", str(outside)),
+        ):
+            connection.execute(
+                """
+                INSERT INTO book_files(
+                    file_id, original_path, storage_path, file_format, file_size,
+                    mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
+                ) VALUES(?, 'orig', ?, 'CBZ', 1, 1, 'sha256', ?, 'healthy', 't', 't')
+                """,
+                (file_id, storage_path, content_hash),
+            )
+        connection.execute(
+            """
+            INSERT INTO books(book_id, file_id, title, author, book_type, cover_path, created_at, updated_at)
+            VALUES('b1', 'f1', 'T', 'A', 'manga', ?, 't', 't')
+            """,
+            (str(cover_inside),),
+        )
+        # Simulate a pre-normalization database so the migration re-runs.
+        connection.execute("DELETE FROM schema_migrations WHERE version = 11")
+
+    database.execute(seed)
+    database.execute(apply_migrations, DatabasePriority.CRITICAL)
+
+    stored = database.execute(
+        lambda connection: {
+            row["file_id"]: row["storage_path"]
+            for row in connection.execute("SELECT file_id, storage_path FROM book_files").fetchall()
+        }
+    )
+    cover = database.execute(
+        lambda connection: connection.execute(
+            "SELECT cover_path FROM books WHERE book_id = 'b1'"
+        ).fetchone()["cover_path"]
+    )
+
+    assert stored["f1"] == "Books/ab/inside.cbz"
+    assert stored["f2"] == str(outside)  # outside the storage root: left as-is (surfaces as missing)
+    assert cover == "Thumbnails/covers/c.png"
     database.close()
 
 
@@ -813,20 +916,82 @@ def test_progress_stores_page_index_and_percent_without_clamping(tmp_path: Path)
     database.close()
 
 
-def test_storage_migration_moves_storage_and_updates_config(tmp_path: Path) -> None:
-    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "old")
-    store.save(AppSettings(storage_location=str(tmp_path / "old")))
+def _seed_library(root: Path) -> None:
+    """Create a valid migrated JoyRead library with one book file at ``root``."""
+
+    database = root / "Database" / "joyread.sqlite3"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = open_sqlite_connection(database)
+    apply_migrations(connection)
+    connection.close()
+    book = root / "Books" / "ab" / "book.cbz"
+    book.parent.mkdir(parents=True, exist_ok=True)
+    book.write_bytes(b"book")
+
+
+def _migration_service(store: SettingsStore) -> StorageMigrationService:
+    return StorageMigrationService(store, StorageValidationService())
+
+
+def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path: Path) -> None:
     old = tmp_path / "old"
-    old.mkdir()
-    (old / "Books").mkdir()
-    (old / "Books" / "book.cbz").write_bytes(b"book")
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
 
-    result = StorageMigrationService(store).move_storage_location(old, tmp_path / "new")
+    result = _migration_service(store).move_to_parent(old, parent)
 
-    assert (tmp_path / "new" / "Books" / "book.cbz").exists()
-    assert result.old_backup_root is not None
-    assert result.old_backup_root.exists()
-    assert store.load().storage_location == str((tmp_path / "new").resolve())
+    target = parent / "JoyRead"
+    assert result.target_root == target.resolve()
+    assert (target / "Books" / "ab" / "book.cbz").exists()
+    assert (target / "Database" / "joyread.sqlite3").exists()
+    assert store.load().storage_location == str(target.resolve())
+    assert not old.exists()  # old root removed after a successful move
+
+
+def test_move_to_parent_fails_when_target_exists_and_keeps_settings(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+    (parent / "JoyRead").mkdir(parents=True)
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().storage_location == str(old)
+    assert old.exists()
+
+
+def test_move_to_parent_rolls_back_when_validation_fails(tmp_path: Path) -> None:
+    # A library with no database fails staging validation; nothing is adopted.
+    old = tmp_path / "old"
+    (old / "Books").mkdir(parents=True)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().storage_location == str(old)
+    assert old.exists()
+    assert not (parent / "JoyRead").exists()
+    # Staging copies are cleaned up.
+    assert not any(child.name.startswith(".JoyRead.staging-") for child in parent.iterdir())
+
+
+def test_reset_library_clears_root(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    _seed_library(root)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=root)
+
+    _migration_service(store).reset_library(root)
+
+    assert root.exists()
+    assert list(root.iterdir()) == []
 
 
 def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Path) -> None:
@@ -838,6 +1003,75 @@ def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Pa
     assert (context.paths.paths.database / "joyread.sqlite3").exists()
     assert context.settings_store.settings_path.is_relative_to(tmp_path / "runtime" / ".joyread_support")
     context.database_interpreter.close()
+
+
+def test_app_context_move_storage_preserves_books_under_new_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    source = tmp_path / "moved.cbz"
+    _write_cbz(source)
+    context.import_service.import_files([source])
+    assert len(context.book_repository.list_books()) == 1
+    old_root = Path(context.settings.storage_location)
+    parent = tmp_path / "newhome"
+
+    context.move_storage_to_parent(parent)
+
+    new_root = (parent / "JoyRead").resolve()
+    assert Path(context.settings.storage_location) == new_root
+    assert (new_root / "Database" / "joyread.sqlite3").exists()
+    books = context.book_repository.list_books()
+    assert len(books) == 1
+    # Relative storage paths resolve under the new root and the file exists.
+    assert Path(books[0].file_path).is_relative_to(new_root)
+    assert Path(books[0].file_path).exists()
+    assert not old_root.exists()
+    context.close()
+
+
+def test_app_context_reset_storage_empties_library(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    source = tmp_path / "reset.cbz"
+    _write_cbz(source)
+    context.import_service.import_files([source])
+    assert len(context.book_repository.list_books()) == 1
+
+    context.reset_storage()
+
+    assert context.book_repository.list_books() == []
+    assert (Path(context.settings.storage_location) / "Database" / "joyread.sqlite3").exists()
+    context.close()
+
+
+def test_app_context_select_existing_library_switches_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    other = tmp_path / "other" / "JoyRead"
+    _seed_library(other)
+
+    result = context.select_storage(other)
+
+    assert result.ok
+    assert Path(context.settings.storage_location) == other.resolve()
+    assert other.exists()  # Select never deletes the chosen library.
+    context.close()
+
+
+def test_app_context_select_existing_library_rejects_invalid(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    original_root = context.settings.storage_location
+    invalid = tmp_path / "not-a-library"
+    invalid.mkdir()
+
+    result = context.select_storage(invalid)
+
+    assert not result.ok
+    # Settings unchanged; the current library keeps running.
+    assert context.settings.storage_location == original_root
+    assert context.book_repository.list_books() == []
+    context.close()
 
 
 def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeypatch, tmp_path: Path) -> None:

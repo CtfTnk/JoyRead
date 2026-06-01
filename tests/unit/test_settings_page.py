@@ -104,8 +104,9 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four original General rows, two Import depth rows, and five Cache rows.
-    assert len(setting_items) == 11
+    # Three General rows (Storage moved to Privacy), two Import depth rows,
+    # and five Cache rows.
+    assert len(setting_items) == 10
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 5
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
@@ -363,11 +364,31 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
 
     assert any("Show Collections" in label for label in labels)
     assert {"Change Password", "Revert all", "Reset and Erase"}.issubset(set(labels))
-    # Three button rows.
-    assert len(button_items) == 3
-    # All three buttons disabled until the feature is initialised.
-    for item in button_items:
-        assert item.button.isEnabled() is False
+    # Storage management rows live on the Privacy tab too. The Library Location
+    # row shows the directory (address item); Select/Reset are button rows.
+    assert {"Library Location", "Select Existing Library", "Reset JoyRead Directory"}.issubset(
+        set(labels)
+    )
+    address_items = page.findChildren(SettingsAddressItem)
+    assert len(address_items) == 1
+
+    def _row_name(item: SettingsButtonItem) -> str:
+        label = next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        )
+        return label.text()
+
+    by_name = {_row_name(item): item for item in button_items}
+    # Three Hidden Space rows + two Storage button rows (Move is an address row).
+    assert len(button_items) == 5
+    # Hidden Space buttons are disabled until the feature is initialised; the
+    # Storage buttons are always actionable.
+    for hidden_label in ("Change Password", "Revert all", "Reset and Erase"):
+        assert by_name[hidden_label].button.isEnabled() is False
+    for storage_label in ("Select Existing Library", "Reset JoyRead Directory"):
+        assert by_name[storage_label].button.isEnabled() is True
     # The Show Collections switch is the only switch on this tab.
     assert len(switch_items) == 1
 
@@ -415,6 +436,84 @@ def test_privacy_show_collections_toggle_off_persists_immediately(qtbot, tmp_pat
 
     assert viewmodel.show_hidden_collection is False
     assert store.load().show_hidden_collection is False
+
+
+def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem, SettingsPushButton
+
+    viewmodel = SettingsViewModel()
+    viewmodel.set_storage_location("~/Documents/JoyRead Library")
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    emitted: list[str] = []
+    page.storage_move_requested.connect(lambda: emitted.append("move"))
+    page.storage_select_requested.connect(lambda: emitted.append("select"))
+    page.storage_reset_requested.connect(lambda: emitted.append("reset"))
+
+    # The Move row is an address item that displays the current directory.
+    address_item = page.findChildren(SettingsAddressItem)[0]
+    path_field = address_item.findChild(QLineEdit)
+    assert path_field is not None
+    assert path_field.text() == "~/Documents/JoyRead Library"
+
+    def _row_name(item: SettingsButtonItem) -> str:
+        return next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        ).text()
+
+    by_name = {_row_name(item): item for item in page.findChildren(SettingsButtonItem)}
+    address_item.findChild(SettingsPushButton).click()
+    by_name["Select Existing Library"].button.click()
+    by_name["Reset JoyRead Directory"].button.click()
+
+    assert emitted == ["move", "select", "reset"]
+
+
+def test_storage_reset_requires_two_step_delete_confirmation(qtbot, monkeypatch) -> None:
+    apply_theme()
+    window = MainWindow(create_app_context())
+    qtbot.addWidget(window)
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        window.dialog_overlay,
+        "show_confirm",
+        lambda title, message, on_confirm, **kwargs: captured.update(
+            confirm=on_confirm, destructive=kwargs.get("destructive")
+        ),
+    )
+    monkeypatch.setattr(
+        window.dialog_overlay,
+        "show_input",
+        lambda title, header, on_confirm, *, validator=None, **kwargs: captured.update(
+            submit=on_confirm, validator=validator
+        ),
+    )
+    executed: list[bool] = []
+    monkeypatch.setattr(window, "_execute_reset_storage", lambda: executed.append(True))
+
+    window._request_reset_storage()
+    assert captured["destructive"] is True
+    assert not executed  # first confirm does nothing destructive on its own
+
+    captured["confirm"]()  # user presses Continue → second-step input appears
+    validator = captured["validator"]
+    assert validator("") is not None
+    assert validator("remove") is not None
+    assert validator("delete") is None
+    assert validator("DELETE") is None
+    assert validator("  delete  ") is None
+
+    captured["submit"]("delete")  # typing the word and confirming runs the reset
+    assert executed == [True]
+
+    window._context.close()
 
 
 def test_privacy_buttons_enable_once_hidden_space_initialised(qtbot, tmp_path) -> None:

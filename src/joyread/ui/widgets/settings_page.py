@@ -42,7 +42,12 @@ from joyread.ui.widgets.section_banner import SectionBanner
 
 
 class SettingsPageWidget(QFrame):
-    storage_change_requested = QtSignal()
+    # Storage management (Privacy > Storage). Move picks a parent folder for a
+    # fresh ``<parent>/JoyRead``; Select adopts an existing JoyRead library;
+    # Reset wipes the current library. MainWindow owns the dialogs/file pickers.
+    storage_move_requested = QtSignal()
+    storage_select_requested = QtSignal()
+    storage_reset_requested = QtSignal()
     # Hidden Space user-actions that need a dialog overlay. SettingsView
     # forwards them so MainWindow (which owns the overlay) can drive the
     # dialog flow and call the relevant VM methods.
@@ -184,7 +189,37 @@ class SettingsPageWidget(QFrame):
         reset.clicked.connect(self.hidden_space_reset_requested.emit)
         reset.set_enabled(self._viewmodel.hidden_space_initialized)
 
-        return [hidden_banner, show_switch, change_password, revert, reset]
+        # Storage management. The library location itself is not shown/edited
+        # here: Move creates a fresh JoyRead under a chosen parent and migrates,
+        # Select adopts an existing JoyRead folder, Reset wipes the current one.
+        storage_banner = SectionBanner("Storage", self._resources)
+
+        # Show the current library directory (read-only) with a Move action,
+        # matching the previous Storage Location row.
+        move_library = SettingsAddressItem(
+            "Library Location",
+            self._viewmodel.storage_location,
+            button_text="Move",
+        )
+        move_library.change_requested.connect(self.storage_move_requested.emit)
+
+        select_library = SettingsButtonItem("Select Existing Library", "Select")
+        select_library.clicked.connect(self.storage_select_requested.emit)
+
+        reset_library = SettingsButtonItem("Reset JoyRead Directory", "Proceed", destructive=True)
+        reset_library.clicked.connect(self.storage_reset_requested.emit)
+
+        return [
+            hidden_banner,
+            show_switch,
+            change_password,
+            revert,
+            reset,
+            storage_banner,
+            move_library,
+            select_library,
+            reset_library,
+        ]
 
     def _handle_show_hidden_toggled(self, enabled: bool) -> None:
         if enabled:
@@ -231,9 +266,6 @@ class SettingsPageWidget(QFrame):
             self._viewmodel.individual_read_window,
         )
         window_switch.toggled.connect(self._viewmodel.set_individual_read_window)
-
-        storage = SettingsAddressItem("Storage Location", self._viewmodel.storage_location)
-        storage.change_requested.connect(self.storage_change_requested.emit)
 
         import_banner = SectionBanner("Import", self._resources)
 
@@ -310,7 +342,6 @@ class SettingsPageWidget(QFrame):
             language,
             import_switch,
             window_switch,
-            storage,
             import_banner,
             import_folder_depth_item,
             archive_depth_item,
@@ -564,7 +595,14 @@ class SettingsButtonItem(SettingsOptionItem):
 class SettingsAddressItem(QFrame):
     change_requested = QtSignal()
 
-    def __init__(self, title: str, directory: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        directory: str,
+        parent: QWidget | None = None,
+        *,
+        button_text: str = "Change",
+    ) -> None:
         super().__init__(parent)
         self.setProperty("class", "SettingsItem")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -601,7 +639,7 @@ class SettingsAddressItem(QFrame):
         path.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         option_layout.addWidget(path, stretch=1)
 
-        change_button = SettingsPushButton("Change")
+        change_button = SettingsPushButton(button_text)
         change_button.clicked.connect(self.change_requested.emit)
         option_layout.addWidget(change_button)
 

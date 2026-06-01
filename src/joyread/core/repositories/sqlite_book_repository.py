@@ -24,9 +24,70 @@ from joyread.core.reader.models import (
     ReaderTransitionMode,
 )
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
+from joyread.infrastructure.filesystem.path_service import StoragePathResolver
 
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_managed(resolver: StoragePathResolver | None, value: object) -> str | None:
+    """Turn a stored (relative) managed path into an absolute one for callers.
+
+    Legacy rows that still hold an absolute path — or any path outside the
+    current storage root — are passed through unchanged so a moved library
+    surfaces them as ``missing`` rather than silently rewriting them.
+    """
+
+    if value is None:
+        return None
+    text = str(value)
+    if resolver is None:
+        if text and not Path(text).is_absolute():
+            logger.warning(
+                "No storage resolver available; returning raw relative path %r — "
+                "callers will resolve it against CWD",
+                text,
+            )
+        return text
+    try:
+        return str(resolver.to_storage_absolute(text))
+    except ValueError:
+        return text
+
+
+def _resolver_from_database(database: DatabaseInterpreter) -> StoragePathResolver | None:
+    """Derive a resolver from ``<storage_root>/Database/joyread.sqlite3``.
+
+    Only returns a resolver when the database actually lives inside a
+    ``Database/`` subdirectory of the storage root.  A flat or non-standard path
+    (e.g. a test database placed directly in ``tmp_path``) returns ``None`` so
+    callers fall back to passing through raw stored values rather than resolving
+    against a structurally wrong root.
+    """
+
+    database_path = getattr(database, "database_path", None)
+    if database_path is None:
+        return None
+    path = Path(database_path)
+    if not path.is_absolute():
+        return None
+    if path.parent.name != "Database":
+        return None
+    return StoragePathResolver(path.parent.parent)
+
+
+def _relativize_managed(resolver: StoragePathResolver | None, value: object) -> str | None:
+    """Turn an absolute managed path into the storage-relative form to persist."""
+
+    if value is None:
+        return None
+    text = str(value)
+    if resolver is None:
+        return text
+    try:
+        return resolver.to_storage_relative(text)
+    except ValueError:
+        return text
 
 
 @dataclass(frozen=True)
@@ -47,17 +108,26 @@ class SqliteBookRepository(BookRepository):
         self,
         database: DatabaseInterpreter,
         *,
+        resolver: StoragePathResolver | None = None,
         managed_books_root: Path | None = None,
         thumbnails_root: Path | None = None,
     ) -> None:
         self._database = database
+        # Fall back to deriving the storage root from the database location
+        # (``<storage_root>/Database/joyread.sqlite3``) so the repository can
+        # always resolve managed relative paths even when a resolver is not
+        # injected explicitly.
+        self._resolver = resolver or _resolver_from_database(database)
         self._managed_books_root = managed_books_root.resolve() if managed_books_root is not None else None
         self._thumbnails_root = thumbnails_root.resolve() if thumbnails_root is not None else None
 
     def list_books(self) -> list[Book]:
         # State refresh runs only on the user-action ``get_book`` path
         # so a shelf load doesn't pay a per-book ``Path.exists()`` stat.
-        books = self._database.execute(_list_books, DatabasePriority.HIGH)
+        books = self._database.execute(
+            lambda connection: _list_books(connection, resolver=self._resolver),
+            DatabasePriority.HIGH,
+        )
         logger.debug("list_books returned count=%d", len(books))
         return books
 
@@ -84,7 +154,7 @@ class SqliteBookRepository(BookRepository):
             # file would report a per-book failure but leave the row's
             # ``state`` stale, so the shelf still shows the book as
             # healthy until the user later clicks it.
-            _refresh_book_file_states(connection, target_ids)
+            _refresh_book_file_states(connection, target_ids, resolver=self._resolver)
             placeholders = ", ".join("?" for _book_id in target_ids)
             rows = connection.execute(
                 f"""
@@ -103,15 +173,17 @@ class SqliteBookRepository(BookRepository):
                 """,
                 target_ids,
             ).fetchall()
-            records_by_id = {row["book_id"]: _export_record_from_row(row) for row in rows}
+            records_by_id = {
+                row["book_id"]: _export_record_from_row(row, resolver=self._resolver) for row in rows
+            }
             return [records_by_id[book_id] for book_id in target_ids if book_id in records_by_id]
 
         return self._database.execute(read, DatabasePriority.HIGH)
 
     def get_book(self, book_id: str) -> Book | None:
         def read(connection: sqlite3.Connection) -> list[Book]:
-            _refresh_book_file_states(connection, (book_id,))
-            return _list_books(connection, book_id)
+            _refresh_book_file_states(connection, (book_id,), resolver=self._resolver)
+            return _list_books(connection, book_id, resolver=self._resolver)
 
         books = self._database.execute(read, DatabasePriority.HIGH)
         if not books:
@@ -164,11 +236,14 @@ class SqliteBookRepository(BookRepository):
         )
 
     def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
-        logger.debug("set_book_cover_path book=%s path=%s", book_id, cover_path)
+        # Covers live under the managed Thumbnails/ tree, so persist them
+        # relative to the storage root just like book files.
+        stored_path = _relativize_managed(self._resolver, cover_path)
+        logger.debug("set_book_cover_path book=%s path=%s stored=%s", book_id, cover_path, stored_path)
         self._database.execute(
             lambda connection: connection.execute(
                 "UPDATE books SET cover_path = ?, updated_at = ? WHERE book_id = ?",
-                (cover_path, _now(), book_id),
+                (stored_path, _now(), book_id),
             ),
             DatabasePriority.NORMAL,
         )
@@ -334,8 +409,13 @@ class SqliteBookRepository(BookRepository):
             return _BookDeletionCleanup(storage_path=None, cover_path=None, generated_cover_pattern=None)
 
         file_id = row["file_id"]
-        storage_path = Path(row["storage_path"])
-        cover_path = Path(row["cover_path"]) if row["cover_path"] else None
+        # Stored paths are storage-relative; resolve to absolute before any
+        # filesystem check so the managed-root guard in ``_unlink_if_managed``
+        # compares like-for-like.
+        resolved_storage = _resolve_managed(self._resolver, row["storage_path"])
+        resolved_cover = _resolve_managed(self._resolver, row["cover_path"])
+        storage_path = Path(resolved_storage) if resolved_storage else None
+        cover_path = Path(resolved_cover) if resolved_cover else None
         should_delete_storage_file = False
 
         connection.execute("BEGIN")
@@ -797,7 +877,12 @@ class SqliteBookRepository(BookRepository):
         return self._database.execute(write, DatabasePriority.NORMAL)
 
 
-def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> list[Book]:
+def _list_books(
+    connection: sqlite3.Connection,
+    book_id: str | None = None,
+    *,
+    resolver: StoragePathResolver | None = None,
+) -> list[Book]:
     where = "WHERE books.book_id = ?" if book_id is not None else ""
     parameters = (book_id,) if book_id is not None else ()
     rows = connection.execute(
@@ -835,10 +920,15 @@ def _list_books(connection: sqlite3.Connection, book_id: str | None = None) -> l
         """,
         parameters,
     ).fetchall()
-    return [_book_from_row(row) for row in rows]
+    return [_book_from_row(row, resolver=resolver) for row in rows]
 
 
-def _refresh_book_file_states(connection: sqlite3.Connection, book_ids: tuple[str, ...] | None = None) -> None:
+def _refresh_book_file_states(
+    connection: sqlite3.Connection,
+    book_ids: tuple[str, ...] | None = None,
+    *,
+    resolver: StoragePathResolver | None = None,
+) -> None:
     where = ""
     parameters: tuple[object, ...] = ()
     if book_ids:
@@ -866,8 +956,9 @@ def _refresh_book_file_states(connection: sqlite3.Connection, book_ids: tuple[st
     missing_count = 0
     healthy_count = 0
     for row in rows:
-        storage_path = Path(row["storage_path"]).expanduser()
-        desired_state = "healthy" if storage_path.exists() else "missing"
+        resolved = _resolve_managed(resolver, row["storage_path"])
+        storage_path = Path(resolved).expanduser() if resolved else None
+        desired_state = "healthy" if storage_path is not None and storage_path.exists() else "missing"
         if row["state"] == desired_state:
             continue
         updates.append((desired_state, now, row["file_id"]))
@@ -926,7 +1017,7 @@ def _list_languages(connection: sqlite3.Connection) -> list[Language]:
     ]
 
 
-def _book_from_row(row: sqlite3.Row) -> Book:
+def _book_from_row(row: sqlite3.Row, *, resolver: StoragePathResolver | None = None) -> Book:
     collection_ids = tuple(
         value for value in (row["collection_ids"] or "").split(",") if value
     )
@@ -939,9 +1030,9 @@ def _book_from_row(row: sqlite3.Row) -> Book:
         language_name=row["language_name"],
         book_type=row["book_type"],
         file_format=row["file_format"],
-        file_path=row["storage_path"],
+        file_path=_resolve_managed(resolver, row["storage_path"]),
         progress=max(0.0, min(100.0, progress_percent)) / 100.0,
-        cover_thumbnail_path=row["cover_path"],
+        cover_thumbnail_path=_resolve_managed(resolver, row["cover_path"]),
         added_at=datetime.fromisoformat(row["created_at"]),
         updated_at=datetime.fromisoformat(row["updated_at"]),
         last_read_at=(
@@ -958,11 +1049,13 @@ def _book_from_row(row: sqlite3.Row) -> Book:
     )
 
 
-def _export_record_from_row(row: sqlite3.Row) -> BookExportRecord:
+def _export_record_from_row(
+    row: sqlite3.Row, *, resolver: StoragePathResolver | None = None
+) -> BookExportRecord:
     return BookExportRecord(
         book_uuid=row["book_id"],
         title=row["title"],
-        storage_path=row["storage_path"],
+        storage_path=_resolve_managed(resolver, row["storage_path"]),
         original_file_name=_original_file_name_from_row(row),
         hash_algorithm=row["hash_algorithm"],
         content_hash=row["content_hash"],
