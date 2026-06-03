@@ -78,3 +78,6 @@ test_set/
 # Generated reports
 reports/
 artifacts/
+
+# Local agent files
+.agent.md

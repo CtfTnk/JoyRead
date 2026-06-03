@@ -5,9 +5,16 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import FileFilter, SortField
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
+from joyread.ui.widgets.mode_switches import SortModeSwitchWidget
 from joyread.ui.widgets.search_panel import SearchPanelWidget
 from joyread.ui.widgets.top_toolbar import TagFilterButton, TopToolbarWidget
-from joyread.ui.widgets.window_chrome import ActionMenuButton
+from joyread.ui.widgets.window_chrome import (
+    ActionMenuButton,
+    StoplightControlsWidget,
+    TitleBarWidget,
+    TitleControlButton,
+    TitleControlGroup,
+)
 
 
 def apply_theme() -> None:
@@ -165,3 +172,90 @@ def test_action_menu_button_shadow_is_shifted_down(qtbot) -> None:
     assert effect is not None
     assert effect.offset().x() == 0
     assert effect.offset().y() == 1
+
+
+def test_title_control_group_matches_figma_geometry_after_sort_switch(qtbot) -> None:
+    apply_theme()
+    title_bar = TitleBarWidget(ResourceLoader(), platform_name="win32")
+    qtbot.addWidget(title_bar)
+    title_bar.resize(720, Theme.toolbar_height)
+    title_bar.show()
+    QApplication.processEvents()
+
+    group = title_bar.findChild(TitleControlGroup, "TitleControlGroup")
+    sort_switch = title_bar.findChild(SortModeSwitchWidget)
+    assert group is not None
+    assert sort_switch is not None
+
+    buttons = group.findChildren(TitleControlButton)
+    margins = group.layout().contentsMargins()
+
+    assert group.isVisible()
+    assert group.width() == Theme.title_control_group_width
+    assert group.height() == Theme.title_control_group_height
+    assert group.x() - (sort_switch.x() + sort_switch.width()) == 10
+    assert group.layout().spacing() == Theme.title_control_gap
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (
+        0,
+        0,
+        Theme.title_control_group_right_inset,
+        0,
+    )
+    assert len(buttons) == 3
+    assert {button.width() for button in buttons} == {Theme.title_control_button_size}
+    assert {button.height() for button in buttons} == {Theme.title_control_button_size}
+    assert buttons[1].x() - (buttons[0].x() + buttons[0].width()) == Theme.title_control_gap
+    assert buttons[2].x() - (buttons[1].x() + buttons[1].width()) == Theme.title_control_gap
+    assert group.width() - (buttons[2].x() + buttons[2].width()) == Theme.title_control_group_right_inset
+
+
+def test_title_bar_switches_between_macos_and_forced_non_macos_controls(qtbot) -> None:
+    apply_theme()
+    title_bar = TitleBarWidget(ResourceLoader(), platform_name="darwin")
+    qtbot.addWidget(title_bar)
+    title_bar.resize(720, Theme.toolbar_height)
+    title_bar.show()
+    QApplication.processEvents()
+
+    stoplights = title_bar.findChild(StoplightControlsWidget)
+    group = title_bar.findChild(TitleControlGroup, "TitleControlGroup")
+
+    assert stoplights is not None
+    assert group is not None
+    assert stoplights.isVisible()
+    assert group.isHidden()
+
+    title_bar.set_title_control_mode(
+        force_non_macos_title_controls=True,
+    )
+    QApplication.processEvents()
+
+    assert stoplights.isHidden()
+    assert group.isVisible()
+
+    title_bar.set_title_control_mode(
+        force_non_macos_title_controls=False,
+    )
+    QApplication.processEvents()
+
+    assert stoplights.isVisible()
+    assert group.isHidden()
+
+
+def test_title_control_group_emits_window_action_signals(qtbot) -> None:
+    apply_theme()
+    group = TitleControlGroup(ResourceLoader())
+    qtbot.addWidget(group)
+    group.show()
+    QApplication.processEvents()
+
+    emitted: list[str] = []
+    group.minimize_requested.connect(lambda: emitted.append("minimize"))
+    group.zoom_requested.connect(lambda: emitted.append("zoom"))
+    group.close_requested.connect(lambda: emitted.append("close"))
+
+    qtbot.mouseClick(group.minimize_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(group.zoom_button, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(group.close_button, Qt.MouseButton.LeftButton)
+
+    assert emitted == ["minimize", "zoom", "close"]

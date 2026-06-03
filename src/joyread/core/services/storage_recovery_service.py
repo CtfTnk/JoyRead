@@ -8,7 +8,9 @@ never silently overwriting a user's library outside first-run initialization.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 import logging
 from pathlib import Path
 
@@ -18,6 +20,20 @@ from joyread.infrastructure.config.settings_store import AppSettings, SettingsSt
 
 
 logger = logging.getLogger(__name__)
+
+
+class StorageRecoveryDecision(StrEnum):
+    """User's choice when the configured library is unavailable at startup."""
+
+    RETRY = "retry"
+    FALLBACK = "fallback"
+
+
+# Called when the configured storage is unavailable. Receives the configured
+# location and the validation failure message; returns whether to re-check that
+# same location (the user may have reconnected a drive) or fall back to another
+# library. Kept Qt-free so the core service stays UI-agnostic and testable.
+RecoveryPrompt = Callable[[str, str], StorageRecoveryDecision]
 
 
 @dataclass(frozen=True)
@@ -37,15 +53,20 @@ class StorageRecoveryService:
         self._validation = validation_service
         self._migration = migration_service
 
-    def prepare(self) -> StorageStartupResult:
-        """Resolve the storage root to use, updating settings as needed."""
+    def prepare(self, prompt: RecoveryPrompt | None = None) -> StorageStartupResult:
+        """Resolve the storage root to use, updating settings as needed.
+
+        ``prompt`` is consulted on daily startup when the configured library is
+        unavailable, letting the user retry the same location or fall back. When
+        it is ``None`` (tests, headless runs), recovery falls back automatically.
+        """
 
         first_run = not self._settings_store.settings_path.exists()
         settings = self._settings_store.load()
         if first_run:
             logger.info("First run detected; initializing default library")
             return self._prepare_first_run(settings)
-        return self._prepare_daily(settings)
+        return self._prepare_daily(settings, prompt)
 
     # -- first run ----------------------------------------------------------
 
@@ -77,14 +98,28 @@ class StorageRecoveryService:
 
     # -- daily startup ------------------------------------------------------
 
-    def _prepare_daily(self, settings: AppSettings) -> StorageStartupResult:
+    def _prepare_daily(
+        self, settings: AppSettings, prompt: RecoveryPrompt | None
+    ) -> StorageStartupResult:
         current = settings.storage_location
-        if self._validation.validate_lightweight(current).ok:
+        result = self._validation.validate_lightweight(current)
+        if result.ok:
             if settings.last_good_storage_location != current:
                 settings = self._settings_store.update(last_good_storage_location=current)
             return StorageStartupResult(settings, None)
 
         logger.warning("Configured storage at %s is unavailable; recovering", current)
+
+        # Let the user retry the same location (e.g. after reconnecting an
+        # external drive) before we switch away from their chosen library.
+        while prompt is not None and prompt(current, result.message) == StorageRecoveryDecision.RETRY:
+            result = self._validation.validate_lightweight(current)
+            if result.ok:
+                logger.info("Configured storage at %s became available on retry", current)
+                updated = self._settings_store.update(last_good_storage_location=current)
+                return StorageStartupResult(updated, None)
+            logger.warning("Retry of %s still unavailable: %s", current, result.message)
+
         default_root = str(self._settings_store.default_storage_root)
 
         for candidate in self._fallback_candidates(settings, current, default_root):

@@ -86,6 +86,7 @@ class SettingsViewModel:
         self.language = settings.language
         self.import_book_when_opening = settings.import_book_when_opening
         self.individual_read_window = settings.individual_read_window
+        self.inspect_non_native_title_control = False
         self.storage_location = settings.storage_location
         self.reader_page_cache_mb = _clamp_int(
             getattr(settings, "reader_page_cache_mb", 512),
@@ -152,6 +153,12 @@ class SettingsViewModel:
             return
         self.individual_read_window = enabled
         self._persist(individual_read_window=enabled)
+        self.state_changed.emit()
+
+    def set_inspect_non_native_title_control(self, enabled: bool) -> None:
+        if enabled == self.inspect_non_native_title_control:
+            return
+        self.inspect_non_native_title_control = enabled
         self.state_changed.emit()
 
     def set_storage_location(self, path: str) -> None:

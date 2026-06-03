@@ -267,6 +267,12 @@ class SettingsPageWidget(QFrame):
         )
         window_switch.toggled.connect(self._viewmodel.set_individual_read_window)
 
+        inspect_title_switch = SettingsSwitchItem(
+            "Inspect Windows/Linux Title Control",
+            self._viewmodel.inspect_non_native_title_control,
+        )
+        inspect_title_switch.toggled.connect(self._viewmodel.set_inspect_non_native_title_control)
+
         import_banner = SectionBanner("Import", self._resources)
 
         import_folder_depth_item = SettingsNumericItem(
@@ -342,6 +348,7 @@ class SettingsPageWidget(QFrame):
             language,
             import_switch,
             window_switch,
+            inspect_title_switch,
             import_banner,
             import_folder_depth_item,
             archive_depth_item,

@@ -9,10 +9,11 @@ import sys
 from pathlib import Path
 
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
 
 from joyread.app.app_context import AppContext, create_app_context
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
+from joyread.core.services.storage_recovery_service import StorageRecoveryDecision
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.infrastructure.logging.logging_service import configure_early_logging, configure_logging
 from joyread.ui.views.main_window import MainWindow
@@ -37,7 +38,7 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     )
     app = QApplication.instance() or QApplication(argv)
     app.setQuitOnLastWindowClosed(True)
-    context = create_app_context()
+    context = create_app_context(recovery_prompt=_prompt_storage_recovery)
     context.paths.ensure_directories()
     configure_logging(context.paths.paths.logs)
 
@@ -60,6 +61,34 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
         logger.info("Main window launch")
         window = MainWindow(context)
     return app, context, window
+
+
+def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryDecision:
+    """Ask the user to retry the unavailable library or fall back to another.
+
+    Shown before the main window and the stylesheet exist, so this uses a
+    native, parentless ``QMessageBox`` rather than the in-app themed overlay.
+    """
+
+    logger.info("Prompting storage recovery for unavailable location %s", current)
+    box = QMessageBox()
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle("JoyRead Library Unavailable")
+    box.setText("JoyRead can't open your library.")
+    box.setInformativeText(
+        f"Location:\n{current}\n\n{message}\n\n"
+        "Reconnect the drive or folder and choose Retry, or choose "
+        "Use Backup Library to continue with another library."
+    )
+    retry_button = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+    fallback_button = box.addButton("Use Backup Library", QMessageBox.ButtonRole.DestructiveRole)
+    box.setDefaultButton(retry_button)
+    box.exec()
+    if box.clickedButton() is fallback_button:
+        logger.info("Storage recovery: user chose fallback for %s", current)
+        return StorageRecoveryDecision.FALLBACK
+    logger.info("Storage recovery: user chose retry for %s", current)
+    return StorageRecoveryDecision.RETRY
 
 
 def _log_about_to_quit() -> None:

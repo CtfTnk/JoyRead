@@ -171,6 +171,13 @@ class Theme:
     traffic_light_size = 14
     traffic_light_group_width = 62
     traffic_light_group_height = 16
+    title_control_group_width = 96
+    title_control_group_height = 24
+    title_control_group_right_inset = 6
+    title_control_gap = 9
+    title_control_button_size = 24
+    title_control_button_radius = 6
+    title_control_stroke_width = 1.5
     chrome_button_size = 36
     action_button_width = 42
     action_button_height = 36

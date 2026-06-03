@@ -58,6 +58,8 @@ class ReaderShellWidget(QWidget):
         self.canvas = ReaderCanvas(self)
         self.header = ReaderHeader(context.resources, self)
         self.header.set_back_visible(show_back_button)
+        self._sync_title_control_mode()
+        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
         self.left_arrow = _side_button(context.resources, "icon_left.svg", self)
         self.right_arrow = _side_button(context.resources, "icon_right.svg", self)
@@ -160,6 +162,12 @@ class ReaderShellWidget(QWidget):
             lambda message: self.dialog_overlay.show_info("Bookmarks", message)
         )
         self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
+
+    def _sync_title_control_mode(self) -> None:
+        settings_vm = self._context.settings_viewmodel
+        self.header.set_title_control_mode(
+            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
+        )
 
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)

@@ -29,7 +29,7 @@ from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
-from joyread.ui.widgets.window_chrome import WindowChromeWidget
+from joyread.ui.widgets.window_chrome import TitleBarWidget
 
 
 logger = logging.getLogger(__name__)
@@ -65,7 +65,8 @@ class MainWindow(QMainWindow):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(0)
 
-        self.chrome = WindowChromeWidget(context.resources)
+        self.title_bar = TitleBarWidget(context.resources)
+        self.chrome = self.title_bar
         root_layout.addWidget(self.chrome)
 
         view_panel = QWidget()
@@ -150,6 +151,7 @@ class MainWindow(QMainWindow):
         context.settings_viewmodel.hidden_space_error.connect(
             lambda message: self.dialog_overlay.show_info("Hidden Space", message)
         )
+        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         # Shelf clicks travel through the viewmodel (book_card →
         # shelf_view → vm.open_book) so every "open" is gated by
         # ``_refresh_book_state`` — that re-validates the
@@ -185,6 +187,7 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
+        self._sync_title_control_mode()
 
         # Launch-time Hidden Space gate. If the user closed the previous
         # session with "Show Collections" still on, the shelf is hidden
@@ -1319,6 +1322,12 @@ class MainWindow(QMainWindow):
         self.chrome.set_sort(
             self._context.shelf_viewmodel.sort_field.value,
             self._context.shelf_viewmodel.sort_ascending,
+        )
+
+    def _sync_title_control_mode(self) -> None:
+        settings_vm = self._context.settings_viewmodel
+        self.title_bar.set_title_control_mode(
+            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
         )
 
     def _handle_books_deleted(self, _book_uuids: tuple[str, ...]) -> None:

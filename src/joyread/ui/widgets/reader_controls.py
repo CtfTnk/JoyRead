@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
@@ -23,7 +24,7 @@ from joyread.core.reader import ReaderDirection, ReaderTransitionMode
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
-from joyread.ui.widgets.window_chrome import WindowControlsWidget
+from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
 
 
 logger = logging.getLogger(__name__)
@@ -152,8 +153,10 @@ class ReaderHeader(QWidget):
         parent: QWidget | None = None,
         *,
         show_custom_button: bool = False,
+        platform_name: str | None = None,
     ) -> None:
         super().__init__(parent)
+        self._platform_name = platform_name or sys.platform
         self.setObjectName("ReaderHeader")
         self.setMouseTracking(True)
         self.setFixedHeight(Theme.reader_banner_height)
@@ -163,11 +166,11 @@ class ReaderHeader(QWidget):
         layout.setContentsMargins(18, 8, 8, 8)
         layout.setSpacing(10)
 
-        controls = WindowControlsWidget()
-        controls.close_requested.connect(lambda: self.window().close())
-        controls.minimize_requested.connect(lambda: self.window().showMinimized())
-        controls.zoom_requested.connect(self._toggle_zoom)
-        layout.addWidget(controls)
+        self._stoplight_controls = StoplightControlsWidget()
+        self._stoplight_controls.close_requested.connect(lambda: self.window().close())
+        self._stoplight_controls.minimize_requested.connect(lambda: self.window().showMinimized())
+        self._stoplight_controls.zoom_requested.connect(self._toggle_zoom)
+        layout.addWidget(self._stoplight_controls)
 
         self.back_button = reader_button(resources, "icon_left.svg", "Back")
         self.back_button.setProperty("class", "ChromeButton")
@@ -204,7 +207,18 @@ class ReaderHeader(QWidget):
         if show_custom_button:
             layout.addWidget(self.custom_button)
         else:
-            layout.addWidget(QWidget(), stretch=0)
+            self._custom_placeholder = QWidget()
+            self._custom_placeholder.setFixedSize(0, 0)
+            layout.addWidget(self._custom_placeholder, stretch=0)
+
+        self._title_control_group = TitleControlGroup(resources)
+        self._title_control_group.close_requested.connect(lambda: self.window().close())
+        self._title_control_group.minimize_requested.connect(lambda: self.window().showMinimized())
+        self._title_control_group.zoom_requested.connect(self._toggle_zoom)
+        layout.addWidget(self._title_control_group, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.set_title_control_mode(
+            force_non_macos_title_controls=False,
+        )
 
     def set_back_visible(self, visible: bool) -> None:
         self.back_button.setVisible(visible)
@@ -220,6 +234,17 @@ class ReaderHeader(QWidget):
 
     def set_bookmarks_enabled(self, enabled: bool) -> None:
         self.topic_button_group.set_bookmarks_enabled(enabled)
+
+    def set_title_control_mode(
+        self,
+        *,
+        force_non_macos_title_controls: bool,
+    ) -> None:
+        show_non_macos_controls = force_non_macos_title_controls or self._platform_name != "darwin"
+        show_stoplights = self._platform_name == "darwin" and not show_non_macos_controls
+        self._stoplight_controls.setVisible(show_stoplights)
+        self._title_control_group.setVisible(show_non_macos_controls)
+        self._position_title()
 
     def set_topic_active_mode(self, mode: ReaderTopicMode | None) -> None:
         logger.debug(
@@ -251,7 +276,15 @@ class ReaderHeader(QWidget):
 
     def _position_title(self) -> None:
         left_edge = self.topic_button_group.geometry().right() + 12 if self.topic_button_group.width() else 160
-        right_edge = 52 + 12
+        right_controls = [
+            widget
+            for widget in (self.custom_button, self._title_control_group)
+            if widget.isVisible() and widget.width() > 0
+        ]
+        if right_controls:
+            right_edge = self.width() - min(widget.geometry().left() for widget in right_controls) + 12
+        else:
+            right_edge = 52 + 12
         safe_side = max(left_edge, right_edge)
         available = self.width() - (safe_side * 2)
         was_visible = getattr(self, "_title_visible", True)

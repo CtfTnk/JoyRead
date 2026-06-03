@@ -26,7 +26,7 @@ from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.storage_migration_service import StorageMigrationService
-from joyread.core.services.storage_recovery_service import StorageRecoveryService
+from joyread.core.services.storage_recovery_service import RecoveryPrompt, StorageRecoveryService
 from joyread.core.services.storage_validation_service import (
     StorageValidationResult,
     StorageValidationService,
@@ -266,7 +266,7 @@ class AppContext:
         self.cache_service.archive_extraction_pool = self.archive_extraction_pool
 
 
-def create_app_context() -> AppContext:
+def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppContext:
     logger.info("Creating AppContext")
     config = AppConfig()
     runtime_override = environ.get("JOYREAD_RUNTIME_DIR")
@@ -286,7 +286,7 @@ def create_app_context() -> AppContext:
     storage_recovery_service = StorageRecoveryService(
         settings_store, storage_validation_service, storage_migration_service
     )
-    startup = storage_recovery_service.prepare()
+    startup = storage_recovery_service.prepare(recovery_prompt)
     settings = startup.settings
     paths = _create_path_service(config, settings_store, settings)
     paths.ensure_directories()

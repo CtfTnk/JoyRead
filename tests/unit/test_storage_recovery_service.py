@@ -3,7 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from joyread.core.services.storage_migration_service import StorageMigrationService
-from joyread.core.services.storage_recovery_service import StorageRecoveryService
+from joyread.core.services.storage_recovery_service import (
+    StorageRecoveryDecision,
+    StorageRecoveryService,
+)
 from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.database import LATEST_SCHEMA_VERSION, apply_migrations
@@ -136,3 +139,86 @@ def test_daily_startup_uses_empty_default_when_all_unavailable(tmp_path: Path) -
 
     assert result.notice is not None
     assert result.settings.storage_location == str(default_root)
+
+
+# -- daily startup recovery prompt ------------------------------------------
+
+
+def test_prompt_retry_adopts_location_once_available(tmp_path: Path) -> None:
+    root = tmp_path / "lib"  # missing on the first check
+    store = _store(tmp_path, tmp_path / "default")
+    store.save(AppSettings(storage_location=str(root)))
+
+    calls: list[tuple[str, str]] = []
+
+    def prompt(current: str, message: str) -> StorageRecoveryDecision:
+        calls.append((current, message))
+        # Simulate the user reconnecting the drive before retrying.
+        _make_library(root)
+        return StorageRecoveryDecision.RETRY
+
+    result = _recovery(store).prepare(prompt)
+
+    assert len(calls) == 1
+    assert calls[0][0] == str(root)
+    assert result.notice is None  # adopted the original location, no switch
+    assert result.settings.storage_location == str(root)
+    assert result.settings.last_good_storage_location == str(root)
+
+
+def test_prompt_fallback_switches_to_last_good(tmp_path: Path) -> None:
+    good = tmp_path / "good"
+    _make_library(good)
+    missing = tmp_path / "gone"
+    store = _store(tmp_path, tmp_path / "default")
+    store.save(
+        AppSettings(storage_location=str(missing), last_good_storage_location=str(good))
+    )
+
+    decisions = iter([StorageRecoveryDecision.FALLBACK])
+    result = _recovery(store).prepare(lambda current, message: next(decisions))
+
+    assert result.notice is not None
+    assert result.settings.storage_location == str(good)
+
+
+def test_prompt_retry_then_fallback_when_still_missing(tmp_path: Path) -> None:
+    good = tmp_path / "good"
+    _make_library(good)
+    missing = tmp_path / "gone"  # stays missing across retries
+    store = _store(tmp_path, tmp_path / "default")
+    store.save(
+        AppSettings(storage_location=str(missing), last_good_storage_location=str(good))
+    )
+
+    decisions = iter(
+        [
+            StorageRecoveryDecision.RETRY,
+            StorageRecoveryDecision.RETRY,
+            StorageRecoveryDecision.FALLBACK,
+        ]
+    )
+    calls: list[str] = []
+
+    def prompt(current: str, message: str) -> StorageRecoveryDecision:
+        calls.append(current)
+        return next(decisions)
+
+    result = _recovery(store).prepare(prompt)
+
+    assert len(calls) == 3  # two retries, then fallback
+    assert result.settings.storage_location == str(good)
+
+
+def test_healthy_startup_never_prompts(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    _make_library(root)
+    store = _store(tmp_path, root)
+    store.save(AppSettings(storage_location=str(root)))
+
+    def prompt(current: str, message: str) -> StorageRecoveryDecision:  # pragma: no cover
+        raise AssertionError("prompt should not be called when storage is healthy")
+
+    result = _recovery(store).prepare(prompt)
+
+    assert result.settings.storage_location == str(root)

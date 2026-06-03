@@ -99,6 +99,8 @@ class NovelReaderShellWidget(QWidget):
         self.canvas = self.content_area
         self.header = ReaderHeader(context.resources, self, show_custom_button=True)
         self.header.set_back_visible(show_back_button)
+        self._sync_title_control_mode()
+        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
         # Direction/transition switches and spread shift are manga-only;
         # hide them so the novel footer matches Figma's stripped layout.
@@ -219,6 +221,12 @@ class NovelReaderShellWidget(QWidget):
         self.viewmodel.progress_changed.connect(self._handle_progress_changed)
         self.viewmodel.error_changed.connect(self._handle_error_changed)
         self.viewmodel.writing_mode_warning.connect(self._handle_writing_mode_warning)
+
+    def _sync_title_control_mode(self) -> None:
+        settings_vm = self._context.settings_viewmodel
+        self.header.set_title_control_mode(
+            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
+        )
 
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)

@@ -33,6 +33,7 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_section(SettingsSectionKey.TAGS)
     viewmodel.set_import_book_when_opening(True)
     viewmodel.set_individual_read_window(True)
+    viewmodel.set_inspect_non_native_title_control(True)
     viewmodel.set_language("English")
     viewmodel.set_storage_location("~/Documents/JoyRead Library")
     viewmodel.set_archive_cache_strategy("Hidden image files")
@@ -42,12 +43,13 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
     assert viewmodel.individual_read_window is True
+    assert viewmodel.inspect_non_native_title_control is True
     assert viewmodel.storage_location == "~/Documents/JoyRead Library"
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
     assert viewmodel.archive_cache_strategy_label == "Hidden image files"
     assert viewmodel.import_folder_max_depth == 3
     assert viewmodel.archive_internal_max_depth == 4
-    assert len(changes) == 7
+    assert len(changes) == 8
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -104,13 +106,49 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Three General rows (Storage moved to Privacy), two Import depth rows,
+    # Four General rows (Storage moved to Privacy), two Import depth rows,
     # and five Cache rows.
-    assert len(setting_items) == 10
+    assert len(setting_items) == 11
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 5
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
+
+
+def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+    switches = page.findChildren(SettingsSwitchItem)
+
+    assert "Use Native Title Control" not in labels
+    assert "Inspect Windows/Linux Title Control" in labels
+    assert len(switches) == 3
+
+    inspect_item = next(
+        item
+        for item in page.findChildren(SettingsSwitchItem)
+        if next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        ).text()
+        == "Inspect Windows/Linux Title Control"
+    )
+    assert inspect_item.switch.isEnabled()
+
+    inspect_item.switch.set_checked(True)
+    QApplication.processEvents()
+
+    assert viewmodel.inspect_non_native_title_control is True
 
 
 def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> None:

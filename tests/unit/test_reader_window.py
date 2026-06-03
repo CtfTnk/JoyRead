@@ -21,6 +21,7 @@ from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
+from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:
@@ -39,6 +40,7 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert window.height() == Theme.reader_height
     assert window.minimumWidth() == Theme.reader_min_width
     assert window.minimumHeight() == Theme.reader_min_height
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
     assert window.header.height() == Theme.reader_banner_height
     assert window.footer.height() == Theme.reader_footer_height
     assert window.left_arrow.size().width() == Theme.reader_side_button_width
@@ -58,6 +60,31 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert direction_buttons[ReaderDirection.LEFT_TO_RIGHT].property("iconName") == "icon_read-from-right.svg"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].toolTip() == "Top-to-down"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].property("iconName") == "icon_read-from-top.svg"
+
+    window.close()
+    context.close()
+
+
+def test_reader_window_inspection_mode_shows_non_macos_title_control_group(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    context.settings_viewmodel.set_inspect_non_native_title_control(True)
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.show()
+
+    title_controls = window.header.findChild(TitleControlGroup, "TitleControlGroup")
+    stoplights = window.header.findChild(StoplightControlsWidget)
+
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert title_controls is not None
+    assert stoplights is not None
+    assert title_controls.isVisible()
+    assert stoplights.isHidden()
 
     window.close()
     context.close()

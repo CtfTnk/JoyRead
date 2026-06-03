@@ -35,13 +35,14 @@ QWidget#ViewPanel {
     border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
+QWidget#TitleBar,
 QWidget#WindowChrome {
     background: #ffffff;
     border-top-left-radius: __WINDOW_RADIUS__;
     border-top-right-radius: __WINDOW_RADIUS__;
 }
 
-/* Frameless chrome controls */
+/* Custom title bar controls */
 QToolButton#CloseButton,
 QToolButton#MinimizeButton,
 QToolButton#ZoomButton {
