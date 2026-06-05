@@ -3,11 +3,14 @@ from __future__ import annotations
 import inspect
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtCore import QTimer
+from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
 
 from joyread.app import bootstrap
 from joyread.app.app_context import AppContext
 from joyread.app.bootstrap import create_application
+from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
+from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
@@ -101,6 +104,35 @@ def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) ->
 
     window.close()
     context.close()
+
+
+def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch) -> None:
+    calls: list[list[str] | None] = []
+
+    def cancel_startup(argv: list[str] | None = None):
+        calls.append(argv)
+        raise StorageRecoveryCancelled
+
+    monkeypatch.setattr(bootstrap, "create_application", cancel_startup)
+
+    assert bootstrap.run(["joyread"]) == 0
+    assert calls == [["joyread"]]
+
+
+def test_storage_recovery_dialog_close_rejects_and_width_is_stable(qtbot) -> None:
+    QApplication.instance() or QApplication(["test"])
+    dialog = StorageRecoveryDialog("/missing/JoyRead", "No database found.")
+    qtbot.addWidget(dialog)
+
+    assert dialog.minimumWidth() >= 500
+    assert sorted(button.text() for button in dialog.findChildren(QPushButton)) == [
+        "Initialize",
+        "Select",
+    ]
+
+    QTimer.singleShot(0, dialog.close)
+
+    assert dialog.exec() == QDialog.DialogCode.Rejected
 
 
 def test_launch_window_is_centered_on_available_screen(qtbot) -> None:

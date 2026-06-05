@@ -43,8 +43,9 @@ from joyread.ui.widgets.section_banner import SectionBanner
 
 class SettingsPageWidget(QFrame):
     # Storage management (Privacy > Storage). Move picks a parent folder for a
-    # fresh ``<parent>/JoyRead``; Select adopts an existing JoyRead library;
-    # Reset wipes the current library. MainWindow owns the dialogs/file pickers.
+    # fresh ``<parent>/JoyRead-Library``; Select adopts an existing JoyRead
+    # library; Reset wipes the current library. MainWindow owns the
+    # dialogs/file pickers.
     storage_move_requested = QtSignal()
     storage_select_requested = QtSignal()
     storage_reset_requested = QtSignal()
@@ -190,8 +191,9 @@ class SettingsPageWidget(QFrame):
         reset.set_enabled(self._viewmodel.hidden_space_initialized)
 
         # Storage management. The library location itself is not shown/edited
-        # here: Move creates a fresh JoyRead under a chosen parent and migrates,
-        # Select adopts an existing JoyRead folder, Reset wipes the current one.
+        # here: Move creates a fresh JoyRead-Library under a chosen parent and
+        # migrates, Select adopts an existing JoyRead library root, Reset wipes
+        # the current one.
         storage_banner = SectionBanner("Storage", self._resources)
 
         # Show the current library directory (read-only) with a Move action,
@@ -206,7 +208,7 @@ class SettingsPageWidget(QFrame):
         select_library = SettingsButtonItem("Select Existing Library", "Select")
         select_library.clicked.connect(self.storage_select_requested.emit)
 
-        reset_library = SettingsButtonItem("Reset JoyRead Directory", "Proceed", destructive=True)
+        reset_library = SettingsButtonItem("Reset Library", "Proceed", destructive=True)
         reset_library.clicked.connect(self.storage_reset_requested.emit)
 
         return [

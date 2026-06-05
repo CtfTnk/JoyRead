@@ -2,8 +2,8 @@
 
 Run once before the path service and database are built. It decides which
 storage root the app will open this session and, when the configured library is
-unavailable, falls back to the last-known-good root or the app's default —
-never silently overwriting a user's library outside first-run initialization.
+unavailable, either adopts a user-selected library, initializes the app default,
+or exits without changing settings.
 """
 
 from __future__ import annotations
@@ -25,15 +25,38 @@ logger = logging.getLogger(__name__)
 class StorageRecoveryDecision(StrEnum):
     """User's choice when the configured library is unavailable at startup."""
 
-    RETRY = "retry"
-    FALLBACK = "fallback"
+    INITIALIZE = "initialize"
+    SELECT = "select"
+    QUIT = "quit"
+
+
+@dataclass(frozen=True)
+class StorageRecoveryPromptResult:
+    decision: StorageRecoveryDecision
+    selected_root: str | None = None
+
+    @classmethod
+    def initialize(cls) -> StorageRecoveryPromptResult:
+        return cls(StorageRecoveryDecision.INITIALIZE)
+
+    @classmethod
+    def select(cls, selected_root: str) -> StorageRecoveryPromptResult:
+        return cls(StorageRecoveryDecision.SELECT, selected_root)
+
+    @classmethod
+    def quit(cls) -> StorageRecoveryPromptResult:
+        return cls(StorageRecoveryDecision.QUIT)
+
+
+class StorageRecoveryCancelled(Exception):
+    """Raised when the user closes startup recovery instead of choosing a library."""
 
 
 # Called when the configured storage is unavailable. Receives the configured
-# location and the validation failure message; returns whether to re-check that
-# same location (the user may have reconnected a drive) or fall back to another
-# library. Kept Qt-free so the core service stays UI-agnostic and testable.
-RecoveryPrompt = Callable[[str, str], StorageRecoveryDecision]
+# location and the current validation/recovery message. Returns Initialize,
+# Select(selected_root), or Quit. Kept Qt-free so the core service stays
+# UI-agnostic and testable.
+RecoveryPrompt = Callable[[str, str], StorageRecoveryPromptResult]
 
 
 @dataclass(frozen=True)
@@ -57,8 +80,9 @@ class StorageRecoveryService:
         """Resolve the storage root to use, updating settings as needed.
 
         ``prompt`` is consulted on daily startup when the configured library is
-        unavailable, letting the user retry the same location or fall back. When
-        it is ``None`` (tests, headless runs), recovery falls back automatically.
+        unavailable, letting the user initialize the default library, select an
+        existing library, or quit. When it is ``None`` (tests, headless runs),
+        recovery falls back automatically.
         """
 
         first_run = not self._settings_store.settings_path.exists()
@@ -110,15 +134,8 @@ class StorageRecoveryService:
 
         logger.warning("Configured storage at %s is unavailable; recovering", current)
 
-        # Let the user retry the same location (e.g. after reconnecting an
-        # external drive) before we switch away from their chosen library.
-        while prompt is not None and prompt(current, result.message) == StorageRecoveryDecision.RETRY:
-            result = self._validation.validate_lightweight(current)
-            if result.ok:
-                logger.info("Configured storage at %s became available on retry", current)
-                updated = self._settings_store.update(last_good_storage_location=current)
-                return StorageStartupResult(updated, None)
-            logger.warning("Retry of %s still unavailable: %s", current, result.message)
+        if prompt is not None:
+            return self._prepare_prompted_recovery(current, result.message, prompt)
 
         default_root = str(self._settings_store.default_storage_root)
 
@@ -140,6 +157,65 @@ class StorageRecoveryService:
         updated = self._settings_store.update(storage_location=default_root)
         return StorageStartupResult(updated, self._empty_notice(current, default_root))
 
+    def _prepare_prompted_recovery(
+        self,
+        current: str,
+        message: str,
+        prompt: RecoveryPrompt,
+    ) -> StorageStartupResult:
+        while True:
+            decision = prompt(current, message)
+            if decision.decision == StorageRecoveryDecision.QUIT:
+                logger.info("Storage recovery cancelled by user for %s", current)
+                raise StorageRecoveryCancelled
+
+            if decision.decision == StorageRecoveryDecision.INITIALIZE:
+                logger.info("Storage recovery: user chose initialize")
+                return self._initialize_default_library(current)
+
+            if decision.decision == StorageRecoveryDecision.SELECT:
+                if not decision.selected_root:
+                    message = "No folder was selected."
+                    continue
+                selected_root = str(Path(decision.selected_root).expanduser().resolve())
+                result = self._validation.validate_full(Path(selected_root))
+                if result.ok:
+                    updated = self._settings_store.update(
+                        storage_location=selected_root,
+                        last_good_storage_location=selected_root,
+                    )
+                    logger.info("Storage recovery: user selected %s", selected_root)
+                    return StorageStartupResult(updated, self._switch_notice(current, selected_root))
+                logger.warning(
+                    "Storage recovery select rejected (%s): %s",
+                    result.code,
+                    result.message,
+                )
+                message = (
+                    "That folder cannot be used as a JoyRead library.\n\n"
+                    f"Selected location:\n{selected_root}\n\n{result.message}"
+                )
+                continue
+
+            message = "Choose Initialize or Select to continue."
+
+    def _initialize_default_library(self, current: str) -> StorageStartupResult:
+        default_root = str(self._settings_store.default_storage_root)
+        default_path = Path(default_root)
+        result = self._validation.validate_lightweight(default_path)
+        if not result.ok and self._validation.database_path(default_path).exists():
+            logger.warning(
+                "Default library at %s is unusable; resetting it: %s",
+                default_root,
+                result.message,
+            )
+            self._migration.reset_library(default_path)
+        updated = self._settings_store.update(
+            storage_location=default_root,
+            last_good_storage_location=default_root,
+        )
+        return StorageStartupResult(updated, self._initialize_notice(current, default_root))
+
     def _fallback_candidates(
         self, settings: AppSettings, current: str, default_root: str
     ) -> list[str]:
@@ -160,4 +236,10 @@ class StorageRecoveryService:
         return (
             f"Your library at\n{current}\nwas unavailable and no backup could be opened, "
             f"so JoyRead started with an empty library at\n{target}."
+        )
+
+    def _initialize_notice(self, current: str, target: str) -> str:
+        return (
+            f"Your library at\n{current}\nwas unavailable, so JoyRead initialized "
+            f"a library at\n{target}."
         )

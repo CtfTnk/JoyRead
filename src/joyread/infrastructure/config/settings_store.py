@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 
 try:
     from platformdirs import user_config_path, user_data_path
@@ -176,10 +177,11 @@ class SettingsStore:
 
     def _default_storage_root_for_environment(self) -> Path:
         if _looks_like_source_checkout(Path.cwd()):
-            return Path.cwd() / ".joyread_storage"
+            return Path.cwd() / LIBRARY_DIRECTORY_NAME
         if user_data_path is not None:
-            return Path(user_data_path(self._app_name, self._app_author, roaming=True))
-        return Path.home() / ".local" / "share" / self._app_name
+            app_data_root = Path(user_data_path(self._app_name, self._app_author, roaming=True))
+            return app_data_root.parent / LIBRARY_DIRECTORY_NAME
+        return Path.home() / ".local" / "share" / LIBRARY_DIRECTORY_NAME
 
 
 def _looks_like_source_checkout(path: Path) -> bool:

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from joyread.core.services.storage_migration_service import StorageMigrationService
 from joyread.core.services.storage_recovery_service import (
-    StorageRecoveryDecision,
+    StorageRecoveryCancelled,
+    StorageRecoveryPromptResult,
     StorageRecoveryService,
 )
 from joyread.core.services.storage_validation_service import StorageValidationService
@@ -144,70 +147,104 @@ def test_daily_startup_uses_empty_default_when_all_unavailable(tmp_path: Path) -
 # -- daily startup recovery prompt ------------------------------------------
 
 
-def test_prompt_retry_adopts_location_once_available(tmp_path: Path) -> None:
-    root = tmp_path / "lib"  # missing on the first check
-    store = _store(tmp_path, tmp_path / "default")
-    store.save(AppSettings(storage_location=str(root)))
+def test_prompt_initialize_switches_to_default_library(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    missing = tmp_path / "gone"
+    store = _store(tmp_path, default_root)
+    store.save(AppSettings(storage_location=str(missing)))
 
     calls: list[tuple[str, str]] = []
 
-    def prompt(current: str, message: str) -> StorageRecoveryDecision:
+    def prompt(current: str, message: str) -> StorageRecoveryPromptResult:
         calls.append((current, message))
-        # Simulate the user reconnecting the drive before retrying.
-        _make_library(root)
-        return StorageRecoveryDecision.RETRY
+        return StorageRecoveryPromptResult.initialize()
 
     result = _recovery(store).prepare(prompt)
 
     assert len(calls) == 1
-    assert calls[0][0] == str(root)
-    assert result.notice is None  # adopted the original location, no switch
-    assert result.settings.storage_location == str(root)
-    assert result.settings.last_good_storage_location == str(root)
+    assert calls[0][0] == str(missing)
+    assert result.notice is not None
+    assert result.settings.storage_location == str(default_root)
+    assert result.settings.last_good_storage_location == str(default_root)
 
 
-def test_prompt_fallback_switches_to_last_good(tmp_path: Path) -> None:
-    good = tmp_path / "good"
-    _make_library(good)
+def test_prompt_initialize_resets_unusable_default_database(tmp_path: Path) -> None:
+    default_root = tmp_path / "default"
+    database = _make_library(default_root)
+    connection = open_sqlite_connection(database)
+    connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (LATEST_SCHEMA_VERSION + 1,))
+    connection.close()
+    marker = default_root / "Books" / "marker.cbz"
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_bytes(b"x")
     missing = tmp_path / "gone"
-    store = _store(tmp_path, tmp_path / "default")
-    store.save(
-        AppSettings(storage_location=str(missing), last_good_storage_location=str(good))
-    )
+    store = _store(tmp_path, default_root)
+    store.save(AppSettings(storage_location=str(missing)))
 
-    decisions = iter([StorageRecoveryDecision.FALLBACK])
-    result = _recovery(store).prepare(lambda current, message: next(decisions))
+    result = _recovery(store).prepare(
+        lambda _current, _message: StorageRecoveryPromptResult.initialize()
+    )
 
     assert result.notice is not None
-    assert result.settings.storage_location == str(good)
+    assert result.settings.storage_location == str(default_root)
+    assert not marker.exists()
 
 
-def test_prompt_retry_then_fallback_when_still_missing(tmp_path: Path) -> None:
-    good = tmp_path / "good"
-    _make_library(good)
-    missing = tmp_path / "gone"  # stays missing across retries
+def test_prompt_select_switches_to_valid_existing_library(tmp_path: Path) -> None:
+    selected = tmp_path / "selected"
+    _make_library(selected)
+    missing = tmp_path / "gone"
     store = _store(tmp_path, tmp_path / "default")
-    store.save(
-        AppSettings(storage_location=str(missing), last_good_storage_location=str(good))
+    store.save(AppSettings(storage_location=str(missing)))
+
+    result = _recovery(store).prepare(
+        lambda _current, _message: StorageRecoveryPromptResult.select(str(selected))
     )
+
+    assert result.notice is not None
+    assert result.settings.storage_location == str(selected.resolve())
+    assert result.settings.last_good_storage_location == str(selected.resolve())
+
+
+def test_prompt_invalid_select_returns_to_dialog_then_accepts_next_choice(tmp_path: Path) -> None:
+    selected = tmp_path / "selected"
+    _make_library(selected)
+    invalid = tmp_path / "not-a-library"
+    invalid.mkdir()
+    missing = tmp_path / "gone"
+    store = _store(tmp_path, tmp_path / "default")
+    store.save(AppSettings(storage_location=str(missing)))
 
     decisions = iter(
         [
-            StorageRecoveryDecision.RETRY,
-            StorageRecoveryDecision.RETRY,
-            StorageRecoveryDecision.FALLBACK,
+            StorageRecoveryPromptResult.select(str(invalid)),
+            StorageRecoveryPromptResult.select(str(selected)),
         ]
     )
-    calls: list[str] = []
+    messages: list[str] = []
 
-    def prompt(current: str, message: str) -> StorageRecoveryDecision:
-        calls.append(current)
+    def prompt(_current: str, message: str) -> StorageRecoveryPromptResult:
+        messages.append(message)
         return next(decisions)
 
     result = _recovery(store).prepare(prompt)
 
-    assert len(calls) == 3  # two retries, then fallback
-    assert result.settings.storage_location == str(good)
+    assert len(messages) == 2
+    assert "cannot be used" in messages[1]
+    assert result.settings.storage_location == str(selected.resolve())
+
+
+def test_prompt_quit_raises_without_changing_settings(tmp_path: Path) -> None:
+    missing = tmp_path / "gone"
+    store = _store(tmp_path, tmp_path / "default")
+    store.save(AppSettings(storage_location=str(missing)))
+
+    with pytest.raises(StorageRecoveryCancelled):
+        _recovery(store).prepare(
+            lambda _current, _message: StorageRecoveryPromptResult.quit()
+        )
+
+    assert store.load().storage_location == str(missing)
 
 
 def test_healthy_startup_never_prompts(tmp_path: Path) -> None:
@@ -216,7 +253,7 @@ def test_healthy_startup_never_prompts(tmp_path: Path) -> None:
     store = _store(tmp_path, root)
     store.save(AppSettings(storage_location=str(root)))
 
-    def prompt(current: str, message: str) -> StorageRecoveryDecision:  # pragma: no cover
+    def prompt(current: str, message: str) -> StorageRecoveryPromptResult:  # pragma: no cover
         raise AssertionError("prompt should not be called when storage is healthy")
 
     result = _recovery(store).prepare(prompt)

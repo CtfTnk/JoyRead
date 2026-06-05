@@ -816,7 +816,7 @@ class MainWindow(QMainWindow):
     def _request_move_storage(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Choose a folder for the new JoyRead library",
+            "Choose a parent folder for JoyRead-Library",
             self._context.settings_viewmodel.storage_location,
         )
         if not directory:
@@ -870,7 +870,7 @@ class MainWindow(QMainWindow):
 
     def _request_reset_storage(self) -> None:
         self.dialog_overlay.show_confirm(
-            "Reset JoyRead Directory",
+            "Reset Library",
             (
                 "This permanently deletes all books, covers, reading progress, and "
                 "data in the current JoyRead library. This cannot be undone."
@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
 
     def _prompt_reset_storage_confirmation(self) -> None:
         self.dialog_overlay.show_input(
-            "Reset JoyRead Directory",
+            "Reset Library",
             "Type delete to confirm",
             on_confirm=lambda _value: self._execute_reset_storage(),
             confirm_text="Delete",

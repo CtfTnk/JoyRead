@@ -9,13 +9,20 @@ import sys
 from pathlib import Path
 
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QApplication, QMainWindow, QMessageBox
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 
 from joyread.app.app_context import AppContext, create_app_context
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
-from joyread.core.services.storage_recovery_service import StorageRecoveryDecision
+from joyread.core.services.storage_recovery_service import (
+    StorageRecoveryCancelled,
+    StorageRecoveryPromptResult,
+)
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.infrastructure.logging.logging_service import configure_early_logging, configure_logging
+from joyread.ui.dialogs.storage_recovery_dialog import (
+    StorageRecoveryDialog,
+    StorageRecoveryDialogResult,
+)
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 
@@ -63,32 +70,35 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     return app, context, window
 
 
-def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryDecision:
-    """Ask the user to retry the unavailable library or fall back to another.
+def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryPromptResult:
+    """Ask the user to initialize the default library or select an existing one.
 
     Shown before the main window and the stylesheet exist, so this uses a
-    native, parentless ``QMessageBox`` rather than the in-app themed overlay.
+    small parentless ``QDialog`` rather than the in-app themed overlay.
     """
 
     logger.info("Prompting storage recovery for unavailable location %s", current)
-    box = QMessageBox()
-    box.setIcon(QMessageBox.Icon.Warning)
-    box.setWindowTitle("JoyRead Library Unavailable")
-    box.setText("JoyRead can't open your library.")
-    box.setInformativeText(
-        f"Location:\n{current}\n\n{message}\n\n"
-        "Reconnect the drive or folder and choose Retry, or choose "
-        "Use Backup Library to continue with another library."
-    )
-    retry_button = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
-    fallback_button = box.addButton("Use Backup Library", QMessageBox.ButtonRole.DestructiveRole)
-    box.setDefaultButton(retry_button)
-    box.exec()
-    if box.clickedButton() is fallback_button:
-        logger.info("Storage recovery: user chose fallback for %s", current)
-        return StorageRecoveryDecision.FALLBACK
-    logger.info("Storage recovery: user chose retry for %s", current)
-    return StorageRecoveryDecision.RETRY
+    while True:
+        dialog = StorageRecoveryDialog(current, message)
+        result = dialog.exec()
+
+        if result == StorageRecoveryDialogResult.INITIALIZE:
+            logger.info("Storage recovery: user chose initialize for %s", current)
+            return StorageRecoveryPromptResult.initialize()
+        if result == StorageRecoveryDialogResult.SELECT:
+            directory = QFileDialog.getExistingDirectory(
+                None,
+                "Select an existing JoyRead library",
+                current,
+            )
+            if directory:
+                logger.info("Storage recovery: user selected candidate %s", directory)
+                return StorageRecoveryPromptResult.select(directory)
+            logger.info("Storage recovery: select cancelled; returning to prompt")
+            continue
+
+        logger.info("Storage recovery: user closed recovery dialog for %s", current)
+        return StorageRecoveryPromptResult.quit()
 
 
 def _log_about_to_quit() -> None:
@@ -96,7 +106,11 @@ def _log_about_to_quit() -> None:
 
 
 def run(argv: list[str] | None = None) -> int:
-    app, _context, window = create_application(argv)
+    try:
+        app, _context, window = create_application(argv)
+    except StorageRecoveryCancelled:
+        logger.info("JoyRead startup cancelled during storage recovery")
+        return 0
     center_window_on_launch(window)
     window.show()
     return app.exec()

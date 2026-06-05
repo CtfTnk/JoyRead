@@ -24,6 +24,7 @@ from joyread.core.services.storage_migration_service import (
 )
 from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.database.migrations import MIGRATIONS
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
@@ -942,7 +943,7 @@ def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path
 
     result = _migration_service(store).move_to_parent(old, parent)
 
-    target = parent / "JoyRead"
+    target = parent / LIBRARY_DIRECTORY_NAME
     assert result.target_root == target.resolve()
     assert (target / "Books" / "ab" / "book.cbz").exists()
     assert (target / "Database" / "joyread.sqlite3").exists()
@@ -956,7 +957,7 @@ def test_move_to_parent_fails_when_target_exists_and_keeps_settings(tmp_path: Pa
     store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
     store.save(AppSettings(storage_location=str(old)))
     parent = tmp_path / "elsewhere"
-    (parent / "JoyRead").mkdir(parents=True)
+    (parent / LIBRARY_DIRECTORY_NAME).mkdir(parents=True)
 
     with pytest.raises(StorageMigrationError):
         _migration_service(store).move_to_parent(old, parent)
@@ -978,9 +979,12 @@ def test_move_to_parent_rolls_back_when_validation_fails(tmp_path: Path) -> None
 
     assert store.load().storage_location == str(old)
     assert old.exists()
-    assert not (parent / "JoyRead").exists()
+    assert not (parent / LIBRARY_DIRECTORY_NAME).exists()
     # Staging copies are cleaned up.
-    assert not any(child.name.startswith(".JoyRead.staging-") for child in parent.iterdir())
+    assert not any(
+        child.name.startswith(f".{LIBRARY_DIRECTORY_NAME}.staging-")
+        for child in parent.iterdir()
+    )
 
 
 def test_reset_library_clears_root(tmp_path: Path) -> None:
@@ -1001,8 +1005,23 @@ def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Pa
 
     assert isinstance(context.book_repository, SqliteBookRepository)
     assert (context.paths.paths.database / "joyread.sqlite3").exists()
+    assert Path(context.settings.storage_location).is_relative_to(
+        tmp_path / "runtime" / LIBRARY_DIRECTORY_NAME
+    )
     assert context.settings_store.settings_path.is_relative_to(tmp_path / "runtime" / ".joyread_support")
     context.database_interpreter.close()
+
+
+def test_settings_store_source_checkout_default_uses_library_directory_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "joyread").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    store = SettingsStore(support_root=tmp_path / "support")
+
+    assert store.default_storage_root == (tmp_path / LIBRARY_DIRECTORY_NAME).resolve()
 
 
 def test_app_context_move_storage_preserves_books_under_new_root(monkeypatch, tmp_path: Path) -> None:
@@ -1017,7 +1036,7 @@ def test_app_context_move_storage_preserves_books_under_new_root(monkeypatch, tm
 
     context.move_storage_to_parent(parent)
 
-    new_root = (parent / "JoyRead").resolve()
+    new_root = (parent / LIBRARY_DIRECTORY_NAME).resolve()
     assert Path(context.settings.storage_location) == new_root
     assert (new_root / "Database" / "joyread.sqlite3").exists()
     books = context.book_repository.list_books()
@@ -1047,7 +1066,7 @@ def test_app_context_reset_storage_empties_library(monkeypatch, tmp_path: Path) 
 def test_app_context_select_existing_library_switches_root(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
     context = create_app_context()
-    other = tmp_path / "other" / "JoyRead"
+    other = tmp_path / "other" / "Arbitrary-Library-Name"
     _seed_library(other)
 
     result = context.select_storage(other)

@@ -35,7 +35,7 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_individual_read_window(True)
     viewmodel.set_inspect_non_native_title_control(True)
     viewmodel.set_language("English")
-    viewmodel.set_storage_location("~/Documents/JoyRead Library")
+    viewmodel.set_storage_location("~/Documents/JoyRead-Library-Test")
     viewmodel.set_archive_cache_strategy("Hidden image files")
     viewmodel.set_import_folder_max_depth(3)
     viewmodel.set_archive_internal_max_depth(4)
@@ -44,7 +44,7 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.import_book_when_opening is True
     assert viewmodel.individual_read_window is True
     assert viewmodel.inspect_non_native_title_control is True
-    assert viewmodel.storage_location == "~/Documents/JoyRead Library"
+    assert viewmodel.storage_location == "~/Documents/JoyRead-Library-Test"
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
     assert viewmodel.archive_cache_strategy_label == "Hidden image files"
     assert viewmodel.import_folder_max_depth == 3
@@ -404,7 +404,7 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
     assert {"Change Password", "Revert all", "Reset and Erase"}.issubset(set(labels))
     # Storage management rows live on the Privacy tab too. The Library Location
     # row shows the directory (address item); Select/Reset are button rows.
-    assert {"Library Location", "Select Existing Library", "Reset JoyRead Directory"}.issubset(
+    assert {"Library Location", "Select Existing Library", "Reset Library"}.issubset(
         set(labels)
     )
     address_items = page.findChildren(SettingsAddressItem)
@@ -425,7 +425,7 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
     # Storage buttons are always actionable.
     for hidden_label in ("Change Password", "Revert all", "Reset and Erase"):
         assert by_name[hidden_label].button.isEnabled() is False
-    for storage_label in ("Select Existing Library", "Reset JoyRead Directory"):
+    for storage_label in ("Select Existing Library", "Reset Library"):
         assert by_name[storage_label].button.isEnabled() is True
     # The Show Collections switch is the only switch on this tab.
     assert len(switch_items) == 1
@@ -481,7 +481,7 @@ def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
     from joyread.ui.widgets.settings_page import SettingsButtonItem, SettingsPushButton
 
     viewmodel = SettingsViewModel()
-    viewmodel.set_storage_location("~/Documents/JoyRead Library")
+    viewmodel.set_storage_location("~/Documents/JoyRead-Library")
     page = SettingsPageWidget(viewmodel, ResourceLoader())
     qtbot.addWidget(page)
     viewmodel.set_section(SettingsSectionKey.PRIVACY)
@@ -496,7 +496,7 @@ def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
     address_item = page.findChildren(SettingsAddressItem)[0]
     path_field = address_item.findChild(QLineEdit)
     assert path_field is not None
-    assert path_field.text() == "~/Documents/JoyRead Library"
+    assert path_field.text() == "~/Documents/JoyRead-Library"
 
     def _row_name(item: SettingsButtonItem) -> str:
         return next(
@@ -508,7 +508,7 @@ def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
     by_name = {_row_name(item): item for item in page.findChildren(SettingsButtonItem)}
     address_item.findChild(SettingsPushButton).click()
     by_name["Select Existing Library"].button.click()
-    by_name["Reset JoyRead Directory"].button.click()
+    by_name["Reset Library"].button.click()
 
     assert emitted == ["move", "select", "reset"]
 

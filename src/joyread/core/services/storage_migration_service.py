@@ -1,9 +1,9 @@
 """Filesystem operations behind Move / Reset of the JoyRead library folder.
 
 The library is the movable storage root. *Move* copies the current library into
-a fresh ``<parent>/JoyRead`` and re-points settings at it; *Reset* wipes the
-current root and lets the app rebuild an empty one. Both validate the result
-through :class:`StorageValidationService` before any destructive step.
+a fresh ``<parent>/JoyRead-Library`` and re-points settings at it; *Reset*
+wipes the current root and lets the app rebuild an empty one. Both validate the
+result through :class:`StorageValidationService` before any destructive step.
 
 Config (``settings.json``) and Logs live in the external support root and are
 deliberately untouched by these operations, so settings survive a move and
@@ -20,12 +20,10 @@ from uuid import uuid4
 
 from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import SettingsStore
+from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 
 
 logger = logging.getLogger(__name__)
-
-
-LIBRARY_DIRECTORY_NAME = "JoyRead"
 
 
 class StorageMigrationError(Exception):
@@ -51,7 +49,7 @@ class StorageMigrationService:
         return target_parent.expanduser().resolve() / LIBRARY_DIRECTORY_NAME
 
     def move_to_parent(self, old_root: Path, target_parent: Path) -> StorageMigrationResult:
-        """Copy the current library into ``<parent>/JoyRead`` and adopt it.
+        """Copy the current library into ``<parent>/JoyRead-Library`` and adopt it.
 
         The caller must close the database before invoking this so the copy is
         consistent. On any failure the staging copy is removed, settings are
@@ -69,7 +67,7 @@ class StorageMigrationService:
 
         if target_root.exists():
             raise StorageMigrationError(
-                "A JoyRead folder already exists in that location. "
+                "A JoyRead-Library folder already exists in that location. "
                 "Choose 'Select Existing Library' to use it, or remove it first."
             )
         if parent == old_root or parent.is_relative_to(old_root) or old_root.is_relative_to(target_root):

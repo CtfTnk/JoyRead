@@ -59,7 +59,7 @@ class SettingsViewModel:
         settings_store: SettingsStore | None = None,
         hidden_space_service: HiddenSpaceService | None = None,
     ) -> None:
-        settings = settings or AppSettings(storage_location="~/Documents/JoyRead")
+        settings = settings or AppSettings(storage_location="~/Documents/JoyRead-Library")
         self.state_changed: Signal[None] = Signal()
         # The cache fields are user-tunable and surface "Clear archive cache"
         # as a one-shot button. AppContext wires the side effects (resize the

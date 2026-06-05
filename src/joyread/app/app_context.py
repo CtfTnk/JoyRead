@@ -36,6 +36,7 @@ from joyread.core.services.task_service import TaskService
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -96,11 +97,11 @@ class AppContext:
         logger.info("AppContext shutdown complete")
 
     def move_storage_to_parent(self, target_parent: Path) -> None:
-        """Move the library into ``<target_parent>/JoyRead`` and adopt it.
+        """Move the library into ``<target_parent>/JoyRead-Library`` and adopt it.
 
         Raises ``StorageMigrationError`` (with a user-facing message) if the
-        destination already has a JoyRead folder or the copy fails validation;
-        the old storage is reopened and stays in use.
+        destination already has a JoyRead-Library folder or the copy fails
+        validation; the old storage is reopened and stays in use.
         """
 
         old_root = Path(self.settings.storage_location)
@@ -271,7 +272,7 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
     config = AppConfig()
     runtime_override = environ.get("JOYREAD_RUNTIME_DIR")
     support_root = Path(runtime_override) / ".joyread_support" if runtime_override else None
-    default_storage_root = Path(runtime_override) / ".joyread_storage" if runtime_override else None
+    default_storage_root = Path(runtime_override) / LIBRARY_DIRECTORY_NAME if runtime_override else None
     settings_store = SettingsStore(
         config.app_name,
         config.app_author,

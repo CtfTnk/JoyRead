@@ -53,6 +53,8 @@ wheelhouse/
 *.log
 .joyread_support/
 .joyread_storage/
+.joyread_storage_/
+/JoyRead-Library/
 /logs/
 /Logs/
 /runtime/
