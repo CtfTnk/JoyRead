@@ -42,6 +42,10 @@ class ResourceLoader:
     def app_icon_path(self) -> Path:
         return self.icon_path("JoyRead.icns")
 
+    def locale_dir(self) -> Path:
+        """Return the directory containing bundled locale JSON files."""
+        return self._package_root / "resources" / "locales"
+
     def load_stylesheet(self, name: str = "main.qss") -> str:
         path = self.style_path(name)
         if not path.exists():

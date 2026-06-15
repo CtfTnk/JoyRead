@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, 
 
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
@@ -149,8 +150,9 @@ class MainWindow(QMainWindow):
         # row + hidable collections appear/disappear in lockstep.
         context.settings_viewmodel.hidden_space_changed.connect(self._handle_hidden_space_changed)
         context.settings_viewmodel.hidden_space_error.connect(
-            lambda message: self.dialog_overlay.show_info("Hidden Space", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.hidden_space_title"), message)
         )
+        context.settings_viewmodel.language_changed.connect(self._on_language_changed)
         context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         # Shelf clicks travel through the viewmodel (book_card →
         # shelf_view → vm.open_book) so every "open" is gated by
@@ -163,26 +165,26 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.book_open_at_requested.connect(self.open_reader_for_book_at)
         context.shelf_viewmodel.missing_book_requested.connect(self._show_missing_book_dialog)
         context.shelf_viewmodel.delete_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Delete Failed", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.delete_failed_title"), message)
         )
         context.shelf_viewmodel.favourite_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Favourite Failed", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.favourite_failed_title"), message)
         )
         context.shelf_viewmodel.book_metadata_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Book Detail", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.book_detail_title"), message)
         )
         context.shelf_viewmodel.book_cover_updated.connect(self._handle_book_cover_updated)
         context.shelf_viewmodel.book_cover_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Cover Editor", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.cover_editor_title"), message)
         )
         context.shelf_viewmodel.book_tags_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Book Tags", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.book_tags_title"), message)
         )
         context.shelf_viewmodel.collection_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Collection", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.collection_title"), message)
         )
         context.shelf_viewmodel.remove_failed.connect(
-            lambda message: self.dialog_overlay.show_info("Remove Failed", message)
+            lambda message: self.dialog_overlay.show_info(t("dialog.remove_failed_title"), message)
         )
         context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
@@ -206,7 +208,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(
                 0,
                 lambda message=context.storage_startup_notice: self.dialog_overlay.show_info(
-                    "Storage", message
+                    t("dialog.storage_title"), message
                 ),
             )
 
@@ -218,7 +220,7 @@ class MainWindow(QMainWindow):
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
             logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
-            self.dialog_overlay.show_info("Read", "The selected book is no longer available.")
+            self.dialog_overlay.show_info(t("dialog.read_title"), t("dialog.book_no_longer_available"))
             return
         individual = self._settings_for_reader_launch().individual_read_window
         source_path = Path(book.file_path)
@@ -276,7 +278,7 @@ class MainWindow(QMainWindow):
                 settings,
                 result,
             ),
-            on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
         )
 
     def _handle_open_import_preflight(self, source_path: Path, settings, result) -> None:  # noqa: ANN001
@@ -291,17 +293,17 @@ class MainWindow(QMainWindow):
             return
         if result.status == "skipped":
             self.dialog_overlay.show_confirm(
-                "Open Read Only",
-                (
-                    "JoyRead won't import this file because it is encrypted or contains encrypted archives.\n\n"
-                    "You can still open it for reading."
-                ),
+                t("dialog.open_read_only_title"),
+                t("dialog.open_read_only_msg"),
                 on_confirm=lambda source_path=source_path: self._show_reader_window(source_path, title=source_path.stem),
-                confirm_text="Read Only",
-                cancel_text="Cancel",
+                confirm_text=t("dialog.btn_read_only"),
+                cancel_text=t("dialog.btn_cancel"),
             )
             return
-        self.dialog_overlay.show_info("Open & Import Failed", result.message or "This file cannot be imported.")
+        self.dialog_overlay.show_info(
+            t("dialog.open_import_failed_title"),
+            result.message or t("dialog.open_import_unsupported"),
+        )
 
     def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
         logger.info("Open & Import starting path=%s", source_path)
@@ -313,7 +315,7 @@ class MainWindow(QMainWindow):
                 archive_internal_max_depth=settings.archive_internal_max_depth,
             ),
             on_success=lambda _result: self._reload_after_background_import(),
-            on_failure=lambda error: self.dialog_overlay.show_info("Open & Import Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
         )
 
     def _select_reader_file(self, import_mode: bool) -> None:
@@ -324,9 +326,9 @@ class MainWindow(QMainWindow):
         # the OS; JoyRead does not spawn or manage those helpers directly.
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Open Book",
+            t("dialog.file_open_book_title"),
             "",
-            f"Readable Books ({extensions})",
+            t("dialog.file_filter_readable_books", extensions=extensions),
         )
         if not file_path:
             return
@@ -334,18 +336,18 @@ class MainWindow(QMainWindow):
 
     def _show_import_menu(self) -> None:
         menu = FigmaMenu(self.shelf_view, width=240)
-        menu.add_item("Import Files...", self._select_import_files)
-        menu.add_item("Import Folder...", self._select_import_folder)
-        menu.add_item("Import JSON Manifest (Dev)...", self._select_import_manifest)
+        menu.add_item(t("menu.import_files"), self._select_import_files)
+        menu.add_item(t("menu.import_folder"), self._select_import_folder)
+        menu.add_item(t("menu.import_json"), self._select_import_manifest)
         menu.exec(QCursor.pos())
 
     def _select_import_files(self) -> None:
         extensions = " ".join(f"*{suffix}" for suffix in sorted(BOOK_EXTENSIONS))
         file_paths, _selected_filter = QFileDialog.getOpenFileNames(
             self,
-            "Import Books",
+            t("dialog.file_import_books_title"),
             "",
-            f"Supported Books ({extensions})",
+            t("dialog.file_filter_supported_books", extensions=extensions),
         )
         if not file_paths:
             return
@@ -358,13 +360,13 @@ class MainWindow(QMainWindow):
                 archive_internal_max_depth=settings.archive_internal_max_depth,
             ),
             on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _select_import_folder(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Choose Import Folder",
+            t("dialog.file_choose_import_folder_title"),
             str(Path.home()),
         )
         if not directory:
@@ -379,7 +381,7 @@ class MainWindow(QMainWindow):
                 archive_internal_max_depth=settings.archive_internal_max_depth,
             ),
             on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _show_reader_window(
@@ -520,9 +522,9 @@ class MainWindow(QMainWindow):
     def _select_import_manifest(self) -> None:
         manifest_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Import JoyRead Manifest",
+            t("dialog.file_import_manifest_title"),
             "",
-            "JSON Manifest (*.json)",
+            t("dialog.file_filter_json_manifest"),
         )
         if not manifest_path:
             return
@@ -535,7 +537,7 @@ class MainWindow(QMainWindow):
                 archive_internal_max_depth=settings.archive_internal_max_depth,
             ),
             on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info("Import Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _handle_import_finished(self, result) -> None:  # noqa: ANN001
@@ -550,12 +552,13 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar_collections()
         self.shelf_view.render()
         self.dialog_overlay.show_info(
-            "Import Finished",
-            (
-                f"Imported: {result.imported_count}\n"
-                f"Duplicates: {result.duplicate_count}\n"
-                f"Skipped: {getattr(result, 'skipped_count', 0)}\n"
-                f"Failed: {result.failed_count}"
+            t("dialog.import_finished_title"),
+            t(
+                "dialog.import_finished_msg",
+                imported=str(result.imported_count),
+                duplicates=str(result.duplicate_count),
+                skipped=str(getattr(result, "skipped_count", 0)),
+                failed=str(result.failed_count),
             ),
         )
 
@@ -565,7 +568,7 @@ class MainWindow(QMainWindow):
             return
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Choose Export Folder",
+            t("dialog.file_choose_export_folder_title"),
             str(Path.home()),
         )
         if not directory:
@@ -575,7 +578,7 @@ class MainWindow(QMainWindow):
             "export-books",
             lambda: self._context.export_service.export_books(target_ids, directory),
             on_success=self._handle_export_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info("Export Failed", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.export_failed_title"), str(error)),
         )
 
     def _handle_export_finished(self, result) -> None:  # noqa: ANN001
@@ -586,19 +589,19 @@ class MainWindow(QMainWindow):
             result.failed_count,
         )
         lines = [
-            f"Exported: {result.exported_count}",
-            f"Skipped: {result.skipped_count}",
-            f"Failed: {result.failed_count}",
+            t("dialog.export_summary_exported", count=str(result.exported_count)),
+            t("dialog.export_summary_skipped", count=str(result.skipped_count)),
+            t("dialog.export_summary_failed", count=str(result.failed_count)),
         ]
         failures = [item for item in result.items if item.status == "failed"]
         if failures:
             lines.append("")
             for item in failures[:5]:
                 label = item.original_file_name or item.book_uuid
-                lines.append(f"{label}: {item.message or 'Export failed.'}")
+                lines.append(f"{label}: {item.message or t('dialog.export_item_failed')}")
             if len(failures) > 5:
-                lines.append(f"...and {len(failures) - 5} more.")
-        self.dialog_overlay.show_info("Export Finished", "\n".join(lines))
+                lines.append(t("dialog.export_more_failures", count=str(len(failures) - 5)))
+        self.dialog_overlay.show_info(t("dialog.export_finished_title"), "\n".join(lines))
 
     def _confirm_delete_books(self, book_uuids: tuple[str, ...]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuids))
@@ -610,48 +613,36 @@ class MainWindow(QMainWindow):
             return
 
         if len(titles) == 1:
-            title = "Delete Book"
-            message = (
-                f"Delete '{titles[0]}' from JoyRead?\n\n"
-                "This removes its library record, collections, progress, bookmarks, recent history, "
-                "and the app-managed copied file."
-            )
+            title = t("dialog.delete_book_title")
+            message = t("dialog.delete_book_msg", title=titles[0])
         else:
-            title = "Delete Books"
-            message = (
-                f"Delete {len(titles)} books from JoyRead?\n\n"
-                "This removes their library records, collections, progress, bookmarks, recent history, "
-                "and app-managed copied files."
-            )
+            title = t("dialog.delete_books_title")
+            message = t("dialog.delete_books_msg", count=str(len(titles)))
         self.dialog_overlay.show_confirm(
             title,
             message,
             on_confirm=lambda target_ids=target_ids: self._context.shelf_viewmodel.delete_books(target_ids),
-            confirm_text="Delete",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_delete"),
+            cancel_text=t("dialog.btn_cancel"),
         )
 
     def _show_missing_book_dialog(self, book_uuid: str) -> None:
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
-            self.dialog_overlay.show_info("Missing File", "The selected book is no longer available.")
+            self.dialog_overlay.show_info(t("dialog.missing_file_title"), t("dialog.missing_file_not_found"))
             return
         # Destructive action on Confirm, dismiss on Cancel — matches
         # ``_confirm_delete_books`` so Esc / click-outside don't
         # silently delete the book. Unicode quotes survive titles
         # that contain an apostrophe.
-        title = book.title or "(untitled)"
-        message = (
-            f"“{title}” cannot be found on disk.\n\n"
-            "Delete it from JoyRead, or keep it in your library?"
-        )
+        book_title = book.title or "(untitled)"
         self.dialog_overlay.show_confirm(
-            "Missing File",
-            message,
+            t("dialog.missing_file_title"),
+            t("dialog.missing_file_msg", title=book_title),
             on_confirm=lambda book_uuid=book_uuid: self._context.shelf_viewmodel.delete_books((book_uuid,)),
             on_cancel=None,
-            confirm_text="Delete",
-            cancel_text="Keep",
+            confirm_text=t("dialog.btn_delete"),
+            cancel_text=t("dialog.btn_keep"),
         )
 
     def _show_hidden_space_setup_dialog(self) -> None:
@@ -680,18 +671,18 @@ class MainWindow(QMainWindow):
             # signal that may bypass the dialog.
             password, confirm = (values + ("", "", ""))[:2]
             if len(password) < 4 or not password.isalnum() or not password.isascii():
-                return "Password must be at least 4 characters (letters/digits only)."
+                return t("dialog.password_rules_error")
             if password != confirm:
-                return "Passwords do not match."
+                return t("dialog.password_mismatch")
             return None
 
         self.dialog_overlay.show_multi_password_input(
-            "Set Hidden Space Password",
-            ("Password", "Confirm Password", "Hint"),
+            t("dialog.set_password_title"),
+            (t("dialog.password_header"), t("dialog.confirm_password_header"), t("dialog.hint_header")),
             on_confirm=on_confirm,
             echo_modes=echo_modes,
-            confirm_text="Confirm",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_confirm"),
+            cancel_text=t("dialog.btn_cancel"),
             validator=validator,
             on_cancel=on_cancel,
         )
@@ -701,24 +692,24 @@ class MainWindow(QMainWindow):
         # single password input. The hint is shown as detail text so the
         # user can recover from a memory lapse without escaping the dialog.
         hint = self._context.settings_viewmodel.hidden_space_hint
-        detail = f"Hint: {hint}" if hint else None
+        detail = t("dialog.hint_prefix", hint=hint) if hint else None
 
         def on_confirm(password: str) -> None:
             if self._context.settings_viewmodel.verify_hidden_space_password(password):
                 self._context.settings_viewmodel.set_show_hidden_collection(True)
                 return
             self.settings_view.page.revert_show_hidden_switch()
-            self.dialog_overlay.show_info("Hidden Space", "Incorrect password.")
+            self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.incorrect_password"))
 
         def on_cancel() -> None:
             self.settings_view.page.revert_show_hidden_switch()
 
         self.dialog_overlay.show_password_input(
-            "Unlock Hidden Space",
-            "Password",
+            t("dialog.unlock_title"),
+            t("dialog.password_header"),
             on_confirm=on_confirm,
-            confirm_text="Verify",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_verify"),
+            cancel_text=t("dialog.btn_cancel"),
             on_cancel=on_cancel,
             detail_text=detail,
         )
@@ -735,24 +726,24 @@ class MainWindow(QMainWindow):
         def validator(values: tuple[str, ...]) -> str | None:
             _old, new, confirm = (values + ("", "", ""))[:3]
             if len(new) < 4 or not new.isalnum() or not new.isascii():
-                return "New password must be at least 4 characters (letters/digits only)."
+                return t("dialog.new_password_rules_error")
             if new != confirm:
-                return "New passwords do not match."
+                return t("dialog.new_password_mismatch")
             return None
 
         def on_confirm(values: tuple[str, ...]) -> None:
             old, new, confirm = (values + ("", "", ""))[:3]
             ok = self._context.settings_viewmodel.change_hidden_space_password(old, new, confirm)
             if ok:
-                self.dialog_overlay.show_info("Hidden Space", "Password updated.")
+                self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.password_updated"))
 
         self.dialog_overlay.show_multi_password_input(
-            "Change Hidden Space Password",
-            ("Current Password", "New Password", "Confirm New Password"),
+            t("dialog.change_password_title"),
+            (t("dialog.current_password_header"), t("dialog.new_password_header"), t("dialog.confirm_new_password_header")),
             on_confirm=on_confirm,
             echo_modes=echo_modes,
-            confirm_text="Update",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_update"),
+            cancel_text=t("dialog.btn_cancel"),
             validator=validator,
         )
 
@@ -761,20 +752,20 @@ class MainWindow(QMainWindow):
         # password is itself the confirmation, so no second confirm dialog.
         def on_confirm(password: str) -> None:
             if not self._context.settings_viewmodel.verify_hidden_space_password(password):
-                self.dialog_overlay.show_info("Hidden Space", "Incorrect password.")
+                self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.incorrect_password"))
                 return
             self._context.settings_viewmodel.revert_hidden_space()
             self.dialog_overlay.show_info(
-                "Hidden Space",
-                "All hidden books and hidable collections have been reverted to normal.",
+                t("dialog.hidden_space_title"),
+                t("dialog.hidden_reverted_msg"),
             )
 
         self.dialog_overlay.show_password_input(
-            "Revert Hidden Space",
-            "Password",
+            t("dialog.revert_hidden_title"),
+            t("dialog.password_header"),
             on_confirm=on_confirm,
-            confirm_text="Revert",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_revert"),
+            cancel_text=t("dialog.btn_cancel"),
         )
 
     def _show_hidden_space_reset_dialog(self) -> None:
@@ -782,18 +773,13 @@ class MainWindow(QMainWindow):
         # asked for an escape hatch in case the password is forgotten. We
         # still gate it behind a destructive-styled confirmation so it
         # can't fire by accident.
-        message = (
-            "This will permanently delete every hidden book from disk, "
-            "delete every hidable collection, and clear the Hidden Space "
-            "password.\n\nThis cannot be undone."
-        )
         self.dialog_overlay.show_confirm(
-            "Reset Hidden Space",
-            message,
+            t("dialog.reset_hidden_title"),
+            t("dialog.reset_hidden_msg"),
             on_confirm=self._context.settings_viewmodel.reset_hidden_space,
             on_cancel=None,
-            confirm_text="Erase",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_erase"),
+            cancel_text=t("dialog.btn_cancel"),
             destructive=True,
         )
 
@@ -808,15 +794,15 @@ class MainWindow(QMainWindow):
             title,
             message,
             on_confirm=self._context.tag_management_viewmodel.delete_selected,
-            confirm_text="Delete",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_delete"),
+            cancel_text=t("dialog.btn_cancel"),
             destructive=True,
         )
 
     def _request_move_storage(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Choose a parent folder for JoyRead-Library",
+            t("dialog.file_choose_library_parent_title"),
             self._context.settings_viewmodel.storage_location,
         )
         if not directory:
@@ -836,7 +822,7 @@ class MainWindow(QMainWindow):
     def _request_select_storage(self) -> None:
         directory = QFileDialog.getExistingDirectory(
             self,
-            "Select an existing JoyRead library",
+            t("dialog.file_select_existing_library_title"),
             self._context.settings_viewmodel.storage_location,
         )
         if not directory:
@@ -847,15 +833,15 @@ class MainWindow(QMainWindow):
             "validate-storage-location",
             lambda: self._context.storage_validation_service.validate_full(existing_root),
             on_success=lambda result: self._apply_selected_storage(existing_root, result),
-            on_failure=lambda error: self.dialog_overlay.show_info("Storage", str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.storage_title"), str(error)),
         )
 
     def _apply_selected_storage(self, existing_root: Path, result: object) -> None:
         if not getattr(result, "ok", False):
-            message = getattr(result, "message", "") or "The selected folder is not a usable JoyRead library."
+            message = getattr(result, "message", "") or t("dialog.storage_invalid_default")
             self.dialog_overlay.show_info(
-                "Storage",
-                f"That folder cannot be used as a JoyRead library.\n\n{message}",
+                t("dialog.storage_title"),
+                t("dialog.storage_invalid_location", message=message),
             )
             return
         resolved = str(existing_root.expanduser().resolve())
@@ -870,25 +856,22 @@ class MainWindow(QMainWindow):
 
     def _request_reset_storage(self) -> None:
         self.dialog_overlay.show_confirm(
-            "Reset Library",
-            (
-                "This permanently deletes all books, covers, reading progress, and "
-                "data in the current JoyRead library. This cannot be undone."
-            ),
+            t("dialog.reset_library_title"),
+            t("dialog.reset_library_msg"),
             on_confirm=self._prompt_reset_storage_confirmation,
-            confirm_text="Continue",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_continue"),
+            cancel_text=t("dialog.btn_cancel"),
             destructive=True,
         )
 
     def _prompt_reset_storage_confirmation(self) -> None:
         self.dialog_overlay.show_input(
-            "Reset Library",
-            "Type delete to confirm",
+            t("dialog.reset_library_title"),
+            t("dialog.type_delete_header"),
             on_confirm=lambda _value: self._execute_reset_storage(),
-            confirm_text="Delete",
-            cancel_text="Cancel",
-            validator=lambda value: None if value.strip().lower() == "delete" else "Type delete to confirm.",
+            confirm_text=t("dialog.btn_delete"),
+            cancel_text=t("dialog.btn_cancel"),
+            validator=lambda value: None if value.strip().lower() == "delete" else t("dialog.type_delete_error"),
         )
 
     def _execute_reset_storage(self) -> None:
@@ -906,11 +889,11 @@ class MainWindow(QMainWindow):
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
-        self.dialog_overlay.show_info("Storage", "Your JoyRead library has been updated.")
+        self.dialog_overlay.show_info(t("dialog.storage_title"), t("dialog.storage_updated_msg"))
 
     def _handle_storage_location_failed(self, error: Exception) -> None:
         self._context.reload_storage_from_settings()
-        self.dialog_overlay.show_info("Storage", str(error))
+        self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":
@@ -924,11 +907,11 @@ class MainWindow(QMainWindow):
 
     def _show_new_collection_dialog(self) -> None:
         self.dialog_overlay.show_input(
-            "New Collection",
-            "Collection Name",
+            t("dialog.new_collection_title"),
+            t("dialog.collection_name_header"),
             on_confirm=self._context.shelf_viewmodel.create_collection,
-            confirm_text="Create",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_create"),
+            cancel_text=t("dialog.btn_cancel"),
             validator=_validate_collection_name,
         )
 
@@ -955,15 +938,15 @@ class MainWindow(QMainWindow):
         if collection is None:
             return
         self.dialog_overlay.show_input(
-            "Rename Collection",
-            "Collection Name",
+            t("dialog.rename_collection_title"),
+            t("dialog.collection_name_header"),
             on_confirm=lambda name, collection_uuid=collection_uuid: self._context.shelf_viewmodel.rename_collection(
                 collection_uuid,
                 name,
             ),
             initial_text=collection.name,
-            confirm_text="Rename",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_rename"),
+            cancel_text=t("dialog.btn_cancel"),
             validator=_validate_collection_name,
         )
 
@@ -972,17 +955,13 @@ class MainWindow(QMainWindow):
         if collection is None:
             return
         self.dialog_overlay.show_confirm(
-            "Delete Collection",
-            (
-                f"Delete '{collection.name}'?\n\n"
-                "This removes only the collection and its book membership records. "
-                "Books and app-managed files are not deleted."
-            ),
+            t("dialog.delete_collection_title"),
+            t("dialog.delete_collection_msg", name=collection.name),
             on_confirm=lambda collection_uuid=collection_uuid: self._context.shelf_viewmodel.delete_collection(
                 collection_uuid,
             ),
-            confirm_text="Delete",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_delete"),
+            cancel_text=t("dialog.btn_cancel"),
         )
 
     def _show_add_to_collection_dialog(self, book_uuids: tuple[str, ...]) -> None:
@@ -991,18 +970,18 @@ class MainWindow(QMainWindow):
         # hidable targets while the feature is dormant.
         collections = list(self._context.shelf_viewmodel.visible_collections)
         if not collections:
-            self.dialog_overlay.show_info("Add to Collection", "Create a collection before adding books.")
+            self.dialog_overlay.show_info(t("dialog.add_to_collection_title"), t("dialog.no_collection_msg"))
             return
 
         def add_to_collection(collection_uuid: str) -> None:
             self._context.shelf_viewmodel.add_books_to_collection(book_uuids, collection_uuid)
 
         self.dialog_overlay.show_collection_select(
-            "Add to Collection",
+            t("dialog.add_to_collection_title"),
             collections,
             on_confirm=add_to_collection,
-            confirm_text="Add",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_add"),
+            cancel_text=t("dialog.btn_cancel"),
         )
 
     def _show_tag_filter_dialog(self) -> None:
@@ -1010,7 +989,7 @@ class MainWindow(QMainWindow):
             tags = self._context.tag_service.list_tags()
         except Exception as exc:  # pragma: no cover - repository-specific failure path.
             logger.exception("Opening tag filter failed: %s", exc)
-            self.dialog_overlay.show_info("Tag Filter", "Could not load tags.")
+            self.dialog_overlay.show_info(t("dialog.tag_filter_title"), t("dialog.tag_filter_failed"))
             return
 
         def apply_filter(tag_ids: tuple[str, ...]) -> None:
@@ -1018,10 +997,10 @@ class MainWindow(QMainWindow):
                 self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
             except Exception as exc:  # pragma: no cover - defensive UI boundary.
                 logger.exception("Applying tag filter failed: %s", exc)
-                self.dialog_overlay.show_info("Tag Filter", "Could not apply tag filter.")
+                self.dialog_overlay.show_info(t("dialog.tag_filter_title"), t("dialog.tag_filter_apply_failed"))
 
         self.dialog_overlay.show_tag_filter(
-            "Tag Filter",
+            t("dialog.tag_filter_title"),
             tags,
             self._context.shelf_viewmodel.tag_filter_ids,
             apply_filter,
@@ -1040,20 +1019,20 @@ class MainWindow(QMainWindow):
     def _show_book_tag_allocation_dialog(self, book_uuid: str) -> None:
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
-            self.dialog_overlay.show_info("Book Tags", "The selected book is no longer available.")
+            self.dialog_overlay.show_info(t("dialog.book_tags_title"), t("dialog.book_no_longer_available"))
             return
         try:
             tags = self._context.tag_service.list_tags()
         except Exception as exc:  # pragma: no cover - repository-specific failure path.
             logger.exception("Opening book tag allocation failed: %s", exc)
-            self.dialog_overlay.show_info("Book Tags", "Could not load tags.")
+            self.dialog_overlay.show_info(t("dialog.book_tags_title"), t("dialog.tag_filter_failed"))
             return
 
         def assign_tags(tag_ids: tuple[str, ...]) -> None:
             self._context.shelf_viewmodel.set_book_tag_ids(book_uuid, tag_ids)
 
         self.dialog_overlay.show_tag_allocation(
-            "Assign Tags",
+            t("dialog.assign_tags_title"),
             tags,
             self._context.shelf_viewmodel.tag_ids_for_book(book_uuid),
             assign_tags,
@@ -1062,13 +1041,13 @@ class MainWindow(QMainWindow):
     def _show_cover_editor(self, book_uuid: str) -> None:
         book = self._book_by_uuid(book_uuid)
         if book is None:
-            self.dialog_overlay.show_info("Cover Editor", "The selected book is no longer available.")
+            self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.book_no_longer_available"))
             return
         if not self._context.thumbnail_service.can_generate_from(book):
             logger.info("Cover editor unavailable for book=%s path=%s", book_uuid, book.file_path)
             self.dialog_overlay.show_info(
-                "Cover Editor",
-                "Cover editing is available for archive and PDF books with available source files.",
+                t("dialog.cover_editor_title"),
+                t("dialog.cover_editor_unavailable"),
             )
             return
 
@@ -1088,9 +1067,9 @@ class MainWindow(QMainWindow):
     def _select_cover_editor_image(self) -> None:
         file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Import Cover Image",
+            t("dialog.file_import_cover_image_title"),
             "",
-            "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
+            t("dialog.file_filter_images"),
         )
         if not file_path:
             return
@@ -1157,19 +1136,19 @@ class MainWindow(QMainWindow):
         if book_uuid is None:
             return
         self.dialog_overlay.show_confirm(
-            "Replace Cover",
-            "Replace this book cover with the edited image?",
+            t("dialog.replace_cover_title"),
+            t("dialog.replace_cover_msg"),
             on_confirm=lambda book_uuid=book_uuid, source_bytes=source_bytes, crop_state=crop_state: (
                 self._save_cover_editor_cover(book_uuid, source_bytes, crop_state)
             ),
-            confirm_text="Confirm",
-            cancel_text="Cancel",
+            confirm_text=t("dialog.btn_confirm"),
+            cancel_text=t("dialog.btn_cancel"),
         )
 
     def _save_cover_editor_cover(self, book_uuid: str, source_bytes: bytes, crop_state) -> None:  # noqa: ANN001
         book = self._book_by_uuid(book_uuid)
         if book is None:
-            self.dialog_overlay.show_info("Cover Editor", "The selected book is no longer available.")
+            self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.book_no_longer_available"))
             return
         self._context.task_service.submit(
             "save-edited-cover",
@@ -1206,7 +1185,7 @@ class MainWindow(QMainWindow):
             return
         if source_bytes is None:
             logger.warning("Cover editor source unavailable book=%s source=%s", book_uuid, source_id)
-            self.dialog_overlay.show_info("Cover Editor", "Could not load a cover image from this book.")
+            self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.cover_editor_load_book_failed"))
             if opening:
                 self._clear_cover_editor_book_uuid()
             return
@@ -1218,7 +1197,10 @@ class MainWindow(QMainWindow):
         )
         if not updated:
             logger.warning("Cover editor rejected image bytes book=%s source=%s", book_uuid, source_id)
-            self.dialog_overlay.show_info("Cover Editor", "Could not load that image as a cover source.")
+            self.dialog_overlay.show_info(
+                t("dialog.cover_editor_title"),
+                t("dialog.cover_editor_load_source_image_failed"),
+            )
             if opening:
                 self._clear_cover_editor_book_uuid()
             return
@@ -1230,7 +1212,7 @@ class MainWindow(QMainWindow):
             return
         if not self.cover_editor_overlay.set_source(source_bytes, f"import:{image_path.name}"):
             logger.warning("Cover editor rejected imported image path=%s", image_path)
-            self.dialog_overlay.show_info("Cover Editor", "Could not load that image.")
+            self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.cover_editor_load_imported_failed"))
 
     def _handle_cover_editor_thumbnail_batch(self, book_uuid: str, batch) -> None:  # noqa: ANN001
         if self._cover_editor_book_uuid != book_uuid:
@@ -1249,7 +1231,7 @@ class MainWindow(QMainWindow):
             error,
             exc_info=(type(error), error, error.__traceback__),
         )
-        self.dialog_overlay.show_info("Cover Editor", "Could not load the cover source.")
+        self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.cover_editor_load_source_failed"))
 
     def _handle_cover_editor_save_failed(self, error: Exception) -> None:
         logger.warning(
@@ -1257,7 +1239,7 @@ class MainWindow(QMainWindow):
             error,
             exc_info=(type(error), error, error.__traceback__),
         )
-        self.dialog_overlay.show_info("Cover Editor", "Could not save the edited cover.")
+        self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.cover_editor_save_failed"))
 
     def _handle_book_cover_updated(self, book_uuid: str, _path: Path) -> None:
         if self._cover_editor_book_uuid == book_uuid:
@@ -1298,6 +1280,16 @@ class MainWindow(QMainWindow):
             ShelfKey.HIDDEN.value,
         } or current.startswith("collection:"):
             self.sidebar.set_active(current)
+
+    def _on_language_changed(self) -> None:
+        """Refresh all static labels after the locale has been reloaded."""
+        self.sidebar.refresh_labels()
+        self.settings_view.refresh_labels()
+        self.chrome.refresh_labels()
+        self.chrome.set_action_menu(self.shelf_view.create_action_menu())
+        self.shelf_view.toolbar.refresh_labels()
+        self.cover_editor_overlay.refresh_labels()
+        self.shelf_view.render()
 
     def _handle_hidden_space_changed(self) -> None:
         settings_vm = self._context.settings_viewmodel
@@ -1459,7 +1451,7 @@ class MainWindow(QMainWindow):
 
 
 def _validate_collection_name(name: str) -> str | None:
-    return None if name.strip() else "Collection name cannot be empty."
+    return None if name.strip() else t("dialog.collection_name_required")
 
 
 def _collection_uuid_from_key(collection_key: str) -> str:

@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import SortField, ViewMode
@@ -40,6 +41,7 @@ class TitleBarWidget(QWidget):
         self._resources = resources
         self._platform_name = platform_name or sys.platform
         self._sort_ascending = False
+        self._current_sort_field: SortField = SortField.ADD_TIME
         self._drag_position: QPoint | None = None
 
         self.setObjectName("TitleBar")
@@ -59,7 +61,7 @@ class TitleBarWidget(QWidget):
         self._sidebar_button = _chrome_button(
             icon=self._icon("icon_sidebar.svg"),
             size=(36, 36),
-            tooltip="Toggle sidebar",
+            tooltip=t("toolbar.sidebar_toggle"),
         )
         self._sidebar_button.setCheckable(True)
         self._sidebar_button.setChecked(True)
@@ -80,10 +82,10 @@ class TitleBarWidget(QWidget):
 
         self._sort_dropdown = FigmaDropdownButton(
             resources,
-            [field.value for field in SortField],
+            [_sort_label(f) for f in SortField],
             width=Theme.sort_dropdown_width,
-            initial_value=SortField.ADD_TIME.value,
-            tooltip="Sort by",
+            initial_value=_sort_label(SortField.ADD_TIME),
+            tooltip=t("toolbar.sort_by"),
         )
         self._sort_dropdown.value_changed.connect(self._emit_sort)
         layout.addWidget(self._sort_dropdown)
@@ -119,9 +121,26 @@ class TitleBarWidget(QWidget):
         self._list_mode_switch.set_value(mode)
 
     def set_sort(self, field: str, ascending: bool) -> None:
-        self._sort_dropdown.set_value(field)
+        sort_field = _sort_field_from_value(field)
+        self._current_sort_field = sort_field
+        self._sort_dropdown.set_value(_sort_label(sort_field))
         self._sort_ascending = ascending
         self._sort_mode_switch.set_ascending(ascending)
+
+    def refresh_sort_labels(self) -> None:
+        """Rebuild the sort dropdown labels after a locale change."""
+        new_options = [_sort_label(f) for f in SortField]
+        new_value = _sort_label(self._current_sort_field)
+        self._sort_dropdown.update_options(new_options, new_value)
+
+    def refresh_labels(self) -> None:
+        """Refresh translated tooltips and display labels after a locale change."""
+        self._sidebar_button.setToolTip(t("toolbar.sidebar_toggle"))
+        self._sort_dropdown.setToolTip(t("toolbar.sort_by"))
+        self._action_button.refresh_tooltip()
+        self._stoplight_controls.refresh_tooltips()
+        self._title_control_group.refresh_tooltips()
+        self.refresh_sort_labels()
 
     def set_shelf_controls_visible(self, visible: bool) -> None:
         for control in self._shelf_controls:
@@ -168,8 +187,12 @@ class TitleBarWidget(QWidget):
         self._sort_ascending = value == SortModeSwitchWidget.ASCENDING
         self._emit_sort(self._sort_dropdown.value)
 
-    def _emit_sort(self, field: str) -> None:
-        self.sort_changed.emit(field, self._sort_ascending)
+    def _emit_sort(self, label: str) -> None:
+        # Dropdown emits the translated display label; convert to canonical
+        # SortField value before propagating so ShelfViewModel stays locale-agnostic.
+        field = _sort_field_from_label(label)
+        self._current_sort_field = field
+        self.sort_changed.emit(field.value, self._sort_ascending)
 
     def _toggle_zoom(self) -> None:
         window = self.window()
@@ -195,16 +218,21 @@ class StoplightControlsWidget(QWidget):
         # layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(9)
 
-        close_button = _traffic_button("CloseButton", "Close")
-        minimize_button = _traffic_button("MinimizeButton", "Minimize")
-        zoom_button = _traffic_button("ZoomButton", "Zoom")
-        close_button.clicked.connect(self.close_requested.emit)
-        minimize_button.clicked.connect(self.minimize_requested.emit)
-        zoom_button.clicked.connect(self.zoom_requested.emit)
+        self.close_button = _traffic_button("CloseButton", t("toolbar.close"))
+        self.minimize_button = _traffic_button("MinimizeButton", t("toolbar.minimize"))
+        self.zoom_button = _traffic_button("ZoomButton", t("toolbar.maximize"))
+        self.close_button.clicked.connect(self.close_requested.emit)
+        self.minimize_button.clicked.connect(self.minimize_requested.emit)
+        self.zoom_button.clicked.connect(self.zoom_requested.emit)
 
-        layout.addWidget(close_button)
-        layout.addWidget(minimize_button)
-        layout.addWidget(zoom_button)
+        layout.addWidget(self.close_button)
+        layout.addWidget(self.minimize_button)
+        layout.addWidget(self.zoom_button)
+
+    def refresh_tooltips(self) -> None:
+        self.close_button.setToolTip(t("toolbar.close"))
+        self.minimize_button.setToolTip(t("toolbar.minimize"))
+        self.zoom_button.setToolTip(t("toolbar.maximize"))
 
 
 class TitleControlGroup(QWidget):
@@ -223,17 +251,17 @@ class TitleControlGroup(QWidget):
 
         self.minimize_button = TitleControlButton(
             QIcon(str(resources.icon_path("icon_frame_minimise.svg"))),
-            "Minimize",
+            t("toolbar.minimize"),
             "TitleControlMinimizeButton",
         )
         self.zoom_button = TitleControlButton(
             QIcon(str(resources.icon_path("icon_frame_expand.svg"))),
-            "Maximize",
+            t("toolbar.maximize"),
             "TitleControlZoomButton",
         )
         self.close_button = TitleControlButton(
             QIcon(str(resources.icon_path("icon_frame_close.svg"))),
-            "Close",
+            t("toolbar.close"),
             "TitleControlCloseButton",
         )
         self.minimize_button.clicked.connect(self.minimize_requested.emit)
@@ -243,6 +271,11 @@ class TitleControlGroup(QWidget):
         layout.addWidget(self.minimize_button)
         layout.addWidget(self.zoom_button)
         layout.addWidget(self.close_button)
+
+    def refresh_tooltips(self) -> None:
+        self.minimize_button.setToolTip(t("toolbar.minimize"))
+        self.zoom_button.setToolTip(t("toolbar.maximize"))
+        self.close_button.setToolTip(t("toolbar.close"))
 
 
 class TitleControlButton(QToolButton):
@@ -297,7 +330,7 @@ class ActionMenuButton(QFrame):
         super().__init__(parent)
         self._menu: FigmaMenu | None = None
         self.setProperty("class", "ActionMenuButton")
-        self.setToolTip("Actions")
+        self.setToolTip(t("toolbar.actions"))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.action_button_width, Theme.action_button_height)
 
@@ -331,6 +364,9 @@ class ActionMenuButton(QFrame):
         self._menu = menu
         self._menu.closed.connect(self._finish_menu_interaction)
 
+    def refresh_tooltip(self) -> None:
+        self.setToolTip(t("toolbar.actions"))
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._menu is not None:
             self._finish_menu_interaction()
@@ -347,6 +383,27 @@ class ActionMenuButton(QFrame):
         if app is not None:
             app.sendEvent(self, QEvent(QEvent.Type.Leave))
         self.update()
+
+
+def _sort_label(field: SortField) -> str:
+    """Return the translated display label for a SortField (e.g. SortField.ADD_TIME → "Add Time")."""
+    return t(f"sort.{field.name.lower()}")
+
+
+def _sort_field_from_label(label: str) -> SortField:
+    """Reverse-map a translated display label back to its SortField enum member."""
+    for field in SortField:
+        if _sort_label(field) == label:
+            return field
+    return SortField.ADD_TIME  # safe fallback
+
+
+def _sort_field_from_value(value: str) -> SortField:
+    """Convert a canonical SortField value string (e.g. 'Add Time') to its enum member."""
+    try:
+        return SortField(value)
+    except ValueError:
+        return SortField.ADD_TIME
 
 
 def _traffic_button(object_name: str, tooltip: str) -> QToolButton:

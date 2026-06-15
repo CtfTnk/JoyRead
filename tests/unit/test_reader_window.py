@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -13,15 +14,43 @@ from PySide6.QtWidgets import QFrame, QScrollArea
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
+from joyread.infrastructure.i18n import locale_service
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
 from joyread.ui.views.main_window import MainWindow
+from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
+from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
+
+
+def test_bookmark_rename_dialog_uses_active_locale() -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeDialog:
+        def show_input(self, *args, **kwargs) -> None:
+            calls.append({"args": args, "kwargs": kwargs})
+
+    receiver = SimpleNamespace(dialog_overlay=FakeDialog(), viewmodel=SimpleNamespace(rename_bookmark=lambda *_args: None))
+
+    try:
+        locale_service.load_language("Chinese")
+        ReaderShellWidget._show_rename_bookmark_dialog(receiver, "bookmark-1", "旧书签")
+        NovelReaderShellWidget._show_rename_bookmark_dialog(receiver, "bookmark-2", "旧书签")
+
+        assert [call["args"][:2] for call in calls] == [
+            ("重命名书签", "书签名称"),
+            ("重命名书签", "书签名称"),
+        ]
+        assert [call["kwargs"]["confirm_text"] for call in calls] == ["重命名", "重命名"]
+        assert [call["kwargs"]["cancel_text"] for call in calls] == ["取消", "取消"]
+        assert calls[0]["kwargs"]["validator"]("   ") == "书签名称不能为空。"
+    finally:
+        locale_service.load_language("English")
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:

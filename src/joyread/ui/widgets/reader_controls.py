@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.reader import ReaderDirection, ReaderTransitionMode
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
@@ -64,19 +65,19 @@ class ReaderTopicButtonGroup(QFrame):
             resources,
             ReaderTopicMode.CONTENTS,
             "icon_list_detailMode.svg",
-            "Contents",
+            t("reader.contents"),
         )
         self.bookmark_button = self._make_button(
             resources,
             ReaderTopicMode.BOOKMARKS,
             "icon_bookmark.svg",
-            "Bookmarks",
+            t("reader.bookmarks"),
         )
         self.thumbnail_button = self._make_button(
             resources,
             ReaderTopicMode.THUMBNAILS,
             "icon_list_cardMode.svg",
-            "Thumbnails",
+            t("reader.thumbnails"),
         )
         layout.addWidget(self.contents_button)
         layout.addWidget(self.bookmark_button)
@@ -172,7 +173,7 @@ class ReaderHeader(QWidget):
         self._stoplight_controls.zoom_requested.connect(self._toggle_zoom)
         layout.addWidget(self._stoplight_controls)
 
-        self.back_button = reader_button(resources, "icon_left.svg", "Back")
+        self.back_button = reader_button(resources, "icon_left.svg", t("reader.back"))
         self.back_button.setProperty("class", "ChromeButton")
         self.back_button.clicked.connect(self.back_requested.emit)
         layout.addWidget(self.back_button)
@@ -200,7 +201,7 @@ class ReaderHeader(QWidget):
         self.custom_button = reader_button(
             resources,
             "icon_setting.svg",
-            "Custom",
+            t("reader.custom"),
             self.custom_requested.emit,
         )
         self.custom_button.setVisible(show_custom_button)
@@ -355,8 +356,8 @@ class ReaderFooter(QWidget):
         left_layout = QHBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
-        self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", "Jump to start", self.start_requested.emit)
-        self.left_inner_button = reader_button(resources, "icon_left.svg", "Previous page", self.previous_requested.emit)
+        self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", t("reader.jump_to_start"), self.start_requested.emit)
+        self.left_inner_button = reader_button(resources, "icon_left.svg", t("reader.previous_page"), self.previous_requested.emit)
         left_layout.addWidget(self.left_outer_button)
         left_layout.addWidget(self.left_inner_button)
         upper_layout.addWidget(left)
@@ -384,8 +385,8 @@ class ReaderFooter(QWidget):
         right_layout = QHBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        self.right_inner_button = reader_button(resources, "icon_right.svg", "Next page", self.next_requested.emit)
-        self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", "Jump to end", self.end_requested.emit)
+        self.right_inner_button = reader_button(resources, "icon_right.svg", t("reader.next_page"), self.next_requested.emit)
+        self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", t("reader.jump_to_end"), self.end_requested.emit)
         right_layout.addWidget(self.right_inner_button)
         right_layout.addWidget(self.right_outer_button)
         upper_layout.addWidget(right)
@@ -404,9 +405,9 @@ class ReaderFooter(QWidget):
         self.direction_switch = ReaderSwitch(
             resources,
             (
-                ("Right-to-left", "icon_read-from-left.svg", ReaderDirection.RIGHT_TO_LEFT),
-                ("Left-to-right", "icon_read-from-right.svg", ReaderDirection.LEFT_TO_RIGHT),
-                ("Top-to-down", "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
+                (t("reader.dir_rtl"), "icon_read-from-left.svg", ReaderDirection.RIGHT_TO_LEFT),
+                (t("reader.dir_ltr"), "icon_read-from-right.svg", ReaderDirection.LEFT_TO_RIGHT),
+                (t("reader.dir_ttb"), "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
             ),
         )
         self.direction_switch.value_changed.connect(self.direction_changed.emit)
@@ -414,8 +415,8 @@ class ReaderFooter(QWidget):
         self.effect_switch = ReaderSwitch(
             resources,
             (
-                ("none", "icon_change-page_no-effect.svg", ReaderTransitionMode.NONE),
-                ("slide", "icon_change-page_slide.svg", ReaderTransitionMode.SLIDE),
+                (t("reader.effect_none"), "icon_change-page_no-effect.svg", ReaderTransitionMode.NONE),
+                (t("reader.effect_slide"), "icon_change-page_slide.svg", ReaderTransitionMode.SLIDE),
             ),
         )
         self.effect_switch.value_changed.connect(self.transition_changed.emit)
@@ -424,11 +425,11 @@ class ReaderFooter(QWidget):
         self.shift_button = reader_button(
             resources,
             "icon_shift-by-one.svg",
-            "Shift spread pairing",
+            t("reader.shift_spread"),
             self.spread_shift_requested.emit,
         )
         lower_layout.addWidget(self.shift_button)
-        self.settings_button = reader_button(resources, "icon_setting.svg", "Reader settings", self.settings_requested.emit)
+        self.settings_button = reader_button(resources, "icon_setting.svg", t("reader.settings"), self.settings_requested.emit)
         lower_layout.addWidget(self.settings_button)
         layout.addWidget(lower)
 
@@ -446,15 +447,15 @@ class ReaderFooter(QWidget):
         self.direction_switch.set_value(direction)
         self.slider.set_reading_direction(direction)
         if direction == ReaderDirection.RIGHT_TO_LEFT:
-            self.left_outer_button.setToolTip("Jump to end")
-            self.left_inner_button.setToolTip("Next page")
-            self.right_inner_button.setToolTip("Previous page")
-            self.right_outer_button.setToolTip("Jump to start")
+            self.left_outer_button.setToolTip(t("reader.jump_to_end"))
+            self.left_inner_button.setToolTip(t("reader.next_page"))
+            self.right_inner_button.setToolTip(t("reader.previous_page"))
+            self.right_outer_button.setToolTip(t("reader.jump_to_start"))
         else:
-            self.left_outer_button.setToolTip("Jump to start")
-            self.left_inner_button.setToolTip("Previous page")
-            self.right_inner_button.setToolTip("Next page")
-            self.right_outer_button.setToolTip("Jump to end")
+            self.left_outer_button.setToolTip(t("reader.jump_to_start"))
+            self.left_inner_button.setToolTip(t("reader.previous_page"))
+            self.right_inner_button.setToolTip(t("reader.next_page"))
+            self.right_outer_button.setToolTip(t("reader.jump_to_end"))
 
     def set_transition_mode(self, mode: ReaderTransitionMode) -> None:
         self.effect_switch.set_value(mode)

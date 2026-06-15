@@ -70,6 +70,10 @@ class SettingsView(QWidget):
         self.style().polish(self)
         self.update()
 
+    def refresh_labels(self) -> None:
+        """Refresh translated labels in the settings overlay."""
+        self.page.refresh_labels()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and not self.page.geometry().contains(event.position().toPoint()):
             self.close_requested.emit()

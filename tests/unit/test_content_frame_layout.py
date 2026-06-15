@@ -22,6 +22,7 @@ from joyread.core.models.tag import Tag
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -84,6 +85,32 @@ def test_cover_editor_matches_figma_geometry_and_zoom_bounds(qtbot) -> None:
     assert editor.canvas.zoom_percent == Theme.cover_editor_max_zoom_percent
     editor.zoom_spin.set_value(ceil(editor.canvas.minimum_zoom_percent))
     assert editor.canvas.crop_state().zoom_percent == editor.canvas.minimum_zoom_percent
+
+
+def test_cover_editor_refresh_labels_translates_controls(qtbot) -> None:
+    apply_theme()
+    editor = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(editor)
+
+    try:
+        locale_service.load_language("Chinese")
+        editor.refresh_labels()
+
+        import_label = editor.findChild(QLabel, "CoverEditorImportText")
+        browse_button = editor.findChild(QToolButton, "CoverEditorBrowseButton")
+        cancel_button = editor.findChild(QToolButton, "CoverEditorCancelButton")
+        confirm_button = editor.findChild(QToolButton, "CoverEditorConfirmButton")
+
+        assert import_label is not None
+        assert import_label.text() == "导入图片"
+        assert browse_button is not None
+        assert browse_button.toolTip() == "从书页选择"
+        assert cancel_button is not None
+        assert cancel_button.toolTip() == "取消封面编辑"
+        assert confirm_button is not None
+        assert confirm_button.toolTip() == "确认封面编辑"
+    finally:
+        locale_service.load_language("English")
 
 
 def test_cover_editor_drag_changes_pan_and_confirm_emits_crop_state(qtbot) -> None:
@@ -238,6 +265,26 @@ def test_shelf_content_switches_left_outer_radius_when_sidebar_hidden(qtbot) -> 
     view.set_sidebar_visible(True)
 
     assert view.property("sidebarVisible") == "true"
+
+
+def test_shelf_view_localizes_fixed_page_titles_from_canonical_shelf_state(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+
+    locale_service.load_language("Chinese")
+    view.render()
+    title = view.toolbar.findChild(QLabel, "PageTitle")
+    assert title is not None
+    assert title.text() == "全部"
+
+    viewmodel.set_current_shelf(ShelfKey.RECENT.value)
+    QApplication.processEvents()
+
+    assert title.text() == "最近阅读"
+    locale_service.load_language("English")
 
 
 def test_grid_spacing_justifies_cards_across_available_row_width(qtbot) -> None:
@@ -662,6 +709,45 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     assert emitted == [book.uuid]
 
 
+def test_book_detail_panel_refresh_labels_localizes_metadata_values(qtbot) -> None:
+    apply_theme()
+    book = replace(
+        InMemoryBookRepository().list_books()[1],
+        author=None,
+        language_tag="ja",
+        language_name="Japanese",
+        book_type="Novel",
+    )
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(876, 760)
+    panel.set_book(book)
+
+    try:
+        locale_service.load_language("Chinese")
+        panel.set_book(book)
+
+        author_label = next(
+            label for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailAuthor"
+        )
+        pill_labels = [
+            label.text()
+            for label in panel.findChildren(QLabel)
+            if label.property("class") == "BookDetailPillText"
+        ]
+        read_label = next(
+            label for label in panel.findChildren(QLabel) if label.property("class") == "DetailReadButtonText"
+        )
+
+        assert author_label.text() == "作者：无"
+        assert "语言: Japanese" not in pill_labels
+        assert "语言：日语" in pill_labels
+        assert f"书籍类型：{book.file_format}" in pill_labels
+        assert read_label.text() == "阅读"
+    finally:
+        locale_service.load_language("English")
+
+
 def test_book_detail_tag_box_shrinks_when_title_uses_two_rows(qtbot) -> None:
     apply_theme()
     book = replace(
@@ -836,6 +922,10 @@ def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) ->
     book = InMemoryBookRepository().list_books()[0]
     panel = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(panel)
+    panel.resize(
+        Theme.content_frame_width - (Theme.detail_panel_horizontal_margin * 2),
+        Theme.content_frame_height - Theme.detail_panel_top_margin,
+    )
     panel.set_book(book)
 
     emitted: list[str] = []

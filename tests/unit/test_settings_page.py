@@ -3,6 +3,8 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButt
 
 from joyread.app.app_context import create_app_context
 from joyread.core.models.cache import ArchiveCacheStrategy
+from joyread.infrastructure.i18n import locale_service
+from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
@@ -11,6 +13,7 @@ from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.widgets.settings_page import (
     SettingsAddressItem,
     SettingsContentPanel,
+    SettingsDropdownButton,
     SettingsPageWidget,
     SettingsSidebarItem,
     SettingsSpinButtonSmall,
@@ -149,6 +152,65 @@ def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
     QApplication.processEvents()
 
     assert viewmodel.inspect_non_native_title_control is True
+
+
+def test_language_dropdown_displays_native_names_but_persists_canonical_value(qtbot, tmp_path) -> None:
+    apply_theme()
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.update(language="English")
+    viewmodel = SettingsViewModel(settings, store)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    language_dropdown = page.findChildren(SettingsDropdownButton)[0]
+
+    assert language_dropdown.value == "English"
+    assert language_dropdown._options == ("English", "中文", "日本語")
+
+    language_dropdown.set_value("中文")
+    QApplication.processEvents()
+
+    assert viewmodel.language == "Chinese"
+    assert store.load().language == "Chinese"
+    locale_service.load_language("English")
+
+
+def test_language_dropdown_selected_display_follows_canonical_viewmodel_value(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel(AppSettings(storage_location="~/Library", language="Japanese"))
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    language_dropdown = page.findChildren(SettingsDropdownButton)[0]
+
+    assert language_dropdown.value == "日本語"
+
+
+def test_settings_page_refresh_labels_updates_sidebar_and_current_content(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    assert any(item.findChild(QLabel).text() == "General" for item in page.findChildren(SettingsSidebarItem))
+
+    locale_service.load_language("Chinese")
+    page.refresh_labels()
+    QApplication.processEvents()
+
+    sidebar_labels = [item.findChild(QLabel).text() for item in page.findChildren(SettingsSidebarItem)]
+    setting_labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+
+    assert "通用" in sidebar_labels
+    assert "语言" in setting_labels
+    locale_service.load_language("English")
 
 
 def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> None:

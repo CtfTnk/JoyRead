@@ -12,6 +12,7 @@ from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
 from joyread.core.services.import_service import ImportPreflightResult
 from joyread.core.services.library_service import LibraryService
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
@@ -441,6 +442,24 @@ def test_tag_allocation_dialog_uses_replace_set_selection_rules(qtbot) -> None:
 
     assert overlay.isHidden()
     assert confirmed == [()]
+
+
+def test_tag_filter_buttons_follow_active_locale(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+
+    try:
+        locale_service.load_language("Chinese")
+        overlay.show_tag_allocation("分配标签", [Tag("tag-action", "Action")], (), lambda _ids: None)
+        QApplication.processEvents()
+
+        buttons = overlay.panel.findChildren(DialogTextButton)
+
+        assert [button.text for button in buttons] == ["取消", "重置", "确认"]
+    finally:
+        locale_service.load_language("English")
 
 
 def test_tag_allocation_cancel_discards_selection_and_no_tag_hint(qtbot) -> None:

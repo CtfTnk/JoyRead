@@ -26,6 +26,7 @@ from joyread.core.services.tag_service import TagService
 from joyread.core.services.task_service import TaskHandle, TaskService
 from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -379,7 +380,7 @@ class ShelfViewModel:
 
     def set_book_tag_ids(self, book_uuid: str, tag_ids: Iterable[str]) -> None:
         if self._tag_service is None:
-            self.book_tags_failed.emit("Tag service is unavailable.")
+            self.book_tags_failed.emit(t("dialog.tag_service_unavailable"))
             return
         book = self._book_by_uuid(book_uuid)
         if book is None:
@@ -534,7 +535,7 @@ class ShelfViewModel:
                     blocked,
                 )
                 self.favourite_failed.emit(
-                    "Hidden books cannot be added to Favourites. Unhide them first."
+                    t("dialog.hidden_favourite_blocked")
                 )
                 return
 
@@ -598,7 +599,7 @@ class ShelfViewModel:
         if language_tag is not None:
             next_language = self._language_by_tag(language_tag)
             if next_language is None:
-                self.book_metadata_failed.emit(f"Unknown language code: {language_tag}")
+                self.book_metadata_failed.emit(t("dialog.unknown_language_code", code=language_tag))
                 return
             next_language_name = next_language.plain_text
         title_changed = title is not None and title != book.title
@@ -649,7 +650,7 @@ class ShelfViewModel:
         path = Path(cover_path)
         book = next((book for book in self.books if book.uuid == book_uuid), None)
         if book is None:
-            self.book_cover_failed.emit("The selected book is no longer available.")
+            self.book_cover_failed.emit(t("dialog.book_no_longer_available"))
             return
 
         if self._task_service is None:
@@ -674,7 +675,7 @@ class ShelfViewModel:
     def create_collection(self, name: str) -> None:
         normalized_name = _normalize_collection_name(name)
         if normalized_name is None:
-            self.collection_failed.emit("Collection name cannot be empty.")
+            self.collection_failed.emit(t("dialog.collection_name_required"))
             return
 
         if self._task_service is None:
@@ -697,7 +698,7 @@ class ShelfViewModel:
     def rename_collection(self, collection_uuid: str, name: str) -> None:
         normalized_name = _normalize_collection_name(name)
         if normalized_name is None:
-            self.collection_failed.emit("Collection name cannot be empty.")
+            self.collection_failed.emit(t("dialog.collection_name_required"))
             return
 
         if self._task_service is None:
@@ -767,8 +768,7 @@ class ShelfViewModel:
                     collection_uuid,
                 )
                 self.collection_failed.emit(
-                    "Hidden books cannot be added to a normal collection. "
-                    "Unhide them first, or make the collection hidable."
+                    t("dialog.hidden_normal_collection_blocked")
                 )
                 return
 

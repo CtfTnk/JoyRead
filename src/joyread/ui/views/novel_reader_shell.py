@@ -30,6 +30,7 @@ from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderProgress
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
 from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderContentsItem
@@ -216,7 +217,7 @@ class NovelReaderShellWidget(QWidget):
         self.viewmodel.toc_changed.connect(self._handle_toc_changed)
         self.viewmodel.bookmarks_changed.connect(self._handle_bookmarks_changed)
         self.viewmodel.bookmark_error_changed.connect(
-            lambda message: self.dialog_overlay.show_info("Bookmarks", message)
+            lambda message: self.dialog_overlay.show_info(t("reader.bookmarks"), message)
         )
         self.viewmodel.progress_changed.connect(self._handle_progress_changed)
         self.viewmodel.error_changed.connect(self._handle_error_changed)
@@ -489,19 +490,19 @@ class NovelReaderShellWidget(QWidget):
         if self._writing_mode_hint_shown:
             return
         self._writing_mode_hint_shown = True
-        self.dialog_overlay.show_info("Heads up", message)
+        self.dialog_overlay.show_info(t("reader.heads_up"), message)
 
     def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
         self.dialog_overlay.show_input(
-            "Rename Bookmark",
-            "Bookmark Name",
+            t("reader.bookmark_rename_title"),
+            t("reader.bookmark_name_header"),
             on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(
                 bookmark_uuid, name
             ),
             initial_text=current_name,
-            confirm_text="Rename",
-            cancel_text="Cancel",
-            validator=lambda value: None if value.strip() else "Bookmark name cannot be empty.",
+            confirm_text=t("reader.bookmark_rename"),
+            cancel_text=t("dialog.btn_cancel"),
+            validator=lambda value: None if value.strip() else t("reader.bookmark_name_required"),
         )
 
     # --- Auto-hide helpers ----------------------------------------------

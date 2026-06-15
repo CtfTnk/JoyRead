@@ -50,10 +50,10 @@ class SectionBanner(QFrame):
         )
         layout.setSpacing(0)
 
-        label = QLabel(title)
-        label.setObjectName(label_object_name)
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(label, stretch=1)
+        self._label = QLabel(title)
+        self._label.setObjectName(label_object_name)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._label, stretch=1)
 
         if show_indicator:
             arrow = QLabel()
@@ -65,6 +65,10 @@ class SectionBanner(QFrame):
                 )
             )
             layout.addWidget(arrow)
+
+    def set_title(self, title: str) -> None:
+        """Update the displayed title text (called on language change)."""
+        self._label.setText(title)
 
 
 # Backward-compatible alias retained for the sidebar so existing imports and

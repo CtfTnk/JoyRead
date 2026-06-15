@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.collection import Collection
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
@@ -36,6 +37,10 @@ class SidebarWidget(QWidget):
         # ``_hidden_item`` is built up-front but visibility is gated on the
         # "Show Hidden Collection" setting toggled from the Privacy page.
         self._hidden_item: SidebarItemWidget | None = None
+        # Fixed-label items that need refreshing on language change.
+        self._fixed_labels: list[tuple[SidebarItemWidget, str]] = []  # (widget, locale_key)
+        self._book_shelf_banner: SidebarSectionBanner | None = None
+        self._collections_banner: SidebarSectionBanner | None = None
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(
@@ -67,8 +72,11 @@ class SidebarWidget(QWidget):
         collections_layout = QVBoxLayout(self._collections_section)
         collections_layout.setContentsMargins(0, 0, 0, 0)
         collections_layout.setSpacing(Theme.sidebar_gap)
-        collections_layout.addWidget(SidebarSectionBanner("Collections", self._resources))
-        collections_layout.addWidget(self._item("New Collection", "new_collection", "icon_add.svg"))
+        self._collections_banner = SidebarSectionBanner(t("sidebar.collections"), self._resources)
+        collections_layout.addWidget(self._collections_banner)
+        new_collection_item = self._item(t("sidebar.new_collection"), "new_collection", "icon_add.svg")
+        self._fixed_labels.append((new_collection_item, "sidebar.new_collection"))
+        collections_layout.addWidget(new_collection_item)
 
         self._collections_container = QWidget()
         self._collections_container.setObjectName("SidebarCollectionsContainer")
@@ -87,7 +95,9 @@ class SidebarWidget(QWidget):
         lower_layout = QVBoxLayout(lower_part)
         lower_layout.setContentsMargins(0, 0, 0, Theme.sidebar_lower_padding_bottom)
         lower_layout.setSpacing(0)
-        lower_layout.addWidget(self._item("Settings", "settings", "icon_setting.svg"))
+        settings_item = self._item(t("sidebar.settings"), "settings", "icon_setting.svg")
+        self._fixed_labels.append((settings_item, "sidebar.settings"))
+        lower_layout.addWidget(settings_item)
         root_layout.addWidget(lower_part)
 
     def set_collections(self, collections: list[Collection]) -> None:
@@ -119,6 +129,15 @@ class SidebarWidget(QWidget):
         if self._hidden_item is not None:
             self._hidden_item.setVisible(visible)
 
+    def refresh_labels(self) -> None:
+        """Re-apply translated labels to all fixed sidebar items (called on language change)."""
+        if self._book_shelf_banner is not None:
+            self._book_shelf_banner.set_title(t("sidebar.book_shelf"))
+        if self._collections_banner is not None:
+            self._collections_banner.set_title(t("sidebar.collections"))
+        for widget, key in self._fixed_labels:
+            widget.set_label(t(key))
+
     def set_active(self, key: str) -> None:
         for item_key, button in self._buttons.items():
             button.set_checked(item_key == key)
@@ -133,11 +152,19 @@ class SidebarWidget(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Theme.sidebar_gap)
 
-        layout.addWidget(SidebarSectionBanner("Book Shelf", self._resources))
-        layout.addWidget(self._item("All", ShelfKey.ALL.value, "icon_book_all.svg", checked=True))
-        layout.addWidget(self._item("Recent", ShelfKey.RECENT.value, "icon_recent.svg"))
-        layout.addWidget(self._item("Favourites", ShelfKey.FAVOURITES.value, "icon_favourite_enabled.svg"))
-        self._hidden_item = self._item("Hidden", ShelfKey.HIDDEN.value, "icon_hidden_collection.svg")
+        self._book_shelf_banner = SidebarSectionBanner(t("sidebar.book_shelf"), self._resources)
+        layout.addWidget(self._book_shelf_banner)
+        all_item = self._item(t("sidebar.all"), ShelfKey.ALL.value, "icon_book_all.svg", checked=True)
+        self._fixed_labels.append((all_item, "sidebar.all"))
+        layout.addWidget(all_item)
+        recent_item = self._item(t("sidebar.recent"), ShelfKey.RECENT.value, "icon_recent.svg")
+        self._fixed_labels.append((recent_item, "sidebar.recent"))
+        layout.addWidget(recent_item)
+        favourites_item = self._item(t("sidebar.favourites"), ShelfKey.FAVOURITES.value, "icon_favourite_enabled.svg")
+        self._fixed_labels.append((favourites_item, "sidebar.favourites"))
+        layout.addWidget(favourites_item)
+        self._hidden_item = self._item(t("sidebar.hidden"), ShelfKey.HIDDEN.value, "icon_hidden_collection.svg")
+        self._fixed_labels.append((self._hidden_item, "sidebar.hidden"))
         self._hidden_item.setVisible(False)
         layout.addWidget(self._hidden_item)
         return section

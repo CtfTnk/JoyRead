@@ -37,6 +37,7 @@ from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -292,6 +293,12 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
     paths = _create_path_service(config, settings_store, settings)
     paths.ensure_directories()
     resources = ResourceLoader()
+    # Initialise the locale service before any UI is constructed.
+    locale_service.init(
+        bundled_dir=resources.locale_dir(),
+        user_dir=settings_store.locales_dir if settings_store.locales_dir.exists() else None,
+        language=settings.language,
+    )
     database_interpreter = _create_database_interpreter(paths)
     book_repository: BookRepository = _create_sqlite_book_repository(database_interpreter, paths)
     tag_repository: TagRepository = SqliteTagRepository(database_interpreter)

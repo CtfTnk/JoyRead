@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.services.thumbnail_service import CoverCropState, DetailThumbnailBatch
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -63,6 +64,10 @@ class CoverEditorOverlay(QWidget):
         self.picker.thumbnail_batch_requested.connect(self.thumbnail_batch_requested.emit)
         self.picker.thumbnail_selected.connect(self.thumbnail_selected.emit)
         self.hide()
+
+    def refresh_labels(self) -> None:
+        self.editor.refresh_labels()
+        self.picker.refresh_labels()
 
     @property
     def source_bytes(self) -> bytes | None:
@@ -165,12 +170,12 @@ class CoverEditorWidget(QFrame):
         import_layout.setContentsMargins(0, 0, 0, 0)
         import_layout.setSpacing(Theme.cover_editor_import_row_gap)
         import_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        import_button = _CoverTextButton("Import img")
-        import_button.clicked.connect(self.import_requested.emit)
-        import_layout.addWidget(import_button)
-        browse_button = _icon_button("CoverEditorBrowseButton", resources.icon_path("icon_list_cardMode.svg"))
-        browse_button.clicked.connect(self.browse_requested.emit)
-        import_layout.addWidget(browse_button)
+        self._import_button = _CoverTextButton(t("cover_editor.import_image"))
+        self._import_button.clicked.connect(self.import_requested.emit)
+        import_layout.addWidget(self._import_button)
+        self._browse_button = _icon_button("CoverEditorBrowseButton", resources.icon_path("icon_list_cardMode.svg"))
+        self._browse_button.clicked.connect(self.browse_requested.emit)
+        import_layout.addWidget(self._browse_button)
         edit_layout.addWidget(import_row, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         self.zoom_spin = CoverZoomSpinButton(
@@ -189,15 +194,16 @@ class CoverEditorWidget(QFrame):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(Theme.cover_editor_icon_button_gap)
         action_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        cancel_button = _icon_button("CoverEditorCancelButton", resources.icon_path("icon_close.svg"))
-        cancel_button.clicked.connect(self.cancel_requested.emit)
-        action_layout.addWidget(cancel_button)
-        confirm_button = _icon_button("CoverEditorConfirmButton", resources.icon_path("icon_confirm.svg"))
-        confirm_button.clicked.connect(self.confirm_requested.emit)
-        action_layout.addWidget(confirm_button)
+        self._cancel_button = _icon_button("CoverEditorCancelButton", resources.icon_path("icon_close.svg"))
+        self._cancel_button.clicked.connect(self.cancel_requested.emit)
+        action_layout.addWidget(self._cancel_button)
+        self._confirm_button = _icon_button("CoverEditorConfirmButton", resources.icon_path("icon_confirm.svg"))
+        self._confirm_button.clicked.connect(self.confirm_requested.emit)
+        action_layout.addWidget(self._confirm_button)
         edit_layout.addWidget(action_row, alignment=Qt.AlignmentFlag.AlignHCenter)
 
         root_layout.addWidget(edit_area, stretch=1)
+        self.refresh_labels()
 
     @property
     def source_bytes(self) -> bytes | None:
@@ -213,6 +219,13 @@ class CoverEditorWidget(QFrame):
 
     def crop_state(self) -> CoverCropState:
         return self.canvas.crop_state()
+
+    def refresh_labels(self) -> None:
+        self._import_button.set_text(t("cover_editor.import_image"))
+        self._import_button.setToolTip(t("cover_editor.import_image"))
+        self._browse_button.setToolTip(t("cover_editor.browse_pages"))
+        self._cancel_button.setToolTip(t("cover_editor.cancel"))
+        self._confirm_button.setToolTip(t("cover_editor.confirm"))
 
     def _sync_zoom_range(self) -> None:
         self.zoom_spin.set_range(
@@ -276,10 +289,14 @@ class CoverThumbnailPickerWidget(QFrame):
         action_layout.setContentsMargins(0, 0, 0, 0)
         action_layout.setSpacing(0)
         action_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        back_button = _icon_button("CoverEditorCancelButton", resources.icon_path("icon_close.svg"))
-        back_button.clicked.connect(self.back_requested.emit)
-        action_layout.addWidget(back_button)
+        self._back_button = _icon_button("CoverEditorCancelButton", resources.icon_path("icon_close.svg"))
+        self._back_button.clicked.connect(self.back_requested.emit)
+        action_layout.addWidget(self._back_button)
         layout.addWidget(action_row)
+        self.refresh_labels()
+
+    def refresh_labels(self) -> None:
+        self._back_button.setToolTip(t("cover_editor.back"))
 
     def reset(self) -> None:
         self._next_index = 0
@@ -529,10 +546,13 @@ class _CoverTextButton(QFrame):
         layout.setContentsMargins(Theme.spacing_xs, Theme.spacing_xs, Theme.spacing_xs, Theme.spacing_xs)
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label = QLabel(text)
-        label.setObjectName("CoverEditorImportText")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        layout.addWidget(label)
+        self._label = QLabel(text)
+        self._label.setObjectName("CoverEditorImportText")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(self._label)
+
+    def set_text(self, text: str) -> None:
+        self._label.setText(text)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

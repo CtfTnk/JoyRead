@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
@@ -750,11 +751,11 @@ class JoyReadDialogPanel(QFrame):
         self._set_content_widget(content)
         buttons: list[tuple[str, Callable[[], None]]] = []
         if include_cancel:
-            buttons.append(("Cancel", self.rejected.emit))
+            buttons.append((t("dialog.btn_cancel"), self.rejected.emit))
         buttons.extend(
             (
-                ("Reset", content.clear_selection),
-                ("Confirm", self.accepted.emit),
+                (t("dialog.btn_reset"), content.clear_selection),
+                (t("dialog.btn_confirm"), self.accepted.emit),
             )
         )
         self._set_buttons(tuple(buttons))
@@ -874,12 +875,12 @@ class JoyReadDialogOverlay(QWidget):
     def panel(self) -> JoyReadDialogPanel:
         return self._panel
 
-    def show_info(self, title: str, message: str, button_text: str = "Confirm") -> None:
+    def show_info(self, title: str, message: str, button_text: str | None = None) -> None:
         self._on_accept = None
         self._on_reject = None
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_info(title, message, button_text)
+        self._panel.set_info(title, message, button_text or t("dialog.btn_confirm"))
         self._show_centered()
 
     def show_confirm(
@@ -888,8 +889,8 @@ class JoyReadDialogOverlay(QWidget):
         message: str,
         on_confirm: Callable[[], None],
         on_cancel: Callable[[], None] | None = None,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         *,
         destructive: bool = False,
     ) -> None:
@@ -897,7 +898,13 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject = on_cancel
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_confirm(title, message, cancel_text, confirm_text, destructive=destructive)
+        self._panel.set_confirm(
+            title,
+            message,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+            destructive=destructive,
+        )
         self._show_centered()
 
     def show_input(
@@ -907,8 +914,8 @@ class JoyReadDialogOverlay(QWidget):
         on_confirm: Callable[[str], None],
         *,
         initial_text: str = "",
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         validator: Callable[[str], str | None] | None = None,
     ) -> None:
         content = DialogInputContent(header, initial_text)
@@ -928,7 +935,12 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = None
         self._on_skip = None
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
         self._focus_line_edit_deferred(content.field.line_edit, select_all_text=initial_text)
@@ -939,8 +951,8 @@ class JoyReadDialogOverlay(QWidget):
         header: str,
         on_confirm: Callable[[str], None],
         *,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         validator: Callable[[str], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
         on_skip: Callable[[], None] | None = None,
@@ -971,7 +983,13 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = on_cancel
         self._on_skip = on_skip
-        self._panel.set_input_content(title, content, cancel_text, confirm_text, skip_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+            skip_text,
+        )
         content.submitted.connect(self._panel.accepted.emit)
         self._show_centered()
         self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
@@ -983,8 +1001,8 @@ class JoyReadDialogOverlay(QWidget):
         on_confirm: Callable[[tuple[str, ...]], None],
         *,
         echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         validator: Callable[[tuple[str, ...]], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
     ) -> None:
@@ -1010,7 +1028,12 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.values)
         self._on_reject = on_cancel
         self._on_skip = None
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
         self._show_centered()
         if content.fields:
             self._focus_line_edit_deferred(content.fields[0].line_edit, select_all_text="")
@@ -1021,8 +1044,8 @@ class JoyReadDialogOverlay(QWidget):
         collections: list[Collection],
         on_confirm: Callable[[str], None],
         *,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
     ) -> None:
         content = DialogCollectionSelectContent(collections, self._resources)
 
@@ -1033,7 +1056,12 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.selected_collection_uuid or "")
         self._on_reject = None
         self._on_skip = None
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
         self._show_centered()
 
     def show_tag_filter(
@@ -1062,7 +1090,7 @@ class JoyReadDialogOverlay(QWidget):
             tags,
             selected_tag_ids,
             allocation_mode=True,
-            empty_hint="No tags yet. Add or edit tags in Settings > Tags.",
+            empty_hint=t("dialog.no_tags_hint"),
         )
         self._before_accept = None
         self._on_accept = lambda: on_confirm(content.selected_tag_ids)

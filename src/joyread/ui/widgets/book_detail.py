@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
 
 from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
+from joyread.infrastructure.i18n.locale_service import book_language_display_name, t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -52,7 +53,6 @@ class DetailReadButton(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setToolTip("Read")
         self.setFixedSize(Theme.detail_read_button_width, Theme.detail_button_size)
 
         shadow = QGraphicsDropShadowEffect(self)
@@ -81,11 +81,16 @@ class DetailReadButton(QFrame):
         )
         layout.addWidget(icon)
 
-        label = QLabel("Read")
-        label.setProperty("class", "DetailReadButtonText")
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        layout.addWidget(label, stretch=1)
+        self._label = QLabel()
+        self._label.setProperty("class", "DetailReadButtonText")
+        self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+        layout.addWidget(self._label, stretch=1)
+        self.refresh_labels()
+
+    def refresh_labels(self) -> None:
+        self._label.setText(t("menu.read"))
+        self.setToolTip(t("menu.read"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -235,10 +240,8 @@ class BookDetailPanel(QFrame):
             logger.debug("BookDetailPanel set_book book=%s title=%r", book.uuid, book.title)
         self._book = book
         self._title_field.set_value(book.title)
-        self._author_field.set_value(book.author or "None")
+        self._author_field.set_value(book.author or "None", display_value=book.author or t("detail.none"))
         self._tag_box.set_tags(tags)
-        self._language_label.setText(f"Language: {self._language_display_name(book)}")
-        self._book_type_label.setText(f"Book Type: {book.file_format.upper()}")
         self._progress.set_progress(book.progress_percent)
         self._progress_percent_label.setText(f"{book.progress_percent}%")
         self._favourite_button.setIcon(
@@ -250,6 +253,7 @@ class BookDetailPanel(QFrame):
                 )
             )
         )
+        self.refresh_labels()
         if cover_path is not None:
             self._cover.set_pixmap_from_path(cover_path)
         elif book_changed:
@@ -258,6 +262,13 @@ class BookDetailPanel(QFrame):
             self._thumbnail_grid.reset_unknown()
         self._sync_tag_box_height()
         QTimer.singleShot(0, self._sync_tag_box_height)
+
+    def refresh_labels(self) -> None:
+        """Re-apply translated labels after a runtime locale change."""
+        self._read_button.refresh_labels()
+        self._cover.setToolTip(t("detail.edit_cover"))
+        self._author_field.set_display_prefix(t("detail.author_prefix"))
+        self._refresh_metadata_labels()
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
@@ -298,6 +309,7 @@ class BookDetailPanel(QFrame):
         cover_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         self._cover = DetailCoverWidget(QSize(Theme.detail_cover_width, Theme.detail_cover_height))
+        self._cover.setToolTip(t("detail.edit_cover"))
         self._cover.double_clicked.connect(self._emit_cover_edit_requested)
         # Figma's cover panel is `items-center`; per-item alignment is needed
         # because the progress unit is narrower than the cover.
@@ -353,7 +365,7 @@ class BookDetailPanel(QFrame):
         self._author_field = InlineEditableText(
             "None",
             label_class="BookDetailAuthor",
-            display_prefix="Author: ",
+            display_prefix=t("detail.author_prefix"),
         )
         self._author_field.committed.connect(self._emit_author_change_requested)
         name_author_layout.addWidget(self._author_field)
@@ -373,13 +385,13 @@ class BookDetailPanel(QFrame):
         attributes_layout.setContentsMargins(Theme.detail_attribute_padding_horizontal, 0, 0, 0)
         attributes_layout.setSpacing(Theme.detail_attribute_gap)
         attributes_layout.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._language_label = DoubleClickTextLabel("Language: Unknown")
+        self._language_label = DoubleClickTextLabel("")
         self._language_label.setCursor(Qt.CursorShape.PointingHandCursor)
         self._language_label.double_clicked.connect(self._emit_language_menu_requested)
         self._language_pill = _attribute_pill(self._language_label)
         self._language_pill.setCursor(Qt.CursorShape.PointingHandCursor)
         attributes_layout.addWidget(self._language_pill)
-        self._book_type_label = QLabel("Book Type: Unknown")
+        self._book_type_label = QLabel("")
         attributes_layout.addWidget(_attribute_pill(self._book_type_label))
         attributes_layout.addStretch(1)
         meta_layout.addWidget(attributes)
@@ -411,9 +423,9 @@ class BookDetailPanel(QFrame):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(Theme.detail_control_gap)
 
-        read_button = DetailReadButton(self._resources)
-        read_button.clicked.connect(self._emit_read_requested)
-        left_layout.addWidget(read_button)
+        self._read_button = DetailReadButton(self._resources)
+        self._read_button.clicked.connect(self._emit_read_requested)
+        left_layout.addWidget(self._read_button)
 
         self._favourite_button = QToolButton()
         self._favourite_button.setProperty("class", "DetailIconButton")
@@ -426,14 +438,17 @@ class BookDetailPanel(QFrame):
         layout.addWidget(left_side)
         layout.addStretch(1)
 
-        option_button = QToolButton()
-        option_button.setProperty("class", "DetailIconButton")
-        option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
-        option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        option_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        option_button.setFixedSize(Theme.detail_button_size, Theme.detail_button_size)
-        option_button.clicked.connect(lambda _checked=False, button=option_button: self._emit_menu_requested(button))
-        layout.addWidget(option_button)
+        self._option_button = QToolButton()
+        self._option_button.setProperty("class", "DetailIconButton")
+        self._option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
+        self._option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+        self._option_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._option_button.setToolTip(t("detail.more_options"))
+        self._option_button.setFixedSize(Theme.detail_button_size, Theme.detail_button_size)
+        self._option_button.clicked.connect(
+            lambda _checked=False, button=self._option_button: self._emit_menu_requested(button)
+        )
+        layout.addWidget(self._option_button)
         return frame
 
     def _emit_read_requested(self) -> None:
@@ -488,6 +503,26 @@ class BookDetailPanel(QFrame):
             return
         self._tag_box.set_compact_title_mode(self._title_field.display_line_count > 1)
 
+    def _refresh_metadata_labels(self) -> None:
+        book = self._book
+        if book is None:
+            self._language_label.setText(_attribute_text(t("detail.language"), t("language_name.und")))
+            self._book_type_label.setText(_attribute_text(t("detail.book_type"), t("detail.book_type_unknown")))
+            self._favourite_button.setToolTip(t("menu.favourite"))
+            if hasattr(self, "_option_button"):
+                self._option_button.setToolTip(t("detail.more_options"))
+            return
+        self._author_field.set_display_prefix(t("detail.author_prefix"))
+        if not book.author:
+            self._author_field.set_value("None", display_value=t("detail.none"))
+        self._language_label.setText(
+            _attribute_text(t("detail.language"), book_language_display_name(book.language_tag, book.language_name))
+        )
+        self._book_type_label.setText(_attribute_text(t("detail.book_type"), self._book_type_display_name(book)))
+        self._favourite_button.setToolTip(t("menu.unfavourite") if book.is_favourite else t("menu.favourite"))
+        if hasattr(self, "_option_button"):
+            self._option_button.setToolTip(t("detail.more_options"))
+
     def _apply_description_layout(self, narrow: bool) -> None:
         if narrow == self._description_narrow:
             return
@@ -516,12 +551,8 @@ class BookDetailPanel(QFrame):
         QTimer.singleShot(0, self._sync_tag_box_height)
         self._apply_description_layout(self.width() < Theme.detail_description_narrow_threshold)
 
-    def _language_display_name(self, book: Book) -> str:
-        if book.language_name:
-            return book.language_name
-        if not book.language_tag or book.language_tag == "und":
-            return "Unknown"
-        return book.language_tag
+    def _book_type_display_name(self, book: Book) -> str:
+        return (book.file_format or t("detail.book_type_unknown")).strip().upper()
 
 
 class InlineEditableText(QWidget):
@@ -539,6 +570,7 @@ class InlineEditableText(QWidget):
     ) -> None:
         super().__init__()
         self._value = value
+        self._display_value = value
         self._display_prefix = display_prefix
 
         layout = QStackedLayout(self)
@@ -558,11 +590,16 @@ class InlineEditableText(QWidget):
         layout.addWidget(self._editor)
         self.set_value(value)
 
-    def set_value(self, value: str) -> None:
+    def set_value(self, value: str, *, display_value: str | None = None) -> None:
         self._value = value
-        self._label.setText(f"{self._display_prefix}{value}")
+        self._display_value = display_value or value
+        self._label.setText(f"{self._display_prefix}{self._display_value}")
         self._editor.setText(value)
         self._stack.setCurrentWidget(self._label)
+
+    def set_display_prefix(self, prefix: str) -> None:
+        self._display_prefix = prefix
+        self._label.setText(f"{self._display_prefix}{self._display_value}")
 
     @property
     def display_line_count(self) -> int:
@@ -584,8 +621,9 @@ class InlineEditableText(QWidget):
         self._editor.selectAll()
 
     def _commit_edit(self) -> None:
-        value = self._editor.text().strip() or "None"
-        self.set_value(value)
+        raw_value = self._editor.text().strip()
+        value = raw_value or "None"
+        self.set_value(value, display_value=raw_value or t("detail.none"))
         self.committed.emit(value)
 
     def _cancel_edit(self) -> None:
@@ -836,3 +874,7 @@ def _attribute_pill(label: QLabel) -> QFrame:
     layout.setSpacing(0)
     layout.addWidget(label)
     return pill
+
+
+def _attribute_text(label: str, value: str) -> str:
+    return t("detail.attribute_format", label=label, value=value)

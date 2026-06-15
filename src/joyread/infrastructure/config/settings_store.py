@@ -93,6 +93,11 @@ class SettingsStore:
         return self._support_root / "Config"
 
     @property
+    def locales_dir(self) -> Path:
+        """User-supplied locale override directory (Config/locales)."""
+        return self.config_dir / "locales"
+
+    @property
     def settings_path(self) -> Path:
         return self.config_dir / self._FILENAME
 

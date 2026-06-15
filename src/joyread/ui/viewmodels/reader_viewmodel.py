@@ -28,6 +28,7 @@ from joyread.core.services.cache_service import BoundedByteCache, NamespacedPage
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.task_service import TaskHandle, TaskService, TaskStatus
 from joyread.core.services.thumbnail_service import render_contain_blur_thumbnail
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
@@ -383,7 +384,7 @@ class ReaderViewModel:
         if not self.can_use_bookmarks or self._page_count <= 0:
             return
         page_index = self.current_index
-        default_name = self.title.strip() or "Bookmark"
+        default_name = self.title.strip() or t("reader.bookmark_default")
 
         def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
             service.add_bookmark(book_uuid, default_name, page_index)
@@ -941,7 +942,7 @@ class ReaderViewModel:
         if generation != self._task_generation:
             return
         self._bookmark_handle = None
-        self.bookmark_error_changed.emit(f"Could not sync bookmarks: {error}")
+        self.bookmark_error_changed.emit(t("reader.bookmark_sync_failed", error=str(error)))
         if refresh_on_failure:
             self.refresh_bookmarks()
 
@@ -1112,7 +1113,7 @@ class ReaderViewModel:
         self._unavailable_pages.add(page_index)
         if page_index == self._primary_index:
             detail = f": {error}" if error is not None else "."
-            self.error_message = f"Could not load page {page_index + 1}{detail}"
+            self.error_message = t("reader.page_load_failed", page=str(page_index + 1), detail=detail)
             self._layout_result = None
             self.loading_page_index = None
             self._layout_waiting_for_pages = ()

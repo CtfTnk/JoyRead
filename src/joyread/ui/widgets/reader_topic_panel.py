@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderBookmarkItem,
@@ -133,7 +134,7 @@ class ReaderTopicPanel(QFrame):
         """Populate CONTENTS mode with a TOC list. Empty tuple = placeholder."""
         _clear_layout(self._contents_layout)
         if not items:
-            placeholder = QLabel("Table of contents not available.")
+            placeholder = QLabel(t("reader.toc_unavailable"))
             placeholder.setObjectName("ReaderTopicEmptyText")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setWordWrap(True)
@@ -334,7 +335,7 @@ class _TopicBookmarkRow(QFrame):
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label)
 
-        index = QLabel(f"page {bookmark.page_index + 1}")
+        index = QLabel(t("reader.page_index", index=str(bookmark.page_index + 1)))
         index.setProperty("class", "ReaderTopicItemIndex")
         index.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout.addWidget(index)
@@ -360,11 +361,11 @@ class _TopicBookmarkRow(QFrame):
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
         menu = FigmaMenu(self)
         menu.add_item(
-            "Rename",
+            t("reader.bookmark_rename"),
             lambda bookmark=self._bookmark: self.rename_requested.emit(bookmark.uuid, bookmark.name),
         )
         menu.add_item(
-            "Delete",
+            t("reader.bookmark_delete"),
             lambda bookmark=self._bookmark: self.delete_requested.emit(bookmark.uuid),
             destructive=True,
         )
@@ -401,7 +402,7 @@ class _NewBookmarkRow(QFrame):
         )
         layout.addWidget(icon)
 
-        label = QLabel("new bookmark")
+        label = QLabel(t("reader.new_bookmark"))
         label.setProperty("class", "ReaderTopicItemLabel")
         layout.addWidget(label, stretch=1)
 

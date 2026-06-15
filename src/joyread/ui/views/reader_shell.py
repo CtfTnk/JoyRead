@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
@@ -159,7 +160,7 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
         self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
         self.viewmodel.bookmark_error_changed.connect(
-            lambda message: self.dialog_overlay.show_info("Bookmarks", message)
+            lambda message: self.dialog_overlay.show_info(t("reader.bookmarks"), message)
         )
         self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
 
@@ -218,11 +219,11 @@ class ReaderShellWidget(QWidget):
         if self.viewmodel.error_message:
             self.canvas.set_status_text(self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
-            self.canvas.set_status_text("Loading...")
+            self.canvas.set_status_text(t("reader.loading"))
         elif self.viewmodel.loading_page_index is not None:
-            self.canvas.set_status_text(f"Loading page {self.viewmodel.loading_page_index + 1}...")
+            self.canvas.set_status_text(t("reader.loading_page", index=self.viewmodel.loading_page_index + 1))
         elif self.viewmodel.page_count <= 0:
-            self.canvas.set_status_text("No readable pages.")
+            self.canvas.set_status_text(t("reader.no_readable_pages"))
 
     def _sync_layout(self, _result) -> None:  # noqa: ANN001 - signal carries the layout dataclass.
         self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x)
@@ -236,17 +237,17 @@ class ReaderShellWidget(QWidget):
 
     def _show_password_dialog(self, prompt: ReaderPasswordPrompt) -> None:
         self.dialog_overlay.show_password_input(
-            "Archive Password",
-            f"Password for: {prompt.display_name}",
+            t("reader.archive_password_title"),
+            t("reader.archive_password_header", name=prompt.display_name),
             on_confirm=self.open_with_password,
-            confirm_text="Open",
-            cancel_text="Cancel",
-            skip_text="Skip",
-            validator=lambda value: None if value else "Password cannot be empty.",
+            confirm_text=t("reader.open"),
+            cancel_text=t("dialog.btn_cancel"),
+            skip_text=t("reader.skip"),
+            validator=lambda value: None if value else t("reader.password_required"),
             on_cancel=self.viewmodel.cancel_password_request,
             on_skip=self.skip_password_request,
             detail_text=prompt.archive_path,
-            state_prompt="Incorrect password. Please try again." if prompt.is_retry else None,
+            state_prompt=t("reader.password_retry") if prompt.is_retry else None,
         )
 
     def _toggle_settings_panel(self) -> None:
@@ -525,13 +526,13 @@ class ReaderShellWidget(QWidget):
 
     def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
         self.dialog_overlay.show_input(
-            "Rename Bookmark",
-            "Bookmark Name",
+            t("reader.bookmark_rename_title"),
+            t("reader.bookmark_name_header"),
             on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(bookmark_uuid, name),
             initial_text=current_name,
-            confirm_text="Rename",
-            cancel_text="Cancel",
-            validator=lambda value: None if value.strip() else "Bookmark name cannot be empty.",
+            confirm_text=t("reader.bookmark_rename"),
+            cancel_text=t("dialog.btn_cancel"),
+            validator=lambda value: None if value.strip() else t("reader.bookmark_name_required"),
         )
 
 

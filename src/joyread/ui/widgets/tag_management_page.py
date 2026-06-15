@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.tag_management_viewmodel import (
     MAX_TAG_NAME_LENGTH,
@@ -101,12 +102,12 @@ class TagManagementPage(QWidget):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(Theme.tag_manager_gap)
         button_layout.addStretch(1)
-        self._rename_button = SettingsPushButton("Rename")
+        self._rename_button = SettingsPushButton(t("tags.btn_rename"))
         self._rename_button.setProperty("variant", "tag")
         self._rename_button.setFixedSize(Theme.tag_control_button_width, Theme.tag_control_button_height)
         self._rename_button.clicked.connect(self._handle_rename_clicked)
         button_layout.addWidget(self._rename_button)
-        self._delete_button = SettingsPushButton("Delete")
+        self._delete_button = SettingsPushButton(t("tags.btn_delete"))
         self._delete_button.setProperty("variant", "tag")
         self._delete_button.setFixedSize(Theme.tag_control_button_width, Theme.tag_control_button_height)
         self._delete_button.setProperty("destructive", "true")
@@ -123,12 +124,12 @@ class TagManagementPage(QWidget):
         self._line_edit = _TagInputLineEdit()
         self._line_edit.setProperty("class", "TagInputField")
         self._line_edit.setMaxLength(MAX_TAG_NAME_LENGTH)
-        self._line_edit.setPlaceholderText("Tag name")
+        self._line_edit.setPlaceholderText(t("tags.placeholder_tag_name"))
         self._line_edit.setFixedSize(Theme.tag_input_field_width, Theme.tag_control_button_height)
         self._line_edit.returnPressed.connect(self._handle_submit_clicked)
         self._line_edit.escape_pressed.connect(self._viewmodel.cancel_input)
         input_layout.addWidget(self._line_edit)
-        self._confirm_button = SettingsPushButton("Confirm")
+        self._confirm_button = SettingsPushButton(t("tags.btn_confirm"))
         self._confirm_button.setProperty("variant", "tag")
         self._confirm_button.setFixedSize(Theme.tag_control_button_width, Theme.tag_control_button_height)
         self._confirm_button.clicked.connect(self._handle_submit_clicked)
@@ -162,6 +163,13 @@ class TagManagementPage(QWidget):
     @property
     def line_edit(self) -> QLineEdit:
         return self._line_edit
+
+    def refresh_labels(self) -> None:
+        """Re-apply translated control labels after a runtime language change."""
+        self._rename_button.setText(t("tags.btn_rename"))
+        self._delete_button.setText(t("tags.btn_delete"))
+        self._confirm_button.setText(t("tags.btn_confirm"))
+        self._line_edit.setPlaceholderText(t("tags.placeholder_tag_name"))
 
     def dispose(self) -> None:
         if self._disposed:
@@ -215,20 +223,12 @@ class TagManagementPage(QWidget):
         ]
         if len(selected_names) == 1:
             return (
-                "Delete Tag",
-                (
-                    f"Delete tag '{selected_names[0]}'?\n\n"
-                    "This removes the tag from every linked book. Books are not deleted. "
-                    "This cannot be undone."
-                ),
+                t("tags.delete_tag_title"),
+                t("tags.delete_tag_msg", name=selected_names[0]),
             )
         return (
-            "Delete Tags",
-            (
-                f"Delete {len(selected_names)} tags?\n\n"
-                "This removes these tags from every linked book. Books are not deleted. "
-                "This cannot be undone."
-            ),
+            t("tags.delete_tags_title"),
+            t("tags.delete_tags_msg", count=str(len(selected_names))),
         )
 
     def _handle_destroyed(self, _obj: object | None = None) -> None:

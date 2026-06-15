@@ -17,6 +17,7 @@ from PySide6.QtGui import QFont, QImage, QMouseEvent, QResizeEvent, QTextDocumen
 from PySide6.QtWidgets import QTextBrowser, QWidget
 
 from joyread.core.reader.epub import EpubAssetReader
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 
 
@@ -343,7 +344,7 @@ class NovelContentArea(QTextBrowser):
         self.setHtml(
             "<div style='padding: 48px; text-align: center;"
             " font-style: italic; opacity: 0.7;'>"
-            "Opening EPUB…</div>"
+            f"{_escape_html(t('reader.opening_epub'))}</div>"
         )
 
 

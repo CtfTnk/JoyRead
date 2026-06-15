@@ -16,6 +16,7 @@ from pathlib import Path
 from joyread.core.reader.epub import EpubAssetReader, EpubBook, flatten_toc
 from joyread.core.reader.epub_session import EpubChapter, EpubReaderSession
 from joyread.core.services.task_service import TaskHandle, TaskService
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderBookmarkItem,
     ReaderContentsItem,
@@ -178,20 +179,24 @@ class NovelReaderViewModel:
             "novel-bookmarks-load",
             lambda: self._library_service.list_bookmarks(book_uuid),
             on_success=self._apply_bookmarks,
-            on_failure=lambda exc: self._emit_bookmark_error("Couldn't load bookmarks.", exc),
+            on_failure=lambda exc: self._emit_bookmark_error(t("reader.bookmark_load_failed"), exc),
         )
 
     def add_bookmark(self, name: str | None = None) -> None:
         if not self.can_use_bookmarks or self._session is None:
             return
         spine_index = self.current_index
-        label = name or self._session.chapter_title(spine_index) or f"Chapter {spine_index + 1}"
+        label = (
+            name
+            or self._session.chapter_title(spine_index)
+            or t("reader.chapter_fallback", index=str(spine_index + 1))
+        )
         book_uuid = self._book_uuid
         self._bookmark_handle = self._task_service.submit(
             "novel-bookmark-add",
             lambda: self._library_service.add_bookmark(book_uuid, label, spine_index),
             on_success=lambda _result: self.refresh_bookmarks(),
-            on_failure=lambda exc: self._emit_bookmark_error("Couldn't add bookmark.", exc),
+            on_failure=lambda exc: self._emit_bookmark_error(t("reader.bookmark_add_failed"), exc),
         )
 
     def delete_bookmark(self, bookmark_uuid: str) -> None:
@@ -202,7 +207,7 @@ class NovelReaderViewModel:
             "novel-bookmark-delete",
             lambda: self._library_service.delete_bookmark(book_uuid, bookmark_uuid),
             on_success=lambda _result: self.refresh_bookmarks(),
-            on_failure=lambda exc: self._emit_bookmark_error("Couldn't delete bookmark.", exc),
+            on_failure=lambda exc: self._emit_bookmark_error(t("reader.bookmark_delete_failed"), exc),
         )
 
     def rename_bookmark(self, bookmark_uuid: str, new_name: str) -> None:
@@ -210,14 +215,14 @@ class NovelReaderViewModel:
             return
         cleaned = (new_name or "").strip()
         if not cleaned:
-            self._emit_bookmark_error("Bookmark name cannot be empty.", None)
+            self._emit_bookmark_error(t("reader.bookmark_name_required"), None)
             return
         book_uuid = self._book_uuid
         self._bookmark_handle = self._task_service.submit(
             "novel-bookmark-rename",
             lambda: self._library_service.rename_bookmark(book_uuid, bookmark_uuid, cleaned),
             on_success=lambda _result: self.refresh_bookmarks(),
-            on_failure=lambda exc: self._emit_bookmark_error("Couldn't rename bookmark.", exc),
+            on_failure=lambda exc: self._emit_bookmark_error(t("reader.bookmark_rename_failed"), exc),
         )
 
     # --- Internals: open / chapter loading ----------------------------------
@@ -248,7 +253,7 @@ class NovelReaderViewModel:
         ):
             self._writing_mode_warning_emitted = True
             self.writing_mode_warning.emit(
-                "Vertical writing mode is not yet supported — showing horizontally."
+                t("reader.vertical_writing_unsupported")
             )
         self._load_chapter(self.current_index)
 
@@ -256,7 +261,7 @@ class NovelReaderViewModel:
         if generation != self._task_generation:
             return
         self.is_loading = False
-        message = f"Couldn't open the EPUB: {exc}"
+        message = t("reader.epub_open_failed", error=str(exc))
         self.error_message = message
         logger.error("EPUB open failed: %s", exc, exc_info=True)
         self.state_changed.emit()
@@ -290,7 +295,7 @@ class NovelReaderViewModel:
     def _handle_chapter_failure(self, exc: BaseException, generation: int) -> None:
         if generation != self._task_generation:
             return
-        message = f"Couldn't load chapter: {exc}"
+        message = t("reader.chapter_load_failed", error=str(exc))
         self.error_message = message
         logger.error("EPUB load_chapter failed: %s", exc, exc_info=True)
         self.state_changed.emit()

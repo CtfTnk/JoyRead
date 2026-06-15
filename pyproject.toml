@@ -35,6 +35,7 @@ joyread = [
     "ui/resources/styles/*.qss",
     "ui/resources/icons/*",
     "ui/resources/fonts/*",
+    "resources/locales/*.json",
     "resources/extractors/7zip/*",
     "resources/extractors/7zip/*/*",
 ]

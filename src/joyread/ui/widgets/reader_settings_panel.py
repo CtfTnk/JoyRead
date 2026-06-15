@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.reader import ReaderFitMode, ReaderSettings
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.menus import FigmaMenu
@@ -51,41 +52,41 @@ class ReaderSettingsPanel(QFrame):
         )
         layout.setSpacing(Theme.reader_settings_gap)
 
-        layout.addWidget(_SectionBanner("Horizontal Mode", resources))
+        layout.addWidget(_SectionBanner(t("reader.section_horizontal"), resources))
 
         self.custom_switch = _SmallSwitch()
         self.custom_switch.toggled.connect(self.custom_enabled_changed.emit)
-        layout.addWidget(_SettingRow("Enable Custom", self.custom_switch))
+        layout.addWidget(_SettingRow(t("reader.enable_custom"), self.custom_switch))
 
         self.one_page_switch = _SmallSwitch()
         self.one_page_switch.toggled.connect(self.always_one_page_changed.emit)
-        self.one_page_row = _SettingRow("Single Page", self.one_page_switch)
+        self.one_page_row = _SettingRow(t("reader.single_page"), self.one_page_switch)
         layout.addWidget(self.one_page_row)
 
         self.fit_dropdown = _FitModeButton(resources)
         self.fit_dropdown.value_changed.connect(self.fit_mode_changed.emit)
-        self.fit_row = _SettingRow("Fit Mode", self.fit_dropdown, option_margin=0)
+        self.fit_row = _SettingRow(t("reader.fit_mode"), self.fit_dropdown, option_margin=0)
         layout.addWidget(self.fit_row)
 
-        layout.addWidget(_SectionBanner("Vertical Mode", resources))
+        layout.addWidget(_SectionBanner(t("reader.section_vertical"), resources))
 
         self.vertical_switch = _SmallSwitch()
         self.vertical_switch.toggled.connect(self.vertical_custom_enabled_changed.emit)
-        layout.addWidget(_SettingRow("Enable Custom", self.vertical_switch))
+        layout.addWidget(_SettingRow(t("reader.enable_custom"), self.vertical_switch))
 
         self.vertical_fit_width_switch = _SmallSwitch()
         self.vertical_fit_width_switch.toggled.connect(self.vertical_fit_width_changed.emit)
-        self.vertical_fit_width_row = _SettingRow("Fit Width", self.vertical_fit_width_switch)
+        self.vertical_fit_width_row = _SettingRow(t("reader.fit_width_toggle"), self.vertical_fit_width_switch)
         layout.addWidget(self.vertical_fit_width_row)
 
         self.spacing_control = _SpinButton(resources, suffix="px", value=0, minimum=0, maximum=200)
         self.spacing_control.value_changed.connect(self.page_spacing_changed.emit)
-        self.spacing_row = _SettingRow("Gap", self.spacing_control, option_margin=0)
+        self.spacing_row = _SettingRow(t("reader.gap"), self.spacing_control, option_margin=0)
         layout.addWidget(self.spacing_row)
 
         self.zoom_control = _ZoomButton(value=100, minimum=25, maximum=200)
         self.zoom_control.value_changed.connect(self.zoom_percent_changed.emit)
-        self.zoom_row = _SettingRow("Zoom", self.zoom_control, option_margin=0)
+        self.zoom_row = _SettingRow(t("reader.zoom"), self.zoom_control, option_margin=0)
         layout.addWidget(self.zoom_row)
 
         layout.addStretch(1)
@@ -278,11 +279,11 @@ class _SmallSwitch(QFrame):
 class _FitModeButton(QFrame):
     value_changed = QtSignal(object)
 
-    _OPTIONS: tuple[tuple[str, ReaderFitMode], ...] = (
-        ("Auto", ReaderFitMode.AUTO),
-        ("Fit to Height", ReaderFitMode.FIT_HEIGHT),
-        ("Fit to Width", ReaderFitMode.FIT_WIDTH),
-        ("Fit to Page", ReaderFitMode.FIT_PAGE),
+    _OPTIONS: tuple[ReaderFitMode, ...] = (
+        ReaderFitMode.AUTO,
+        ReaderFitMode.FIT_HEIGHT,
+        ReaderFitMode.FIT_WIDTH,
+        ReaderFitMode.FIT_PAGE,
     )
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
@@ -299,7 +300,7 @@ class _FitModeButton(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._label = QLabel("Auto")
+        self._label = QLabel(_fit_mode_label(ReaderFitMode.AUTO))
         self._label.setProperty("class", "ReaderSettingsControlText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label, stretch=1)
@@ -346,8 +347,12 @@ class _FitModeButton(QFrame):
 
     def _show_menu(self) -> None:
         menu = FigmaMenu(self, width=self.width())
-        for label, mode in self._OPTIONS:
-            menu.add_item(label, lambda selected=mode: self.set_value(selected), selected=mode == self._value)
+        for mode in self._OPTIONS:
+            menu.add_item(
+                _fit_mode_label(mode),
+                lambda selected=mode: self.set_value(selected),
+                selected=mode == self._value,
+            )
         menu.exec(self.mapToGlobal(QPoint(0, self.height())))
 
 
@@ -529,11 +534,11 @@ class _IconStepButton(QToolButton):
 
 def _fit_mode_label(mode: ReaderFitMode) -> str:
     return {
-        ReaderFitMode.AUTO: "Auto",
-        ReaderFitMode.FIT_HEIGHT: "Fit to Height",
-        ReaderFitMode.FIT_WIDTH: "Fit to Width",
-        ReaderFitMode.FIT_PAGE: "Fit to Page",
-    }.get(mode, "Auto")
+        ReaderFitMode.AUTO: t("reader.fit_auto"),
+        ReaderFitMode.FIT_HEIGHT: t("reader.fit_height"),
+        ReaderFitMode.FIT_WIDTH: t("reader.fit_width"),
+        ReaderFitMode.FIT_PAGE: t("reader.fit_page"),
+    }.get(mode, t("reader.fit_auto"))
 
 
 def _parse_numeric_text(text: str) -> int | None:

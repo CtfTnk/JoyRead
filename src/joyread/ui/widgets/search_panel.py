@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 
@@ -49,7 +50,7 @@ class SearchPanelWidget(QFrame):
         self._search_bar = self._build_search_bar()
         self._collapse_button = self._icon_button(
             "icon_left.svg",
-            "Collapse search",
+            t("toolbar.search_collapse"),
             "CollapseSearchButton",
             "FigmaSearchOuterButton",
         )
@@ -57,7 +58,7 @@ class SearchPanelWidget(QFrame):
 
         self._expand_button = self._icon_button(
             "icon_search.svg",
-            "Expand search",
+            t("toolbar.search_expand"),
             "ExpandSearchButton",
             "FigmaSearchOuterButton",
         )
@@ -86,6 +87,13 @@ class SearchPanelWidget(QFrame):
         )
         if expanded:
             self._input.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def refresh_labels(self) -> None:
+        """Re-apply translated placeholder and tooltips after a locale change."""
+        self._input.setPlaceholderText(t("toolbar.search_placeholder"))
+        self._collapse_button.setToolTip(t("toolbar.search_collapse"))
+        self._expand_button.setToolTip(t("toolbar.search_expand"))
+        self._submit_button.setToolTip(t("toolbar.search_submit"))
 
     def submit(self) -> None:
         query = self.query
@@ -118,7 +126,7 @@ class SearchPanelWidget(QFrame):
 
         self._input = QLineEdit()
         self._input.setObjectName("FigmaSearchInput")
-        self._input.setPlaceholderText("Search books...")
+        self._input.setPlaceholderText(t("toolbar.search_placeholder"))
         self._input.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._input.setFixedHeight(Theme.search_input_height)
         self._input.setMinimumWidth(Theme.search_input_text_width)
@@ -132,9 +140,10 @@ class SearchPanelWidget(QFrame):
         input_layout.addWidget(self._input)
         layout.addWidget(input_frame)
 
-        submit_button = self._icon_button("icon_search.svg", "Search", "SearchSubmitButton", "FigmaSearchInnerButton")
+        submit_button = self._icon_button("icon_search.svg", t("toolbar.search_submit"), "SearchSubmitButton", "FigmaSearchInnerButton")
         submit_button.setFixedSize(Theme.search_inner_button_size, Theme.search_inner_button_size)
         submit_button.clicked.connect(self.submit)
+        self._submit_button = submit_button
         layout.addWidget(submit_button)
 
         return frame

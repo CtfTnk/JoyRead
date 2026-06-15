@@ -13,6 +13,7 @@ from PySide6.QtCore import QRectF, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import QFrame, QSizePolicy, QVBoxLayout, QWidget
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_settings_panel import (
@@ -47,14 +48,14 @@ class NovelCustomPanel(QFrame):
         )
         layout.setSpacing(Theme.reader_settings_gap)
 
-        layout.addWidget(_SectionBanner("Light Novel", resources))
+        layout.addWidget(_SectionBanner(t("reader.section_light_novel"), resources))
 
         self.enable_switch = _SmallSwitch()
         self.enable_switch.toggled.connect(self.enable_custom_changed.emit)
         # Also gate the dependent rows immediately on toggle so the
         # visual disabled state doesn't lag behind a slow shell handler.
         self.enable_switch.toggled.connect(self._sync_child_enabled)
-        self.enable_row = _SettingRow("Enable Custom", self.enable_switch)
+        self.enable_row = _SettingRow(t("reader.enable_custom"), self.enable_switch)
         layout.addWidget(self.enable_row)
 
         # Font size spin uses the same wrapper as the manga panel's
@@ -68,7 +69,7 @@ class NovelCustomPanel(QFrame):
             maximum=72,
         )
         self.font_size_control.value_changed.connect(self.font_size_changed.emit)
-        self.font_size_row = _SettingRow("Font Size", self.font_size_control, option_margin=0)
+        self.font_size_row = _SettingRow(t("reader.font_size"), self.font_size_control, option_margin=0)
         layout.addWidget(self.font_size_row)
 
         # Disable-CSS escape hatch — independent of Enable Custom because
@@ -79,7 +80,7 @@ class NovelCustomPanel(QFrame):
         # overflow at small viewports.
         self.disable_css_switch = _SmallSwitch()
         self.disable_css_switch.toggled.connect(self.disable_css_changed.emit)
-        self.disable_css_row = _SettingRow("Disable CSS", self.disable_css_switch)
+        self.disable_css_row = _SettingRow(t("reader.disable_css"), self.disable_css_switch)
         layout.addWidget(self.disable_css_row)
 
         layout.addStretch(1)

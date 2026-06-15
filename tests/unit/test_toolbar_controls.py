@@ -1,6 +1,7 @@
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton
 
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import FileFilter, SortField
@@ -207,6 +208,32 @@ def test_title_control_group_matches_figma_geometry_after_sort_switch(qtbot) -> 
     assert buttons[1].x() - (buttons[0].x() + buttons[0].width()) == Theme.title_control_gap
     assert buttons[2].x() - (buttons[1].x() + buttons[1].width()) == Theme.title_control_gap
     assert group.width() - (buttons[2].x() + buttons[2].width()) == Theme.title_control_group_right_inset
+
+
+def test_title_bar_refresh_labels_translates_sort_display_and_keeps_canonical_signal(qtbot) -> None:
+    apply_theme()
+    title_bar = TitleBarWidget(ResourceLoader(), platform_name="win32")
+    qtbot.addWidget(title_bar)
+    title_bar.show()
+    QApplication.processEvents()
+
+    emitted: list[tuple[str, bool]] = []
+    title_bar.sort_changed.connect(lambda field, ascending: emitted.append((field, ascending)))
+    sort_dropdown = title_bar.findChildren(FigmaDropdownButton)[0]
+    action_button = title_bar.findChild(ActionMenuButton)
+
+    locale_service.load_language("Chinese")
+    title_bar.refresh_labels()
+
+    assert sort_dropdown.value == "添加时间"
+    assert sort_dropdown.toolTip() == "排序方式"
+    assert action_button is not None
+    assert action_button.toolTip() == "操作"
+
+    sort_dropdown.set_value("书名", emit=True)
+
+    assert emitted == [(SortField.TITLE.value, False)]
+    locale_service.load_language("English")
 
 
 def test_title_bar_switches_between_macos_and_forced_non_macos_controls(qtbot) -> None:

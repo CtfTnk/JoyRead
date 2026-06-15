@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.book import Book
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -165,7 +166,7 @@ class BookListRowWidget(QFrame):
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         info_layout.addWidget(title)
 
-        author = QLabel(book.author or "Unknown author")
+        author = QLabel(book.author or t("detail.unknown_author"))
         author.setProperty("class", "BookAuthor")
         author.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         author.setToolTip(author.text())
@@ -208,28 +209,27 @@ class BookListRowWidget(QFrame):
         option_layout.setContentsMargins(0, 0, 0, 0)
         option_layout.setSpacing(Theme.book_option_frame_gap)
 
-        detail_button = QToolButton()
-        detail_button.setProperty("class", "CardButton")
-        detail_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_detail.svg"))))
-        detail_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        detail_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
-        detail_button.setToolTip("Detail")
-        detail_button.clicked.connect(lambda: self.detail_requested.emit(self.book.uuid))
-        option_layout.addWidget(detail_button)
+        self._detail_button = QToolButton()
+        self._detail_button.setProperty("class", "CardButton")
+        self._detail_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_detail.svg"))))
+        self._detail_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+        self._detail_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
+        self._detail_button.clicked.connect(lambda: self.detail_requested.emit(self.book.uuid))
+        option_layout.addWidget(self._detail_button)
 
-        option_button = QToolButton()
-        option_button.setProperty("class", "CardButton")
-        option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
-        option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        option_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
-        option_button.setToolTip("More options")
-        option_button.clicked.connect(
-            lambda _checked=False, button=option_button: self.menu_requested.emit(
+        self._option_button = QToolButton()
+        self._option_button.setProperty("class", "CardButton")
+        self._option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
+        self._option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+        self._option_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
+        self._option_button.clicked.connect(
+            lambda _checked=False, button=self._option_button: self.menu_requested.emit(
                 self.book.uuid,
                 button.mapToGlobal(QPoint(0, button.height())),
             )
         )
-        option_layout.addWidget(option_button)
+        option_layout.addWidget(self._option_button)
+        self.refresh_labels()
 
         control_bar.addWidget(option_frame)
         info_layout.addWidget(control_bar_frame)
@@ -240,6 +240,10 @@ class BookListRowWidget(QFrame):
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
+
+    def refresh_labels(self) -> None:
+        self._detail_button.setToolTip(t("menu.detail"))
+        self._option_button.setToolTip(t("detail.more_options"))
 
     def set_cover_path(self, path: Path) -> None:
         self._cover.set_pixmap_from_path(path)

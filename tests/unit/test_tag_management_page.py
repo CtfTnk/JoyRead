@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication, QFrame
 from joyread.core.models.tag import Tag
 from joyread.core.repositories.tag_repository import TagNameConflictError
 from joyread.core.services.tag_service import TagService
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
@@ -142,6 +143,24 @@ def test_buttons_disabled_with_no_selection(qtbot) -> None:
 
     assert page.rename_button.isEnabled() is False
     assert page.delete_button.isEnabled() is False
+
+
+def test_tag_management_page_refresh_labels_updates_controls(qtbot) -> None:
+    _apply_theme()
+    vm = _viewmodel_with_tags("Action")
+    page = TagManagementPage(vm)
+    qtbot.addWidget(page)
+    page.show()
+    QApplication.processEvents()
+
+    locale_service.load_language("Japanese")
+    page.refresh_labels()
+
+    assert page.rename_button.text() == "名前変更"
+    assert page.delete_button.text() == "削除"
+    assert page.confirm_button.text() == "確認"
+    assert page.line_edit.placeholderText() == "タグ名"
+    locale_service.load_language("English")
 
 
 def test_rename_disabled_when_multiple_selected(qtbot) -> None:

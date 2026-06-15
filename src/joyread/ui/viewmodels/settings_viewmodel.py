@@ -17,6 +17,7 @@ from joyread.core.services.hidden_space_service import (
     HiddenSpaceService,
 )
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.i18n import locale_service
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -61,6 +62,8 @@ class SettingsViewModel:
     ) -> None:
         settings = settings or AppSettings(storage_location="~/Documents/JoyRead-Library")
         self.state_changed: Signal[None] = Signal()
+        # Emitted after the locale has been reloaded so the UI can refresh labels.
+        self.language_changed: Signal[None] = Signal()
         # The cache fields are user-tunable and surface "Clear archive cache"
         # as a one-shot button. AppContext wires the side effects (resize the
         # actual caches, blow away on-disk pool entries) and refreshes the
@@ -77,10 +80,10 @@ class SettingsViewModel:
         self._hidden_space_service = hidden_space_service
         self._archive_pool_bytes_provider: Callable[[], int] | None = None
         self.sections = (
-            SettingsSection(SettingsSectionKey.GENERAL, "General"),
-            SettingsSection(SettingsSectionKey.TAGS, "Tags"),
-            SettingsSection(SettingsSectionKey.PRIVACY, "Privacy"),
-            SettingsSection(SettingsSectionKey.ABOUT, "About", lower_group=True),
+            SettingsSection(SettingsSectionKey.GENERAL, locale_service.t("settings.section_general")),
+            SettingsSection(SettingsSectionKey.TAGS, locale_service.t("settings.section_tags")),
+            SettingsSection(SettingsSectionKey.PRIVACY, locale_service.t("settings.section_privacy")),
+            SettingsSection(SettingsSectionKey.ABOUT, locale_service.t("settings.section_about"), lower_group=True),
         )
         self.current_section = SettingsSectionKey.GENERAL
         self.language = settings.language
@@ -139,6 +142,8 @@ class SettingsViewModel:
             return
         self.language = language
         self._persist(language=language)
+        locale_service.load_language(language)
+        self.language_changed.emit()
         self.state_changed.emit()
 
     def set_import_book_when_opening(self, enabled: bool) -> None:

@@ -18,6 +18,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import (
+    LANGUAGE_DISPLAY_OPTIONS,
+    language_display_name,
+    language_value_from_display,
+    t,
+)
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import (
@@ -131,6 +137,13 @@ class SettingsPageWidget(QFrame):
             self._tag_viewmodel.clear_selection()
         self._content.set_items(self._items_for_current_section())
 
+    def refresh_labels(self) -> None:
+        """Refresh static labels and rebuild current content after a language change."""
+        self._sidebar.refresh_labels()
+        if self._tag_page is not None:
+            self._tag_page.refresh_labels()
+        self.render()
+
     def _handle_destroyed(self, _obj: object | None = None) -> None:
         self.dispose()
 
@@ -149,7 +162,7 @@ class SettingsPageWidget(QFrame):
         # from this module).
         from joyread.ui.widgets.tag_management_page import TagManagementPage
 
-        banner = SectionBanner("Book Tag", self._resources)
+        banner = SectionBanner(t("settings.banner_book_tag"), self._resources)
         if self._tag_viewmodel is None:
             return [banner]
         # Cache the page across section navigations. SettingsContentPanel
@@ -169,24 +182,24 @@ class SettingsPageWidget(QFrame):
         # ``hidden_space_setup_requested`` / ``hidden_space_verify_requested``
         # — the VM only flips the persisted toggle off; turning it on
         # requires a password and is owned by MainWindow.
-        hidden_banner = SectionBanner("Hidden Space", self._resources)
+        hidden_banner = SectionBanner(t("settings.banner_hidden_space"), self._resources)
 
         show_switch = SettingsSwitchItem(
-            "Show Collections",
+            t("settings.show_collections"),
             self._viewmodel.show_hidden_collection,
         )
         show_switch.toggled.connect(self._handle_show_hidden_toggled)
 
-        change_password = SettingsButtonItem("Change Password", "Change")
+        change_password = SettingsButtonItem(t("settings.change_password"), t("settings.btn_change"))
         change_password.clicked.connect(self.hidden_space_change_password_requested.emit)
         # Hidden Space hasn't been set up yet → no password to change.
         change_password.set_enabled(self._viewmodel.hidden_space_initialized)
 
-        revert = SettingsButtonItem("Revert all", "Proceed")
+        revert = SettingsButtonItem(t("settings.revert_all"), t("settings.btn_proceed"))
         revert.clicked.connect(self.hidden_space_revert_requested.emit)
         revert.set_enabled(self._viewmodel.hidden_space_initialized)
 
-        reset = SettingsButtonItem("Reset and Erase", "Proceed", destructive=True)
+        reset = SettingsButtonItem(t("settings.reset_and_erase"), t("settings.btn_proceed"), destructive=True)
         reset.clicked.connect(self.hidden_space_reset_requested.emit)
         reset.set_enabled(self._viewmodel.hidden_space_initialized)
 
@@ -194,21 +207,21 @@ class SettingsPageWidget(QFrame):
         # here: Move creates a fresh JoyRead-Library under a chosen parent and
         # migrates, Select adopts an existing JoyRead library root, Reset wipes
         # the current one.
-        storage_banner = SectionBanner("Storage", self._resources)
+        storage_banner = SectionBanner(t("settings.banner_storage"), self._resources)
 
         # Show the current library directory (read-only) with a Move action,
         # matching the previous Storage Location row.
         move_library = SettingsAddressItem(
-            "Library Location",
+            t("settings.library_location"),
             self._viewmodel.storage_location,
-            button_text="Move",
+            button_text=t("settings.btn_move"),
         )
         move_library.change_requested.connect(self.storage_move_requested.emit)
 
-        select_library = SettingsButtonItem("Select Existing Library", "Select")
+        select_library = SettingsButtonItem(t("settings.select_existing_library"), t("settings.btn_select"))
         select_library.clicked.connect(self.storage_select_requested.emit)
 
-        reset_library = SettingsButtonItem("Reset Library", "Proceed", destructive=True)
+        reset_library = SettingsButtonItem(t("settings.reset_library"), t("settings.btn_proceed"), destructive=True)
         reset_library.clicked.connect(self.storage_reset_requested.emit)
 
         return [
@@ -247,38 +260,38 @@ class SettingsPageWidget(QFrame):
         # General sub-group: existing settings, headed by the same banner
         # widget the sidebar uses for "Book Shelf" / "Collections" so the
         # grouping vocabulary is consistent across the app.
-        general_banner = SectionBanner("General", self._resources)
+        general_banner = SectionBanner(t("settings.banner_general"), self._resources)
 
         language = SettingsDropdownItem(
-            "Language",
-            self._viewmodel.language,
-            ("English",),
+            t("settings.language"),
+            language_display_name(self._viewmodel.language),
+            LANGUAGE_DISPLAY_OPTIONS,
             self._resources,
         )
-        language.value_changed.connect(self._viewmodel.set_language)
+        language.value_changed.connect(lambda label: self._viewmodel.set_language(language_value_from_display(label)))
 
         import_switch = SettingsSwitchItem(
-            "Import book when opening",
+            t("settings.import_when_opening"),
             self._viewmodel.import_book_when_opening,
         )
         import_switch.toggled.connect(self._viewmodel.set_import_book_when_opening)
 
         window_switch = SettingsSwitchItem(
-            "Individual Read Window",
+            t("settings.individual_read_window"),
             self._viewmodel.individual_read_window,
         )
         window_switch.toggled.connect(self._viewmodel.set_individual_read_window)
 
         inspect_title_switch = SettingsSwitchItem(
-            "Inspect Windows/Linux Title Control",
+            t("settings.inspect_title_control"),
             self._viewmodel.inspect_non_native_title_control,
         )
         inspect_title_switch.toggled.connect(self._viewmodel.set_inspect_non_native_title_control)
 
-        import_banner = SectionBanner("Import", self._resources)
+        import_banner = SectionBanner(t("settings.banner_import"), self._resources)
 
         import_folder_depth_item = SettingsNumericItem(
-            "Import folder depth",
+            t("settings.import_folder_depth"),
             self._viewmodel.import_folder_max_depth,
             IMPORT_FOLDER_DEPTH_MIN,
             IMPORT_FOLDER_DEPTH_MAX,
@@ -287,7 +300,7 @@ class SettingsPageWidget(QFrame):
         import_folder_depth_item.value_changed.connect(self._viewmodel.set_import_folder_max_depth)
 
         archive_depth_item = SettingsNumericItem(
-            "Archive internal depth",
+            t("settings.archive_internal_depth"),
             self._viewmodel.archive_internal_max_depth,
             ARCHIVE_INTERNAL_DEPTH_MIN,
             ARCHIVE_INTERNAL_DEPTH_MAX,
@@ -298,10 +311,10 @@ class SettingsPageWidget(QFrame):
         # Cache sub-group: user-tunable cache budgets and a one-shot purge for
         # the disk pool. Live in General per design — there is no separate
         # "Performance" section.
-        cache_banner = SectionBanner("Cache", self._resources)
+        cache_banner = SectionBanner(t("settings.banner_cache"), self._resources)
 
         reader_cache_item = SettingsNumericItem(
-            "Reader page cache (in-memory)",
+            t("settings.reader_page_cache"),
             self._viewmodel.reader_page_cache_mb,
             READER_PAGE_CACHE_MIN_MB,
             READER_PAGE_CACHE_MAX_MB,
@@ -311,7 +324,7 @@ class SettingsPageWidget(QFrame):
         reader_cache_item.value_changed.connect(self._viewmodel.set_reader_page_cache_mb)
 
         detail_cache_item = SettingsNumericItem(
-            "Detail thumbnail cache (in-memory)",
+            t("settings.detail_thumbnail_cache"),
             self._viewmodel.detail_thumbnail_cache_mb,
             DETAIL_THUMBNAIL_CACHE_MIN_MB,
             DETAIL_THUMBNAIL_CACHE_MAX_MB,
@@ -321,7 +334,7 @@ class SettingsPageWidget(QFrame):
         detail_cache_item.value_changed.connect(self._viewmodel.set_detail_thumbnail_cache_mb)
 
         archive_pool_item = SettingsNumericItem(
-            "Archive extraction pool (disk)",
+            t("settings.archive_extraction_pool"),
             self._viewmodel.archive_extraction_pool_mb,
             ARCHIVE_POOL_MIN_MB,
             ARCHIVE_POOL_MAX_MB,
@@ -331,7 +344,7 @@ class SettingsPageWidget(QFrame):
         archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_mb)
 
         archive_strategy_item = SettingsDropdownItem(
-            "Archive cache strategy",
+            t("settings.archive_cache_strategy"),
             self._viewmodel.archive_cache_strategy_label,
             ARCHIVE_CACHE_STRATEGY_OPTIONS,
             self._resources,
@@ -339,7 +352,7 @@ class SettingsPageWidget(QFrame):
         archive_strategy_item.value_changed.connect(self._viewmodel.set_archive_cache_strategy)
 
         archive_pool_usage = SettingsCacheStatusItem(
-            "Archive pool usage",
+            t("settings.archive_pool_usage"),
             current_bytes=self._viewmodel.archive_pool_current_bytes,
             budget_mb=self._viewmodel.archive_extraction_pool_mb,
         )
@@ -364,6 +377,14 @@ class SettingsPageWidget(QFrame):
 
 
 class SettingsSidebarWidget(QFrame):
+    # Maps section key to the locale key used for the label.
+    _SECTION_LOCALE_KEYS: dict[SettingsSectionKey, str] = {
+        SettingsSectionKey.GENERAL: "settings.section_general",
+        SettingsSectionKey.TAGS: "settings.section_tags",
+        SettingsSectionKey.PRIVACY: "settings.section_privacy",
+        SettingsSectionKey.ABOUT: "settings.section_about",
+    }
+
     def __init__(self, viewmodel: SettingsViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._viewmodel = viewmodel
@@ -411,6 +432,13 @@ class SettingsSidebarWidget(QFrame):
         for section_key, item in self._items.items():
             item.set_checked(section_key == key)
 
+    def refresh_labels(self) -> None:
+        """Re-apply translated labels to all sidebar items (called on language change)."""
+        for section_key, item in self._items.items():
+            locale_key = self._SECTION_LOCALE_KEYS.get(section_key)
+            if locale_key:
+                item.set_label(t(locale_key))
+
 
 class SettingsSidebarItem(QFrame):
     clicked = QtSignal(str)
@@ -435,11 +463,14 @@ class SettingsSidebarItem(QFrame):
         )
         layout.setSpacing(0)
 
-        text = QLabel(label)
-        text.setProperty("class", "SettingsSidebarItemText")
-        text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        layout.addWidget(text)
+        self._text = QLabel(label)
+        self._text.setProperty("class", "SettingsSidebarItemText")
+        self._text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(self._text)
         layout.addStretch(1)
+
+    def set_label(self, label: str) -> None:
+        self._text.setText(label)
 
     def set_checked(self, checked: bool) -> None:
         self.setProperty("selected", "true" if checked else "false")
@@ -1009,7 +1040,7 @@ class SettingsCacheStatusItem(QFrame):
         self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         option_layout.addWidget(self._usage_label, stretch=1)
 
-        clear_button = SettingsPushButton("Clear")
+        clear_button = SettingsPushButton(t("settings.btn_clear"))
         clear_button.clicked.connect(self.clear_requested.emit)
         option_layout.addWidget(clear_button)
 

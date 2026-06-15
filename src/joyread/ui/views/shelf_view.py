@@ -21,6 +21,7 @@ from joyread.ui.widgets.menus import (
     build_book_context_menu,
     build_language_dropdown_menu,
 )
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 
@@ -87,10 +88,10 @@ class ShelfView(QWidget):
         self.stack.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.grid = BookGridWidget(resources)
         self.list_view = BookListWidget(resources)
-        self.empty_state = StateView("No books yet", "Use Open & Import or Import to add books to your bookshelf.")
-        self.loading_state = StateView("Loading library", "Preparing the mock bookshelf.")
-        self.error_state = StateView("Could not load library", "The library service returned an error.")
-        self.importing_state = StateView("Importing", "Import progress UI is reserved for a future phase.")
+        self.empty_state = StateView(t("state.no_books_title"), t("state.no_books_msg"))
+        self.loading_state = StateView(t("state.loading_title"), t("state.loading_msg"))
+        self.error_state = StateView(t("state.error_title"), t("state.error_msg"))
+        self.importing_state = StateView(t("state.importing_title"), t("state.importing_msg"))
 
         for book_view in (self.grid, self.list_view):
             book_view.book_selected.connect(self._viewmodel.select_book)
@@ -134,7 +135,7 @@ class ShelfView(QWidget):
         self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)
 
     def render(self) -> None:
-        self.toolbar.set_title(self._viewmodel.page_title)
+        self.toolbar.set_title(_localized_page_title(self._viewmodel))
         self.toolbar.set_filter(self._viewmodel.file_filter.value)
         self.toolbar.set_tag_filter_active(self._viewmodel.tag_filter_active)
 
@@ -229,30 +230,24 @@ class ShelfView(QWidget):
             or self._viewmodel.file_filter.value != "ALL"
             or self._viewmodel.tag_filter_active
         ):
-            self.empty_state.set_text("No matching books", "Try adjusting your search or filter.")
+            self.empty_state.set_text(t("state.no_matching_title"), t("state.no_matching_msg"))
             return
         if self._viewmodel.current_shelf == ShelfKey.ALL.value:
-            self.empty_state.set_text(
-                "No books yet",
-                "Use Open & Import or Import to add books to your bookshelf.",
-            )
+            self.empty_state.set_text(t("state.no_books_title"), t("state.no_books_msg"))
             return
         if self._viewmodel.current_shelf == ShelfKey.RECENT.value:
-            self.empty_state.set_text("No recent books", "Books you read will appear here.")
+            self.empty_state.set_text(t("state.no_recent_title"), t("state.no_recent_msg"))
             return
         if self._viewmodel.current_shelf == ShelfKey.FAVOURITES.value:
-            self.empty_state.set_text(
-                "No favourites yet",
-                "Favourite books from a book's More menu to find them here.",
-            )
+            self.empty_state.set_text(t("state.no_favourites_title"), t("state.no_favourites_msg"))
             return
         if self._viewmodel.current_shelf.startswith("collection:"):
             self.empty_state.set_text(
-                "No books in this collection",
-                "Add books to this collection from a book's More menu.",
+                t("state.no_collection_books_title"),
+                t("state.no_collection_books_msg"),
             )
             return
-        self.empty_state.set_text("No books found", "There are no books to show here.")
+        self.empty_state.set_text(t("state.no_books_found_title"), t("state.no_books_found_msg"))
 
     def _show_placeholder(self, action: str) -> None:
         self.info_requested.emit(action, f"{action} is a placeholder in this phase.")
@@ -419,3 +414,17 @@ class ShelfView(QWidget):
             and self.detail_panel.is_near_thumbnail_bottom()
         ):
             QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
+
+
+def _localized_page_title(viewmodel: ShelfViewModel) -> str:
+    if viewmodel.current_shelf == ShelfKey.ALL.value:
+        return t("sidebar.all")
+    if viewmodel.current_shelf == ShelfKey.RECENT.value:
+        return t("sidebar.recent")
+    if viewmodel.current_shelf == ShelfKey.FAVOURITES.value:
+        return t("sidebar.favourites")
+    if viewmodel.current_shelf == ShelfKey.HIDDEN.value:
+        return t("sidebar.hidden")
+    if viewmodel.current_shelf.startswith("collection:"):
+        return viewmodel.page_title
+    return t("dialog.collection_title")

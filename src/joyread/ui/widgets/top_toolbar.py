@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import FileFilter
@@ -38,7 +39,7 @@ class TopToolbarWidget(QWidget):
         )
         layout.setSpacing(10)
 
-        self._title = QLabel("All")
+        self._title = QLabel(t("sidebar.all"))
         self._title.setObjectName("PageTitle")
         layout.addWidget(self._title)
         layout.addStretch(1)
@@ -54,7 +55,7 @@ class TopToolbarWidget(QWidget):
             [filter_name.value for filter_name in FileFilter],
             width=Theme.file_filter_width,
             initial_value=FileFilter.ALL.value,
-            tooltip="Filter by file type",
+            tooltip=t("toolbar.filter_tooltip"),
         )
         self._filter_dropdown.value_changed.connect(self.filter_changed.emit)
         layout.addWidget(self._filter_dropdown)
@@ -62,6 +63,17 @@ class TopToolbarWidget(QWidget):
         self._tag_filter_button = TagFilterButton(resources)
         self._tag_filter_button.clicked.connect(self.tag_filter_requested.emit)
         layout.addWidget(self._tag_filter_button)
+
+    def refresh_labels(self) -> None:
+        """Re-apply translated tooltips/placeholders after a locale change.
+
+        The toolbar is built once and persists across language switches, so
+        its tooltips (set in ``__init__``) would otherwise stay in the old
+        language. Called from ``MainWindow._on_language_changed``.
+        """
+        self._filter_dropdown.setToolTip(t("toolbar.filter_tooltip"))
+        self._tag_filter_button.setToolTip(t("toolbar.tag_filter_tooltip"))
+        self._search_panel.refresh_labels()
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
@@ -86,7 +98,7 @@ class TagFilterButton(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("Filter by tag")
+        self.setToolTip(t("toolbar.tag_filter_tooltip"))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFixedSize(Theme.toolbar_button_size, Theme.toolbar_button_size)
 

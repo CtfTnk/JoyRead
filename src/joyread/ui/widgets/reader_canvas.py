@@ -21,6 +21,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QWidget
 
 from joyread.core.reader import ReaderLayoutResult, ReaderPageImage
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 
 
@@ -58,7 +59,7 @@ class ReaderCanvas(QWidget):
         self._layout_result: ReaderLayoutResult | None = None
         self._pixmaps: dict[int, QPixmap] = {}
         self._pan_x = 0.0
-        self._status_text = "Loading..."
+        self._status_text = t("reader.loading")
         # Spinner phase advances while any visible page is still loading. The
         # timer is created lazily and stopped as soon as every draw has its
         # pixmap, so a fully-loaded spread costs nothing.
@@ -356,7 +357,7 @@ def _draw_loading_indicator(painter: QPainter, rect: QRectF, phase_deg: float) -
     shadow_rect = QRectF(label_rect)
     shadow_rect.translate(0, 1)
     painter.setPen(QColor(0, 0, 0, 90))
-    painter.drawText(shadow_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "Loading…")
+    painter.drawText(shadow_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, t("reader.loading"))
     painter.setPen(QColor(Theme.color_text_muted))
-    painter.drawText(label_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, "Loading…")
+    painter.drawText(label_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, t("reader.loading"))
     painter.restore()
