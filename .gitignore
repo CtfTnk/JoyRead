@@ -83,3 +83,6 @@ artifacts/
 
 # Local agent files
 .agent.md
+
+# Codex pets
+.codex-pets/
