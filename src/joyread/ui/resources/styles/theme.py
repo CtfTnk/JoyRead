@@ -483,8 +483,6 @@ class Theme:
     reader_topic_add_icon_size = 18
     reader_topic_index_font_size = 10
     reader_topic_scroll_threshold = 400
-    reader_topic_thumbnail_batch_size = 24
-    reader_topic_thumbnail_cache_bytes = 32 * 1024 * 1024
     reader_auto_hide_delay_ms = 1600
     reader_fade_duration_ms = 160
     reader_edge_reveal_distance = 78
@@ -536,7 +534,7 @@ class Theme:
     color_reader_settings_background_rgba = (255, 255, 255, 204)
     color_reader_settings_control_rgba = (255, 255, 255, 230)
     color_reader_settings_switch_background_rgba = (185, 185, 185, 230)
-    color_reader_topic_item_hover_rgba = (238, 238, 238, 230)
+    color_reader_topic_item_hover_rgba = (238, 238, 238, 204)
     missing_book_opacity = 0.6
 
     # General spacing scale

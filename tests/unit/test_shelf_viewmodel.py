@@ -1,12 +1,15 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import RLock
 
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.models.tag import Tag
 from joyread.core.services.library_service import LibraryService
-from joyread.core.services.task_service import TaskHandle
-from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.cache_service import CacheService
+from joyread.core.services.task_service import TaskHandle, TaskStatus
+from joyread.core.services.thumbnail_service import DetailThumbnailItem, ThumbnailSourceHandle
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
@@ -612,7 +615,9 @@ class RecordingTaskService:
         self.submitted.append(name)
         self.callbacks.append(callback)
         self.success_callbacks.append(on_success)
-        return TaskHandle(task_id=name)
+        handle = TaskHandle(task_id=name)
+        handle.status = TaskStatus.RUNNING
+        return handle
 
     def complete(self, index: int = -1) -> None:
         result = self.callbacks[index]()
@@ -649,6 +654,11 @@ class FailingLanguageUpdateRepository(InMemoryBookRepository):
 class FakeThumbnailService:
     def __init__(self) -> None:
         self.coverable_ids = {"mock-book-01", "mock-book-15"}
+        self.cache_service = CacheService(
+            ArchiveExtractionPool(None, 0),
+            reader_page_cache_max_bytes=1024,
+            thumbnail_cache_max_bytes=1024,
+        )
 
     def can_generate_from(self, book) -> bool:  # noqa: ANN001
         return book.uuid in self.coverable_ids
@@ -661,22 +671,26 @@ class FakeThumbnailService:
         del size
         return Path(f"/tmp/{book.uuid}.png")
 
-    def generate_detail_thumbnail_batch(self, book, start_index, batch_size, size, *, detail_cache=None):  # noqa: ANN001
-        del size
-        items = tuple(
-            DetailThumbnailItem(page_index=index, image_bytes=f"page-{index}".encode())
-            for index in range(start_index, start_index + batch_size)
+    def issue_thumbnail_cache_client(self, client_id):  # noqa: ANN001
+        return self.cache_service.issue_thumbnail_client(client_id)
+
+    def open_thumbnail_source(self, book):  # noqa: ANN001
+        session = type("FakeThumbnailSession", (), {"page_count": 28})()
+        return ThumbnailSourceHandle(
+            source_id=f"source:{book.uuid}",
+            page_count=28,
+            suffix=".cbz",
+            session=session,  # type: ignore[arg-type]
+            access_lock=RLock(),
+            source_path=Path(book.file_path),
+            nested_archive_max_depth=2,
+            archive_global_file_max_depth=100,
         )
-        if detail_cache is not None:
-            for item in items:
-                detail_cache.put((item.page_index, 100, 142), item.image_bytes)
-        return DetailThumbnailBatch(
-            book_uuid=book.uuid,
-            start_index=start_index,
-            next_index=start_index + batch_size,
-            has_more=start_index == 0,
-            items=items,
-        )
+
+    def stream_thumbnails(self, source, page_indices, size, emit_item):  # noqa: ANN001
+        del source, size
+        for index in page_indices:
+            emit_item(DetailThumbnailItem(page_index=index, image_bytes=f"page-{index}".encode()))
 
 
 def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books() -> None:
@@ -713,7 +727,7 @@ def test_set_book_cover_path_updates_state_and_emits_cover_even_for_same_path() 
     assert emitted == [("mock-book-01", cover_path), ("mock-book-01", cover_path)]
 
 
-def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> None:
+def test_detail_open_submits_one_source_task_and_waits_for_viewport_interest() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
         LibraryService(InMemoryBookRepository()),
@@ -727,13 +741,13 @@ def test_detail_open_does_not_submit_per_page_tasks_and_batches_on_demand() -> N
     vm.show_detail(book.uuid)
     assert task_service.submitted == []
 
-    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
-    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    vm.set_detail_thumbnail_interest(book.uuid, (0,), (1,), (100, 142))
+    vm.set_detail_thumbnail_interest(book.uuid, (0,), (1,), (100, 142))
 
-    assert task_service.submitted == [f"detail-thumbnail-batch-{book.uuid}-0"]
+    assert task_service.submitted == [f"detail-thumbnail-source-{book.uuid}"]
 
 
-def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
+def test_detail_stream_emits_each_visible_item_and_advances_serially() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
         LibraryService(InMemoryBookRepository()),
@@ -742,53 +756,52 @@ def test_detail_batch_results_emit_items_and_allow_next_batch() -> None:
         cover_size=(200, 284),
     )
     emitted: list[tuple[str, int, bytes]] = []
-    finished: list[tuple[str, int, bool]] = []
     vm.page_thumbnail_ready.connect(lambda book_uuid, page_index, data: emitted.append((book_uuid, page_index, data)))
-    vm.detail_thumbnail_batch_finished.connect(
-        lambda book_uuid, next_index, has_more: finished.append((book_uuid, next_index, has_more))
-    )
     vm.load_books()
     book = next(book for book in vm.books if book.uuid == "mock-book-15")
     vm.show_detail(book.uuid)
 
-    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    vm.set_detail_thumbnail_interest(book.uuid, (0, 1), (2,), (100, 142))
     task_service.complete()
-    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    task_service.complete()
 
-    assert len(emitted) == 14
     assert emitted[0] == (book.uuid, 0, b"page-0")
-    assert finished == [(book.uuid, 14, True)]
-    assert task_service.submitted == [
-        f"detail-thumbnail-batch-{book.uuid}-0",
-        f"detail-thumbnail-batch-{book.uuid}-14",
+    assert task_service.submitted[:3] == [
+        f"detail-thumbnail-source-{book.uuid}",
+        "detail-thumbnail-0",
+        "detail-thumbnail-1",
     ]
 
 
-def test_detail_thumbnail_cache_is_cleared_when_detail_panel_closes() -> None:
+def test_detail_close_releases_pins_but_keeps_shared_lru_bytes() -> None:
     task_service = RecordingTaskService()
+    thumbnail_service = FakeThumbnailService()
     vm = ShelfViewModel(
         LibraryService(InMemoryBookRepository()),
-        FakeThumbnailService(),  # type: ignore[arg-type]
+        thumbnail_service,  # type: ignore[arg-type]
         task_service,  # type: ignore[arg-type]
         cover_size=(200, 284),
     )
     vm.load_books()
     book = next(book for book in vm.books if book.uuid == "mock-book-15")
     vm.show_detail(book.uuid)
-    vm.request_next_detail_thumbnail_batch(book.uuid, (100, 142))
+    vm.set_detail_thumbnail_interest(book.uuid, (0,), (), (100, 142))
+    task_service.complete()
     task_service.complete()
 
-    cache = vm._detail_thumbnail_cache
+    cache = thumbnail_service.cache_service.thumbnail_cache
     assert cache.current_bytes > 0
+    assert vm._detail_stream is not None
+    cache_client = vm._detail_stream._cache
+    assert cache_client.pins
 
     vm.hide_detail()
 
-    # Closing the detail panel must release the bytes deterministically, not
-    # wait for LRU pressure on some other cache to age them out.
-    assert cache.current_bytes == 0
+    assert cache_client.pins == frozenset()
+    assert cache.current_bytes > 0
 
 
-def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:
+def test_stale_detail_source_results_are_ignored_after_switching_books() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(
         LibraryService(InMemoryBookRepository()),
@@ -803,7 +816,7 @@ def test_stale_detail_batch_results_are_ignored_after_switching_books() -> None:
     second = next(book for book in vm.books if book.uuid == "mock-book-01")
 
     vm.show_detail(first.uuid)
-    vm.request_next_detail_thumbnail_batch(first.uuid, (100, 142))
+    vm.set_detail_thumbnail_interest(first.uuid, (0,), (), (100, 142))
     vm.show_detail(second.uuid)
     task_service.complete(0)
 

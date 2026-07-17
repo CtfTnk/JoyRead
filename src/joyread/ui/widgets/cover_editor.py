@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from math import ceil
 
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import (
     QColor,
     QIcon,
@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from joyread.core.services.thumbnail_service import CoverCropState, DetailThumbnailBatch
+from joyread.core.services.thumbnail_service import CoverCropState
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -40,7 +40,9 @@ from joyread.ui.widgets.settings_page import SettingsSpinButtonSmall
 class CoverEditorOverlay(QWidget):
     closed = QtSignal()
     import_requested = QtSignal()
-    thumbnail_batch_requested = QtSignal(int, int, tuple)
+    thumbnail_interest_changed = QtSignal(tuple, tuple, tuple)
+    thumbnail_interest_released = QtSignal()
+    picker_visibility_changed = QtSignal(bool)
     thumbnail_selected = QtSignal(int)
     save_requested = QtSignal(object, object)
 
@@ -61,7 +63,8 @@ class CoverEditorOverlay(QWidget):
         self.editor.cancel_requested.connect(self.hide)
         self.editor.confirm_requested.connect(self._emit_save_requested)
         self.picker.back_requested.connect(self._show_editor)
-        self.picker.thumbnail_batch_requested.connect(self.thumbnail_batch_requested.emit)
+        self.picker.thumbnail_interest_changed.connect(self.thumbnail_interest_changed.emit)
+        self.picker.thumbnail_interest_released.connect(self.thumbnail_interest_released.emit)
         self.picker.thumbnail_selected.connect(self.thumbnail_selected.emit)
         self.hide()
 
@@ -89,8 +92,11 @@ class CoverEditorOverlay(QWidget):
         self._show_editor()
         return True
 
-    def apply_thumbnail_batch(self, batch: DetailThumbnailBatch) -> None:
-        self.picker.apply_thumbnail_batch(batch)
+    def set_thumbnail_page_count(self, page_count: int) -> None:
+        self.picker.set_page_count(page_count)
+
+    def set_thumbnail(self, page_index: int, image_bytes: bytes) -> None:
+        self.picker.set_thumbnail(page_index, image_bytes)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         event.accept()
@@ -101,10 +107,16 @@ class CoverEditorOverlay(QWidget):
 
     def hideEvent(self, event) -> None:  # type: ignore[override]
         super().hideEvent(event)
+        self.picker.release_interest()
+        self.picker_visibility_changed.emit(False)
         self.closed.emit()
 
     def _show_editor(self) -> None:
+        was_picker = self._stack.currentWidget() is self.picker
+        self.picker.release_interest()
         self._stack.setCurrentWidget(self.editor)
+        if was_picker:
+            self.picker_visibility_changed.emit(False)
         self._position_panel()
         self.raise_()
 
@@ -112,7 +124,8 @@ class CoverEditorOverlay(QWidget):
         self.picker.reset()
         self._stack.setCurrentWidget(self.picker)
         self._position_panel()
-        self.picker.request_initial_batch()
+        self.picker_visibility_changed.emit(True)
+        self.picker.refresh_interest()
 
     def _emit_save_requested(self) -> None:
         source_bytes = self.editor.source_bytes
@@ -238,8 +251,9 @@ class CoverEditorWidget(QFrame):
 
 
 class CoverThumbnailPickerWidget(QFrame):
-    thumbnail_batch_requested = QtSignal(int, int, tuple)
     thumbnail_selected = QtSignal(int)
+    thumbnail_interest_changed = QtSignal(tuple, tuple, tuple)
+    thumbnail_interest_released = QtSignal()
     back_requested = QtSignal()
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
@@ -247,9 +261,11 @@ class CoverThumbnailPickerWidget(QFrame):
         self.setObjectName("CoverEditorPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedSize(Theme.cover_editor_width, Theme.cover_editor_height)
-        self._next_index = 0
-        self._has_more = True
-        self._pending = False
+        self._page_count = 0
+        self._last_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
+        self._interest_timer = QTimer(self)
+        self._interest_timer.setSingleShot(True)
+        self._interest_timer.timeout.connect(self._emit_interest)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -267,8 +283,8 @@ class CoverThumbnailPickerWidget(QFrame):
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.viewport().setObjectName("CoverThumbnailViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._scroll.verticalScrollBar().valueChanged.connect(self._request_more_if_near_bottom)
-        self._scroll.verticalScrollBar().rangeChanged.connect(lambda _minimum, _maximum: self._request_more_if_near_bottom())
+        self._scroll.verticalScrollBar().valueChanged.connect(self._defer_interest)
+        self._scroll.verticalScrollBar().rangeChanged.connect(lambda _minimum, _maximum: self._defer_interest())
 
         page = QWidget()
         page.setObjectName("CoverThumbnailPickerPage")
@@ -299,38 +315,60 @@ class CoverThumbnailPickerWidget(QFrame):
         self._back_button.setToolTip(t("cover_editor.back"))
 
     def reset(self) -> None:
-        self._next_index = 0
-        self._has_more = True
-        self._pending = False
-        self._grid.reset_unknown()
+        self._grid.set_thumbnail_count(self._page_count, reset=True)
+        self._last_interest = ((), ())
         self._scroll.verticalScrollBar().setValue(0)
 
-    def request_initial_batch(self) -> None:
-        self._request_more_if_needed()
+    def refresh_interest(self) -> None:
+        self._last_interest = ((), ())
+        self._defer_interest()
 
-    def apply_thumbnail_batch(self, batch: DetailThumbnailBatch) -> None:
-        self._pending = False
-        if batch.next_index > self._next_index:
-            self._grid.set_thumbnail_count(batch.next_index)
-            self._next_index = batch.next_index
-        for item in batch.items:
-            self._grid.set_thumbnail(item.page_index, item.image_bytes)
-        self._has_more = batch.has_more
-        if not self._has_more:
-            self._grid.mark_complete()
+    def set_page_count(self, page_count: int) -> None:
+        self._page_count = max(0, int(page_count))
+        self._grid.set_thumbnail_count(self._page_count, reset=True)
+        self._last_interest = ((), ())
+        self._defer_interest()
 
-    def _request_more_if_near_bottom(self) -> None:
-        scrollbar = self._scroll.verticalScrollBar()
-        if scrollbar.maximum() <= 0 or (scrollbar.maximum() - scrollbar.value()) <= Theme.reader_topic_scroll_threshold:
-            self._request_more_if_needed()
+    def set_thumbnail(self, page_index: int, image_bytes: bytes) -> None:
+        self._grid.set_thumbnail(page_index, image_bytes)
 
-    def _request_more_if_needed(self) -> None:
-        if self._pending or not self._has_more:
+    def release_interest(self) -> None:
+        self._interest_timer.stop()
+        self._grid.set_interest(())
+        if self._last_interest != ((), ()):
+            self.thumbnail_interest_released.emit()
+        self._last_interest = ((), ())
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._defer_interest()
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        super().hideEvent(event)
+        self.release_interest()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._defer_interest()
+
+    def _defer_interest(self) -> None:
+        if not self._interest_timer.isActive():
+            self._interest_timer.start(0)
+
+    def _emit_interest(self) -> None:
+        if not self.isVisible() or self._page_count <= 0:
             return
-        self._pending = True
-        self.thumbnail_batch_requested.emit(
-            self._next_index,
-            Theme.reader_topic_thumbnail_batch_size,
+        origin = self._grid.mapFrom(self._scroll.viewport(), QPoint(0, 0))
+        viewport_rect = QRect(origin, self._scroll.viewport().size())
+        visible, prefetch = self._grid.visible_and_prefetch_indices(viewport_rect, prefetch_rows=1)
+        interest = (visible, prefetch)
+        if interest == self._last_interest:
+            return
+        self._last_interest = interest
+        self._grid.set_interest((*visible, *prefetch))
+        self.thumbnail_interest_changed.emit(
+            visible,
+            prefetch,
             (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
         )
 

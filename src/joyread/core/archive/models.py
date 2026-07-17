@@ -25,6 +25,15 @@ class ArchivePasswordResponse:
 PasswordProvider = Callable[[ArchivePasswordRequest], str | ArchivePasswordResponse | None]
 
 
+@dataclass(frozen=True)
+class ArchiveContentsEntry:
+    """One folder-derived table-of-contents target in flattened page order."""
+
+    label: str
+    page_index: int
+    depth: int = 0
+
+
 class ArchiveValidationCode(StrEnum):
     OK = "ok"
     MISSING = "missing"
@@ -43,6 +52,14 @@ class ArchiveValidationCode(StrEnum):
 class ArchivePasswordPolicy(StrEnum):
     ALLOW = "allow"
     FORBID = "forbid"
+
+
+class ArchiveAccessMode(StrEnum):
+    """Cost/readiness of page access for a discovered archive session."""
+
+    DIRECT = "direct"
+    EXPENSIVE_COLD = "expensive_cold"
+    EXPENSIVE_READY = "expensive_ready"
 
 
 @dataclass(frozen=True)

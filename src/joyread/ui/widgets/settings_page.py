@@ -27,19 +27,22 @@ from joyread.infrastructure.i18n.locale_service import (
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import (
+    ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
+    ARCHIVE_GLOBAL_FILE_DEPTH_MIN,
     ARCHIVE_POOL_MAX_MB,
     ARCHIVE_POOL_MIN_MB,
     ARCHIVE_CACHE_STRATEGY_OPTIONS,
-    ARCHIVE_INTERNAL_DEPTH_MAX,
-    ARCHIVE_INTERNAL_DEPTH_MIN,
-    DETAIL_THUMBNAIL_CACHE_MAX_MB,
-    DETAIL_THUMBNAIL_CACHE_MIN_MB,
+    THUMBNAIL_CACHE_MAX_MB,
+    THUMBNAIL_CACHE_MIN_MB,
     IMPORT_FOLDER_DEPTH_MAX,
     IMPORT_FOLDER_DEPTH_MIN,
+    NESTED_ARCHIVE_DEPTH_MAX,
+    NESTED_ARCHIVE_DEPTH_MIN,
     READER_PAGE_CACHE_MAX_MB,
     READER_PAGE_CACHE_MIN_MB,
     SettingsSectionKey,
     SettingsViewModel,
+    UNLIMITED_DEPTH,
 )
 from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -299,14 +302,25 @@ class SettingsPageWidget(QFrame):
         )
         import_folder_depth_item.value_changed.connect(self._viewmodel.set_import_folder_max_depth)
 
-        archive_depth_item = SettingsNumericItem(
-            t("settings.archive_internal_depth"),
-            self._viewmodel.archive_internal_max_depth,
-            ARCHIVE_INTERNAL_DEPTH_MIN,
-            ARCHIVE_INTERNAL_DEPTH_MAX,
+        nested_archive_depth_item = SettingsNumericItem(
+            t("settings.nested_archive_depth"),
+            self._viewmodel.nested_archive_max_depth,
+            NESTED_ARCHIVE_DEPTH_MIN,
+            NESTED_ARCHIVE_DEPTH_MAX,
             self._resources,
+            unlimited_sentinel=UNLIMITED_DEPTH,
         )
-        archive_depth_item.value_changed.connect(self._viewmodel.set_archive_internal_max_depth)
+        nested_archive_depth_item.value_changed.connect(self._viewmodel.set_nested_archive_max_depth)
+
+        archive_global_depth_item = SettingsNumericItem(
+            t("settings.archive_global_file_depth"),
+            self._viewmodel.archive_global_file_max_depth,
+            ARCHIVE_GLOBAL_FILE_DEPTH_MIN,
+            ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
+            self._resources,
+            unlimited_sentinel=UNLIMITED_DEPTH,
+        )
+        archive_global_depth_item.value_changed.connect(self._viewmodel.set_archive_global_file_max_depth)
 
         # Cache sub-group: user-tunable cache budgets and a one-shot purge for
         # the disk pool. Live in General per design — there is no separate
@@ -324,14 +338,14 @@ class SettingsPageWidget(QFrame):
         reader_cache_item.value_changed.connect(self._viewmodel.set_reader_page_cache_mb)
 
         detail_cache_item = SettingsNumericItem(
-            t("settings.detail_thumbnail_cache"),
-            self._viewmodel.detail_thumbnail_cache_mb,
-            DETAIL_THUMBNAIL_CACHE_MIN_MB,
-            DETAIL_THUMBNAIL_CACHE_MAX_MB,
+            t("settings.thumbnail_cache"),
+            self._viewmodel.thumbnail_cache_mb,
+            THUMBNAIL_CACHE_MIN_MB,
+            THUMBNAIL_CACHE_MAX_MB,
             self._resources,
             "MB",
         )
-        detail_cache_item.value_changed.connect(self._viewmodel.set_detail_thumbnail_cache_mb)
+        detail_cache_item.value_changed.connect(self._viewmodel.set_thumbnail_cache_mb)
 
         archive_pool_item = SettingsNumericItem(
             t("settings.archive_extraction_pool"),
@@ -366,7 +380,8 @@ class SettingsPageWidget(QFrame):
             inspect_title_switch,
             import_banner,
             import_folder_depth_item,
-            archive_depth_item,
+            nested_archive_depth_item,
+            archive_global_depth_item,
             cache_banner,
             reader_cache_item,
             detail_cache_item,
@@ -878,8 +893,17 @@ class SettingsNumericItem(SettingsOptionItem):
         resources: ResourceLoader,
         suffix: str = "",
         parent: QWidget | None = None,
+        *,
+        unlimited_sentinel: int | None = None,
     ) -> None:
-        self.spin_button = SettingsSpinButtonSmall(value, minimum, maximum, suffix, resources)
+        self.spin_button = SettingsSpinButtonSmall(
+            value,
+            minimum,
+            maximum,
+            suffix,
+            resources,
+            unlimited_sentinel=unlimited_sentinel,
+        )
         super().__init__(name, self.spin_button, parent)
         self.spinbox = self.spin_button
         self.spin_button.value_changed.connect(self.value_changed.emit)
@@ -898,12 +922,15 @@ class SettingsSpinButtonSmall(QFrame):
         unit: str,
         resources: ResourceLoader,
         parent: QWidget | None = None,
+        *,
+        unlimited_sentinel: int | None = None,
     ) -> None:
         super().__init__(parent)
         self._minimum = int(minimum)
         self._maximum = int(maximum)
+        self._unlimited_sentinel = unlimited_sentinel
         self._unit = unit
-        self._value = max(self._minimum, min(self._maximum, int(value)))
+        self._value = self._normalized_value(value, fallback=self._minimum)
         self.setProperty("class", "SettingsSpinButtonSmall")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedSize(Theme.settings_spin_width, Theme.settings_spin_height)
@@ -933,9 +960,13 @@ class SettingsSpinButtonSmall(QFrame):
         self._value_editor.setProperty("class", "SettingsSpinValueText")
         self._value_editor.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._value_editor.setFrame(False)
-        self._value_editor.setMaxLength(max(len(str(self._minimum)), len(str(self._maximum))))
+        value_lengths = [len(str(self._minimum)), len(str(self._maximum))]
+        if self._unlimited_sentinel is not None:
+            value_lengths.append(len(str(self._unlimited_sentinel)))
+        self._value_editor.setMaxLength(max(value_lengths))
         self._value_editor.setFixedWidth(Theme.settings_spin_editor_width)
-        self._value_editor.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
+        if self._unlimited_sentinel is None:
+            self._value_editor.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
         self._value_editor.returnPressed.connect(self._commit_editor_value)
         self._value_editor.editingFinished.connect(self._refresh_label)
         self._unit_label = QLabel(unit)
@@ -963,17 +994,35 @@ class SettingsSpinButtonSmall(QFrame):
         return self._value
 
     def set_value(self, value: int, *, emit: bool = True) -> None:
-        clamped = max(self._minimum, min(self._maximum, int(value)))
-        if clamped == self._value:
+        normalized = self._normalized_value(value, fallback=self._value)
+        if normalized == self._value:
             self._refresh_label()
             return
-        self._value = clamped
+        self._value = normalized
         self._refresh_label()
         if emit:
-            self.value_changed.emit(clamped)
+            self.value_changed.emit(normalized)
 
     def step_by(self, delta: int) -> None:
+        if self._unlimited_sentinel is not None:
+            if self._value == self._unlimited_sentinel and delta > 0:
+                self.set_value(self._minimum)
+                return
+            if self._value == self._minimum and delta < 0:
+                self.set_value(self._unlimited_sentinel)
+                return
         self.set_value(self._value + delta)
+
+    def _normalized_value(self, value: object, *, fallback: int) -> int:
+        try:
+            coerced = int(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return fallback
+        if self._unlimited_sentinel is not None and coerced == self._unlimited_sentinel:
+            return self._unlimited_sentinel
+        if self._unlimited_sentinel is not None and coerced < self._minimum:
+            return fallback
+        return max(self._minimum, min(self._maximum, coerced))
 
     def _step_button(self, resources: ResourceLoader, icon_name: str, delta: int) -> QToolButton:
         button = QToolButton()

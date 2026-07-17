@@ -27,10 +27,10 @@ def _wait_for_chapter(qtbot, window) -> None:  # noqa: ANN001
     qtbot.waitUntil(lambda: window.shell.viewmodel.chapter_count > 0, timeout=2000)
 
 
-def test_novel_format_routing_recognises_epub() -> None:
-    assert ".epub" in NOVEL_FORMATS
-    assert _is_novel_source(Path("/tmp/book.epub"))
-    assert _is_novel_source(Path("/tmp/book.EPUB"))
+def test_novel_format_routing_keeps_epub_shelved() -> None:
+    assert ".epub" not in NOVEL_FORMATS
+    assert not _is_novel_source(Path("/tmp/book.epub"))
+    assert not _is_novel_source(Path("/tmp/book.EPUB"))
     assert not _is_novel_source(Path("/tmp/book.cbz"))
 
 
@@ -454,7 +454,7 @@ def test_novel_reader_add_and_delete_bookmark_roundtrip(qtbot, tmp_path: Path, m
     context.close()
 
 
-def test_main_window_routes_epub_book_to_novel_reader(qtbot, tmp_path: Path, monkeypatch) -> None:
+def test_main_window_blocks_existing_epub_book(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
     novel_path = write_tiny_epub(tmp_path / "story.epub")
@@ -468,16 +468,15 @@ def test_main_window_routes_epub_book_to_novel_reader(qtbot, tmp_path: Path, mon
     context.settings_store.update(individual_read_window=True)
 
     window.open_reader_for_book(book.uuid)
-    assert len(window._reader_windows) == 1
-    assert isinstance(window._reader_windows[0], NovelReaderWindow)
+    assert window._reader_windows == []
+    assert not window.dialog_overlay.isHidden()
+    assert window.dialog_overlay.panel.title_text == "Read"
 
-    window._reader_windows[0].close()
-    qtbot.wait(0)
     window.close()
     context.close()
 
 
-def test_main_window_routes_epub_file_open_to_novel_window(qtbot, tmp_path: Path, monkeypatch) -> None:
+def test_main_window_blocks_epub_file_open(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
     novel_path = write_tiny_epub(tmp_path / "anything.epub")
@@ -487,11 +486,10 @@ def test_main_window_routes_epub_file_open_to_novel_window(qtbot, tmp_path: Path
 
     window.open_reader_for_file(novel_path, import_mode=True)
 
-    assert len(window._reader_windows) == 1
-    assert isinstance(window._reader_windows[0], NovelReaderWindow)
+    assert window._reader_windows == []
+    assert not window.dialog_overlay.isHidden()
+    assert window.dialog_overlay.panel.title_text == "Read"
 
-    window._reader_windows[0].close()
-    qtbot.wait(0)
     window.close()
     context.close()
 

@@ -13,6 +13,7 @@ from uuid import uuid4
 
 from joyread.core.archive import ArchiveImageService, ArchivePasswordPolicy, ArchiveValidationCode
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.tag_service import TagService
@@ -20,7 +21,7 @@ from joyread.infrastructure.database.database_interpreter import DatabaseInterpr
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
-BOOK_EXTENSIONS = frozenset({".epub", ".pdf"}) | ARCHIVE_EXTENSIONS
+BOOK_EXTENSIONS = SUPPORTED_READER_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,8 @@ class ImportService:
         self,
         manifest_path: str | Path,
         *,
-        archive_internal_max_depth: int | None = None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
     ) -> ImportBatchResult:
         """Import every entry in a JSON manifest file.
 
@@ -130,14 +132,16 @@ class ImportService:
         return self.import_items(
             items,
             manifest_path=path,
-            archive_internal_max_depth=archive_internal_max_depth,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
         )
 
     def import_files(
         self,
         paths: list[str | Path],
         *,
-        archive_internal_max_depth: int | None = None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
     ) -> ImportBatchResult:
         """Import a list of explicit source paths chosen by the user.
 
@@ -146,18 +150,25 @@ class ImportService:
         is involved, so per-item metadata defaults are used.
         """
 
-        logger.info("Import files requested count=%d max_depth=%s", len(paths), archive_internal_max_depth)
+        logger.info(
+            "Import files requested count=%d nested_depth=%s global_depth=%s",
+            len(paths),
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
+        )
         return self.import_items(
             [{"source_path": str(path)} for path in paths],
             manifest_path=None,
-            archive_internal_max_depth=archive_internal_max_depth,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
         )
 
     def preflight_file(
         self,
         path: str | Path,
         *,
-        archive_internal_max_depth: int | None = None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
     ) -> ImportPreflightResult:
         """Validate a source without copying or inserting any rows.
 
@@ -169,8 +180,17 @@ class ImportService:
         """
 
         source_path = Path(path).expanduser()
-        logger.debug("Import preflight start path=%s max_depth=%s", source_path, archive_internal_max_depth)
-        failure = self._validate_source(source_path, archive_internal_max_depth)
+        logger.debug(
+            "Import preflight start path=%s nested_depth=%s global_depth=%s",
+            source_path,
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
+        )
+        failure = self._validate_source(
+            source_path,
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
+        )
         if failure is not None:
             logger.debug(
                 "Import preflight rejected path=%s status=%s message=%s",
@@ -192,19 +212,25 @@ class ImportService:
         path: str | Path,
         *,
         max_depth: int = 1,
-        archive_internal_max_depth: int | None = None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
     ) -> ImportBatchResult:
         folder = Path(path).expanduser()
         files = _supported_files_within_depth(folder, max_depth=max_depth)
         logger.info("Import folder requested path=%s depth=%d matched=%d", folder, max_depth, len(files))
-        return self.import_files(files, archive_internal_max_depth=archive_internal_max_depth)
+        return self.import_files(
+            files,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
+        )
 
     def import_items(
         self,
         items: list[dict[str, object]],
         *,
         manifest_path: Path | None,
-        archive_internal_max_depth: int | None = None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
     ) -> ImportBatchResult:
         """Core import loop: validate, hash, copy, insert per item.
 
@@ -220,11 +246,12 @@ class ImportService:
         started_at = _now()
         manifest_display = str(manifest_path) if manifest_path is not None else None
         logger.info(
-            "Import batch %s starting: %d item(s) manifest=%s max_depth=%s",
+            "Import batch %s starting: %d item(s) manifest=%s nested_depth=%s global_depth=%s",
             batch_id,
             len(items),
             manifest_display,
-            archive_internal_max_depth,
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
         )
         self._database.execute(
             lambda connection: connection.execute(
@@ -248,7 +275,8 @@ class ImportService:
                     source_path=_resolve_source_path(source_value, manifest_dir),
                     source_display=source_value,
                     external_id=str(external_id) if external_id is not None else None,
-                    archive_internal_max_depth=archive_internal_max_depth,
+                    nested_archive_max_depth=nested_archive_max_depth,
+                    archive_global_file_max_depth=archive_global_file_max_depth,
                 )
             except Exception as exc:
                 logger.warning("Import item %s failed: %s", source_value, exc, exc_info=True)
@@ -354,9 +382,14 @@ class ImportService:
         source_path: Path,
         source_display: str,
         external_id: str | None,
-        archive_internal_max_depth: int | None,
+        nested_archive_max_depth: int | None,
+        archive_global_file_max_depth: int | None,
     ) -> ImportItemResult:
-        failure = self._validate_source(source_path, archive_internal_max_depth)
+        failure = self._validate_source(
+            source_path,
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
+        )
         if failure is not None:
             logger.debug(
                 "Import item rejected source=%s status=%s message=%s",
@@ -438,7 +471,12 @@ class ImportService:
             message="Imported.",
         )
 
-    def _validate_source(self, source_path: Path, archive_internal_max_depth: int | None) -> _ValidationFailure | None:
+    def _validate_source(
+        self,
+        source_path: Path,
+        nested_archive_max_depth: int | None,
+        archive_global_file_max_depth: int | None,
+    ) -> _ValidationFailure | None:
         logger.debug("Validating import source path=%s", source_path)
         if not source_path.exists():
             return _ValidationFailure("failed", f"Source file does not exist: {source_path}")
@@ -455,7 +493,10 @@ class ImportService:
             validation = self._archive_service.validate_archive(
                 source_path,
                 password_policy=ArchivePasswordPolicy.FORBID,
-                max_depth=archive_internal_max_depth if archive_internal_max_depth is not None else 2,
+                max_nested_depth=nested_archive_max_depth if nested_archive_max_depth is not None else 2,
+                global_file_max_depth=(
+                    archive_global_file_max_depth if archive_global_file_max_depth is not None else 100
+                ),
             )
             logger.debug(
                 "Archive import validation path=%s code=%s pages=%s",

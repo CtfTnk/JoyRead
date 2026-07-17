@@ -11,6 +11,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.reader.epub import (
     EpubAssetReader,
     EpubBook,
@@ -22,9 +23,6 @@ from joyread.core.reader.epub import (
 
 
 logger = logging.getLogger(__name__)
-
-
-EPUB_EXTENSIONS: frozenset[str] = frozenset({".epub"})
 
 
 @dataclass(frozen=True)

@@ -6,12 +6,16 @@ import logging
 import os
 import platform
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtGui import QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow
 
 from joyread.app.app_context import AppContext, create_app_context
+from joyread.app.file_open_router import FileOpenRouter, JoyReadApplication
+from joyread.app.startup_window_coordinator import StartupWindowCoordinator
+from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import (
     StorageRecoveryCancelled,
@@ -24,13 +28,39 @@ from joyread.ui.dialogs.storage_recovery_dialog import (
     StorageRecoveryDialogResult,
 )
 from joyread.ui.views.main_window import MainWindow
+from joyread.ui.views.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_window import ReaderWindow
 
 
 logger = logging.getLogger(__name__)
 
+MACOS_FILE_OPEN_GRACE_MS = 250
+
+
+@dataclass(frozen=True)
+class _ApplicationRuntime:
+    app: QApplication
+    context: AppContext
+    file_open_router: FileOpenRouter
+    direct_path: Path | None
+
 
 def create_application(argv: list[str] | None = None) -> tuple[QApplication, AppContext, QMainWindow]:
+    runtime = _create_application_runtime(argv)
+    if runtime.direct_path is not None:
+        logger.info("Direct-reader launch path=%s", runtime.direct_path)
+        window = _create_standalone_reader_window(runtime.context, runtime.direct_path)
+    else:
+        logger.info("Main window launch")
+        window = MainWindow(runtime.context)
+
+    runtime.file_open_router.set_open_handler(
+        lambda path: _show_external_reader_window(runtime.context, path)
+    )
+    return runtime.app, runtime.context, window
+
+
+def _create_application_runtime(argv: list[str] | None = None) -> _ApplicationRuntime:
     argv = argv or sys.argv
     # Early stderr logging so AppContext setup (migrations, service init) is
     # visible. Once the writable logs path is known we upgrade to the rotating
@@ -43,7 +73,16 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
         platform.python_version(),
         argv[1:],
     )
-    app = QApplication.instance() or QApplication(argv)
+    app = _create_qt_application(argv)
+    previous_router = getattr(app, "_joyread_file_open_router", None)
+    if isinstance(previous_router, FileOpenRouter):
+        previous_router.dispose()
+    file_open_router = FileOpenRouter(app, SUPPORTED_READER_EXTENSIONS)
+    setattr(app, "_joyread_file_open_router", file_open_router)
+    if isinstance(app, JoyReadApplication):
+        for path in app.take_startup_file_open_paths():
+            file_open_router.enqueue(path)
+
     app.setQuitOnLastWindowClosed(True)
     context = create_app_context(recovery_prompt=_prompt_storage_recovery)
     context.paths.ensure_directories()
@@ -57,17 +96,40 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     app.aboutToQuit.connect(_log_about_to_quit)
     app.aboutToQuit.connect(context.close)
 
+    # Process any native open-document event queued while services and storage
+    # were initialized. A command-line path wins if both channels report the
+    # same launch request.
+    app.processEvents()
     direct_path = _direct_reader_path(argv[1:])
     if direct_path is not None:
-        # OS "Open With" should go straight to reader-only mode. Do not show
-        # the bookshelf or a QFileDialog here; macOS native panel helpers are
-        # only expected when the user explicitly opens an in-app file picker.
-        logger.info("Direct-reader launch path=%s", direct_path)
-        window = ReaderWindow(context, direct_path)
+        file_open_router.discard_pending(direct_path)
     else:
-        logger.info("Main window launch")
-        window = MainWindow(context)
-    return app, context, window
+        direct_path = file_open_router.take_pending_path()
+    return _ApplicationRuntime(
+        app=app,
+        context=context,
+        file_open_router=file_open_router,
+        direct_path=direct_path,
+    )
+
+
+def _create_qt_application(argv: list[str]) -> QApplication:
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing
+    return JoyReadApplication(argv, SUPPORTED_READER_EXTENSIONS)
+
+
+def _create_standalone_reader_window(context: AppContext, path: Path) -> QMainWindow:
+    if path.suffix.lower() in EPUB_EXTENSIONS:
+        return NovelReaderWindow(context, path)
+    return ReaderWindow(context, path)
+
+
+def _show_external_reader_window(context: AppContext, path: Path) -> QMainWindow:
+    window = _create_standalone_reader_window(context, path)
+    _present_window(window)
+    return window
 
 
 def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryPromptResult:
@@ -107,13 +169,38 @@ def _log_about_to_quit() -> None:
 
 def run(argv: list[str] | None = None) -> int:
     try:
-        app, _context, window = create_application(argv)
+        runtime = _create_application_runtime(argv)
     except StorageRecoveryCancelled:
         logger.info("JoyRead startup cancelled during storage recovery")
+        app = QApplication.instance()
+        router = getattr(app, "_joyread_file_open_router", None) if app is not None else None
+        if isinstance(router, FileOpenRouter):
+            router.dispose()
         return 0
+
+    grace_ms = (
+        MACOS_FILE_OPEN_GRACE_MS
+        if platform.system() == "Darwin" and runtime.direct_path is None
+        else 0
+    )
+    coordinator = StartupWindowCoordinator(
+        create_main_window=lambda: MainWindow(runtime.context),
+        create_reader_window=lambda path: _create_standalone_reader_window(runtime.context, path),
+        present_window=_present_window,
+        file_open_grace_ms=grace_ms,
+        parent=runtime.app,
+    )
+    setattr(runtime.app, "_joyread_startup_window_coordinator", coordinator)
+    coordinator.start(runtime.direct_path)
+    runtime.file_open_router.set_open_handler(coordinator.open_file)
+    return runtime.app.exec()
+
+
+def _present_window(window: QMainWindow) -> None:
     center_window_on_launch(window)
     window.show()
-    return app.exec()
+    window.raise_()
+    window.activateWindow()
 
 
 def center_window_on_launch(window: QMainWindow) -> None:

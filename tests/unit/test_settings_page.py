@@ -1,3 +1,5 @@
+import json
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
@@ -41,7 +43,8 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_storage_location("~/Documents/JoyRead-Library-Test")
     viewmodel.set_archive_cache_strategy("Hidden image files")
     viewmodel.set_import_folder_max_depth(3)
-    viewmodel.set_archive_internal_max_depth(4)
+    viewmodel.set_nested_archive_max_depth(4)
+    viewmodel.set_archive_global_file_max_depth(250)
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
@@ -51,8 +54,28 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
     assert viewmodel.archive_cache_strategy_label == "Hidden image files"
     assert viewmodel.import_folder_max_depth == 3
-    assert viewmodel.archive_internal_max_depth == 4
-    assert len(changes) == 8
+    assert viewmodel.nested_archive_max_depth == 4
+    assert viewmodel.archive_global_file_max_depth == 250
+    assert len(changes) == 9
+
+
+def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinels() -> None:
+    viewmodel = SettingsViewModel()
+    depth_changes: list[None] = []
+    viewmodel.archive_depth_limits_changed.connect(lambda: depth_changes.append(None))
+
+    viewmodel.set_nested_archive_max_depth(-1)
+    viewmodel.set_archive_global_file_max_depth(-1)
+
+    assert viewmodel.nested_archive_max_depth == -1
+    assert viewmodel.archive_global_file_max_depth == -1
+
+    viewmodel.set_nested_archive_max_depth(0)
+    viewmodel.set_archive_global_file_max_depth(-2)
+
+    assert viewmodel.nested_archive_max_depth == -1
+    assert viewmodel.archive_global_file_max_depth == -1
+    assert len(depth_changes) == 2
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -109,11 +132,11 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four General rows (Storage moved to Privacy), two Import depth rows,
+    # Four General rows (Storage moved to Privacy), three Import depth rows,
     # and five Cache rows.
-    assert len(setting_items) == 11
+    assert len(setting_items) == 12
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 5
+    assert len(spin_buttons) == 6
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
 
@@ -380,6 +403,95 @@ def test_settings_spin_button_small_commits_editor_value_on_return(qtbot) -> Non
     assert spin.value == 64
     assert editor.text() == "64"
     assert emitted == [55, 64]
+
+
+def test_settings_depth_spin_supports_unlimited_and_rejects_zero(qtbot) -> None:
+    apply_theme()
+    spin = SettingsSpinButtonSmall(
+        1,
+        1,
+        5,
+        "",
+        ResourceLoader(),
+        unlimited_sentinel=-1,
+    )
+    qtbot.addWidget(spin)
+    emitted: list[int] = []
+    spin.value_changed.connect(emitted.append)
+    spin.show()
+    QApplication.processEvents()
+
+    buttons = spin.findChildren(QToolButton)
+    editor = spin.findChild(QLineEdit, "SettingsSpinValueEditor")
+    assert editor is not None
+
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    assert spin.value == -1
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    assert spin.value == 1
+
+    editor.setText("0")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    assert spin.value == 1
+    assert editor.text() == "1"
+
+    editor.setText("-2")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    assert spin.value == 1
+    assert editor.text() == "1"
+    assert emitted == [-1, 1]
+
+
+def test_settings_store_migrates_legacy_archive_depth_and_persists_new_keys(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_internal_max_depth": -1,
+                "archive_global_file_max_depth": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+
+    assert settings.nested_archive_max_depth == -1
+    assert settings.archive_global_file_max_depth == 100
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["nested_archive_max_depth"] == -1
+    assert saved["archive_global_file_max_depth"] == 100
+    assert "archive_internal_max_depth" not in saved
+
+
+def test_settings_store_migrates_thumbnail_cache_key_and_viewmodel_persists_new_name(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "detail_thumbnail_cache_mb": 72,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store)
+
+    assert settings.thumbnail_cache_mb == 72
+    assert viewmodel.thumbnail_cache_mb == 72
+
+    viewmodel.set_thumbnail_cache_mb(96)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+
+    assert saved["thumbnail_cache_mb"] == 96
+    assert "detail_thumbnail_cache_mb" not in saved
 
 
 def test_main_window_opens_centered_floating_settings_overlay_and_restores_sidebar(qtbot) -> None:

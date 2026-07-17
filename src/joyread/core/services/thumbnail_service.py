@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import re
-from threading import Lock
+from threading import Lock, RLock
 
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
 from joyread.core.archive import ArchiveError, ArchiveImageService
-from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderImageSession, ReaderSessionService
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfError
-from joyread.core.services.cache_service import BoundedByteCache, CacheService
+from joyread.core.services.cache_service import BoundedByteCache, CacheService, ThumbnailCacheClient
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
@@ -48,6 +49,26 @@ class DetailThumbnailBatch:
 
 
 @dataclass(frozen=True)
+class ThumbnailSourceHandle:
+    """Source-stable session used by viewport thumbnail streams."""
+
+    source_id: str
+    page_count: int
+    suffix: str
+    session: ReaderImageSession
+    access_lock: RLock
+    source_path: Path
+    nested_archive_max_depth: int
+    archive_global_file_max_depth: int
+
+    def preferred_batch_size(self, page_index: int) -> int:
+        provider = getattr(self.session, "thumbnail_batch_size", None)
+        if callable(provider):
+            return max(1, min(8, int(provider(page_index))))
+        return 8 if self.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS else 1
+
+
+@dataclass(frozen=True)
 class CoverCropState:
     source_id: str
     zoom_percent: float
@@ -67,17 +88,104 @@ class ThumbnailService:
         archive_service: ArchiveImageService,
         cache_service: CacheService,
         reader_session_service: ReaderSessionService | None = None,
+        *,
+        nested_archive_max_depth: int = 2,
+        archive_global_file_max_depth: int = 100,
     ) -> None:
         self._paths = paths
         self._archive_service = archive_service
         self._reader_session_service = reader_session_service or ReaderSessionService(archive_service)
         self._cache_service = cache_service
+        self._nested_archive_max_depth = _normalize_depth_limit(
+            nested_archive_max_depth,
+            default=2,
+            maximum=5,
+        )
+        self._archive_global_file_max_depth = _normalize_depth_limit(
+            archive_global_file_max_depth,
+            default=100,
+            maximum=1000,
+        )
         # The session cache keeps an open reader session per book so grid
         # covers and detail-thumbnail batches do not re-scan the source for
         # the same book. Bounded implicitly by how many books are being
         # interacted with concurrently.
         self._session_cache: dict[str, ReaderImageSession] = {}
+        self._session_access_locks: dict[str, RLock] = {}
         self._session_cache_lock = Lock()
+
+    def set_archive_depth_limits(self, nested_max_depth: int, global_file_max_depth: int) -> None:
+        nested = _normalize_depth_limit(nested_max_depth, default=2, maximum=5)
+        global_depth = _normalize_depth_limit(global_file_max_depth, default=100, maximum=1000)
+        with self._session_cache_lock:
+            if (
+                nested == self._nested_archive_max_depth
+                and global_depth == self._archive_global_file_max_depth
+            ):
+                return
+            self._nested_archive_max_depth = nested
+            self._archive_global_file_max_depth = global_depth
+            self._session_cache.clear()
+            self._session_access_locks.clear()
+
+    def issue_thumbnail_cache_client(self, client_id: str) -> ThumbnailCacheClient:
+        """Lease the app-wide rendered-thumbnail cache for one viewport."""
+
+        return self._cache_service.issue_thumbnail_client(client_id)
+
+    def open_thumbnail_source(self, book: Book) -> ThumbnailSourceHandle | None:
+        """Open one reusable source without decoding any page pixels."""
+
+        if not self.can_generate_from(book):
+            return None
+        signature = self._source_signature(book)
+        if signature is None:
+            return None
+        session = self._session_for(book, signature)
+        source_id = self._thumbnail_source_id(book, signature)
+        with self._session_cache_lock:
+            access_lock = self._session_access_locks.setdefault(source_id, RLock())
+        return ThumbnailSourceHandle(
+            source_id=source_id,
+            page_count=session.page_count,
+            suffix=Path(book.file_path).suffix.lower(),
+            session=session,
+            access_lock=access_lock,
+            source_path=Path(book.file_path),
+            nested_archive_max_depth=self._nested_archive_max_depth,
+            archive_global_file_max_depth=self._archive_global_file_max_depth,
+        )
+
+    def stream_thumbnails(
+        self,
+        source: ThumbnailSourceHandle,
+        page_indices: Iterable[int],
+        size: SizeTuple,
+        emit_item: Callable[[DetailThumbnailItem], None],
+    ) -> None:
+        """Read a bounded group and emit each rendered item independently."""
+
+        requested = tuple(
+            dict.fromkeys(
+                int(index)
+                for index in page_indices
+                if 0 <= int(index) < source.page_count
+            )
+        )
+        if not requested:
+            return
+        with source.access_lock:
+            pages = source.session.get_pages(requested)
+        for page in pages:
+            if page is None:
+                continue
+            page_index = int(getattr(page, "index", getattr(page, "page_index", -1)))
+            try:
+                rendered = render_contain_blur_thumbnail(page.image_bytes, size)
+            except (OSError, UnidentifiedImageError) as exc:
+                logger.warning("Thumbnail stream render failed page=%d: %s", page_index, exc)
+                continue
+            emit_item(DetailThumbnailItem(page_index, rendered))
 
     def can_generate_from(self, book: Book) -> bool:
         source = Path(book.file_path)
@@ -137,7 +245,11 @@ class ThumbnailService:
 
         try:
             session = self._session_for(book, signature)
-            page = session.get_page(page_index)
+            source_id = self._thumbnail_source_id(book, signature)
+            with self._session_cache_lock:
+                access_lock = self._session_access_locks.setdefault(source_id, RLock())
+            with access_lock:
+                page = session.get_page(page_index)
         except (ArchiveError, PdfError, OSError) as exc:
             logger.warning("Cover source load failed for book=%s page=%d: %s", book.uuid, page_index, exc)
             return None
@@ -364,8 +476,10 @@ class ThumbnailService:
         return f"{stat.st_mtime_ns}-{stat.st_size}"
 
     def _session_for(self, book: Book, signature: str) -> ReaderImageSession:
-        cache_key = f"session:{book.uuid}:{signature}"
         with self._session_cache_lock:
+            nested_depth = self._nested_archive_max_depth
+            global_depth = self._archive_global_file_max_depth
+            cache_key = f"session:{book.uuid}:{signature}:{nested_depth}:{global_depth}"
             session = self._session_cache.get(cache_key)
         if session is not None:
             logger.debug("Thumbnail session cache hit book=%s", book.uuid)
@@ -374,10 +488,29 @@ class ThumbnailService:
         # Source scanning is expensive for large books, so keep a source-stable
         # session around for cover and detail thumbnail batches.
         logger.debug("Thumbnail session cache miss book=%s source=%s", book.uuid, book.file_path)
-        session = self._reader_session_service.open_document(book.file_path)
+        session = self._reader_session_service.open_document(
+            book.file_path,
+            nested_archive_max_depth=nested_depth,
+            archive_global_file_max_depth=global_depth,
+        )
         with self._session_cache_lock:
-            self._session_cache[cache_key] = session
+            if (
+                nested_depth == self._nested_archive_max_depth
+                and global_depth == self._archive_global_file_max_depth
+            ):
+                self._session_cache[cache_key] = session
         return session
+
+    def _thumbnail_source_id(self, book: Book, signature: str) -> str:
+        source = Path(book.file_path)
+        try:
+            path = str(source.resolve())
+        except OSError:
+            path = str(source.absolute())
+        return (
+            f"{path}:{signature}:nested={self._nested_archive_max_depth}:"
+            f"global={self._archive_global_file_max_depth}"
+        )
 
     def _cover_path(self, book: Book, signature: str, size: SizeTuple) -> Path:
         return self._covers_dir() / f"{self._safe_book_uuid(book.uuid)}-{signature}-{size[0]}x{size[1]}.png"
@@ -539,3 +672,15 @@ def _resize_to_contain(image: Image.Image, size: SizeTuple) -> Image.Image:
     width, height = size
     scale = min(width / image.width, height / image.height)
     return image.resize((max(1, round(image.width * scale)), max(1, round(image.height * scale))), Image.Resampling.LANCZOS)
+
+
+def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
+    try:
+        depth = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if depth == -1:
+        return -1
+    if depth < 1:
+        return default
+    return min(maximum, depth)

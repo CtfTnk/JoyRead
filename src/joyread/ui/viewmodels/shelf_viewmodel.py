@@ -20,17 +20,15 @@ from joyread.core.search import (
     matches_book_search,
     parse_book_search_query,
 )
-from joyread.core.services.cache_service import BoundedByteCache
 from joyread.core.services.library_service import LibraryService
+from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.tag_service import TagService
-from joyread.core.services.task_service import TaskHandle, TaskService
-from joyread.core.services.thumbnail_service import DetailThumbnailBatch, ThumbnailService
+from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskService
+from joyread.core.services.thumbnail_service import ThumbnailService, ThumbnailSourceHandle
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.signals import Signal
-
-
-_DEFAULT_DETAIL_THUMBNAIL_CACHE_MB = 64
+from joyread.ui.viewmodels.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 
 
 logger = logging.getLogger(__name__)
@@ -80,7 +78,7 @@ class ShelfViewModel:
 
     - ``cover_ready``
     - ``page_thumbnail_ready``
-    - ``detail_thumbnail_batch_finished``
+    - ``detail_thumbnail_source_ready``
 
     These are produced by thumbnail jobs running off-UI. Receivers that
     touch widgets (paint, layout) MUST re-marshal back onto the Qt UI
@@ -89,9 +87,9 @@ class ShelfViewModel:
 
     The token ``_detail_load_token`` exists to defeat race conditions when
     the user opens detail panel for book A, then quickly switches to book B
-    before A's thumbnail batch finishes. Each detail-panel open bumps the
-    token; late batches compare against the captured token and drop their
-    result if they're stale.
+    before A's thumbnail source or stream item finishes. Each detail-panel
+    open bumps the token; late results compare against the captured token and
+    are dropped when stale.
     """
 
     def __init__(
@@ -102,15 +100,15 @@ class ShelfViewModel:
         cover_size: tuple[int, int] | None = None,
         settings: AppSettings | None = None,
         settings_store: SettingsStore | None = None,
-        detail_thumbnail_cache_mb: int | None = None,
         tag_service: TagService | None = None,
+        archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
         self.book_open_requested: Signal[str] = Signal()
         self.book_open_at_requested: Signal[tuple[str, int]] = Signal()
         self.missing_book_requested: Signal[str] = Signal()
-        # cover_ready / page_thumbnail_ready / detail_thumbnail_batch_finished
+        # cover_ready / page_thumbnail_ready / detail_thumbnail_source_ready
         # fire from the TaskService worker thread (the thumbnail jobs are
         # submitted to the QThreadPool). Receivers in widgets must marshal
         # back to the Qt UI thread (Qt::AutoConnection is the default for
@@ -118,7 +116,7 @@ class ShelfViewModel:
         # subscriber is responsible).
         self.cover_ready: Signal[tuple[str, Path]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
-        self.detail_thumbnail_batch_finished: Signal[tuple[str, int, bool]] = Signal()
+        self.detail_thumbnail_source_ready: Signal[tuple[str, int]] = Signal()
         self.books_deleted: Signal[tuple[str, ...]] = Signal()
         self.delete_failed: Signal[str] = Signal()
         self.favourite_failed: Signal[str] = Signal()
@@ -135,9 +133,10 @@ class ShelfViewModel:
         self._thumbnail_service = thumbnail_service
         self._task_service = task_service
         self._tag_service = tag_service
+        self._archive_warmup_coordinator = archive_warmup_coordinator
+        self._detail_warmup_client_id = f"detail-thumbnail:{id(self)}"
         self._cover_size = cover_size
         self._settings_store = settings_store
-        self._detail_batch_size = 14
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.languages: list[Language] = []
@@ -164,21 +163,12 @@ class ShelfViewModel:
         self._cover_paths: dict[str, Path] = {}
         self._pending_cover_ids: set[str] = set()
         self._detail_load_token = 0
-        self._detail_next_index = 0
-        self._detail_has_more = True
-        self._detail_batch_pending = False
-        self._detail_batch_handle: TaskHandle[DetailThumbnailBatch] | None = None
-        # Detail thumbnails are scoped to a single open detail panel. Owning
-        # the byte-budgeted cache here means closing the panel deterministic-
-        # ally frees those bytes regardless of LRU pressure on other caches.
-        detail_mb = detail_thumbnail_cache_mb
-        if detail_mb is None and settings is not None:
-            detail_mb = getattr(settings, "detail_thumbnail_cache_mb", None)
-        if detail_mb is None:
-            detail_mb = _DEFAULT_DETAIL_THUMBNAIL_CACHE_MB
-        self._detail_thumbnail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(
-            max_bytes=max(0, int(detail_mb)) * 1024 * 1024,
-        )
+        self._detail_source_handle: ThumbnailSourceHandle | None = None
+        self._detail_source_task: TaskHandle[ThumbnailSourceHandle | None] | None = None
+        self._detail_thumbnail_size = (1, 1)
+        self._detail_pending_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
+        self._detail_stream: ThumbnailStreamController | None = None
+        self._rebuild_detail_stream()
 
     @property
     def cover_paths(self) -> dict[str, Path]:
@@ -293,6 +283,7 @@ class ShelfViewModel:
         self._pending_cover_ids.clear()
         self._refresh_book_tag_index()
         self._set_detail_book_uuid(None)
+        self._rebuild_detail_stream()
 
     def set_show_hidden_collection(self, enabled: bool) -> None:
         # Settings layer is the single source of truth; the VM mirrors it
@@ -1043,47 +1034,95 @@ class ShelfViewModel:
                 continue
 
             self._pending_cover_ids.add(book.uuid)
-            self._task_service.submit(
-                f"cover-{book.uuid}",
-                lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
-                on_success=lambda path, book_uuid=book.uuid: self._handle_cover_result(book_uuid, path),
-                on_failure=lambda _error, book_uuid=book.uuid: self._pending_cover_ids.discard(book_uuid),
-            )
+            kwargs = {
+                "on_success": lambda path, book_uuid=book.uuid: self._handle_cover_result(book_uuid, path),
+                "on_failure": lambda _error, book_uuid=book.uuid: self._pending_cover_ids.discard(book_uuid),
+            }
+            try:
+                self._task_service.submit(
+                    f"cover-{book.uuid}",
+                    lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
+                    priority=TaskPriority.LOW,
+                    **kwargs,
+                )
+            except TypeError:
+                self._task_service.submit(
+                    f"cover-{book.uuid}",
+                    lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
+                    **kwargs,
+                )
 
-    def request_detail_thumbnails(self, book_uuid: str, size: tuple[int, int]) -> None:
-        self.request_next_detail_thumbnail_batch(book_uuid, size)
-
-    def request_next_detail_thumbnail_batch(self, book_uuid: str, size: tuple[int, int]) -> None:
+    def prepare_detail_thumbnail_source(self, book_uuid: str, size: tuple[int, int]) -> None:
         if (
             self._thumbnail_service is None
             or self._task_service is None
             or self.detail_book_uuid != book_uuid
-            or self._detail_batch_pending
-            or not self._detail_has_more
         ):
             return
-
-        book = next((book for book in self.books if book.uuid == book_uuid), None)
-        if book is None or not self._thumbnail_service.can_generate_from(book):
-            self._detail_has_more = False
+        normalized_size = (max(1, int(size[0])), max(1, int(size[1])))
+        if self._detail_source_handle is not None and self._detail_thumbnail_size == normalized_size:
             return
-
+        if self._detail_source_task is not None:
+            return
+        book = self._book_by_uuid(book_uuid)
+        open_source = getattr(self._thumbnail_service, "open_thumbnail_source", None)
+        if book is None or not callable(open_source) or not self._thumbnail_service.can_generate_from(book):
+            self.detail_thumbnail_source_ready.emit(book_uuid, 0)
+            return
         token = self._detail_load_token
-        start_index = self._detail_next_index
-        self._detail_batch_pending = True
-        detail_cache = self._detail_thumbnail_cache
-        self._detail_batch_handle = self._task_service.submit(
-            f"detail-thumbnail-batch-{book_uuid}-{start_index}",
-            lambda book=book, start_index=start_index: self._thumbnail_service.generate_detail_thumbnail_batch(
-                book,
-                start_index=start_index,
-                batch_size=self._detail_batch_size,
-                size=size,
-                detail_cache=detail_cache,
-            ),
-            on_success=lambda batch, token=token: self._handle_detail_thumbnail_batch_result(token, batch),
-            on_failure=lambda _error, token=token: self._handle_detail_thumbnail_batch_failure(token),
-        )
+        self._detail_thumbnail_size = normalized_size
+
+        def success(source: ThumbnailSourceHandle | None) -> None:
+            self._handle_detail_source_result(token, book_uuid, source, normalized_size)
+
+        try:
+            self._detail_source_task = self._task_service.submit(
+                f"detail-thumbnail-source-{book_uuid}",
+                lambda book=book: open_source(book),
+                on_success=success,
+                on_failure=lambda error, token=token: self._handle_detail_source_failure(token, error),
+                priority=TaskPriority.HIGH,
+            )
+        except TypeError:
+            self._detail_source_task = self._task_service.submit(
+                f"detail-thumbnail-source-{book_uuid}",
+                lambda book=book: open_source(book),
+                on_success=success,
+                on_failure=lambda error, token=token: self._handle_detail_source_failure(token, error),
+            )
+
+    def set_detail_thumbnail_interest(
+        self,
+        book_uuid: str,
+        visible_indices: Iterable[int],
+        prefetch_indices: Iterable[int],
+        size: tuple[int, int],
+    ) -> None:
+        if self.detail_book_uuid != book_uuid:
+            return
+        visible = tuple(dict.fromkeys(int(index) for index in visible_indices))
+        prefetch = tuple(dict.fromkeys(int(index) for index in prefetch_indices))
+        self._detail_pending_interest = (visible, prefetch)
+        normalized_size = (max(1, int(size[0])), max(1, int(size[1])))
+        if self._detail_source_handle is None or self._detail_thumbnail_size != normalized_size:
+            self.prepare_detail_thumbnail_source(book_uuid, normalized_size)
+            return
+        if self._detail_stream is not None:
+            self._detail_stream.set_interest(visible, prefetch)
+        self._ensure_detail_warmup()
+
+    def release_detail_thumbnail_interest(self, book_uuid: str) -> None:
+        if self.detail_book_uuid != book_uuid:
+            return
+        self._detail_pending_interest = ((), ())
+        if self._detail_stream is not None:
+            self._detail_stream.release_interest()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._detail_warmup_client_id)
+
+    def refresh_detail_thumbnail_interest(self, book_uuid: str) -> None:
+        if self.detail_book_uuid == book_uuid and self._detail_stream is not None:
+            self._detail_stream.refresh()
 
     def _book_in_current_shelf(self, book: Book) -> bool:
         if self.current_shelf == ShelfKey.HIDDEN:
@@ -1296,61 +1335,109 @@ class ShelfViewModel:
             return
         self._record_cover(book_uuid, path)
 
-    def _handle_detail_thumbnail_batch_result(self, token: int, batch: DetailThumbnailBatch) -> None:
-        if token != self._detail_load_token or self.detail_book_uuid != batch.book_uuid:
-            logger.debug(
-                "Detail thumbnail batch dropped token=%d active_token=%d batch_book=%s detail_book=%s",
-                token,
-                self._detail_load_token,
-                batch.book_uuid,
-                self.detail_book_uuid,
-            )
+    def _handle_detail_source_result(
+        self,
+        token: int,
+        book_uuid: str,
+        source: ThumbnailSourceHandle | None,
+        size: tuple[int, int],
+    ) -> None:
+        if token != self._detail_load_token or self.detail_book_uuid != book_uuid:
+            return
+        self._detail_source_task = None
+        self._detail_source_handle = source
+        if source is None or self._detail_stream is None or self._thumbnail_service is None:
+            self.detail_thumbnail_source_ready.emit(book_uuid, 0)
             return
 
-        self._detail_batch_pending = False
-        self._detail_batch_handle = None
-        self._detail_next_index = batch.next_index
-        self._detail_has_more = batch.has_more
-        for item in batch.items:
-            self.page_thumbnail_ready.emit(batch.book_uuid, item.page_index, item.image_bytes)
-        self.detail_thumbnail_batch_finished.emit(batch.book_uuid, batch.next_index, batch.has_more)
+        thumbnail_service = self._thumbnail_service
 
-    def _handle_detail_thumbnail_batch_failure(self, token: int) -> None:
+        def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
+            thumbnail_service.stream_thumbnails(
+                source,
+                indices,
+                size,
+                lambda item: emit_item(ThumbnailStreamItem(item.page_index, item.image_bytes)),
+            )
+
+        self._detail_stream.set_source(
+            source.source_id,
+            source.page_count,
+            size,
+            load,
+            batch_size_for=source.preferred_batch_size,
+        )
+        self.detail_thumbnail_source_ready.emit(book_uuid, source.page_count)
+        visible, prefetch = self._detail_pending_interest
+        if visible or prefetch:
+            self._detail_stream.set_interest(visible, prefetch)
+            self._ensure_detail_warmup()
+
+    def _handle_detail_source_failure(self, token: int, error: Exception) -> None:
         if token != self._detail_load_token:
-            logger.debug(
-                "Detail thumbnail failure dropped token=%d active_token=%d",
-                token,
-                self._detail_load_token,
-            )
             return
-        self._detail_batch_pending = False
-        self._detail_batch_handle = None
-        self._detail_has_more = False
+        logger.warning("Detail thumbnail source failed: %s", error)
+        self._detail_source_task = None
+        if self.detail_book_uuid is not None:
+            self.detail_thumbnail_source_ready.emit(self.detail_book_uuid, 0)
+
+    def _handle_detail_stream_item(self, page_index: int, image_bytes: bytes) -> None:
+        if self.detail_book_uuid is not None:
+            self.page_thumbnail_ready.emit(self.detail_book_uuid, page_index, image_bytes)
+
+    def _ensure_detail_warmup(self) -> None:
+        source = self._detail_source_handle
+        coordinator = self._archive_warmup_coordinator
+        if source is None or coordinator is None:
+            return
+        access_mode = getattr(source.session, "access_mode", None)
+        if getattr(access_mode, "value", access_mode) != "expensive_cold":
+            return
+        coordinator.acquire(
+            source.source_path,
+            self._detail_warmup_client_id,
+            nested_depth=source.nested_archive_max_depth,
+            global_depth=source.archive_global_file_max_depth,
+            on_ready=lambda: self._detail_stream.refresh() if self._detail_stream is not None else None,
+        )
+
+    def _rebuild_detail_stream(self) -> None:
+        if self._detail_stream is not None:
+            self._detail_stream.cancel()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._detail_warmup_client_id)
+        self._detail_stream = None
+        if self._thumbnail_service is None or self._task_service is None:
+            return
+        issue_client = getattr(self._thumbnail_service, "issue_thumbnail_cache_client", None)
+        if not callable(issue_client):
+            return
+        self._detail_stream = ThumbnailStreamController(
+            self._task_service,
+            issue_client("detail-page"),
+            task_name="detail-thumbnail",
+        )
+        self._detail_stream.thumbnail_ready.connect(self._handle_detail_stream_item)
 
     def _set_detail_book_uuid(self, book_uuid: str | None) -> None:
         if self.detail_book_uuid == book_uuid:
             return
-        self._cancel_detail_thumbnail_batch()
-        # Closing the detail panel (or switching to a different book) frees
-        # the cached PNGs immediately. This is the deterministic counterpart
-        # to the byte budget — the budget caps how high memory can go while
-        # detail is open, this call guarantees zero bytes when it is closed.
-        self._detail_thumbnail_cache.clear()
+        if self._detail_source_task is not None:
+            self._detail_source_task.cancel()
+        self._detail_source_task = None
+        self._detail_source_handle = None
+        self._detail_pending_interest = ((), ())
+        if self._detail_stream is not None:
+            self._detail_stream.cancel()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._detail_warmup_client_id)
         self.detail_book_uuid = book_uuid
         self._detail_load_token += 1
-        self._detail_next_index = 0
-        self._detail_has_more = book_uuid is not None
-        self._detail_batch_pending = False
 
     def resize_detail_thumbnail_cache(self, max_bytes: int) -> None:
-        """Live-resize the detail thumbnail budget from the settings panel."""
+        """Deprecated compatibility hook; the app cache owns this budget."""
 
-        self._detail_thumbnail_cache.resize(max(0, int(max_bytes)))
-
-    def _cancel_detail_thumbnail_batch(self) -> None:
-        if self._detail_batch_handle is not None:
-            self._detail_batch_handle.cancel()
-        self._detail_batch_handle = None
+        del max_bytes
 
     def _language_by_tag(self, language_tag: str) -> Language | None:
         return next((language for language in self.languages if language.iso_code == language_tag), None)

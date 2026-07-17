@@ -42,14 +42,19 @@ class SettingsSection:
 # the user with extreme allocations and to keep the spinner UI manageable.
 READER_PAGE_CACHE_MIN_MB = 64
 READER_PAGE_CACHE_MAX_MB = 4096
-DETAIL_THUMBNAIL_CACHE_MIN_MB = 8
-DETAIL_THUMBNAIL_CACHE_MAX_MB = 512
+THUMBNAIL_CACHE_MIN_MB = 8
+THUMBNAIL_CACHE_MAX_MB = 512
+DETAIL_THUMBNAIL_CACHE_MIN_MB = THUMBNAIL_CACHE_MIN_MB
+DETAIL_THUMBNAIL_CACHE_MAX_MB = THUMBNAIL_CACHE_MAX_MB
 ARCHIVE_POOL_MIN_MB = 128
 ARCHIVE_POOL_MAX_MB = 8192
 IMPORT_FOLDER_DEPTH_MIN = 1
 IMPORT_FOLDER_DEPTH_MAX = 5
-ARCHIVE_INTERNAL_DEPTH_MIN = 1
-ARCHIVE_INTERNAL_DEPTH_MAX = 5
+NESTED_ARCHIVE_DEPTH_MIN = 1
+NESTED_ARCHIVE_DEPTH_MAX = 5
+ARCHIVE_GLOBAL_FILE_DEPTH_MIN = 1
+ARCHIVE_GLOBAL_FILE_DEPTH_MAX = 1000
+UNLIMITED_DEPTH = -1
 ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
 
@@ -69,6 +74,7 @@ class SettingsViewModel:
         # actual caches, blow away on-disk pool entries) and refreshes the
         # current-usage label via ``refresh_archive_pool_usage``.
         self.cache_budgets_changed: Signal[None] = Signal()
+        self.archive_depth_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
         # Hidden Space side effects: surface password-setup outcome and
         # reset/revert events so MainWindow can refresh the shelf + sidebar
@@ -96,10 +102,10 @@ class SettingsViewModel:
             READER_PAGE_CACHE_MIN_MB,
             READER_PAGE_CACHE_MAX_MB,
         )
-        self.detail_thumbnail_cache_mb = _clamp_int(
-            getattr(settings, "detail_thumbnail_cache_mb", 64),
-            DETAIL_THUMBNAIL_CACHE_MIN_MB,
-            DETAIL_THUMBNAIL_CACHE_MAX_MB,
+        self.thumbnail_cache_mb = _clamp_int(
+            settings.thumbnail_cache_mb,
+            THUMBNAIL_CACHE_MIN_MB,
+            THUMBNAIL_CACHE_MAX_MB,
         )
         self.archive_extraction_pool_mb = _clamp_int(
             getattr(settings, "archive_extraction_pool_mb", 1024),
@@ -114,10 +120,15 @@ class SettingsViewModel:
             IMPORT_FOLDER_DEPTH_MIN,
             IMPORT_FOLDER_DEPTH_MAX,
         )
-        self.archive_internal_max_depth = _clamp_int(
-            getattr(settings, "archive_internal_max_depth", 2),
-            ARCHIVE_INTERNAL_DEPTH_MIN,
-            ARCHIVE_INTERNAL_DEPTH_MAX,
+        self.nested_archive_max_depth = _normalize_depth_limit(
+            getattr(settings, "nested_archive_max_depth", 2),
+            default=2,
+            maximum=NESTED_ARCHIVE_DEPTH_MAX,
+        )
+        self.archive_global_file_max_depth = _normalize_depth_limit(
+            getattr(settings, "archive_global_file_max_depth", 100),
+            default=100,
+            maximum=ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
         )
         self.archive_pool_current_bytes = 0
         # Hidden Space surface state. The service is the source of truth;
@@ -182,12 +193,12 @@ class SettingsViewModel:
         self.cache_budgets_changed.emit()
         self.state_changed.emit()
 
-    def set_detail_thumbnail_cache_mb(self, value: int) -> None:
-        clamped = _clamp_int(value, DETAIL_THUMBNAIL_CACHE_MIN_MB, DETAIL_THUMBNAIL_CACHE_MAX_MB)
-        if clamped == self.detail_thumbnail_cache_mb:
+    def set_thumbnail_cache_mb(self, value: int) -> None:
+        clamped = _clamp_int(value, THUMBNAIL_CACHE_MIN_MB, THUMBNAIL_CACHE_MAX_MB)
+        if clamped == self.thumbnail_cache_mb:
             return
-        self.detail_thumbnail_cache_mb = clamped
-        self._persist(detail_thumbnail_cache_mb=clamped)
+        self.thumbnail_cache_mb = clamped
+        self._persist(thumbnail_cache_mb=clamped)
         self.cache_budgets_changed.emit()
         self.state_changed.emit()
 
@@ -217,12 +228,30 @@ class SettingsViewModel:
         self._persist(import_folder_max_depth=clamped)
         self.state_changed.emit()
 
-    def set_archive_internal_max_depth(self, value: int) -> None:
-        clamped = _clamp_int(value, ARCHIVE_INTERNAL_DEPTH_MIN, ARCHIVE_INTERNAL_DEPTH_MAX)
-        if clamped == self.archive_internal_max_depth:
+    def set_nested_archive_max_depth(self, value: int) -> None:
+        normalized = _normalize_depth_limit(
+            value,
+            default=self.nested_archive_max_depth,
+            maximum=NESTED_ARCHIVE_DEPTH_MAX,
+        )
+        if normalized == self.nested_archive_max_depth:
             return
-        self.archive_internal_max_depth = clamped
-        self._persist(archive_internal_max_depth=clamped)
+        self.nested_archive_max_depth = normalized
+        self._persist(nested_archive_max_depth=normalized)
+        self.archive_depth_limits_changed.emit()
+        self.state_changed.emit()
+
+    def set_archive_global_file_max_depth(self, value: int) -> None:
+        normalized = _normalize_depth_limit(
+            value,
+            default=self.archive_global_file_max_depth,
+            maximum=ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
+        )
+        if normalized == self.archive_global_file_max_depth:
+            return
+        self.archive_global_file_max_depth = normalized
+        self._persist(archive_global_file_max_depth=normalized)
+        self.archive_depth_limits_changed.emit()
         self.state_changed.emit()
 
     def request_clear_archive_pool(self) -> None:
@@ -351,3 +380,15 @@ def _clamp_int(value: object, minimum: int, maximum: int) -> int:
     except (TypeError, ValueError):
         coerced = minimum
     return max(minimum, min(maximum, coerced))
+
+
+def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
+    try:
+        coerced = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if coerced == UNLIMITED_DEPTH:
+        return UNLIMITED_DEPTH
+    if coerced < 1:
+        return default
+    return min(maximum, coerced)

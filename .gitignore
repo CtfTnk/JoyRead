@@ -9,16 +9,22 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.hypothesis/
 .mypy_cache/
 .ruff_cache/
 .pyre/
+.tox/
+.nox/
 .coverage
 .coverage.*
 coverage.xml
+junit.xml
 htmlcov/
 
 # Virtual environments and local Python tooling
 .venv/
+.conda/
+conda-meta/
 venv/
 env/
 ENV/
@@ -40,9 +46,15 @@ wheelhouse/
 # IDE/editor local state
 .idea/
 .vscode/
+.fleet/
 *.swp
 *.swo
 *~
+
+# Windows / Linux desktop metadata
+Thumbs.db
+Desktop.ini
+.directory
 
 # Local environment and secrets
 .env
@@ -83,6 +95,7 @@ artifacts/
 
 # Local agent files
 .agent.md
+.claude/settings.local.json
 
 # Codex pets
 .codex-pets/

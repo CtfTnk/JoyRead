@@ -9,14 +9,17 @@ import pytest
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFrame, QScrollArea
+from PySide6.QtWidgets import QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
 from joyread.infrastructure.i18n import locale_service
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
+from joyread.ui.viewmodels.reader_viewmodel import (
+    ReaderBookmarkItem,
+    ReaderContentsItem,
+)
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.reader_shell import ReaderShellWidget
@@ -180,6 +183,34 @@ def test_reader_topic_button_group_disables_unavailable_modes_for_direct_files(q
     context.close()
 
 
+def test_reader_topic_contents_enables_for_archive_folders(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader-contents.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "000.png")
+        archive.write(image, "Chapter1/001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    qtbot.waitUntil(lambda: window.shell.viewmodel.can_use_contents, timeout=5000)
+
+    assert window.header.detail_button.isEnabled()
+    assert [(item.label, item.page_index, item.depth) for item in window.shell.viewmodel.contents] == [
+        ("Chapter1", 1, 0),
+    ]
+
+    window.shell._show_topic_panel(ReaderTopicMode.CONTENTS)
+    assert window.topic_panel.isVisible()
+    assert window.topic_panel.mode == ReaderTopicMode.CONTENTS
+
+    window.close()
+    context.close()
+
+
 def test_reader_topic_panel_opens_centered_and_closes_with_escape(qtbot, tmp_path: Path) -> None:
     source = tmp_path / "reader.cbz"
     image = tmp_path / "001.png"
@@ -246,7 +277,6 @@ def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qt
     panel.reset_thumbnails(80)
     panel.show()
     panel.set_mode(ReaderTopicMode.THUMBNAILS)
-    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, 80, False, ()))
 
     thumbnail_scroll = panel.findChild(QScrollArea, "ReaderTopicThumbnailsScrollArea")
     bookmark_scroll = panel.findChild(QScrollArea, "ReaderTopicBookmarksScrollArea")
@@ -270,6 +300,27 @@ def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qt
 
     assert panel._stack.currentWidget() is thumbnail_scroll
     assert thumbnail_scroll.verticalScrollBar().value() == thumbnail_value
+
+    context.close()
+
+
+def test_reader_topic_contents_renders_one_based_page_number(qtbot) -> None:
+    locale_service.load_language("English")
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_contents((ReaderContentsItem("Nested archive", 18, 0),))
+    panel.set_mode(ReaderTopicMode.CONTENTS)
+    panel.show()
+    qtbot.wait(0)
+
+    index_labels = [
+        label
+        for label in panel.findChildren(QLabel)
+        if label.property("class") == "ReaderTopicItemIndex"
+    ]
+
+    assert [label.text() for label in index_labels] == ["page 19"]
 
     context.close()
 
@@ -299,31 +350,31 @@ def test_reader_topic_bookmark_row_elides_long_names_without_expanding_panel(qtb
     context.close()
 
 
-def test_reader_topic_panel_requests_more_thumbnails_after_append_without_resize(qtbot) -> None:
+def test_reader_topic_panel_updates_interest_when_virtual_grid_scrolls(qtbot) -> None:
     context = create_app_context()
     panel = ReaderTopicPanel(context.resources)
     qtbot.addWidget(panel)
-    requests: list[tuple[int, int, tuple[int, int]]] = []
-    panel.thumbnail_batch_requested.connect(
-        lambda start, batch_size, size: requests.append((start, batch_size, size))
+    interests: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, int]]] = []
+    panel.thumbnail_interest_changed.connect(
+        lambda visible, prefetch, size: interests.append((visible, prefetch, size))
     )
     panel.resize(Theme.reader_topic_panel_width, Theme.reader_topic_panel_height)
     panel.show()
     panel.set_mode(ReaderTopicMode.THUMBNAILS)
     panel.reset_thumbnails(100)
 
-    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
-    assert requests[-1][0] == 0
+    qtbot.waitUntil(lambda: bool(interests), timeout=1000)
+    assert interests[-1][0][0] == 0
 
-    requests.clear()
-    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, Theme.reader_topic_thumbnail_batch_size, True, ()))
+    interests.clear()
+    scrollbar = panel._thumbnails_scroll.verticalScrollBar()
+    scrollbar.setValue(scrollbar.maximum())
 
-    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
-    assert requests[-1] == (
-        Theme.reader_topic_thumbnail_batch_size,
-        Theme.reader_topic_thumbnail_batch_size,
-        (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
-    )
+    qtbot.waitUntil(lambda: bool(interests), timeout=1000)
+    visible, prefetch, size = interests[-1]
+    assert visible[0] > 0
+    assert prefetch
+    assert size == (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
 
     context.close()
 

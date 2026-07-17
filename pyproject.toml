@@ -16,12 +16,16 @@ dependencies = [
     "platformdirs>=4.2",
     "rarfile>=4.2",
     "lxml>=5.0",
+    "natsort>=8.4",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
+]
+release = [
+    "pyinstaller>=6.21,<7",
 ]
 
 [project.scripts]

@@ -90,9 +90,13 @@ class ReaderShellWidget(QWidget):
             progress=_reader_progress_for_book(context, book, start_page_index),
             prefetch_before=context.config.page_prefetch_before,
             prefetch_after=context.config.page_prefetch_after,
-            archive_internal_max_depth=app_settings.archive_internal_max_depth,
+            nested_archive_max_depth=app_settings.nested_archive_max_depth,
+            archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
+            thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
+            archive_warmup_coordinator=context.archive_warmup_coordinator,
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        self.header.set_contents_enabled(self.viewmodel.can_use_contents)
         self._connect_signals()
         self._install_auto_hide()
 
@@ -139,8 +143,10 @@ class ReaderShellWidget(QWidget):
         self.canvas.wheel_scrolled.connect(self.viewmodel.handle_vertical_scroll)
         self.left_arrow.clicked.connect(self.viewmodel.activate_left_side)
         self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
-        self.topic_panel.thumbnail_batch_requested.connect(self.viewmodel.request_topic_thumbnail_batch)
+        self.topic_panel.thumbnail_interest_changed.connect(self.viewmodel.set_topic_thumbnail_interest)
+        self.topic_panel.thumbnail_interest_released.connect(self.viewmodel.release_topic_thumbnail_interest)
         self.topic_panel.thumbnail_selected.connect(self.viewmodel.seek)
+        self.topic_panel.contents_selected.connect(self.viewmodel.seek)
         self.topic_panel.bookmark_selected.connect(self.viewmodel.seek)
         self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)
         self.topic_panel.bookmark_rename_requested.connect(self._show_rename_bookmark_dialog)
@@ -159,10 +165,11 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.password_required.connect(self._show_password_dialog)
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
         self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
+        self.viewmodel.contents_changed.connect(self._handle_contents_changed)
         self.viewmodel.bookmark_error_changed.connect(
             lambda message: self.dialog_overlay.show_info(t("reader.bookmarks"), message)
         )
-        self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
+        self.viewmodel.topic_thumbnail_ready.connect(self.topic_panel.set_thumbnail)
 
     def _sync_title_control_mode(self) -> None:
         settings_vm = self._context.settings_viewmodel
@@ -203,6 +210,9 @@ class ReaderShellWidget(QWidget):
     def _sync_state(self) -> None:
         self.header.set_title(self.viewmodel.title)
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        self.header.set_contents_enabled(self.viewmodel.can_use_contents)
+        if not self.viewmodel.can_use_contents and self.topic_panel.mode == ReaderTopicMode.CONTENTS:
+            self._hide_topic_panel()
         if not self.viewmodel.can_use_bookmarks and self.topic_panel.mode == ReaderTopicMode.BOOKMARKS:
             self._hide_topic_panel()
         self.footer.set_page_state(
@@ -262,7 +272,7 @@ class ReaderShellWidget(QWidget):
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
-        if mode == ReaderTopicMode.CONTENTS:
+        if mode == ReaderTopicMode.CONTENTS and not self.viewmodel.can_use_contents:
             self.header.clear_topic_active_mode()
             return
         if mode == ReaderTopicMode.BOOKMARKS and not self.viewmodel.can_use_bookmarks:
@@ -278,6 +288,10 @@ class ReaderShellWidget(QWidget):
         self.topic_panel.raise_()
         self.panel_filter.activate(self.topic_panel)
         self._start_hide_timer_if_allowed()
+
+    def _handle_contents_changed(self, items) -> None:  # noqa: ANN001 - signal carries immutable TOC items.
+        self.topic_panel.set_contents(items)
+        self.header.set_contents_enabled(bool(items))
 
     def _handle_canvas_mouse_move(self, position: QPoint) -> None:
         edge = Theme.reader_edge_reveal_distance

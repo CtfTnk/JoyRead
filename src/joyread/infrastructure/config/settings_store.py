@@ -40,11 +40,12 @@ class AppSettings:
     # fresh install. Reader cache is the *total* shared budget across every
     # open reader window — see CacheService.reader_page_cache.
     reader_page_cache_mb: int = 512
-    detail_thumbnail_cache_mb: int = 64
+    thumbnail_cache_mb: int = 64
     archive_extraction_pool_mb: int = 1024
     archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
     import_folder_max_depth: int = 1
-    archive_internal_max_depth: int = 2
+    nested_archive_max_depth: int = 2
+    archive_global_file_max_depth: int = 100
     # Hidden Space (soft visibility layer for books + user collections).
     # ``hidden_space_password_hash is None`` is the sentinel for the
     # uninitiated state — the feature is only "armed" once the user
@@ -53,7 +54,6 @@ class AppSettings:
     hidden_space_password_salt: str | None = None
     hidden_space_password_hint: str | None = None
     show_hidden_collection: bool = False
-
 
 class SettingsStore:
     """Loads the bootstrap settings needed before PathService exists.
@@ -127,7 +127,10 @@ class SettingsStore:
             shelf_file_filter=str(raw.get("shelf_file_filter") or "ALL"),
             shelf_view_mode=str(raw.get("shelf_view_mode") or "grid"),
             reader_page_cache_mb=_coerce_positive_int(raw.get("reader_page_cache_mb"), default=512),
-            detail_thumbnail_cache_mb=_coerce_positive_int(raw.get("detail_thumbnail_cache_mb"), default=64),
+            thumbnail_cache_mb=_coerce_positive_int(
+                raw.get("thumbnail_cache_mb", raw.get("detail_thumbnail_cache_mb")),
+                default=64,
+            ),
             archive_extraction_pool_mb=_coerce_positive_int(raw.get("archive_extraction_pool_mb"), default=1024),
             archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
             import_folder_max_depth=_coerce_int_in_range(
@@ -136,11 +139,15 @@ class SettingsStore:
                 minimum=1,
                 maximum=5,
             ),
-            archive_internal_max_depth=_coerce_int_in_range(
-                raw.get("archive_internal_max_depth"),
+            nested_archive_max_depth=_coerce_depth_limit(
+                raw.get("nested_archive_max_depth", raw.get("archive_internal_max_depth")),
                 default=2,
-                minimum=1,
                 maximum=5,
+            ),
+            archive_global_file_max_depth=_coerce_depth_limit(
+                raw.get("archive_global_file_max_depth"),
+                default=100,
+                maximum=1000,
             ),
             hidden_space_password_hash=_coerce_optional_str(raw.get("hidden_space_password_hash")),
             hidden_space_password_salt=_coerce_optional_str(raw.get("hidden_space_password_salt")),
@@ -158,8 +165,9 @@ class SettingsStore:
     def save(self, settings: AppSettings) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         logger.debug("Saving settings to %s", self.settings_path)
+        payload = asdict(settings)
         self.settings_path.write_text(
-            json.dumps(asdict(settings), indent=2, sort_keys=True),
+            json.dumps(payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
 
@@ -225,3 +233,19 @@ def _coerce_int_in_range(value: object, *, default: int, minimum: int, maximum: 
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, coerced))
+
+
+def _coerce_depth_limit(value: object, *, default: int, maximum: int) -> int:
+    """Read a depth limit whose only valid negative value is ``-1``."""
+
+    if value is None:
+        return default
+    try:
+        coerced = int(value)
+    except (TypeError, ValueError):
+        return default
+    if coerced == -1:
+        return -1
+    if coerced < 1:
+        return default
+    return min(maximum, coerced)

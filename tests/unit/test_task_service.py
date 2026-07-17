@@ -1,7 +1,25 @@
 import logging
 from threading import Event
 
-from joyread.core.services.task_service import TaskService, TaskStatus
+from joyread.core.services.task_service import TaskPriority, TaskService, TaskStatus
+
+
+class _ImmediateThreadPool:
+    def __init__(self) -> None:
+        self.priorities: list[int] = []
+
+    def setMaxThreadCount(self, _count: int) -> None:  # noqa: N802 - Qt-compatible fake.
+        return
+
+    def start(self, runnable, priority: int = 0) -> None:  # noqa: ANN001
+        self.priorities.append(priority)
+        runnable.run()
+
+    def clear(self) -> None:
+        return
+
+    def waitForDone(self, _timeout_ms: int) -> bool:  # noqa: N802 - Qt-compatible fake.
+        return True
 
 
 def test_task_service_submit_runs_callback_on_background_pool(qtbot) -> None:
@@ -39,6 +57,31 @@ def test_task_service_submit_placeholder_remains_synchronous() -> None:
 
     assert handle.status == TaskStatus.COMPLETED
     assert handle.result == 42
+
+
+def test_task_service_streams_items_individually_at_requested_priority() -> None:
+    pool = _ImmediateThreadPool()
+    service = TaskService(max_workers=1, thread_pool=pool)  # type: ignore[arg-type]
+    items: list[str] = []
+    completed: list[str] = []
+
+    def work(emit) -> str:  # noqa: ANN001
+        emit("first")
+        emit("second")
+        return "done"
+
+    handle = service.submit_stream(
+        "stream",
+        work,
+        on_item=items.append,
+        on_success=completed.append,
+        priority=TaskPriority.HIGH,
+    )
+
+    assert pool.priorities == [int(TaskPriority.HIGH)]
+    assert items == ["first", "second"]
+    assert completed == ["done"]
+    assert handle.status == TaskStatus.COMPLETED
 
 
 def test_task_service_shutdown_cancels_active_and_queued_work(qtbot) -> None:

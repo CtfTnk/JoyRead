@@ -694,16 +694,18 @@ def test_reader_progress_round_trips_without_page_count(tmp_path: Path) -> None:
 def test_import_failures_are_recorded_without_books(tmp_path: Path) -> None:
     unsupported = tmp_path / "sample.txt"
     unsupported.write_text("not a book", encoding="utf-8")
+    shelved_epub = tmp_path / "shelved.epub"
+    shelved_epub.write_bytes(b"epub access disabled")
     corrupt = tmp_path / "corrupt.cbz"
     corrupt.write_bytes(b"not a zip")
     service, database, _paths = _import_service(tmp_path)
 
-    result = service.import_files([tmp_path / "missing.cbz", unsupported, corrupt])
+    result = service.import_files([tmp_path / "missing.cbz", unsupported, shelved_epub, corrupt])
     item_rows = database.execute(lambda connection: connection.execute("SELECT status FROM import_items").fetchall())
 
-    assert result.failed_count == 3
+    assert result.failed_count == 4
     assert SqliteBookRepository(database).list_books() == []
-    assert [row["status"] for row in item_rows] == ["failed", "failed", "failed"]
+    assert [row["status"] for row in item_rows] == ["failed", "failed", "failed", "failed"]
     database.close()
 
 

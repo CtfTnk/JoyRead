@@ -6,7 +6,12 @@ from uuid import uuid4
 
 from PIL import Image
 
-from joyread.core.archive import ArchiveEmptyError, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.archive import (
+    ArchiveContentsEntry,
+    ArchiveEmptyError,
+    ArchivePasswordRejected,
+    ArchivePasswordRequired,
+)
 from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage, ReaderSettings
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
@@ -121,8 +126,13 @@ class _DeferredSettingsTaskService:
 class _FakeSession:
     page_count = 5
 
-    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
+    def __init__(
+        self,
+        dimensions: tuple[int, int] = (600, 900),
+        contents: tuple[ArchiveContentsEntry, ...] = (),
+    ) -> None:
         self._dimensions = dimensions
+        self.contents = contents
 
     def get_image(self, index: int) -> bytes | None:
         if not 0 <= index < self.page_count:
@@ -136,8 +146,12 @@ class _FakeSession:
 
 
 class _FakeSessionService:
-    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
-        self._session = _FakeSession(dimensions)
+    def __init__(
+        self,
+        dimensions: tuple[int, int] = (600, 900),
+        contents: tuple[ArchiveContentsEntry, ...] = (),
+    ) -> None:
+        self._session = _FakeSession(dimensions, contents)
 
     def open_document(  # noqa: ANN001
         self,
@@ -146,14 +160,16 @@ class _FakeSessionService:
         passwords=None,
         skipped_archives=None,
         *,
-        archive_internal_max_depth=2,
+        nested_archive_max_depth=2,
+        archive_global_file_max_depth=100,
     ):
         return self.open_archive(
             path,
             password=password,
             passwords=passwords,
             skipped_archives=skipped_archives,
-            archive_internal_max_depth=archive_internal_max_depth,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
         )
 
     def open_archive(  # noqa: ANN001
@@ -163,9 +179,10 @@ class _FakeSessionService:
         passwords=None,
         skipped_archives=None,
         *,
-        archive_internal_max_depth=2,
+        nested_archive_max_depth=2,
+        archive_global_file_max_depth=100,
     ):
-        del archive_internal_max_depth
+        del nested_archive_max_depth, archive_global_file_max_depth
         return self._session
 
     def load_page(self, session: _FakeSession, page_index: int) -> ReaderPageImage | None:
@@ -882,6 +899,37 @@ def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipp
     assert vm.page_count == 0
 
 
+def test_reader_viewmodel_exposes_archive_contents_and_clears_them_on_cancel(tmp_path: Path) -> None:
+    contents = (
+        ArchiveContentsEntry("Chapter1", 0, 0),
+        ArchiveContentsEntry("Part2", 3, 1),
+    )
+    vm = ReaderViewModel(
+        _FakeSessionService(contents=contents),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    changes: list[tuple] = []
+    vm.contents_changed.connect(changes.append)
+
+    vm.open_path(tmp_path / "contents.cbz")
+
+    assert vm.can_use_contents
+    assert [(item.label, item.page_index, item.depth) for item in vm.contents] == [
+        ("Chapter1", 0, 0),
+        ("Part2", 3, 1),
+    ]
+
+    vm.seek(vm.contents[1].page_index)
+    assert vm.current_index == 3
+
+    vm.cancel()
+    assert vm.contents == ()
+    assert not vm.can_use_contents
+    assert changes[-1] == ()
+
+
 def test_reader_viewmodel_bookmarks_sync_from_library_service(tmp_path: Path) -> None:
     library = _FakeLibraryService()
     vm = _viewmodel(tmp_path, library_service=library)
@@ -925,21 +973,16 @@ def test_reader_viewmodel_ignores_bookmark_actions_without_library(tmp_path: Pat
     assert changes[-1] == ()
 
 
-def test_reader_viewmodel_emits_topic_thumbnail_batches_from_active_session(tmp_path: Path) -> None:
+def test_reader_viewmodel_streams_topic_thumbnails_from_active_session(tmp_path: Path) -> None:
     vm = _viewmodel(tmp_path)
-    batches = []
+    items: list[tuple[int, bytes]] = []
 
-    vm.topic_thumbnail_batch_ready.connect(batches.append)
+    vm.topic_thumbnail_ready.connect(lambda page_index, image_bytes: items.append((page_index, image_bytes)))
     vm.open_path(tmp_path / "book.cbz")
-    vm.request_topic_thumbnail_batch(0, 2, (100, 142))
+    vm.set_topic_thumbnail_interest((0, 1), (), (100, 142))
 
-    assert batches
-    batch = batches[-1]
-    assert batch.start_index == 0
-    assert batch.next_index == 2
-    assert batch.has_more is True
-    assert [item.page_index for item in batch.items] == [0, 1]
-    assert all(item.image_bytes for item in batch.items)
+    assert [page_index for page_index, _image_bytes in items] == [0, 1]
+    assert all(image_bytes for _page_index, image_bytes in items)
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

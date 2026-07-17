@@ -10,16 +10,18 @@ from __future__ import annotations
 import logging
 from collections import OrderedDict
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-import re
 import subprocess
 from tempfile import TemporaryDirectory
 from typing import Iterable, Sequence
 from zipfile import BadZipFile
 
 from PIL import Image, UnidentifiedImageError
+from natsort import natsort_keygen, ns
+
+from joyread.core.file_types import ARCHIVE_EXTENSIONS
 
 
 logger = logging.getLogger(__name__)
@@ -36,6 +38,8 @@ from joyread.core.archive.errors import (
     ArchiveUnsupportedFormat,
 )
 from joyread.core.archive.models import (
+    ArchiveAccessMode,
+    ArchiveContentsEntry,
     ArchivePage,
     ArchivePasswordPolicy,
     ArchivePasswordRequest,
@@ -66,15 +70,18 @@ except ImportError:  # pragma: no cover
 
 
 IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff"})
-ARCHIVE_EXTENSIONS = frozenset({".zip", ".cbz", ".7z", ".cb7", ".rar", ".cbr"})
 _ZIP_EXTENSIONS = frozenset({".zip", ".cbz"})
 _SEVEN_ZIP_EXTENSIONS = frozenset({".7z", ".cb7"})
 _RAR_EXTENSIONS = frozenset({".rar", ".cbr"})
-_NATURAL_PART_RE = re.compile(r"(\d+)")
 _SEVEN_ZIP_READ_LIMIT = 512 * 1024 * 1024
 _ZIP_BAD_FILE_ERRORS = (BadZipFile,)
 _EXPENSIVE_CACHE_EXTENSIONS = _SEVEN_ZIP_EXTENSIONS | _RAR_EXTENSIONS
 EXPENSIVE_ARCHIVE_EXTENSIONS = _EXPENSIVE_CACHE_EXTENSIONS
+_DEFAULT_NESTED_ARCHIVE_DEPTH = 2
+_DEFAULT_GLOBAL_FILE_DEPTH = 100
+_MAX_NESTED_ARCHIVE_DEPTH = 5
+_MAX_GLOBAL_FILE_DEPTH = 1000
+_NATURAL_KEY = natsort_keygen(alg=ns.INT | ns.IGNORECASE | ns.PRESORT)
 if pyzipper is not None:
     # pyzipper vendors its own ``zipfile`` fork to support AES, and that fork
     # raises a different ``BadZipFile`` class. Without catching both, a
@@ -89,6 +96,7 @@ class _ArchiveSource:
     suffix: str
     path: Path | None = None
     data: bytes | None = None
+    allow_persistent_cache: bool = True
 
     @property
     def display_name(self) -> str:
@@ -119,6 +127,18 @@ class _PageRecord:
 
 
 @dataclass
+class _ArchiveTreeNode:
+    """Logical folder/archive node used to derive pages and Contents together."""
+
+    name: str
+    label: str
+    kind: str
+    pages: list[_PageRecord] = field(default_factory=list)
+    children: list["_ArchiveTreeNode"] = field(default_factory=list)
+    folders: dict[str, "_ArchiveTreeNode"] = field(default_factory=dict)
+
+
+@dataclass
 class _ScanContext:
     password_provider: PasswordProvider | None
     password_policy: ArchivePasswordPolicy
@@ -136,9 +156,22 @@ class ArchiveImageSession:
         self,
         pages: Iterable[_PageRecord],
         read_entries: Callable[[_ArchiveSource, Sequence[tuple[str, str | None]]], dict[str, bytes]],
+        contents: Iterable[ArchiveContentsEntry] = (),
+        *,
+        document_path: Path | None = None,
+        extraction_cache: ArchiveExtractionCache | None = None,
+        cache_signature: str = "",
     ) -> None:
         self._pages = list(pages)
         self._read_entries = read_entries
+        self._contents = tuple(contents)
+        self._document_path = document_path
+        self._extraction_cache = extraction_cache
+        self._cache_signature = cache_signature
+        self._uses_expensive_cache = any(
+            record.source.suffix in _EXPENSIVE_CACHE_EXTENSIONS
+            for record in self._pages
+        )
         self.current_index = 0
 
     @property
@@ -148,6 +181,52 @@ class ArchiveImageSession:
     @property
     def index_range(self) -> range:
         return range(0, self.page_count)
+
+    @property
+    def contents(self) -> tuple[ArchiveContentsEntry, ...]:
+        return self._contents
+
+    @property
+    def access_mode(self) -> ArchiveAccessMode:
+        if not self._uses_expensive_cache:
+            return ArchiveAccessMode.DIRECT
+        return (
+            ArchiveAccessMode.EXPENSIVE_READY
+            if self._cache_is_complete()
+            else ArchiveAccessMode.EXPENSIVE_COLD
+        )
+
+    def access_mode_for(self, page_index: int) -> ArchiveAccessMode:
+        if not self.is_valid_index(page_index):
+            return ArchiveAccessMode.DIRECT
+        record = self._pages[page_index]
+        if record.source.suffix not in _EXPENSIVE_CACHE_EXTENSIONS:
+            return ArchiveAccessMode.DIRECT
+        return (
+            ArchiveAccessMode.EXPENSIVE_READY
+            if self._cache_is_complete()
+            else ArchiveAccessMode.EXPENSIVE_COLD
+        )
+
+    def thumbnail_batch_size(self, page_index: int) -> int:
+        return 8 if self.access_mode_for(page_index) == ArchiveAccessMode.EXPENSIVE_COLD else 1
+
+    def mark_thumbnail_cache_ready(self) -> bool:
+        if not self._uses_expensive_cache or not self._can_use_document_cache():
+            return False
+        if any(not self._record_is_cacheable(record) for record in self._pages):
+            return False
+        assert self._document_path is not None
+        assert self._extraction_cache is not None
+        expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
+        if len(self._extraction_cache.get_many(self._document_path, expected_keys)) != self.page_count:
+            return False
+        self._extraction_cache.mark_complete(
+            self._document_path,
+            self.page_count,
+            self._cache_signature,
+        )
+        return self._cache_is_complete()
 
     def is_not_empty(self) -> bool:
         return self.page_count > 0
@@ -200,6 +279,16 @@ class ArchiveImageSession:
             if not self.is_valid_index(page_index):
                 continue
             record = self._pages[page_index]
+            if self._record_is_cacheable(record):
+                assert self._document_path is not None
+                assert self._extraction_cache is not None
+                cached = self._extraction_cache.get(self._document_path, self._cache_page_key(page_index))
+                if cached is not None:
+                    page = _archive_page_from_bytes(page_index, record, cached)
+                    if page is not None:
+                        record.dimensions = page.dimensions
+                        results[result_index] = page
+                        continue
             missing.append((result_index, page_index, record))
 
         groups: OrderedDict[tuple[int, str | None], list[tuple[int, int, _PageRecord]]] = OrderedDict()
@@ -207,6 +296,7 @@ class ArchiveImageSession:
             record = item[2]
             groups.setdefault((id(record.source), record.password), []).append(item)
 
+        cache_payloads: dict[str, bytes] = {}
         for group in groups.values():
             source = group[0][2].source
             requests = [(record.name, record.password) for _result_index, _page_index, record in group]
@@ -220,8 +310,44 @@ class ArchiveImageSession:
                     continue
                 record.dimensions = page.dimensions
                 results[result_index] = page
+                if self._record_is_cacheable(record):
+                    cache_payloads[self._cache_page_key(page_index)] = payload
+
+        if cache_payloads:
+            assert self._document_path is not None
+            assert self._extraction_cache is not None
+            self._extraction_cache.put_many(self._document_path, cache_payloads)
 
         return results
+
+    def _can_use_document_cache(self) -> bool:
+        return (
+            self._uses_expensive_cache
+            and self._document_path is not None
+            and self._extraction_cache is not None
+        )
+
+    def _record_is_cacheable(self, record: _PageRecord) -> bool:
+        return (
+            self._can_use_document_cache()
+            and record.password is None
+            and record.source.allow_persistent_cache
+        )
+
+    def _cache_is_complete(self) -> bool:
+        if not self._can_use_document_cache():
+            return False
+        assert self._document_path is not None
+        assert self._extraction_cache is not None
+        return self._extraction_cache.is_complete(
+            self._document_path,
+            self.page_count,
+            self._cache_signature,
+        )
+
+    @staticmethod
+    def _cache_page_key(page_index: int) -> str:
+        return f"pages/{page_index:08d}"
 
     def get_aspect_ratio(self, index: int) -> tuple[float, float] | None:
         dimensions = self.get_dimensions(index)
@@ -300,8 +426,9 @@ class ArchiveImageService:
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
         password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
-        max_depth: int = 2,
+        max_depth: int | None = None,
         max_nested_depth: int | None = None,
+        global_file_max_depth: int = _DEFAULT_GLOBAL_FILE_DEPTH,
     ) -> ArchiveValidationResult:
         """Return structured feedback without raising controlled archive errors.
 
@@ -312,7 +439,12 @@ class ArchiveImageService:
         path = Path(archive_path)
         suffix = path.suffix.lower()
         archive_format = suffix.lstrip(".").upper() or None
-        effective_max_depth = _coerce_depth(max_nested_depth if max_nested_depth is not None else max_depth)
+        effective_nested_depth = _resolve_nested_depth(max_depth, max_nested_depth)
+        effective_global_depth = _coerce_depth_limit(
+            global_file_max_depth,
+            default=_DEFAULT_GLOBAL_FILE_DEPTH,
+            maximum=_MAX_GLOBAL_FILE_DEPTH,
+        )
 
         if not path.exists():
             return self._validation_result(
@@ -344,7 +476,8 @@ class ArchiveImageService:
                 path,
                 password_provider=password_provider,
                 password_policy=password_policy,
-                max_depth=effective_max_depth,
+                max_nested_depth=effective_nested_depth,
+                global_file_max_depth=effective_global_depth,
             )
             first_page = session.get_page(0)
         except ArchiveError as exc:
@@ -381,17 +514,24 @@ class ArchiveImageService:
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
         password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
-        max_depth: int = 2,
+        max_depth: int | None = None,
         max_nested_depth: int | None = None,
+        global_file_max_depth: int = _DEFAULT_GLOBAL_FILE_DEPTH,
     ) -> ArchiveImageSession:
-        effective_max_depth = _coerce_depth(max_nested_depth if max_nested_depth is not None else max_depth)
+        effective_nested_depth = _resolve_nested_depth(max_depth, max_nested_depth)
+        effective_global_depth = _coerce_depth_limit(
+            global_file_max_depth,
+            default=_DEFAULT_GLOBAL_FILE_DEPTH,
+            maximum=_MAX_GLOBAL_FILE_DEPTH,
+        )
         path = Path(archive_path)
         suffix = path.suffix.lower()
         logger.debug(
-            "Archive open: path=%s suffix=%s max_depth=%d policy=%s",
+            "Archive open: path=%s suffix=%s nested_depth=%d global_file_depth=%d policy=%s",
             path,
             suffix,
-            effective_max_depth,
+            effective_nested_depth,
+            effective_global_depth,
             password_policy.value if hasattr(password_policy, "value") else password_policy,
         )
         if not path.exists():
@@ -407,20 +547,36 @@ class ArchiveImageService:
             password_policy=password_policy,
             skipped_archives=set(),
         )
-        pages = self._scan_archive(
+        root = self._scan_archive(
             source,
             context,
-            max_depth=effective_max_depth,
-            archive_level=0,
+            max_nested_depth=effective_nested_depth,
+            nested_depth=0,
+            global_base_depth=0,
+            global_file_max_depth=effective_global_depth,
         )
+        _disambiguate_nested_archive_labels(root)
+        pages, contents = _flatten_archive_tree(root)
         if not pages:
             if context.skipped_archives:
                 raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
             raise ArchiveEmptyError(
-                f"No supported image pages found in archive within archive depth {effective_max_depth}: {path}"
+                "No supported image pages found within the configured archive depth limits: "
+                f"{path}"
             )
         logger.info("Archive opened: %s pages=%d", path.name, len(pages))
-        return ArchiveImageSession(pages, self._read_entries)
+        cache_signature = (
+            f"archive-pages-v1:nested={effective_nested_depth}:"
+            f"global={effective_global_depth}"
+        )
+        return ArchiveImageSession(
+            pages,
+            self._read_entries_uncached,
+            contents,
+            document_path=path,
+            extraction_cache=self._page_cache,
+            cache_signature=cache_signature,
+        )
 
     def _validation_result(
         self,
@@ -460,17 +616,18 @@ class ArchiveImageService:
         self,
         source: _ArchiveSource,
         context: _ScanContext,
-        max_depth: int,
-        archive_level: int,
-    ) -> list[_PageRecord]:
+        *,
+        max_nested_depth: int,
+        nested_depth: int,
+        global_base_depth: int,
+        global_file_max_depth: int,
+    ) -> _ArchiveTreeNode:
         try:
             entries = self._list_entries(source, context)
         except _ArchiveSourceSkipped:
-            return []
+            return _ArchiveTreeNode("", "", "root")
         entry_prefix = _transparent_single_root_prefix(entries)
-        root_group: list[_PageRecord] = []
-        group_by_parent: OrderedDict[str, list[_PageRecord]] = OrderedDict({"": root_group})
-        segments: list[tuple[str, list[_PageRecord]]] = []
+        root = _ArchiveTreeNode("", "", "root")
 
         for entry in entries:
             safe_name = _safe_entry_name(entry.name)
@@ -481,45 +638,62 @@ class ArchiveImageService:
             if logical_name is None:
                 continue
             suffix = PurePosixPath(logical_name).suffix.lower()
-            entry_depth = _entry_depth(logical_name)
-            if entry_depth > max_depth:
-                continue
+            physical_parts = PurePosixPath(safe_name).parts
+            folder_depth = max(0, len(physical_parts) - 1)
+            global_entry_depth = global_base_depth + folder_depth
             if suffix in IMAGE_EXTENSIONS:
-                page = self._page_record(source, safe_name, logical_name, entry.password)
-                parent = _parent_group(logical_name)
-                if parent == "":
-                    root_group.append(page)
+                if not _depth_is_allowed(global_entry_depth, global_file_max_depth):
                     continue
-
-                if parent not in group_by_parent:
-                    group_by_parent[parent] = []
-                    segments.append(("group", group_by_parent[parent]))
-                group_by_parent[parent].append(page)
+                page = self._page_record(source, safe_name, logical_name, entry.password)
+                parent = _ensure_folder_path(root, PurePosixPath(logical_name).parts[:-1])
+                parent.pages.append(page)
                 continue
 
-            if suffix in ARCHIVE_EXTENSIONS and archive_level < max_depth:
-                nested_data = self._read_entry(source, safe_name, entry.password)
-                nested_source = _ArchiveSource(
-                    label=f"{source.label}::{logical_name}",
-                    suffix=suffix,
-                    data=nested_data,
-                )
-                nested_pages = self._scan_archive(
-                    nested_source,
-                    context,
-                    max_depth=max_depth,
-                    archive_level=archive_level + 1,
-                )
-                if nested_pages:
-                    segments.append(("nested", nested_pages))
+            next_nested_depth = nested_depth + 1
+            nested_global_depth = global_entry_depth + 1
+            if (
+                suffix in ARCHIVE_EXTENSIONS
+                and _depth_is_allowed(next_nested_depth, max_nested_depth)
+                and _depth_is_allowed(nested_global_depth, global_file_max_depth)
+            ):
+                try:
+                    nested_data = self._read_entry(source, safe_name, entry.password)
+                    nested_source = _ArchiveSource(
+                        label=f"{source.label}::{logical_name}",
+                        suffix=suffix,
+                        data=nested_data,
+                        allow_persistent_cache=(
+                            source.allow_persistent_cache and entry.password is None
+                        ),
+                    )
+                    nested_root = self._scan_archive(
+                        nested_source,
+                        context,
+                        max_nested_depth=max_nested_depth,
+                        nested_depth=next_nested_depth,
+                        global_base_depth=nested_global_depth,
+                        global_file_max_depth=global_file_max_depth,
+                    )
+                except (ArchivePasswordRequired, ArchivePasswordRejected):
+                    raise
+                except ArchiveError as exc:
+                    logger.warning("Skipping unreadable nested archive %s: %s", logical_name, exc)
+                    continue
+                if _tree_has_pages(nested_root):
+                    logical_path = PurePosixPath(logical_name)
+                    parent = _ensure_folder_path(root, logical_path.parts[:-1])
+                    parent.children.append(
+                        _ArchiveTreeNode(
+                            name=logical_path.name,
+                            label=logical_path.stem,
+                            kind="archive",
+                            pages=nested_root.pages,
+                            children=nested_root.children,
+                            folders=nested_root.folders,
+                        )
+                    )
 
-        ordered_pages = _sort_group(root_group)
-        for segment_type, segment_pages in segments:
-            if segment_type == "group":
-                ordered_pages.extend(_sort_group(segment_pages))
-            else:
-                ordered_pages.extend(segment_pages)
-        return ordered_pages
+        return root
 
     def _page_record(self, source: _ArchiveSource, name: str, logical_name: str, password: str | None) -> _PageRecord:
         display_path = f"{source.label}/{logical_name}"
@@ -1029,42 +1203,114 @@ def _strip_transparent_prefix(name: str, prefix: str | None) -> str | None:
     return stripped or None
 
 
-def _entry_depth(name: str) -> int:
-    return len(PurePosixPath(name).parts)
+def _ensure_folder_path(root: _ArchiveTreeNode, parts: Sequence[str]) -> _ArchiveTreeNode:
+    node = root
+    for part in parts:
+        child = node.folders.get(part)
+        if child is None:
+            child = _ArchiveTreeNode(part, part, "folder")
+            node.folders[part] = child
+            node.children.append(child)
+        node = child
+    return node
 
 
-def _parent_group(name: str) -> str:
-    parent = PurePosixPath(name).parent
-    if parent == PurePosixPath("."):
-        return ""
-    return parent.as_posix()
+def _tree_has_pages(node: _ArchiveTreeNode) -> bool:
+    # Nodes are only attached after an accepted page or non-empty nested
+    # archive is found, so a child is itself proof of a page-bearing subtree.
+    return bool(node.pages or node.children)
 
 
-def _sort_group(pages: list[_PageRecord]) -> list[_PageRecord]:
-    if not pages:
-        return []
-    stems = [PurePosixPath(page.display_path).stem for page in pages]
-    if all(stem.isdigit() for stem in stems):
-        return sorted(pages, key=lambda page: (int(PurePosixPath(page.display_path).stem), page.display_path.lower()))
-    return sorted(pages, key=lambda page: _natural_key(PurePosixPath(page.display_path).name))
+def _sorted_pages(pages: Iterable[_PageRecord]) -> list[_PageRecord]:
+    return sorted(
+        pages,
+        key=lambda page: (
+            _NATURAL_KEY(PurePosixPath(page.display_path).name),
+            page.display_path.casefold(),
+        ),
+    )
 
 
-def _natural_key(value: str) -> tuple[object, ...]:
-    parts: list[tuple[int, object]] = []
-    for part in _NATURAL_PART_RE.split(value.lower()):
-        if part.isdigit():
-            parts.append((0, int(part)))
-        elif part:
-            parts.append((1, part))
-    return tuple(parts)
+def _sorted_children(children: Iterable[_ArchiveTreeNode]) -> list[_ArchiveTreeNode]:
+    return sorted(
+        (child for child in children if _tree_has_pages(child)),
+        key=lambda child: (
+            _NATURAL_KEY(child.label),
+            _NATURAL_KEY(child.name),
+            child.kind,
+        ),
+    )
 
 
-def _coerce_depth(value: object) -> int:
+def _disambiguate_nested_archive_labels(node: _ArchiveTreeNode) -> None:
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        visible_children = [child for child in current.children if _tree_has_pages(child)]
+        label_counts: dict[str, int] = {}
+        for child in visible_children:
+            key = child.label.casefold()
+            label_counts[key] = label_counts.get(key, 0) + 1
+        for child in visible_children:
+            if child.kind == "archive" and label_counts.get(child.label.casefold(), 0) > 1:
+                child.label = child.name
+        pending.extend(visible_children)
+
+
+def _flatten_archive_tree(
+    root: _ArchiveTreeNode,
+) -> tuple[list[_PageRecord], tuple[ArchiveContentsEntry, ...]]:
+    pages: list[_PageRecord] = []
+    contents: list[ArchiveContentsEntry] = []
+
+    pages.extend(_sorted_pages(root.pages))
+    pending = [(child, 0) for child in reversed(_sorted_children(root.children))]
+    while pending:
+        node, depth = pending.pop()
+        contents.append(ArchiveContentsEntry(node.label, len(pages), depth))
+        pages.extend(_sorted_pages(node.pages))
+        children = _sorted_children(node.children)
+        pending.extend((child, depth + 1) for child in reversed(children))
+    return pages, tuple(contents)
+
+
+def _depth_is_allowed(depth: int, maximum: int) -> bool:
+    return maximum == -1 or depth <= maximum
+
+
+def _resolve_nested_depth(max_depth: object | None, max_nested_depth: object | None) -> int:
+    if max_depth is not None and max_nested_depth is not None:
+        legacy = _coerce_depth_limit(
+            max_depth,
+            default=_DEFAULT_NESTED_ARCHIVE_DEPTH,
+            maximum=_MAX_NESTED_ARCHIVE_DEPTH,
+        )
+        explicit = _coerce_depth_limit(
+            max_nested_depth,
+            default=_DEFAULT_NESTED_ARCHIVE_DEPTH,
+            maximum=_MAX_NESTED_ARCHIVE_DEPTH,
+        )
+        if legacy != explicit:
+            raise ValueError("max_depth and max_nested_depth must match when both are provided")
+        return explicit
+    selected = max_nested_depth if max_nested_depth is not None else max_depth
+    return _coerce_depth_limit(
+        selected,
+        default=_DEFAULT_NESTED_ARCHIVE_DEPTH,
+        maximum=_MAX_NESTED_ARCHIVE_DEPTH,
+    )
+
+
+def _coerce_depth_limit(value: object, *, default: int, maximum: int) -> int:
+    if value is None:
+        return default
     try:
         depth = int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
-        return 2
-    return max(1, min(5, depth))
+        return default
+    if depth == -1:
+        return -1
+    return max(1, min(maximum, depth))
 
 
 def _looks_like_password_error(exc: Exception) -> bool:

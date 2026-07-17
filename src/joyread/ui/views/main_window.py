@@ -11,6 +11,7 @@ from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.core.models.tag import Tag
@@ -18,6 +19,7 @@ from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
 from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_shell import ReaderShellWidget
@@ -38,11 +40,15 @@ logger = logging.getLogger(__name__)
 
 # Formats handled by the novel reader skeleton. Engine work will expand
 # this (and remove the read-only restriction in ``open_reader_for_file``).
-NOVEL_FORMATS: frozenset[str] = frozenset({".epub"})
+NOVEL_FORMATS: frozenset[str] = EPUB_EXTENSIONS if EPUB_ACCESS_ENABLED else frozenset()
 
 
 def _is_novel_source(path: Path) -> bool:
     return path.suffix.lower() in NOVEL_FORMATS
+
+
+def _is_shelved_epub(path: Path) -> bool:
+    return not EPUB_ACCESS_ENABLED and path.suffix.lower() in EPUB_EXTENSIONS
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +58,11 @@ class MainWindow(QMainWindow):
         self._reader_windows: list[ReaderWindow | NovelReaderWindow] = []
         self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
         self._cover_editor_book_uuid: str | None = None
+        self._cover_editor_thumbnail_viewmodel = CoverEditorThumbnailViewModel(
+            context.thumbnail_service,
+            context.task_service,
+            context.archive_warmup_coordinator,
+        )
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
@@ -126,10 +137,25 @@ class MainWindow(QMainWindow):
         self.shelf_view.detail_tag_allocation_requested.connect(self._show_book_tag_allocation_dialog)
         self.shelf_view.cover_edit_requested.connect(self._show_cover_editor)
         self.cover_editor_overlay.import_requested.connect(self._select_cover_editor_image)
-        self.cover_editor_overlay.thumbnail_batch_requested.connect(self._request_cover_editor_thumbnail_batch)
+        self.cover_editor_overlay.thumbnail_interest_changed.connect(
+            self._cover_editor_thumbnail_viewmodel.set_interest
+        )
+        self.cover_editor_overlay.thumbnail_interest_released.connect(
+            self._cover_editor_thumbnail_viewmodel.release_interest
+        )
+        self.cover_editor_overlay.picker_visibility_changed.connect(
+            self._handle_cover_picker_visibility_changed
+        )
         self.cover_editor_overlay.thumbnail_selected.connect(self._load_cover_editor_thumbnail_source)
         self.cover_editor_overlay.save_requested.connect(self._confirm_cover_editor_save)
         self.cover_editor_overlay.closed.connect(self._clear_cover_editor_book_uuid)
+        self._cover_editor_thumbnail_viewmodel.source_ready.connect(
+            self._handle_cover_editor_thumbnail_source_ready
+        )
+        self._cover_editor_thumbnail_viewmodel.thumbnail_ready.connect(
+            self.cover_editor_overlay.set_thumbnail
+        )
+        self._cover_editor_thumbnail_viewmodel.failed.connect(self._handle_cover_editor_source_failed)
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_move_requested.connect(self._request_move_storage)
         self.settings_view.storage_select_requested.connect(self._request_select_storage)
@@ -222,8 +248,11 @@ class MainWindow(QMainWindow):
             logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
             self.dialog_overlay.show_info(t("dialog.read_title"), t("dialog.book_no_longer_available"))
             return
-        individual = self._settings_for_reader_launch().individual_read_window
         source_path = Path(book.file_path)
+        if _is_shelved_epub(source_path):
+            self._show_epub_unavailable()
+            return
+        individual = self._settings_for_reader_launch().individual_read_window
         is_novel = _is_novel_source(source_path)
         logger.info(
             "open_reader_for_book uuid=%s page=%s mode=%s reader=%s",
@@ -257,9 +286,12 @@ class MainWindow(QMainWindow):
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
         logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
+        if _is_shelved_epub(source_path):
+            self._show_epub_unavailable()
+            return
         if _is_novel_source(source_path):
-            # Skeleton: .epub bypasses preflight/import (no parser yet),
-            # opening read-only regardless of ``import_mode``.
+            # When EPUB access is enabled again it remains read-only here;
+            # importing it needs its own validation path first.
             self._show_novel_reader_window(source_path, title=source_path.stem)
             return
         if not import_mode:
@@ -271,7 +303,8 @@ class MainWindow(QMainWindow):
             "open-and-import-preflight",
             lambda: self._context.import_service.preflight_file(
                 source_path,
-                archive_internal_max_depth=settings.archive_internal_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=lambda result, source_path=source_path, settings=settings: self._handle_open_import_preflight(
                 source_path,
@@ -279,6 +312,12 @@ class MainWindow(QMainWindow):
                 result,
             ),
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
+        )
+
+    def _show_epub_unavailable(self) -> None:
+        self.dialog_overlay.show_info(
+            t("dialog.read_title"),
+            t("dialog.epub_temporarily_unavailable"),
         )
 
     def _handle_open_import_preflight(self, source_path: Path, settings, result) -> None:  # noqa: ANN001
@@ -312,14 +351,15 @@ class MainWindow(QMainWindow):
             "open-and-import-file",
             lambda: self._context.import_service.import_files(
                 [source_path],
-                archive_internal_max_depth=settings.archive_internal_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=lambda _result: self._reload_after_background_import(),
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
         )
 
     def _select_reader_file(self, import_mode: bool) -> None:
-        readable_suffixes = sorted(SUPPORTED_READER_EXTENSIONS | NOVEL_FORMATS)
+        readable_suffixes = sorted(SUPPORTED_READER_EXTENSIONS)
         extensions = " ".join(f"*{suffix}" for suffix in readable_suffixes)
         # Keep the platform-native picker. On macOS this can briefly involve
         # Open/Save Panel, QuickLook, and AutoFill helper processes owned by
@@ -357,7 +397,8 @@ class MainWindow(QMainWindow):
             "import-files",
             lambda: self._context.import_service.import_files(
                 [Path(path) for path in file_paths],
-                archive_internal_max_depth=settings.archive_internal_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=self._handle_import_finished,
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
@@ -378,7 +419,8 @@ class MainWindow(QMainWindow):
             lambda: self._context.import_service.import_folder(
                 directory,
                 max_depth=settings.import_folder_max_depth,
-                archive_internal_max_depth=settings.archive_internal_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=self._handle_import_finished,
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
@@ -534,7 +576,8 @@ class MainWindow(QMainWindow):
             "import-manifest",
             lambda: self._context.import_service.import_manifest(
                 manifest_path,
-                archive_internal_max_depth=settings.archive_internal_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=self._handle_import_finished,
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
@@ -1039,6 +1082,9 @@ class MainWindow(QMainWindow):
         )
 
     def _show_cover_editor(self, book_uuid: str) -> None:
+        self._cover_editor_thumbnail_viewmodel.replace_thumbnail_service(
+            self._context.thumbnail_service
+        )
         book = self._book_by_uuid(book_uuid)
         if book is None:
             self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.book_no_longer_available"))
@@ -1052,6 +1098,10 @@ class MainWindow(QMainWindow):
             return
 
         self._cover_editor_book_uuid = book_uuid
+        self._cover_editor_thumbnail_viewmodel.set_book(
+            book,
+            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+        )
         self._context.task_service.submit(
             "cover-editor-source",
             lambda book=book: self._context.thumbnail_service.load_cover_source_page(book, 0),
@@ -1080,32 +1130,6 @@ class MainWindow(QMainWindow):
             on_success=lambda source, image_path=image_path: self._handle_cover_editor_import_loaded(
                 image_path,
                 source,
-            ),
-            on_failure=lambda error: self._handle_cover_editor_source_failed(error),
-        )
-
-    def _request_cover_editor_thumbnail_batch(
-        self,
-        start_index: int,
-        batch_size: int,
-        size: tuple[int, int],
-    ) -> None:
-        book = self._cover_editor_book()
-        if book is None:
-            return
-        self._context.task_service.submit(
-            "cover-editor-thumbnails",
-            lambda book=book, start_index=start_index, batch_size=batch_size, size=size: (
-                self._context.thumbnail_service.generate_detail_thumbnail_batch(
-                    book,
-                    start_index,
-                    batch_size,
-                    size,
-                )
-            ),
-            on_success=lambda batch, book_uuid=book.uuid: self._handle_cover_editor_thumbnail_batch(
-                book_uuid,
-                batch,
             ),
             on_failure=lambda error: self._handle_cover_editor_source_failed(error),
         )
@@ -1214,16 +1238,19 @@ class MainWindow(QMainWindow):
             logger.warning("Cover editor rejected imported image path=%s", image_path)
             self.dialog_overlay.show_info(t("dialog.cover_editor_title"), t("dialog.cover_editor_load_imported_failed"))
 
-    def _handle_cover_editor_thumbnail_batch(self, book_uuid: str, batch) -> None:  # noqa: ANN001
-        if self._cover_editor_book_uuid != book_uuid:
-            logger.debug(
-                "Cover editor thumbnail batch dropped book=%s active_book=%s",
-                book_uuid,
-                self._cover_editor_book_uuid,
-            )
+    def _handle_cover_editor_thumbnail_source_ready(self, book_uuid: str, page_count: int) -> None:
+        if self._cover_editor_book_uuid == book_uuid:
+            self.cover_editor_overlay.set_thumbnail_page_count(page_count)
+
+    def _handle_cover_picker_visibility_changed(self, visible: bool) -> None:
+        detail_book_uuid = self._context.shelf_viewmodel.detail_book_uuid
+        if detail_book_uuid is None:
             return
-        logger.debug("Cover editor thumbnail batch applied book=%s items=%d", book_uuid, len(batch.items))
-        self.cover_editor_overlay.apply_thumbnail_batch(batch)
+        if visible:
+            self._context.shelf_viewmodel.release_detail_thumbnail_interest(detail_book_uuid)
+            return
+        self._context.shelf_viewmodel.refresh_detail_thumbnail_interest(detail_book_uuid)
+        self.shelf_view.detail_panel.refresh_thumbnail_interest()
 
     def _handle_cover_editor_source_failed(self, error: Exception) -> None:
         logger.warning(
@@ -1248,6 +1275,7 @@ class MainWindow(QMainWindow):
 
     def _clear_cover_editor_book_uuid(self) -> None:
         if not self.cover_editor_overlay.isVisible():
+            self._cover_editor_thumbnail_viewmodel.cancel()
             self._cover_editor_book_uuid = None
 
     def _book_by_uuid(self, book_uuid: str) -> Book | None:

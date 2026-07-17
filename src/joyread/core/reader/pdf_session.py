@@ -12,13 +12,13 @@ from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
 from PySide6.QtPdf import QPdfDocument
 from PIL import Image, ImageChops
 
+from joyread.core.file_types import PDF_EXTENSIONS
 from joyread.core.reader.models import ReaderPageImage
 
 
 logger = logging.getLogger(__name__)
 
 
-PDF_EXTENSIONS = frozenset({".pdf"})
 PDF_RENDER_DPI = 144
 PDF_RENDER_MAX_LONG_EDGE = 4096
 _PDF_POINTS_PER_INCH = 72.0

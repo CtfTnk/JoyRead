@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from joyread.core.archive import (
+    ArchiveAccessMode,
     ArchiveCorruptError,
     ArchiveDependencyMissing,
     ArchiveEmptyError,
@@ -23,6 +24,7 @@ from joyread.core.archive import (
     ExtractionBackendResolver,
 )
 from joyread.core.archive.backends import SEVEN_ZIP_ENV_VAR
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 
 
 def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
@@ -36,6 +38,14 @@ def _write_zip(path: Path, entries: dict[str, bytes]) -> None:
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
         for name, data in entries.items():
             archive.writestr(name, data)
+
+
+def _zip_bytes(entries: dict[str, bytes]) -> bytes:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
 
 
 def _encrypted_cbz_bytes(password: str = "secret", image_size: tuple[int, int] = (32, 16)) -> bytes:
@@ -55,7 +65,7 @@ def _write_encrypted_cbz(path: Path, password: str = "secret", image_size: tuple
     path.write_bytes(_encrypted_cbz_bytes(password, image_size))
 
 
-def test_cbz_discovers_images_sorts_groups_and_respects_default_depth(tmp_path: Path) -> None:
+def test_cbz_discovers_images_and_naturally_sorts_each_directory(tmp_path: Path) -> None:
     archive_path = tmp_path / "sample.cbz"
     _write_zip(
         archive_path,
@@ -74,13 +84,14 @@ def test_cbz_discovers_images_sorts_groups_and_respects_default_depth(tmp_path: 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
     session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
 
-    assert session.page_count == 5
+    assert session.page_count == 6
     assert [session.get_dimensions(index) for index in session.index_range] == [
         (20, 10),
         (30, 10),
         (101, 10),
         (102, 10),
         (110, 10),
+        (201, 10),
     ]
 
 
@@ -134,7 +145,7 @@ def test_session_caches_dimensions_without_retaining_archive_page_bytes(tmp_path
     assert all(not hasattr(record, "_page") for record in session._pages)
 
 
-def test_nested_cbz_pages_are_appended_in_discovery_order(tmp_path: Path) -> None:
+def test_nested_cbz_pages_follow_root_pages_and_create_contents(tmp_path: Path) -> None:
     nested_buffer = BytesIO()
     with ZipFile(nested_buffer, "w", compression=ZIP_DEFLATED) as nested:
         nested.writestr("001.png", _png_bytes((40, 10)))
@@ -152,9 +163,123 @@ def test_nested_cbz_pages_are_appended_in_discovery_order(tmp_path: Path) -> Non
 
     assert session.page_count == 2
     assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (40, 10)]
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [("nested", 1, 0)]
 
 
-def test_archive_internal_depth_counts_from_archive_root(tmp_path: Path) -> None:
+def test_nested_archives_sort_as_folder_nodes_and_expose_internal_contents(tmp_path: Path) -> None:
+    archive_path = tmp_path / "nested-order.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "Volume10.cbz": _zip_bytes({"Wrapper/Chapter2/1.png": _png_bytes((102, 10))}),
+            "Volume2.cbz": _zip_bytes({"Wrapper/Chapter1/1.png": _png_bytes((21, 10))}),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [session.get_dimensions(index) for index in session.index_range] == [(21, 10), (102, 10)]
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [
+        ("Volume2", 0, 0),
+        ("Chapter1", 0, 1),
+        ("Volume10", 1, 0),
+        ("Chapter2", 1, 1),
+    ]
+
+
+def test_nested_archive_label_keeps_extension_when_it_collides_with_folder(tmp_path: Path) -> None:
+    archive_path = tmp_path / "collision.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "Bonus/1.png": _png_bytes((10, 10)),
+            "Bonus.cbz": _zip_bytes({"1.png": _png_bytes((20, 10))}),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [
+        ("Bonus", 0, 0),
+        ("Bonus.cbz", 1, 0),
+    ]
+
+
+def test_unreadable_nested_archive_is_skipped_without_a_contents_entry(tmp_path: Path) -> None:
+    archive_path = tmp_path / "unreadable-nested.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "1.png": _png_bytes((10, 10)),
+            "broken.cbz": b"not a zip archive",
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert session.page_count == 1
+    assert session.contents == ()
+
+
+def test_nested_and_global_depth_limits_apply_independently(tmp_path: Path) -> None:
+    level_three = _zip_bytes({"3.png": _png_bytes((30, 10))})
+    level_two = _zip_bytes({"2.png": _png_bytes((20, 10)), "level3.cbz": level_three})
+    level_one = _zip_bytes(
+        {
+            "Wrapper/1.png": _png_bytes((10, 10)),
+            "Wrapper/level2.cbz": level_two,
+        }
+    )
+    archive_path = tmp_path / "depths.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "0.png": _png_bytes((1, 10)),
+            "level1.cbz": level_one,
+        },
+    )
+
+    nested_limited = ArchiveImageService().open(
+        archive_path,
+        max_nested_depth=1,
+        global_file_max_depth=-1,
+    )
+    global_limited = ArchiveImageService().open(
+        archive_path,
+        max_nested_depth=-1,
+        global_file_max_depth=1,
+    )
+    unlimited = ArchiveImageService().open(
+        archive_path,
+        max_nested_depth=-1,
+        global_file_max_depth=-1,
+    )
+
+    assert [nested_limited.get_dimensions(index) for index in nested_limited.index_range] == [(1, 10), (10, 10)]
+    assert [global_limited.get_dimensions(index) for index in global_limited.index_range] == [(1, 10)]
+    assert [unlimited.get_dimensions(index) for index in unlimited.index_range] == [
+        (1, 10),
+        (10, 10),
+        (20, 10),
+        (30, 10),
+    ]
+
+
+def test_legacy_max_depth_alias_targets_nested_archives_and_rejects_conflicts(tmp_path: Path) -> None:
+    archive_path = tmp_path / "alias.cbz"
+    _write_zip(
+        archive_path,
+        {"nested.cbz": _zip_bytes({"1.png": _png_bytes((10, 10))})},
+    )
+
+    session = ArchiveImageService().open(archive_path, max_depth=1)
+
+    assert session.page_count == 1
+    with pytest.raises(ValueError, match="must match"):
+        ArchiveImageService().open(archive_path, max_depth=1, max_nested_depth=2)
+
+
+def test_archive_global_file_depth_counts_normal_folders_from_archive_root(tmp_path: Path) -> None:
     archive_path = tmp_path / "depth.cbz"
     _write_zip(
         archive_path,
@@ -165,10 +290,10 @@ def test_archive_internal_depth_counts_from_archive_root(tmp_path: Path) -> None
         },
     )
 
-    default_session = ArchiveImageService().open(archive_path)
-    deep_session = ArchiveImageService().open(archive_path, max_depth=3)
+    shallow_session = ArchiveImageService().open(archive_path, global_file_max_depth=1)
+    deep_session = ArchiveImageService().open(archive_path, global_file_max_depth=2)
 
-    assert [default_session.get_dimensions(index) for index in default_session.index_range] == [(10, 10), (20, 10)]
+    assert [shallow_session.get_dimensions(index) for index in shallow_session.index_range] == [(10, 10), (20, 10)]
     assert [deep_session.get_dimensions(index) for index in deep_session.index_range] == [
         (10, 10),
         (20, 10),
@@ -176,7 +301,28 @@ def test_archive_internal_depth_counts_from_archive_root(tmp_path: Path) -> None
     ]
 
 
-def test_archive_single_root_folder_is_transparent_for_default_depth(tmp_path: Path) -> None:
+def test_archive_global_depth_1000_uses_iterative_contents_flattening(tmp_path: Path) -> None:
+    archive_path = tmp_path / "deep-tree.cbz"
+    depth_1000 = "/".join(["d"] * 1000)
+    depth_1001 = f"{depth_1000}/d"
+    _write_zip(
+        archive_path,
+        {
+            "0.png": _png_bytes((1, 10)),
+            f"{depth_1000}/1.png": _png_bytes((10, 10)),
+            f"{depth_1001}/2.png": _png_bytes((20, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path, global_file_max_depth=1000)
+
+    assert session.page_count == 2
+    assert len(session.contents) == 1000
+    assert session.contents[-1].page_index == 1
+    assert session.contents[-1].depth == 999
+
+
+def test_archive_single_root_folder_is_transparent_but_counts_toward_global_depth(tmp_path: Path) -> None:
     archive_path = tmp_path / "wrapped.cbz"
     _write_zip(
         archive_path,
@@ -188,8 +334,14 @@ def test_archive_single_root_folder_is_transparent_for_default_depth(tmp_path: P
     )
 
     session = ArchiveImageService().open(archive_path)
+    shallow_session = ArchiveImageService().open(archive_path, global_file_max_depth=1)
 
-    assert [session.get_dimensions(index) for index in session.index_range] == [(10, 10), (20, 10)]
+    assert [session.get_dimensions(index) for index in session.index_range] == [(10, 10), (20, 10), (30, 10)]
+    assert [shallow_session.get_dimensions(index) for index in shallow_session.index_range] == [(10, 10)]
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [
+        ("chapter", 1, 0),
+        ("deep", 2, 1),
+    ]
 
 
 def test_archive_skips_macos_metadata_entries(tmp_path: Path) -> None:
@@ -224,6 +376,62 @@ def test_archive_natural_sort_handles_mixed_chinese_and_numeric_names(tmp_path: 
     session = ArchiveImageService().open(archive_path)
 
     assert [session.get_dimensions(index) for index in session.index_range] == [(10, 10), (20, 10), (30, 10)]
+
+
+def test_archive_dfs_outputs_direct_pages_before_naturally_sorted_child_folders(tmp_path: Path) -> None:
+    archive_path = tmp_path / "chapters.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "Chapter10/1.png": _png_bytes((101, 10)),
+            "Chapter2/Sub10/1.png": _png_bytes((210, 10)),
+            "Chapter2/10.png": _png_bytes((2010, 10)),
+            "Chapter2/2.png": _png_bytes((202, 10)),
+            "Chapter1/1.png": _png_bytes((11, 10)),
+            "0.png": _png_bytes((1, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [session.get_dimensions(index) for index in session.index_range] == [
+        (1, 10),
+        (11, 10),
+        (202, 10),
+        (2010, 10),
+        (210, 10),
+        (101, 10),
+    ]
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [
+        ("Chapter1", 1, 0),
+        ("Chapter2", 2, 0),
+        ("Sub10", 4, 1),
+        ("Chapter10", 5, 0),
+    ]
+
+
+def test_archive_natural_sort_is_deterministic_for_case_and_leading_zero(tmp_path: Path) -> None:
+    archive_path = tmp_path / "natural.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "chapter/1.png": _png_bytes((1, 10)),
+            "chapter/01.png": _png_bytes((10, 10)),
+            "chapter/001.png": _png_bytes((100, 10)),
+            "ChapterA/1.png": _png_bytes((20, 10)),
+            "chaptera/1.png": _png_bytes((30, 10)),
+        },
+    )
+
+    session = ArchiveImageService().open(archive_path)
+
+    assert [session.get_dimensions(index) for index in session.index_range] == [
+        (100, 10),
+        (10, 10),
+        (1, 10),
+        (20, 10),
+        (30, 10),
+    ]
 
 
 def test_7z_archive_reads_images(tmp_path: Path) -> None:
@@ -263,6 +471,27 @@ def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytes
     second_session = service.open(archive_path)
     assert second_session.get_page(0) is not None
     assert calls == [("001.png", "002.png")]
+
+
+def test_7z_thumbnail_access_switches_from_cold_batch_to_ready_single_page(tmp_path: Path) -> None:
+    archive_path = tmp_path / "sample.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+        archive.writestr(_png_bytes((60, 20)), "002.png")
+    pool = ArchiveExtractionPool(tmp_path / "archive_pages", max_bytes=1 << 20)
+    session = ArchiveImageService(extraction_pool=pool).open(archive_path)
+
+    assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
+    assert session.thumbnail_batch_size(0) == 8
+
+    assert all(page is not None for page in session.get_pages((0, 1)))
+    assert session.mark_thumbnail_cache_ready()
+    assert session.access_mode == ArchiveAccessMode.EXPENSIVE_READY
+    assert session.thumbnail_batch_size(0) == 1
+
+    pool.clear()
+
+    assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
 
 
 def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
@@ -409,6 +638,9 @@ def test_multiple_nested_encrypted_archives_prompt_in_order_and_skip_independent
 
     assert requests == ["outer.cbz::nested-a.cbz", "outer.cbz::nested-b.cbz"]
     assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (48, 16)]
+    assert [(item.label, item.page_index, item.depth) for item in session.contents] == [
+        ("nested-b", 1, 0),
+    ]
 
 
 def test_wrong_nested_archive_password_reports_nested_archive_path(tmp_path: Path) -> None:

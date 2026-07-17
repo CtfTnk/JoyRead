@@ -19,6 +19,7 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
 )
+from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
@@ -87,12 +88,15 @@ class AppContext:
     shelf_viewmodel: ShelfViewModel
     settings_viewmodel: SettingsViewModel
     tag_management_viewmodel: TagManagementViewModel
+    archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None
     # Populated when startup recovery had to fall back to another library;
     # the main window shows it once on launch.
     storage_startup_notice: str | None = None
 
     def close(self) -> None:
         logger.info("AppContext shutting down: cancelling tasks then closing database")
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.close()
         self.task_service.shutdown()
         self.database_interpreter.close()
         logger.info("AppContext shutdown complete")
@@ -144,6 +148,13 @@ class AppContext:
         self.storage_migration_service.reset_library(root)
         self.reload_storage_from_settings()
 
+    def apply_archive_depth_settings(self) -> None:
+        self.settings = self.settings_store.load()
+        self.thumbnail_service.set_archive_depth_limits(
+            self.settings.nested_archive_max_depth,
+            self.settings.archive_global_file_max_depth,
+        )
+
     def reload_storage_from_settings(self) -> None:
         # Rebuild every storage-rooted service in the right order: settings →
         # path service → archive pool → archive reading stack → database. A
@@ -173,6 +184,8 @@ class AppContext:
             self.archive_image_service,
             self.cache_service,
             self.reader_session_service,
+            nested_archive_max_depth=self.settings.nested_archive_max_depth,
+            archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
         )
         self.import_service = ImportService(
             self.paths,
@@ -197,20 +210,19 @@ class AppContext:
 
         Called when the user edits a value under the Cache group on the
         Settings page. ``CacheService.apply_cache_budgets`` covers the shared
-        reader page cache and the disk pool; the detail-thumbnail cache lives
-        on ``ShelfViewModel`` so we resize it explicitly here.
+        reader page cache, thumbnail cache, and disk extraction pool.
         """
 
         previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         self.settings = self.settings_store.load()
         next_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         logger.info(
-            "Applying cache settings: strategy=%s->%s reader_mb=%s pool_mb=%s detail_mb=%s",
+            "Applying cache settings: strategy=%s->%s reader_mb=%s pool_mb=%s thumbnail_mb=%s",
             previous_strategy.value,
             next_strategy.value,
             self.settings.reader_page_cache_mb,
             self.settings.archive_extraction_pool_mb,
-            self.settings.detail_thumbnail_cache_mb,
+            self.settings.thumbnail_cache_mb,
         )
         if next_strategy != previous_strategy:
             # Strategy change isn't a resize — `ArchiveExtractionPool` and
@@ -226,6 +238,8 @@ class AppContext:
                 self.archive_image_service,
                 self.cache_service,
                 self.reader_session_service,
+                nested_archive_max_depth=self.settings.nested_archive_max_depth,
+                archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
             )
             self.import_service = ImportService(
                 self.paths,
@@ -239,15 +253,14 @@ class AppContext:
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
             self.cache_service.apply_cache_budgets(
                 reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
+                thumbnail_cache_bytes=self.settings.thumbnail_cache_mb * 1024 * 1024,
             )
         else:
             self.cache_service.apply_cache_budgets(
                 reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
+                thumbnail_cache_bytes=self.settings.thumbnail_cache_mb * 1024 * 1024,
                 archive_extraction_pool_bytes=self.settings.archive_extraction_pool_mb * 1024 * 1024,
             )
-        self.shelf_viewmodel.resize_detail_thumbnail_cache(
-            self.settings.detail_thumbnail_cache_mb * 1024 * 1024,
-        )
         self._refresh_settings_pool_usage()
 
     def clear_archive_extraction_pool(self) -> None:
@@ -265,6 +278,8 @@ class AppContext:
         logger.debug("Rebuilding archive reader services for cache=%s", type(self.archive_extraction_pool).__name__)
         self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
         self.reader_session_service = ReaderSessionService(self.archive_image_service)
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.replace_session_service(self.reader_session_service)
         self.cache_service.archive_extraction_pool = self.archive_extraction_pool
 
 
@@ -308,10 +323,12 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
     reader_session_service = ReaderSessionService(archive_image_service)
     library_service = LibraryService(book_repository)
     task_service = TaskService(config.max_background_workers)
+    archive_warmup_coordinator = ArchiveWarmupCoordinator(reader_session_service, task_service)
     hash_service = HashService()
     cache_service = CacheService(
         archive_extraction_pool=archive_extraction_pool,
         reader_page_cache_max_bytes=settings.reader_page_cache_mb * 1024 * 1024,
+        thumbnail_cache_max_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
         cover_index_max_items=config.cover_index_max_items,
     )
     import_service = ImportService(
@@ -323,7 +340,14 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
         tag_service=tag_service,
     )
     export_service = ExportService(book_repository, hash_service)
-    thumbnail_service = ThumbnailService(paths, archive_image_service, cache_service, reader_session_service)
+    thumbnail_service = ThumbnailService(
+        paths,
+        archive_image_service,
+        cache_service,
+        reader_session_service,
+        nested_archive_max_depth=settings.nested_archive_max_depth,
+        archive_global_file_max_depth=settings.archive_global_file_max_depth,
+    )
     hidden_space_service = HiddenSpaceService(settings_store, library_service)
     main_window_viewmodel = MainWindowViewModel()
     shelf_viewmodel = ShelfViewModel(
@@ -334,6 +358,7 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
         settings=settings,
         settings_store=settings_store,
         tag_service=tag_service,
+        archive_warmup_coordinator=archive_warmup_coordinator,
     )
     settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space_service)
     tag_management_viewmodel = TagManagementViewModel(tag_service)
@@ -350,6 +375,7 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
         archive_extraction_pool=archive_extraction_pool,
         archive_image_service=archive_image_service,
         reader_session_service=reader_session_service,
+        archive_warmup_coordinator=archive_warmup_coordinator,
         library_service=library_service,
         task_service=task_service,
         cache_service=cache_service,
@@ -376,6 +402,7 @@ def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppCont
     # connection in AppContext keeps the viewmodel UI-only and makes the side
     # effects (resize/clear) easy to find from one place.
     settings_viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
+    settings_viewmodel.archive_depth_limits_changed.connect(context.apply_archive_depth_settings)
     settings_viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
     logger.info(
         "AppContext ready (storage=%s, workers=%d, archive_cache_strategy=%s)",

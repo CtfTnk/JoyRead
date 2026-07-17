@@ -1,0 +1,127 @@
+"""Route operating-system file-open events into standalone reader windows."""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Iterable
+from pathlib import Path
+
+from PySide6.QtCore import QEvent, QObject
+from PySide6.QtGui import QFileOpenEvent
+from PySide6.QtWidgets import QApplication, QMainWindow
+
+
+logger = logging.getLogger(__name__)
+
+OpenFileHandler = Callable[[Path], QMainWindow]
+
+
+def _supported_file_open_path(
+    event: QEvent,
+    supported_extensions: frozenset[str],
+) -> Path | None:
+    if event.type() != QEvent.Type.FileOpen or not isinstance(event, QFileOpenEvent):
+        return None
+
+    value = event.file()
+    if not value:
+        url = event.url()
+        if not url.isLocalFile():
+            return None
+        value = url.toLocalFile()
+
+    path = Path(value).expanduser()
+    if path.suffix.lower() not in supported_extensions:
+        return None
+    return path
+
+
+class JoyReadApplication(QApplication):
+    """Capture macOS document events that arrive during QApplication init."""
+
+    def __init__(self, argv: list[str], supported_extensions: Iterable[str]) -> None:
+        self._supported_extensions = frozenset(supported_extensions)
+        self._startup_file_open_paths: list[Path] = []
+        super().__init__(argv)
+
+    def event(self, event: QEvent) -> bool:
+        path = _supported_file_open_path(event, self._supported_extensions)
+        if path is not None:
+            self._startup_file_open_paths.append(path)
+            event.accept()
+            return True
+        return super().event(event)
+
+    def take_startup_file_open_paths(self) -> tuple[Path, ...]:
+        paths = tuple(self._startup_file_open_paths)
+        self._startup_file_open_paths.clear()
+        return paths
+
+
+class FileOpenRouter(QObject):
+    """Queue startup events, then open one window for each requested file."""
+
+    def __init__(self, app: QApplication, supported_extensions: Iterable[str]) -> None:
+        super().__init__(app)
+        self._app = app
+        self._supported_extensions = frozenset(supported_extensions)
+        self._pending_paths: list[Path] = []
+        self._open_handler: OpenFileHandler | None = None
+        self._opened_windows: dict[int, QMainWindow] = {}
+        app.installEventFilter(self)
+
+    @property
+    def opened_windows(self) -> tuple[QMainWindow, ...]:
+        return tuple(self._opened_windows.values())
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if watched is self._app:
+            path = _supported_file_open_path(event, self._supported_extensions)
+            if path is not None:
+                self.enqueue(path)
+                event.accept()
+                return True
+        return super().eventFilter(watched, event)
+
+    def enqueue(self, path: str | Path) -> None:
+        source = Path(path).expanduser()
+        if source.suffix.lower() not in self._supported_extensions:
+            return
+        if self._open_handler is None:
+            self._pending_paths.append(source)
+            return
+        self._open(source)
+
+    def take_pending_path(self) -> Path | None:
+        if not self._pending_paths:
+            return None
+        return self._pending_paths.pop(0)
+
+    def discard_pending(self, path: str | Path) -> None:
+        target = Path(path).expanduser()
+        self._pending_paths = [candidate for candidate in self._pending_paths if candidate != target]
+
+    def set_open_handler(self, handler: OpenFileHandler) -> None:
+        self._open_handler = handler
+        pending, self._pending_paths = self._pending_paths, []
+        for path in pending:
+            self._open(path)
+
+    def dispose(self) -> None:
+        self._app.removeEventFilter(self)
+        self._open_handler = None
+        self._pending_paths.clear()
+        self._opened_windows.clear()
+
+    def _open(self, path: Path) -> None:
+        handler = self._open_handler
+        if handler is None:
+            self._pending_paths.append(path)
+            return
+        logger.info("Opening file from operating-system request path=%s", path)
+        window = handler(path)
+        key = id(window)
+        self._opened_windows[key] = window
+        window.destroyed.connect(
+            lambda _object=None, window_key=key: self._opened_windows.pop(window_key, None)
+        )

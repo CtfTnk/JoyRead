@@ -231,6 +231,45 @@ def test_zip_pool_put_many_writes_one_bundle_with_multiple_entries(tmp_path: Pat
         assert sorted(archive.namelist()) == ["001.png", "002.png"]
 
 
+def test_zip_pool_partial_build_publishes_ready_manifest_atomically(tmp_path: Path) -> None:
+    directory = tmp_path / "cache"
+    source = _write_source(tmp_path)
+    pool = ArchiveExtractionPool(directory, max_bytes=4096)
+
+    pool.put_many(source, {"pages/00000000": b"one", "pages/00000001": b"two"})
+
+    partials = list(directory.glob("*.partial.zip"))
+    assert len(partials) == 1
+    assert not pool.is_complete(source, 2, "depth=2")
+
+    pool.mark_complete(source, 2, "depth=2")
+
+    assert list(directory.glob("*.partial.zip")) == []
+    published = [path for path in directory.glob("*.zip") if not path.name.endswith(".partial.zip")]
+    assert len(published) == 1
+    assert pool.is_complete(source, 2, "depth=2")
+    assert not pool.is_complete(source, 3, "depth=2")
+    assert not pool.is_complete(source, 2, "depth=3")
+
+    reopened = ArchiveExtractionPool(directory, max_bytes=4096)
+    assert reopened.is_complete(source, 2, "depth=2")
+    assert reopened.get(source, "pages/00000001") == b"two"
+
+
+def test_hidden_pool_page_eviction_invalidates_ready_manifest(tmp_path: Path) -> None:
+    pool = HiddenImageExtractionPool(tmp_path / ".archive_image_pages", max_bytes=4096)
+    source = _write_source(tmp_path)
+    pool.put(source, "pages/00000000", b"page")
+    pool.mark_complete(source, 1, "depth=2")
+
+    assert pool.is_complete(source, 1, "depth=2")
+
+    pool.resize(1)
+
+    assert pool.get(source, "pages/00000000") is None
+    assert not pool.is_complete(source, 1, "depth=2")
+
+
 def test_hidden_image_pool_uses_hidden_folder_and_non_image_extension(tmp_path: Path) -> None:
     directory = tmp_path / ".archive_image_pages"
     pool = HiddenImageExtractionPool(directory, max_bytes=4096)

@@ -19,7 +19,6 @@ from PIL import Image
 
 from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
-from joyread.core.services.thumbnail_service import DetailThumbnailBatch, DetailThumbnailItem
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.i18n import locale_service
@@ -145,30 +144,21 @@ def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
     overlay = CoverEditorOverlay(ResourceLoader())
     qtbot.addWidget(overlay)
     overlay.resize(Theme.window_width, Theme.window_height)
-    requested: list[tuple[int, int, tuple[int, int]]] = []
+    interests: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, int]]] = []
     selected: list[int] = []
-    overlay.thumbnail_batch_requested.connect(
-        lambda start, batch_size, size: requested.append((start, batch_size, size))
+    overlay.thumbnail_interest_changed.connect(
+        lambda visible, prefetch, size: interests.append((visible, prefetch, size))
     )
     overlay.thumbnail_selected.connect(selected.append)
 
     assert overlay.open_editor(make_test_image_bytes((80, 120)), "page:1")
+    overlay.set_thumbnail_page_count(3)
     browse_button = overlay.editor.findChild(QToolButton, "CoverEditorBrowseButton")
     assert browse_button is not None
     qtbot.mouseClick(browse_button, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
-    overlay.apply_thumbnail_batch(
-        DetailThumbnailBatch(
-            book_uuid="book-1",
-            start_index=0,
-            next_index=3,
-            has_more=False,
-            items=tuple(
-                DetailThumbnailItem(index, make_test_image_bytes((40, 60)))
-                for index in range(3)
-            ),
-        )
-    )
+    for index in range(3):
+        overlay.set_thumbnail(index, make_test_image_bytes((40, 60)))
     QApplication.processEvents()
     thumbnail = overlay.picker.findChild(DetailThumbnailWidget)
     assert thumbnail is not None
@@ -177,13 +167,9 @@ def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
     assert overlay.picker._grid.minimumWidth() == Theme.cover_editor_thumbnail_min_width
     assert overlay.picker._grid._calculate_columns() == 2
     assert overlay.picker._grid.width() < Theme.detail_thumbnail_min_width
-    assert requested == [
-        (
-            0,
-            Theme.reader_topic_thumbnail_batch_size,
-            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
-        )
-    ]
+    assert interests
+    assert set((*interests[-1][0], *interests[-1][1])) == {0, 1, 2}
+    assert interests[-1][2] == (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
     assert selected == [0]
 
 
@@ -910,37 +896,33 @@ def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> Non
     grid = DetailThumbnailGrid()
     qtbot.addWidget(grid)
     grid.set_thumbnail_count(2)
+    grid.set_interest((0, 1))
 
     grid.set_thumbnail(1, make_test_image_bytes())
 
-    assert grid._thumbnails[0]._pixmap is None
+    assert 0 not in grid._thumbnails
     assert grid._thumbnails[1]._pixmap is not None
 
 
-def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) -> None:
-    apply_theme()
-    book = InMemoryBookRepository().list_books()[0]
-    panel = BookDetailPanel(ResourceLoader())
-    qtbot.addWidget(panel)
-    panel.resize(
-        Theme.content_frame_width - (Theme.detail_panel_horizontal_margin * 2),
-        Theme.content_frame_height - Theme.detail_panel_top_margin,
-    )
-    panel.set_book(book)
+def test_detail_thumbnail_grid_virtualizes_large_page_counts_and_releases_offscreen_pixmaps(qtbot) -> None:
+    grid = DetailThumbnailGrid()
+    qtbot.addWidget(grid)
+    grid.resize(864, 400)
+    grid.set_thumbnail_count(100_000)
 
-    emitted: list[str] = []
-    panel.more_thumbnails_requested.connect(emitted.append)
-    panel._emit_more_thumbnails_if_near_bottom()
-    assert emitted == []
+    assert grid.page_count == 100_000
+    assert grid._thumbnails == {}
+    assert grid.minimumHeight() > 1_000_000
 
-    panel.show()
-    QApplication.processEvents()
-    panel._emit_more_thumbnails_if_near_bottom()
+    grid.set_interest((0, 1))
+    grid.set_thumbnail(0, make_test_image_bytes())
+    assert grid._thumbnails[0]._pixmap is not None
 
-    assert emitted == [book.uuid]
+    grid.set_interest((90, 91))
+    assert 0 not in grid._thumbnails
 
 
-def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> None:
+def test_shelf_view_ignores_live_thumbnail_paints_while_popup_is_active(qtbot) -> None:
     apply_theme()
     viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
@@ -959,7 +941,9 @@ def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> Non
     view._popup_interaction_depth = 0
     assert view._flush_deferred_detail_thumbnail_updates() is False
 
-    assert 0 in view.detail_panel._thumbnail_grid._thumbnails
+    # The stream already placed the item in the shared byte cache. The view
+    # does not retain another copy while a popup is active.
+    assert view.detail_panel._thumbnail_grid._thumbnails == {}
 
 
 def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(qtbot) -> None:
@@ -984,7 +968,7 @@ def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(q
     assert view.detail_panel._thumbnail_grid._thumbnails == {}
 
 
-def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> None:
+def test_shelf_view_refreshes_dynamic_interest_after_popup_closes(qtbot) -> None:
     apply_theme()
     viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
@@ -992,22 +976,25 @@ def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> Non
     qtbot.addWidget(view)
     view.show()
     book = viewmodel.visible_books[0]
-    requested: list[str] = []
-    view._request_next_detail_thumbnail_batch = requested.append  # type: ignore[method-assign]
     viewmodel.show_detail(book.uuid)
     QApplication.processEvents()
-    requested.clear()
+    submitted: list[tuple] = []
+    refreshed: list[str] = []
+    panel_refreshed: list[bool] = []
+    viewmodel.set_detail_thumbnail_interest = lambda *args: submitted.append(args)  # type: ignore[method-assign]
+    viewmodel.refresh_detail_thumbnail_interest = refreshed.append  # type: ignore[method-assign]
+    view.detail_panel.refresh_thumbnail_interest = lambda: panel_refreshed.append(True)  # type: ignore[method-assign]
 
     view._popup_interaction_depth = 1
-    view._handle_detail_thumbnail_batch_finished(book.uuid, 14, True)
+    view._handle_detail_thumbnail_interest(book.uuid, (0, 1), (2,))
 
-    assert requested == []
+    assert submitted == []
 
     view._popup_interaction_depth = 0
-    assert view._flush_deferred_detail_thumbnail_updates() is True
-    QApplication.processEvents()
+    assert view._flush_deferred_detail_thumbnail_updates() is False
 
-    assert requested == [book.uuid]
+    assert refreshed == [book.uuid]
+    assert panel_refreshed == [True]
 
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:

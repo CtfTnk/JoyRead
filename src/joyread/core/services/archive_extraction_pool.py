@@ -5,16 +5,17 @@ cheap random access from their containers and do not benefit from caching
 extracted bytes, so the pool is used exclusively for 7z and RAR families,
 where every read otherwise re-runs the decompressor.
 
-Layout: each source archive is mirrored by a single ``<book_key>.zip`` file
-inside the configured directory, where ``book_key`` is a stable
-``sha256(abspath:mtime_ns:size)`` of the source. Page entries live inside the
-zip under their original entry name (sanitised to remove path separators).
+Layout: each source archive is built in a resumable
+``<book_key>.partial.zip`` bundle, then atomically published as
+``<book_key>.zip`` after its ready manifest is written. ``book_key`` is a
+stable ``sha256(abspath:mtime_ns:size)`` of the source. Page entries live
+inside the zip under their original entry name (sanitised to remove path
+separators).
 
-LRU operates at the *book* level — the filesystem ``mtime`` of each
-``<book_key>.zip`` file is the LRU clock. ``get`` touches the zip to refresh
-its position, ``put`` rewrites the zip atomically (write to a sibling
-``.tmp.zip`` and ``os.replace``) so the on-disk file is never in a
-partially-written state.
+LRU operates at the *book* level — the filesystem ``mtime`` of each bundle is
+the LRU clock. ``get`` touches the bundle to refresh its position, and chunk
+writes atomically replace the current partial snapshot so interrupted builds
+can resume without exposing a half-written zip.
 
 Forced ``ZIP_STORED`` keeps the bundle from re-compressing already-compressed
 JPEG/PNG bytes — the zip is purely a grouping container.
@@ -27,11 +28,13 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 import hashlib
+import json
 import os
 from pathlib import Path, PurePosixPath
 import shutil
 from threading import RLock
 from typing import Protocol
+from uuid import uuid4
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
 
 
@@ -53,6 +56,14 @@ class ArchiveExtractionCache(Protocol):
     def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None: ...
 
     def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None: ...
+
+    def contains(self, source_path: Path | str, entry_name: str) -> bool: ...
+
+    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]: ...
+
+    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool: ...
+
+    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None: ...
 
     def resize(self, max_bytes: int) -> None: ...
 
@@ -78,6 +89,7 @@ class ArchiveExtractionPool:
     # used as the primary integrity guard (mtime+size on the source already
     # catches edits because the book_key changes).
     _ZIP_SUFFIX = ".zip"
+    _MANIFEST_ENTRY = "__joyread_ready_manifest__.json"
 
     def __init__(self, directory: Path | None, max_bytes: int) -> None:
         if max_bytes < 0:
@@ -156,6 +168,40 @@ class ArchiveExtractionPool:
             self._current_bytes += refreshed.size - entry.size
             return payload
 
+    def contains(self, source_path: Path | str, entry_name: str) -> bool:
+        return self.get(source_path, entry_name) is not None
+
+    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
+        payloads: dict[str, bytes] = {}
+        for entry_name in entry_names:
+            payload = self.get(source_path, entry_name)
+            if payload is not None:
+                payloads[entry_name] = payload
+        return payloads
+
+    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool:
+        payload = self.get(source_path, self._MANIFEST_ENTRY)
+        return _manifest_matches(payload, page_count, signature)
+
+    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None:
+        self.put(source_path, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
+        source = Path(source_path)
+        book_key = self._book_key_for(source)
+        if book_key is None or self._directory is None:
+            return
+        with self._lock:
+            entry = self._index.get(book_key)
+            if entry is None or not entry.path.name.endswith(".partial.zip"):
+                return
+            final_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
+            try:
+                os.replace(entry.path, final_path)
+                stat = final_path.stat()
+            except OSError as exc:
+                logger.warning("Archive cache publish failed for %s: %s", source, exc)
+                return
+            self._index[book_key] = _PoolEntry(final_path, stat.st_size, stat.st_mtime)
+
     def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None:
         """Persist ``data`` under the bundle for ``source_path``.
 
@@ -174,28 +220,35 @@ class ArchiveExtractionPool:
         if book_key is None:
             return
         safe_name = self._safe_entry_name(entry_name)
-        bundle_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
-        tmp_path = bundle_path.with_suffix(f"{self._ZIP_SUFFIX}.tmp")
-        try:
-            bundle_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_bundle_locked(bundle_path, tmp_path, safe_name, data)
-            stat = bundle_path.stat()
-        except OSError as exc:
-            logger.warning(
-                "Archive bundle write failed for %s (entry %r): %s",
-                bundle_path,
-                entry_name,
-                exc,
-            )
-            # Clean up an orphan tmp from a partial write so it does not
-            # accumulate. The pool stays consistent with what is on disk.
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return
-        entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
         with self._lock:
+            # Resolve the active snapshot while holding the same lock that
+            # rewrites it. A concurrent publisher can rename partial -> final;
+            # choosing the path before acquiring this lock would then copy
+            # from a stale, missing staging path and lose cached pages.
+            existing = self._index.get(book_key)
+            bundle_path = (
+                existing.path
+                if existing is not None
+                else self._directory / f"{book_key}.partial{self._ZIP_SUFFIX}"
+            )
+            tmp_path = bundle_path.with_suffix(f".{uuid4().hex}.tmp")
+            try:
+                bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                self._write_bundle_locked(bundle_path, tmp_path, safe_name, data)
+                stat = bundle_path.stat()
+            except OSError as exc:
+                logger.warning(
+                    "Archive bundle write failed for %s (entry %r): %s",
+                    bundle_path,
+                    entry_name,
+                    exc,
+                )
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
+            entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
             previous = self._index.pop(book_key, None)
             if previous is not None:
                 self._current_bytes -= previous.size
@@ -225,26 +278,31 @@ class ArchiveExtractionPool:
         }
         if not safe_payloads:
             return
-        bundle_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
-        tmp_path = bundle_path.with_suffix(f"{self._ZIP_SUFFIX}.tmp")
-        try:
-            bundle_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_bundle_many_locked(bundle_path, tmp_path, safe_payloads)
-            stat = bundle_path.stat()
-        except OSError as exc:
-            logger.warning(
-                "Archive bundle batch write failed for %s (%d entries): %s",
-                bundle_path,
-                len(safe_payloads),
-                exc,
-            )
-            try:
-                tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            return
-        entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
         with self._lock:
+            existing = self._index.get(book_key)
+            bundle_path = (
+                existing.path
+                if existing is not None
+                else self._directory / f"{book_key}.partial{self._ZIP_SUFFIX}"
+            )
+            tmp_path = bundle_path.with_suffix(f".{uuid4().hex}.tmp")
+            try:
+                bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                self._write_bundle_many_locked(bundle_path, tmp_path, safe_payloads)
+                stat = bundle_path.stat()
+            except OSError as exc:
+                logger.warning(
+                    "Archive bundle batch write failed for %s (%d entries): %s",
+                    bundle_path,
+                    len(safe_payloads),
+                    exc,
+                )
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                return
+            entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
             previous = self._index.pop(book_key, None)
             if previous is not None:
                 self._current_bytes -= previous.size
@@ -327,7 +385,20 @@ class ArchiveExtractionPool:
                     stat = path.stat()
                 except OSError:
                     continue
-                book_key = path.stem
+                book_key = (
+                    path.name[: -len(".partial.zip")]
+                    if path.name.endswith(".partial.zip")
+                    else path.stem
+                )
+                previous = next((item for item in scanned if item[0] == book_key), None)
+                if previous is not None:
+                    # A crash between publish and cleanup can leave both. Keep
+                    # the newest snapshot and discard the stale sibling.
+                    if previous[1].mtime >= stat.st_mtime:
+                        path.unlink(missing_ok=True)
+                        continue
+                    previous[1].path.unlink(missing_ok=True)
+                    scanned.remove(previous)
                 scanned.append((book_key, _PoolEntry(path, stat.st_size, stat.st_mtime)))
             scanned.sort(key=lambda item: item[1].mtime)
             for book_key, entry in scanned:
@@ -439,6 +510,7 @@ class HiddenImageExtractionPool:
     """
 
     _PAGE_SUFFIX = ".jrcache"
+    _MANIFEST_ENTRY = "__joyread_ready_manifest__.json"
 
     def __init__(self, directory: Path | None, max_bytes: int) -> None:
         if max_bytes < 0:
@@ -496,6 +568,24 @@ class HiddenImageExtractionPool:
             self._current_bytes += refreshed.size - entry.size
             return payload
 
+    def contains(self, source_path: Path | str, entry_name: str) -> bool:
+        return self.get(source_path, entry_name) is not None
+
+    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
+        payloads: dict[str, bytes] = {}
+        for entry_name in entry_names:
+            payload = self.get(source_path, entry_name)
+            if payload is not None:
+                payloads[entry_name] = payload
+        return payloads
+
+    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool:
+        payload = self.get(source_path, self._MANIFEST_ENTRY)
+        return _manifest_matches(payload, page_count, signature)
+
+    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None:
+        self.put(source_path, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
+
     def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None:
         self.put_many(source_path, {entry_name: data})
 
@@ -513,7 +603,7 @@ class HiddenImageExtractionPool:
                 continue
             entry_key = self._entry_key_for(entry_name)
             final_path = self._entry_path(book_key, entry_key)
-            tmp_path = final_path.with_suffix(f"{self._PAGE_SUFFIX}.tmp")
+            tmp_path = final_path.with_suffix(f".{uuid4().hex}.tmp")
             try:
                 final_path.parent.mkdir(parents=True, exist_ok=True)
                 tmp_path.write_bytes(data)
@@ -624,6 +714,15 @@ class HiddenImageExtractionPool:
             entry.path.unlink(missing_ok=True)
         except OSError:
             pass
+        manifest_key = (key[0], self._entry_key_for(self._MANIFEST_ENTRY))
+        if key != manifest_key:
+            manifest = self._index.pop(manifest_key, None)
+            if manifest is not None:
+                self._current_bytes -= manifest.size
+                try:
+                    manifest.path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _evict_locked(self, *, protect_key: tuple[str, str] | None = None) -> None:
         while self._current_bytes > self._max_bytes and self._index:
@@ -640,3 +739,25 @@ def _book_key_for_source(source: Path) -> str | None:
         return None
     digest_source = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
     return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+
+
+def _manifest_bytes(page_count: int, signature: str) -> bytes:
+    return json.dumps(
+        {"schema": 1, "page_count": max(0, int(page_count)), "signature": str(signature)},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _manifest_matches(payload: bytes | None, page_count: int, signature: str) -> bool:
+    if payload is None:
+        return False
+    try:
+        manifest = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return False
+    return (
+        manifest.get("schema") == 1
+        and manifest.get("page_count") == max(0, int(page_count))
+        and manifest.get("signature") == str(signature)
+    )

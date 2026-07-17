@@ -12,6 +12,8 @@ from joyread.core.archive.errors import (
     ArchiveUnsupportedFormat,
 )
 from joyread.core.archive.models import (
+    ArchiveAccessMode,
+    ArchiveContentsEntry,
     ArchivePage,
     ArchivePasswordPolicy,
     ArchivePasswordRequest,
@@ -24,7 +26,9 @@ from joyread.core.archive.backends import ExtractionBackend, ExtractionBackendRe
 from joyread.core.archive.service import ArchiveImageService, ArchiveImageSession
 
 __all__ = [
+    "ArchiveAccessMode",
     "ArchiveCorruptError",
+    "ArchiveContentsEntry",
     "ArchiveDependencyMissing",
     "ArchiveEmptyError",
     "ArchiveError",

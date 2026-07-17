@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from threading import Thread
 
-from joyread.core.services.cache_service import BoundedByteCache, NamespacedPageCache
+from joyread.core.services.cache_service import (
+    BoundedByteCache,
+    NamespacedPageCache,
+    SharedThumbnailCache,
+    ThumbnailCacheKey,
+)
 
 
 def _payload(size: int, marker: int = 0) -> bytes:
@@ -141,3 +146,44 @@ def test_namespaced_page_cache_respects_shared_byte_budget_across_sessions() -> 
     assert session_a.get(0) is None  # the oldest entry was evicted
     assert session_a.get(1) == _payload(100, 2)
     assert session_b.get(0) == _payload(100, 9)
+
+
+def test_shared_thumbnail_cache_hits_refresh_the_global_lru() -> None:
+    cache = SharedThumbnailCache(max_bytes=6)
+    client = cache.issue_client("detail")
+    first = ThumbnailCacheKey("book", 0, 100, 142)
+    second = ThumbnailCacheKey("book", 1, 100, 142)
+    third = ThumbnailCacheKey("book", 2, 100, 142)
+
+    client.put(first, b"aaa")
+    client.put(second, b"bbb")
+    assert client.get(first) == b"aaa"
+    client.put(third, b"ccc")
+
+    assert client.get(first) == b"aaa"
+    assert client.get(second) is None
+    assert client.get(third) == b"ccc"
+    assert cache.current_bytes == 6
+
+
+def test_shared_thumbnail_cache_allows_pinned_overage_then_shrinks_on_release() -> None:
+    cache = SharedThumbnailCache(max_bytes=4)
+    detail = cache.issue_client("detail")
+    reader = cache.issue_client("reader")
+    detail_key = ThumbnailCacheKey("book", 0, 100, 142)
+    reader_key = ThumbnailCacheKey("book", 1, 100, 142)
+
+    detail.set_pins(frozenset({detail_key}))
+    reader.set_pins(frozenset({reader_key}))
+    detail.put(detail_key, b"aaaa")
+    reader.put(reader_key, b"bbbb")
+
+    assert cache.current_bytes == 8
+    assert detail.get(detail_key) == b"aaaa"
+    assert reader.get(reader_key) == b"bbbb"
+
+    detail.release()
+
+    assert cache.current_bytes == 4
+    assert detail.get(detail_key) is None
+    assert reader.get(reader_key) == b"bbbb"

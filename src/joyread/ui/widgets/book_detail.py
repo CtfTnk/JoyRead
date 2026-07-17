@@ -7,12 +7,11 @@ from collections.abc import Iterable
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
     QFrame,
-    QGridLayout,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
@@ -174,7 +173,8 @@ class BookDetailPanel(QFrame):
     favourite_requested = QtSignal(str)
     menu_requested = QtSignal(str, QPoint)
     cover_edit_requested = QtSignal(str)
-    more_thumbnails_requested = QtSignal(str)
+    thumbnail_interest_changed = QtSignal(str, tuple, tuple)
+    thumbnail_interest_released = QtSignal(str)
     title_change_requested = QtSignal(str, str)
     author_change_requested = QtSignal(str, str)
     language_menu_requested = QtSignal(str, QPoint)
@@ -185,6 +185,10 @@ class BookDetailPanel(QFrame):
         super().__init__(parent)
         self._resources = resources
         self._book: Book | None = None
+        self._last_thumbnail_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
+        self._thumbnail_interest_timer = QTimer(self)
+        self._thumbnail_interest_timer.setSingleShot(True)
+        self._thumbnail_interest_timer.timeout.connect(self._emit_thumbnail_interest)
 
         self.setObjectName("BookDetailPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -207,7 +211,10 @@ class BookDetailPanel(QFrame):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.viewport().setObjectName("BookDetailViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self._scroll.verticalScrollBar().valueChanged.connect(self._emit_more_thumbnails_if_near_bottom)
+        self._scroll.verticalScrollBar().valueChanged.connect(self._defer_thumbnail_interest)
+        self._scroll.verticalScrollBar().rangeChanged.connect(
+            lambda _minimum, _maximum: self._defer_thumbnail_interest()
+        )
         self._scroll_handle = AutoHideScrollHandle(self._scroll, parent=self)
         root_layout.addWidget(self._scroll)
 
@@ -260,6 +267,7 @@ class BookDetailPanel(QFrame):
             self._cover.set_pixmap(_placeholder_cover())
         if book_changed:
             self._thumbnail_grid.reset_unknown()
+            self._last_thumbnail_interest = ((), ())
         self._sync_tag_box_height()
         QTimer.singleShot(0, self._sync_tag_box_height)
 
@@ -278,13 +286,20 @@ class BookDetailPanel(QFrame):
         if self._book is not None and self._book.uuid == book_uuid:
             self._thumbnail_grid.set_thumbnail(page_index, image_bytes)
 
+    def set_thumbnail_page_count(self, book_uuid: str, page_count: int) -> None:
+        if self._book is None or self._book.uuid != book_uuid:
+            return
+        self._thumbnail_grid.set_thumbnail_count(page_count, reset=True)
+        self._last_thumbnail_interest = ((), ())
+        self._defer_thumbnail_interest()
+
     def mark_thumbnail_complete(self, book_uuid: str) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
             self._thumbnail_grid.mark_complete()
 
-    def is_near_thumbnail_bottom(self, threshold: int = 400) -> bool:
-        scrollbar = self._scroll.verticalScrollBar()
-        return scrollbar.maximum() <= 0 or (scrollbar.maximum() - scrollbar.value()) <= threshold
+    def refresh_thumbnail_interest(self) -> None:
+        self._last_thumbnail_interest = ((), ())
+        self._defer_thumbnail_interest()
 
     def _build_description(self) -> QWidget:
         frame = QWidget()
@@ -471,9 +486,22 @@ class BookDetailPanel(QFrame):
         if self._book is not None:
             self.cover_edit_requested.emit(self._book.uuid)
 
-    def _emit_more_thumbnails_if_near_bottom(self) -> None:
-        if self.isVisible() and self._book is not None and self.is_near_thumbnail_bottom():
-            self.more_thumbnails_requested.emit(self._book.uuid)
+    def _defer_thumbnail_interest(self) -> None:
+        if not self._thumbnail_interest_timer.isActive():
+            self._thumbnail_interest_timer.start(0)
+
+    def _emit_thumbnail_interest(self) -> None:
+        if not self.isVisible() or self._book is None or self._thumbnail_grid.page_count <= 0:
+            return
+        origin = self._thumbnail_grid.mapFrom(self._scroll.viewport(), QPoint(0, 0))
+        viewport_rect = QRect(origin, self._scroll.viewport().size())
+        visible, prefetch = self._thumbnail_grid.visible_and_prefetch_indices(viewport_rect, prefetch_rows=1)
+        interest = (visible, prefetch)
+        if interest == self._last_thumbnail_interest:
+            return
+        self._last_thumbnail_interest = interest
+        self._thumbnail_grid.set_interest((*visible, *prefetch))
+        self.thumbnail_interest_changed.emit(self._book.uuid, visible, prefetch)
 
     def _emit_title_change_requested(self, title: str) -> None:
         if self._book is not None and title != self._book.title:
@@ -550,6 +578,19 @@ class BookDetailPanel(QFrame):
         super().resizeEvent(event)
         QTimer.singleShot(0, self._sync_tag_box_height)
         self._apply_description_layout(self.width() < Theme.detail_description_narrow_threshold)
+        self._defer_thumbnail_interest()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._defer_thumbnail_interest()
+
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        super().hideEvent(event)
+        self._thumbnail_interest_timer.stop()
+        self._thumbnail_grid.set_interest(())
+        if self._book is not None:
+            self.thumbnail_interest_released.emit(self._book.uuid)
+        self._last_thumbnail_interest = ((), ())
 
     def _book_type_display_name(self, book: Book) -> str:
         return (book.file_format or t("detail.book_type_unknown")).strip().upper()
@@ -685,92 +726,177 @@ class DetailThumbnailGrid(QWidget):
             else QSizePolicy.Policy.Minimum
         )
         self.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Minimum)
-        self._thumbnail_order: list[int] = []
+        self._page_count = 0
         self._thumbnails: dict[int, DetailThumbnailWidget] = {}
+        self._interest: frozenset[int] = frozenset()
         self._columns = 0
         self._is_complete = False
+        self._pressed_index: int | None = None
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._margins = (
+            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_horizontal,
+            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_vertical,
+            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_horizontal,
+            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_vertical,
+        )
+        self._horizontal_spacing = Theme.detail_thumbnail_gap
+        self._vertical_spacing = Theme.detail_thumbnail_row_gap + (Theme.detail_thumbnail_row_padding_vertical * 2)
+        self._refresh_geometry(force=True)
 
-        self._layout = QGridLayout(self)
-        self._layout.setContentsMargins(
-            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_horizontal,
-            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_vertical,
-            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_horizontal,
-            Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_vertical,
-        )
-        self._layout.setHorizontalSpacing(Theme.detail_thumbnail_gap)
-        self._layout.setVerticalSpacing(
-            Theme.detail_thumbnail_row_gap + (Theme.detail_thumbnail_row_padding_vertical * 2)
-        )
-        self._layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+    @property
+    def page_count(self) -> int:
+        return self._page_count
 
     def reset_unknown(self) -> None:
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-        self._thumbnail_order.clear()
-        self._thumbnails.clear()
+        self._clear_loaded_widgets()
+        self._page_count = 0
+        self._interest = frozenset()
         self._columns = 0
         self._is_complete = False
-        self._refresh_height(1)
+        self._refresh_geometry(force=True)
 
     def set_thumbnail_count(self, count: int, reset: bool = False) -> None:
-        """Compatibility helper for tests; production detail loading appends."""
+        """Set the virtual extent without allocating one widget per page."""
         if reset:
             self.reset_unknown()
-        count = max(0, count)
-        for index in range(count):
-            self.append_thumbnail_slot(index)
-        self._relayout(force=True)
+        self._page_count = max(0, int(count))
+        self._clear_loaded_widgets(keep=frozenset(index for index in self._thumbnails if index < self._page_count))
+        self._refresh_geometry(force=True)
 
     def append_thumbnail_slot(self, index: int) -> None:
-        if index in self._thumbnails:
-            return
-        self._thumbnail_order.append(index)
-        self._thumbnail_order.sort()
-        thumbnail = DetailThumbnailWidget()
-        thumbnail.set_page_index(index)
-        thumbnail.clicked.connect(self.thumbnail_clicked.emit)
-        self._thumbnails[index] = thumbnail
-        self._relayout(force=True)
-
-    def set_thumbnail(self, index: int, image_bytes: bytes) -> None:
         if index < 0:
             return
-        self.append_thumbnail_slot(index)
-        self._thumbnails[index].set_thumbnail_bytes(image_bytes)
+        if index >= self._page_count:
+            self._page_count = index + 1
+            self._refresh_geometry(force=True)
+
+    def set_interest(self, indices: Iterable[int]) -> None:
+        interest = frozenset(int(index) for index in indices if 0 <= int(index) < self._page_count)
+        if interest == self._interest:
+            return
+        self._interest = interest
+        self._clear_loaded_widgets(keep=interest)
+        self.update()
+
+    def visible_and_prefetch_indices(
+        self,
+        viewport_rect: QRect,
+        *,
+        prefetch_rows: int = 1,
+    ) -> tuple[tuple[int, ...], tuple[int, ...]]:
+        if self._page_count <= 0 or self._columns <= 0:
+            return (), ()
+        visible_rect = viewport_rect.intersected(self.rect())
+        if visible_rect.isEmpty():
+            return (), ()
+        top = self._margins[1]
+        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        first_row = max(0, (visible_rect.top() - top) // row_step)
+        last_row = min(
+            self._row_count() - 1,
+            max(first_row, (visible_rect.bottom() - top) // row_step),
+        )
+        visible = self._indices_for_rows(first_row, last_row)
+        radius = max(0, int(prefetch_rows))
+        prefetch_first = max(0, first_row - radius)
+        prefetch_last = min(self._row_count() - 1, last_row + radius)
+        visible_set = set(visible)
+        prefetch = tuple(
+            index
+            for index in self._indices_for_rows(prefetch_first, prefetch_last)
+            if index not in visible_set
+        )
+        return visible, prefetch
+
+    def set_thumbnail(self, index: int, image_bytes: bytes) -> None:
+        if not 0 <= index < self._page_count:
+            return
+        if self._interest and index not in self._interest:
+            return
+        thumbnail = self._thumbnails.get(index)
+        if thumbnail is None:
+            thumbnail = DetailThumbnailWidget(self)
+            thumbnail.set_page_index(index)
+            thumbnail.clicked.connect(self.thumbnail_clicked.emit)
+            self._thumbnails[index] = thumbnail
+        thumbnail.set_thumbnail_bytes(image_bytes)
+        thumbnail.setGeometry(self._item_rect(index))
+        thumbnail.show()
+        thumbnail.raise_()
+        self.update(self._item_rect(index))
 
     def mark_complete(self) -> None:
         self._is_complete = True
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        self._relayout()
+        self._refresh_geometry()
 
-    def _relayout(self, force: bool = False) -> None:
+    def paintEvent(self, event: QPaintEvent) -> None:
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        clip = event.rect().intersected(self.rect())
+        if clip.isEmpty() or self._page_count <= 0:
+            painter.end()
+            return
+        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        first_row = max(0, (clip.top() - self._margins[1]) // row_step)
+        last_row = min(
+            self._row_count() - 1,
+            max(first_row, (clip.bottom() - self._margins[1]) // row_step),
+        )
+        colors = (QColor("#d8d8d8"), QColor("#cfcfcf"))
+        for index in self._indices_for_rows(first_row, last_row):
+            if index in self._thumbnails:
+                continue
+            rect = self._item_rect(index)
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(rect), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
+            painter.save()
+            painter.setClipPath(path)
+            square = 8
+            for y in range(rect.top(), rect.bottom() + 1, square):
+                for x in range(rect.left(), rect.right() + 1, square):
+                    color = colors[(((x - rect.left()) // square) + ((y - rect.top()) // square)) % 2]
+                    painter.fillRect(x, y, square, square, color)
+            painter.fillRect(rect, QColor(0, 0, 0, 28))
+            painter.restore()
+        painter.end()
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pressed_index = self._index_at(event.position().toPoint())
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.LeftButton:
+            index = self._index_at(event.position().toPoint())
+            if index is not None and index == self._pressed_index:
+                self.thumbnail_clicked.emit(index)
+            self._pressed_index = None
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def _refresh_geometry(self, force: bool = False) -> None:
         columns = self._calculate_columns()
         if not force and columns == self._columns:
-            self._layout.setHorizontalSpacing(self._calculate_horizontal_spacing(columns))
-            return
-
+            spacing = self._calculate_horizontal_spacing(columns)
+            if spacing == self._horizontal_spacing:
+                return
+            self._horizontal_spacing = spacing
         self._columns = columns
-        while self._layout.count():
-            self._layout.takeAt(0)
-
-        self._layout.setHorizontalSpacing(self._calculate_horizontal_spacing(columns))
-        for layout_index, page_index in enumerate(self._thumbnail_order):
-            thumbnail = self._thumbnails[page_index]
-            thumbnail.setVisible(True)
-            self._layout.addWidget(thumbnail, layout_index // columns, layout_index % columns)
-        self._refresh_height(columns)
+        self._horizontal_spacing = self._calculate_horizontal_spacing(columns)
+        self._position_loaded_widgets()
+        self._refresh_height()
+        self.update()
 
     def _calculate_columns(self) -> int:
-        margins = self._layout.contentsMargins()
         available_width = max(
             Theme.detail_thumbnail_width,
-            self.width() - margins.left() - margins.right(),
+            self.width() - self._margins[0] - self._margins[2],
         )
         slot_width = Theme.detail_thumbnail_width + Theme.detail_thumbnail_gap
         return max(1, (available_width + Theme.detail_thumbnail_gap) // slot_width)
@@ -778,22 +904,64 @@ class DetailThumbnailGrid(QWidget):
     def _calculate_horizontal_spacing(self, columns: int) -> int:
         if columns <= 1:
             return Theme.detail_thumbnail_gap
-        margins = self._layout.contentsMargins()
         available_width = max(
             Theme.detail_thumbnail_width,
-            self.width() - margins.left() - margins.right(),
+            self.width() - self._margins[0] - self._margins[2],
         )
         justified_gap = (available_width - (columns * Theme.detail_thumbnail_width)) // (columns - 1)
         return max(Theme.detail_thumbnail_gap, justified_gap)
 
-    def _refresh_height(self, columns: int) -> None:
-        margins = self._layout.contentsMargins()
-        rows = ceil(len(self._thumbnail_order) / columns) if self._thumbnail_order else 0
-        row_gap = self._layout.verticalSpacing()
-        height = margins.top() + margins.bottom()
+    def _refresh_height(self) -> None:
+        rows = self._row_count()
+        height = self._margins[1] + self._margins[3]
         if rows:
-            height += (rows * Theme.detail_thumbnail_height) + ((rows - 1) * row_gap)
+            height += (rows * Theme.detail_thumbnail_height) + ((rows - 1) * self._vertical_spacing)
         self.setMinimumHeight(height)
+
+    def _row_count(self) -> int:
+        return ceil(self._page_count / max(1, self._columns)) if self._page_count else 0
+
+    def _indices_for_rows(self, first_row: int, last_row: int) -> tuple[int, ...]:
+        columns = max(1, self._columns)
+        start = max(0, first_row) * columns
+        end = min(self._page_count, (max(first_row, last_row) + 1) * columns)
+        return tuple(range(start, end))
+
+    def _item_rect(self, index: int) -> QRect:
+        columns = max(1, self._columns)
+        row, column = divmod(index, columns)
+        x = self._margins[0] + column * (Theme.detail_thumbnail_width + self._horizontal_spacing)
+        y = self._margins[1] + row * (Theme.detail_thumbnail_height + self._vertical_spacing)
+        return QRect(x, y, Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
+
+    def _index_at(self, point: QPoint) -> int | None:
+        if self._page_count <= 0:
+            return None
+        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        column_step = Theme.detail_thumbnail_width + self._horizontal_spacing
+        local_x = point.x() - self._margins[0]
+        local_y = point.y() - self._margins[1]
+        if local_x < 0 or local_y < 0:
+            return None
+        row = local_y // row_step
+        column = local_x // column_step
+        if column >= max(1, self._columns):
+            return None
+        index = row * max(1, self._columns) + column
+        return index if index < self._page_count and self._item_rect(index).contains(point) else None
+
+    def _position_loaded_widgets(self) -> None:
+        for index, thumbnail in self._thumbnails.items():
+            thumbnail.setGeometry(self._item_rect(index))
+
+    def _clear_loaded_widgets(self, keep: frozenset[int] = frozenset()) -> None:
+        for index in tuple(self._thumbnails):
+            if index in keep:
+                continue
+            widget = self._thumbnails.pop(index)
+            widget.hide()
+            widget.setParent(None)
+            widget.deleteLater()
 
 
 class DetailThumbnailWidget(QFrame):

@@ -4,11 +4,15 @@ import inspect
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
+from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
 
 from joyread.app import bootstrap
 from joyread.app.app_context import AppContext
 from joyread.app.bootstrap import create_application
+from joyread.app.file_open_router import FileOpenRouter
+from joyread.app.startup_window_coordinator import StartupWindowCoordinator
+from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
 from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
@@ -106,6 +110,130 @@ def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) ->
     context.close()
 
 
+def test_direct_external_open_does_not_accept_epub(qtbot, tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    source = tmp_path / "direct.epub"
+    source.write_bytes(b"")
+
+    app, context, window = create_application(["joyread", str(source)])
+    qtbot.addWidget(window)
+
+    assert app.quitOnLastWindowClosed()
+    assert isinstance(window, MainWindow)
+    assert ".epub" not in SUPPORTED_READER_EXTENSIONS
+
+    window.close()
+    context.close()
+
+
+def test_file_open_event_is_queued_then_dispatched_to_a_retained_window(qtbot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication(["test"])
+    previous_router = getattr(app, "_joyread_file_open_router", None)
+    if isinstance(previous_router, FileOpenRouter):
+        previous_router.dispose()
+
+    source = tmp_path / "finder-open.cbz"
+    source.write_bytes(b"")
+    router = FileOpenRouter(app, SUPPORTED_READER_EXTENSIONS)
+
+    queued_event = QFileOpenEvent(str(source))
+    assert QApplication.sendEvent(app, queued_event)
+    assert router.take_pending_path() == source
+
+    opened_paths: list[Path] = []
+    opened_windows: list[QMainWindow] = []
+
+    def open_file(path: Path) -> QMainWindow:
+        opened_paths.append(path)
+        window = QMainWindow()
+        qtbot.addWidget(window)
+        opened_windows.append(window)
+        return window
+
+    router.set_open_handler(open_file)
+    live_event = QFileOpenEvent(str(source))
+    assert QApplication.sendEvent(app, live_event)
+
+    assert opened_paths == [source]
+    assert router.opened_windows == (opened_windows[0],)
+
+    opened_windows[0].close()
+    router.dispose()
+
+
+def test_startup_file_open_event_creates_reader_without_main_window(qtbot, tmp_path: Path) -> None:
+    app = QApplication.instance() or QApplication(["test"])
+    previous_router = getattr(app, "_joyread_file_open_router", None)
+    if isinstance(previous_router, FileOpenRouter):
+        previous_router.dispose()
+
+    source = tmp_path / "finder-cold-start.cbz"
+    source.write_bytes(b"")
+    main_windows: list[QMainWindow] = []
+    reader_windows: list[QMainWindow] = []
+    opened_paths: list[Path] = []
+
+    def create_main_window() -> QMainWindow:
+        window = QMainWindow()
+        qtbot.addWidget(window)
+        main_windows.append(window)
+        return window
+
+    def create_reader_window(path: Path) -> QMainWindow:
+        opened_paths.append(path)
+        window = QMainWindow()
+        qtbot.addWidget(window)
+        reader_windows.append(window)
+        return window
+
+    router = FileOpenRouter(app, SUPPORTED_READER_EXTENSIONS)
+    coordinator = StartupWindowCoordinator(
+        create_main_window=create_main_window,
+        create_reader_window=create_reader_window,
+        present_window=lambda _window: None,
+        file_open_grace_ms=25,
+    )
+    coordinator.start()
+    router.set_open_handler(coordinator.open_file)
+
+    assert QApplication.sendEvent(app, QFileOpenEvent(str(source)))
+    qtbot.wait(40)
+
+    assert opened_paths == [source]
+    assert main_windows == []
+    assert coordinator.initial_window is reader_windows[0]
+    assert coordinator.startup_settled
+
+    reader_windows[0].close()
+    router.dispose()
+    coordinator.deleteLater()
+
+
+def test_startup_coordinator_builds_main_after_file_open_grace(qtbot) -> None:
+    main_windows: list[QMainWindow] = []
+
+    def create_main_window() -> QMainWindow:
+        window = QMainWindow()
+        qtbot.addWidget(window)
+        main_windows.append(window)
+        return window
+
+    coordinator = StartupWindowCoordinator(
+        create_main_window=create_main_window,
+        create_reader_window=lambda _path: QMainWindow(),
+        present_window=lambda _window: None,
+        file_open_grace_ms=10,
+    )
+    coordinator.start()
+    qtbot.waitUntil(lambda: bool(main_windows), timeout=500)
+
+    assert coordinator.initial_window is main_windows[0]
+    assert coordinator.startup_settled
+
+    main_windows[0].close()
+    coordinator.deleteLater()
+
+
 def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch) -> None:
     calls: list[list[str] | None] = []
 
@@ -113,7 +241,7 @@ def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch) -> None:
         calls.append(argv)
         raise StorageRecoveryCancelled
 
-    monkeypatch.setattr(bootstrap, "create_application", cancel_startup)
+    monkeypatch.setattr(bootstrap, "_create_application_runtime", cancel_startup)
 
     assert bootstrap.run(["joyread"]) == 0
     assert calls == [["joyread"]]

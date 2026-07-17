@@ -24,13 +24,20 @@ from joyread.core.reader import (
     SizeF,
     SmartLayoutEngine,
 )
-from joyread.core.services.cache_service import BoundedByteCache, NamespacedPageCache
+from joyread.core.archive.service import EXPENSIVE_ARCHIVE_EXTENSIONS
+from joyread.core.services.cache_service import (
+    NamespacedPageCache,
+    SharedThumbnailCache,
+    ThumbnailCacheClient,
+)
+from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.library_service import LibraryService
-from joyread.core.services.task_service import TaskHandle, TaskService, TaskStatus
+from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskService, TaskStatus
 from joyread.core.services.thumbnail_service import render_contain_blur_thumbnail
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
+from joyread.ui.viewmodels.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 
 
 logger = logging.getLogger(__name__)
@@ -55,29 +62,13 @@ class ReaderBookmarkItem:
 class ReaderContentsItem:
     """One TOC entry surfaced to the topic panel's CONTENTS mode.
 
-    ``page_index`` carries the spine index for EPUB readers. The
-    manga reader currently doesn't populate this list (its CONTENTS
-    tab stays disabled), so reusing ``page_index`` as an opaque
-    seek target keeps the topic_panel API symmetric with bookmarks.
+    ``page_index`` is an opaque seek target: an archive page index in the
+    manga reader and a spine index in the EPUB reader.
     """
 
     label: str
     page_index: int
     depth: int = 0
-
-
-@dataclass(frozen=True)
-class ReaderTopicThumbnailItem:
-    page_index: int
-    image_bytes: bytes
-
-
-@dataclass(frozen=True)
-class ReaderTopicThumbnailBatch:
-    start_index: int
-    next_index: int
-    has_more: bool
-    items: tuple[ReaderTopicThumbnailItem, ...]
 
 
 class ReaderViewModel:
@@ -116,7 +107,10 @@ class ReaderViewModel:
         progress: ReaderProgress | None = None,
         prefetch_before: int = 1,
         prefetch_after: int = 1,
-        archive_internal_max_depth: int = 2,
+        nested_archive_max_depth: int = 2,
+        archive_global_file_max_depth: int = 100,
+        thumbnail_cache_client: ThumbnailCacheClient | None = None,
+        archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
@@ -125,8 +119,9 @@ class ReaderViewModel:
         self.password_required: Signal[ReaderPasswordPrompt] = Signal()
         self.progress_changed: Signal[tuple[str, int, float]] = Signal()
         self.bookmarks_changed: Signal[tuple[ReaderBookmarkItem, ...]] = Signal()
+        self.contents_changed: Signal[tuple[ReaderContentsItem, ...]] = Signal()
         self.bookmark_error_changed: Signal[str] = Signal()
-        self.topic_thumbnail_batch_ready: Signal[ReaderTopicThumbnailBatch] = Signal()
+        self.topic_thumbnail_ready: Signal[tuple[int, bytes]] = Signal()
 
         self._session_service = session_service
         self._task_service = task_service
@@ -135,6 +130,8 @@ class ReaderViewModel:
         # just this session's bytes from the global budget.
         self._page_cache = page_cache
         self._library_service = library_service
+        self._archive_warmup_coordinator = archive_warmup_coordinator
+        self._warmup_client_id = f"reader:{id(self)}"
         self._layout_engine = SmartLayoutEngine()
         self._session_lock = RLock()
         self._session: ReaderImageSession | None = None
@@ -150,7 +147,6 @@ class ReaderViewModel:
         self._settings_save_handle: TaskHandle[None] | None = None
         self._pending_settings_save: ReaderSettings | None = None
         self._bookmark_handle: TaskHandle[tuple[ReaderBookmarkItem, ...]] | None = None
-        self._topic_thumbnail_handle: TaskHandle[ReaderTopicThumbnailBatch] | None = None
         # Bumped on every `cancel()`/`open_path()`. Worker callbacks compare
         # against this snapshot before mutating state, so a page-load that
         # finishes after the user has navigated to a different book (or
@@ -162,16 +158,34 @@ class ReaderViewModel:
         self._pages: dict[int, ReaderPageImage] = {}
         self._unavailable_pages: set[int] = set()
         self._bookmarks: tuple[ReaderBookmarkItem, ...] = ()
-        self._topic_thumbnail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(
-            Theme.reader_topic_thumbnail_cache_bytes,
+        self._contents: tuple[ReaderContentsItem, ...] = ()
+        # Production injects an app-scope client. The fallback keeps pure VM
+        # tests independent without restoring the old fixed 32MB cache.
+        thumbnail_client = thumbnail_cache_client or SharedThumbnailCache(64 * 1024 * 1024).issue_client(
+            "reader-topic-test"
         )
+        self._topic_thumbnail_stream = ThumbnailStreamController(
+            task_service,
+            thumbnail_client,
+            task_name="reader-topic-thumbnail",
+        )
+        self._topic_thumbnail_stream.thumbnail_ready.connect(self.topic_thumbnail_ready.emit)
         self._page_count = 0
         # Prefetch windows come from AppConfig; we hold the raw values and let
         # `_preload_nearby_pages` apply direction-aware bias so RTL readers
         # prefetch toward the next page, not the previous one.
         self._prefetch_before = max(0, int(prefetch_before))
         self._prefetch_after = max(0, int(prefetch_after))
-        self._archive_internal_max_depth = max(1, min(5, int(archive_internal_max_depth)))
+        self._nested_archive_max_depth = _normalize_depth_limit(
+            nested_archive_max_depth,
+            default=2,
+            maximum=5,
+        )
+        self._archive_global_file_max_depth = _normalize_depth_limit(
+            archive_global_file_max_depth,
+            default=100,
+            maximum=1000,
+        )
         # `_primary_index` is the LAYOUT anchor only. It decides which page's
         # aspect ratio drives single/double/wide-pan layout. It is intentionally
         # NOT the user-facing reading position: the indicator, slider value,
@@ -206,6 +220,14 @@ class ReaderViewModel:
     @property
     def bookmarks(self) -> tuple[ReaderBookmarkItem, ...]:
         return self._bookmarks
+
+    @property
+    def contents(self) -> tuple[ReaderContentsItem, ...]:
+        return self._contents
+
+    @property
+    def can_use_contents(self) -> bool:
+        return bool(self._contents)
 
     @property
     def current_index(self) -> int:
@@ -281,17 +303,26 @@ class ReaderViewModel:
         self._last_saved_progress = None
         self._emit_state()
         generation = self._task_generation
-        self._open_handle = self._task_service.submit(
-            "reader-open",
-            lambda: self._session_service.open_document(
+        open_work = lambda: self._session_service.open_document(
                 self._source_path or source_path,
                 passwords=dict(self._archive_passwords),
                 skipped_archives=set(self._skipped_archives),
-                archive_internal_max_depth=self._archive_internal_max_depth,
-            ),
-            on_success=lambda session, generation=generation: self._handle_open_success(generation, session),
-            on_failure=lambda error, generation=generation: self._handle_open_failure(generation, error),
-        )
+                nested_archive_max_depth=self._nested_archive_max_depth,
+                archive_global_file_max_depth=self._archive_global_file_max_depth,
+            )
+        open_kwargs = {
+            "on_success": lambda session, generation=generation: self._handle_open_success(generation, session),
+            "on_failure": lambda error, generation=generation: self._handle_open_failure(generation, error),
+        }
+        try:
+            self._open_handle = self._task_service.submit(
+                "reader-open",
+                open_work,
+                priority=TaskPriority.CRITICAL,
+                **open_kwargs,
+            )
+        except TypeError:
+            self._open_handle = self._task_service.submit("reader-open", open_work, **open_kwargs)
 
     def cancel(self, *, reset_passwords: bool = True) -> None:
         logger.debug(
@@ -306,20 +337,20 @@ class ReaderViewModel:
             handle.cancel()
         if self._warm_handle is not None:
             self._warm_handle.cancel()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._warmup_client_id)
         if self._save_handle is not None:
             self._save_handle.cancel()
         # Reader preferences are intentionally not cancelled here. They are
         # tiny per-book writes and should survive closing the reader window.
         if self._bookmark_handle is not None:
             self._bookmark_handle.cancel()
-        if self._topic_thumbnail_handle is not None:
-            self._topic_thumbnail_handle.cancel()
         self._open_handle = None
         self._page_handles.clear()
         self._warm_handle = None
         self._save_handle = None
         self._bookmark_handle = None
-        self._topic_thumbnail_handle = None
+        self._topic_thumbnail_stream.cancel()
         with self._session_lock:
             self._session = None
         self.is_loading = False
@@ -328,6 +359,7 @@ class ReaderViewModel:
         self._pages.clear()
         self._unavailable_pages.clear()
         self._bookmarks = ()
+        self._set_contents(())
         self._page_count = 0
         self._layout_result = None
         self._source_path = None
@@ -341,7 +373,6 @@ class ReaderViewModel:
         # open readers can claim it. The namespace itself stays valid; a
         # subsequent `open_path` will refill it.
         self._page_cache.clear()
-        self._topic_thumbnail_cache.clear()
         self.bookmarks_changed.emit(self._bookmarks)
 
     def cancel_password_request(self) -> None:
@@ -413,41 +444,21 @@ class ReaderViewModel:
 
         self._submit_bookmark_task("reader-bookmark-delete", work)
 
-    def request_topic_thumbnail_batch(
+    def set_topic_thumbnail_interest(
         self,
-        start_index: int,
-        batch_size: int,
+        visible_indices: tuple[int, ...],
+        prefetch_indices: tuple[int, ...],
         size: tuple[int, int],
     ) -> None:
         if self._session is None or self._page_count <= 0:
-            self.topic_thumbnail_batch_ready.emit(ReaderTopicThumbnailBatch(0, 0, False, ()))
+            self._topic_thumbnail_stream.release_interest()
             return
-        if self._topic_thumbnail_handle is not None and self._topic_thumbnail_handle.status in {
-            TaskStatus.PENDING,
-            TaskStatus.RUNNING,
-        }:
-            return
+        if self._topic_thumbnail_stream.source_id is None:
+            self._configure_topic_thumbnail_stream(self._session, size)
+        self._topic_thumbnail_stream.set_interest(visible_indices, prefetch_indices)
 
-        width = max(1, int(size[0]))
-        height = max(1, int(size[1]))
-        batch_size = max(1, int(batch_size))
-        start = max(0, min(int(start_index), self._page_count))
-        end = min(self._page_count, start + batch_size)
-        generation = self._task_generation
-
-        def work() -> ReaderTopicThumbnailBatch:
-            return self._load_topic_thumbnail_batch(start, end, (width, height))
-
-        self._topic_thumbnail_handle = self._task_service.submit(
-            f"reader-topic-thumbnails-{start}",
-            work,
-            on_success=lambda batch, generation=generation: self._handle_topic_thumbnail_success(generation, batch),
-            on_failure=lambda error, generation=generation, start=start: self._handle_topic_thumbnail_failure(
-                generation,
-                start,
-                error,
-            ),
-        )
+    def release_topic_thumbnail_interest(self) -> None:
+        self._topic_thumbnail_stream.release_interest()
 
     def set_viewport_size(self, width: int, height: int) -> None:
         size = SizeF(max(1.0, float(width)), max(1.0, float(height)))
@@ -824,8 +835,24 @@ class ReaderViewModel:
     def _handle_open_success(self, generation: int, session: ReaderImageSession) -> None:
         if generation != self._task_generation:
             return
-        self._session = session
+        with self._session_lock:
+            self._session = session
         self._page_count = session.page_count
+        self._configure_topic_thumbnail_stream(
+            session,
+            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+        )
+        archive_contents = getattr(session, "contents", ())
+        self._set_contents(
+            tuple(
+                ReaderContentsItem(
+                    label=str(entry.label),
+                    page_index=int(entry.page_index),
+                    depth=max(0, int(entry.depth)),
+                )
+                for entry in archive_contents
+            )
+        )
         self._primary_index = max(0, min(self._primary_index, max(0, self._page_count - 1)))
         self._companion_index = self._companion_for_seek(self._primary_index)
         self.is_loading = False
@@ -846,6 +873,7 @@ class ReaderViewModel:
             self._request_password_retry(error)
             return
         self.is_loading = False
+        self._set_contents(())
         if isinstance(error, ArchiveError):
             self.error_message = str(error)
         else:
@@ -871,6 +899,7 @@ class ReaderViewModel:
         self._pages.clear()
         self._unavailable_pages.clear()
         self._page_count = 0
+        self._set_contents(())
         display_name = _archive_display_name(archive_path)
         if isinstance(error, ArchivePasswordRejected):
             prompt = ReaderPasswordPrompt(
@@ -950,66 +979,59 @@ class ReaderViewModel:
         self._bookmarks = tuple(sorted(bookmarks, key=lambda item: (item.page_index, item.name, item.uuid)))
         self.bookmarks_changed.emit(self._bookmarks)
 
-    def _load_topic_thumbnail_batch(
+    def _configure_topic_thumbnail_stream(
         self,
-        start: int,
-        end: int,
+        session: ReaderImageSession,
         size: tuple[int, int],
-    ) -> ReaderTopicThumbnailBatch:
-        items: list[ReaderTopicThumbnailItem] = []
-        missing: list[int] = []
-        width, height = size
-        for page_index in range(start, end):
-            cached = self._topic_thumbnail_cache.get((page_index, width, height))
-            if cached is None:
-                missing.append(page_index)
-                continue
-            items.append(ReaderTopicThumbnailItem(page_index, cached))
+    ) -> None:
+        source_path = self._source_path
+        if source_path is None:
+            return
+        source_id = self._topic_thumbnail_source_id(source_path)
+        session_service = self._session_service
 
-        if missing:
+        def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
             with self._session_lock:
-                if self._session is None:
-                    return ReaderTopicThumbnailBatch(start, start, False, ())
-                pages = self._session_service.load_pages(self._session, tuple(missing))
-            for page_index in missing:
+                if self._session is not session:
+                    return
+                pages = session_service.load_pages(session, indices)
+            for page_index in indices:
                 image = pages.get(page_index)
                 if image is None:
                     continue
                 try:
                     rendered = render_contain_blur_thumbnail(image.image_bytes, size)
                 except Exception as exc:
-                    logger.warning(
-                        "Topic thumbnail render failed page=%d size=%dx%d: %s",
-                        page_index,
-                        width,
-                        height,
-                        exc,
-                    )
+                    logger.warning("Topic thumbnail render failed page=%d: %s", page_index, exc)
                     continue
-                self._topic_thumbnail_cache.put((page_index, width, height), rendered)
-                items.append(ReaderTopicThumbnailItem(page_index, rendered))
+                emit_item(ThumbnailStreamItem(page_index, rendered))
 
-        return ReaderTopicThumbnailBatch(
-            start,
-            end,
-            end < self._page_count,
-            tuple(sorted(items, key=lambda item: item.page_index)),
+        provider = getattr(session, "thumbnail_batch_size", None)
+        if callable(provider):
+            batch_size_for = lambda index: max(1, min(8, int(provider(index))))
+        else:
+            default_batch = 8 if source_path.suffix.lower() in EXPENSIVE_ARCHIVE_EXTENSIONS else 1
+            batch_size_for = lambda _index, default_batch=default_batch: default_batch
+        self._topic_thumbnail_stream.set_source(
+            source_id,
+            session.page_count,
+            size,
+            load,
+            batch_size_for=batch_size_for,
         )
 
-    def _handle_topic_thumbnail_success(self, generation: int, batch: ReaderTopicThumbnailBatch) -> None:
-        if generation != self._task_generation:
-            return
-        self._topic_thumbnail_handle = None
-        self.topic_thumbnail_batch_ready.emit(batch)
-
-    def _handle_topic_thumbnail_failure(self, generation: int, start: int, error: Exception) -> None:
-        if generation != self._task_generation:
-            return
-        self._topic_thumbnail_handle = None
-        if isinstance(error, (ArchivePasswordRejected, ArchivePasswordRequired)):
-            self._request_password_retry(error)
-            return
-        self.topic_thumbnail_batch_ready.emit(ReaderTopicThumbnailBatch(start, start, False, ()))
+    def _topic_thumbnail_source_id(self, source_path: Path) -> str:
+        try:
+            stat = source_path.stat()
+            signature = f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            signature = "missing"
+        encrypted_generation = self._task_generation if self._archive_passwords or self._skipped_archives else 0
+        return (
+            f"{source_path.resolve(strict=False)}:{signature}:"
+            f"{self._nested_archive_max_depth}:{self._archive_global_file_max_depth}:"
+            f"auth-{encrypted_generation}"
+        )
 
     def _request_visible_pages(self) -> None:
         self._request_pages(self.current_display_indices)
@@ -1059,16 +1081,24 @@ class ReaderViewModel:
                     return {}
                 return self._session_service.load_pages(self._session, requested)
 
-        handle = self._task_service.submit(
-            f"reader-pages-{requested[0]}",
-            load,
-            on_success=lambda images, generation=generation, requested=requested: self._handle_page_batch_success(
+        page_kwargs = {
+            "on_success": lambda images, generation=generation, requested=requested: self._handle_page_batch_success(
                 generation, requested, images
             ),
-            on_failure=lambda error, generation=generation, requested=requested: self._handle_page_batch_failure(
+            "on_failure": lambda error, generation=generation, requested=requested: self._handle_page_batch_failure(
                 generation, requested, error
             ),
-        )
+        }
+        interactive = bool(set(requested) & set(self.current_display_indices))
+        try:
+            handle = self._task_service.submit(
+                f"reader-pages-{requested[0]}",
+                load,
+                priority=TaskPriority.CRITICAL if interactive else TaskPriority.NORMAL,
+                **page_kwargs,
+            )
+        except TypeError:
+            handle = self._task_service.submit(f"reader-pages-{requested[0]}", load, **page_kwargs)
         for page_index in requested:
             if handle.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:
                 self._page_handles[page_index] = handle
@@ -1183,33 +1213,25 @@ class ReaderViewModel:
         return self.loading_page_index is not None
 
     def _start_disk_cache_warmup(self) -> None:
-        if self._source_path is None or self._warm_handle is not None:
+        coordinator = self._archive_warmup_coordinator
+        if self._source_path is None or coordinator is None:
             return
         if self._archive_passwords or self._skipped_archives:
             return
-        should_warm = getattr(self._session_service, "should_warm_disk_cache", None)
-        warm_disk_cache = getattr(self._session_service, "warm_disk_cache", None)
-        if should_warm is None or warm_disk_cache is None:
+        with self._session_lock:
+            session = self._session
+        if session is None:
             return
-        if not should_warm(self._source_path):
+        access_mode = getattr(session, "access_mode", None)
+        if getattr(access_mode, "value", access_mode) != "expensive_cold":
             return
-        source_path = self._source_path
-        handle_ref: list[TaskHandle[None] | None] = [None]
-
-        def is_cancelled() -> bool:
-            handle = handle_ref[0]
-            return handle is not None and handle.status == TaskStatus.CANCELLED
-
-        handle = self._task_service.submit(
-            "reader-cache-warm",
-            lambda: warm_disk_cache(
-                source_path,
-                archive_internal_max_depth=self._archive_internal_max_depth,
-                is_cancelled=is_cancelled,
-            ),
+        coordinator.acquire(
+            self._source_path,
+            self._warmup_client_id,
+            nested_depth=self._nested_archive_max_depth,
+            global_depth=self._archive_global_file_max_depth,
+            on_ready=self._topic_thumbnail_stream.refresh,
         )
-        handle_ref[0] = handle
-        self._warm_handle = handle
 
     def _preload_nearby_pages(self) -> None:
         if self._page_count <= 0:
@@ -1447,6 +1469,12 @@ class ReaderViewModel:
     def _emit_state(self) -> None:
         self.state_changed.emit()
 
+    def _set_contents(self, contents: tuple[ReaderContentsItem, ...]) -> None:
+        if contents == self._contents:
+            return
+        self._contents = contents
+        self.contents_changed.emit(contents)
+
 
 def _archive_display_name(archive_path: str) -> str:
     if "::" in archive_path:
@@ -1459,3 +1487,15 @@ def _archive_display_name(archive_path: str) -> str:
 
 def _bookmark_items(bookmarks: list[Bookmark]) -> tuple[ReaderBookmarkItem, ...]:
     return tuple(ReaderBookmarkItem(bookmark.uuid, bookmark.name, bookmark.page_index) for bookmark in bookmarks)
+
+
+def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
+    try:
+        depth = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    if depth == -1:
+        return -1
+    if depth < 1:
+        return default
+    return min(maximum, depth)

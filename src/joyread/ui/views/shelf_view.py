@@ -65,8 +65,6 @@ class ShelfView(QWidget):
         # while the user is mid-click — so we coalesce updates here and
         # flush them once the depth counter returns to zero.
         self._popup_interaction_depth = 0
-        self._deferred_page_thumbnails: list[tuple[str, int, bytes]] = []
-        self._deferred_detail_batch_finishes: list[tuple[str, int, bool]] = []
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -118,7 +116,10 @@ class ShelfView(QWidget):
         self.detail_panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
         self.detail_panel.menu_requested.connect(self._show_book_menu)
         self.detail_panel.cover_edit_requested.connect(self.cover_edit_requested.emit)
-        self.detail_panel.more_thumbnails_requested.connect(self._request_next_detail_thumbnail_batch)
+        self.detail_panel.thumbnail_interest_changed.connect(self._handle_detail_thumbnail_interest)
+        self.detail_panel.thumbnail_interest_released.connect(
+            self._viewmodel.release_detail_thumbnail_interest
+        )
         self.detail_panel.title_change_requested.connect(self._viewmodel.update_book_title)
         self.detail_panel.author_change_requested.connect(self._viewmodel.update_book_author)
         self.detail_panel.language_menu_requested.connect(self._show_language_menu)
@@ -132,7 +133,7 @@ class ShelfView(QWidget):
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
-        self._viewmodel.detail_thumbnail_batch_finished.connect(self._handle_detail_thumbnail_batch_finished)
+        self._viewmodel.detail_thumbnail_source_ready.connect(self.detail_panel.set_thumbnail_page_count)
 
     def render(self) -> None:
         self.toolbar.set_title(_localized_page_title(self._viewmodel))
@@ -316,7 +317,13 @@ class ShelfView(QWidget):
         self.detail_panel.show()
         self.detail_panel.raise_()
         if not self._is_popup_interaction_active():
-            QTimer.singleShot(0, lambda book_uuid=book.uuid: self._request_next_detail_thumbnail_batch(book_uuid))
+            QTimer.singleShot(
+                0,
+                lambda book_uuid=book.uuid: self._viewmodel.prepare_detail_thumbnail_source(
+                    book_uuid,
+                    (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+                ),
+            )
 
     def _position_detail_panel(self) -> None:
         if not hasattr(self, "detail_panel"):
@@ -334,34 +341,21 @@ class ShelfView(QWidget):
 
     def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._is_popup_interaction_active():
-            self._deferred_page_thumbnails.append((book_uuid, page_index, image_bytes))
             return
         self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
 
-    def _handle_detail_thumbnail_batch_finished(self, book_uuid: str, _next_index: int, has_more: bool) -> None:
-        if self._is_popup_interaction_active():
-            self._deferred_detail_batch_finishes.append((book_uuid, _next_index, has_more))
-            return
-        self._apply_detail_thumbnail_batch_finished(book_uuid, has_more)
-
-    def _apply_detail_thumbnail_batch_finished(
+    def _handle_detail_thumbnail_interest(
         self,
         book_uuid: str,
-        has_more: bool,
-        *,
-        force_next: bool = False,
+        visible_indices: tuple[int, ...],
+        prefetch_indices: tuple[int, ...],
     ) -> None:
-        if not has_more:
-            self.detail_panel.mark_thumbnail_complete(book_uuid)
-            return
-        if force_next or (self.detail_panel.isVisible() and self.detail_panel.is_near_thumbnail_bottom()):
-            QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
-
-    def _request_next_detail_thumbnail_batch(self, book_uuid: str) -> None:
         if self._is_popup_interaction_active():
             return
-        self._viewmodel.request_next_detail_thumbnail_batch(
+        self._viewmodel.set_detail_thumbnail_interest(
             book_uuid,
+            visible_indices,
+            prefetch_indices,
             (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
         )
 
@@ -372,48 +366,24 @@ class ShelfView(QWidget):
         finally:
             self._popup_interaction_depth = max(0, self._popup_interaction_depth - 1)
             if not self._is_popup_interaction_active():
-                applied_deferred_batch_finish = self._flush_deferred_detail_thumbnail_updates()
-                if not applied_deferred_batch_finish:
-                    self._resume_detail_thumbnail_loading_if_needed()
+                self._flush_deferred_detail_thumbnail_updates()
 
     def _is_popup_interaction_active(self) -> bool:
         return self._popup_interaction_depth > 0
 
     def _flush_deferred_detail_thumbnail_updates(self) -> bool:
         current_book_uuid = self._viewmodel.detail_book_uuid
-        page_updates = self._deferred_page_thumbnails
-        batch_finishes = self._deferred_detail_batch_finishes
-        self._deferred_page_thumbnails = []
-        self._deferred_detail_batch_finishes = []
         if current_book_uuid is None:
             return False
-
-        for book_uuid, page_index, image_bytes in page_updates:
-            if book_uuid == current_book_uuid:
-                self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
-
-        current_finishes = [
-            (book_uuid, has_more)
-            for book_uuid, _next_index, has_more in batch_finishes
-            if book_uuid == current_book_uuid
-        ]
-        if not current_finishes:
-            return False
-        _, has_more = current_finishes[-1]
-        # The batch-finished signal already decided there is more thumbnail
-        # work; it was only held back because a popup was open. Queue the next
-        # batch once the popup closes so the detail panel does not stall.
-        self._apply_detail_thumbnail_batch_finished(current_book_uuid, has_more, force_next=True)
-        return True
+        self._viewmodel.refresh_detail_thumbnail_interest(current_book_uuid)
+        self.detail_panel.refresh_thumbnail_interest()
+        return False
 
     def _resume_detail_thumbnail_loading_if_needed(self) -> None:
         book_uuid = self._viewmodel.detail_book_uuid
-        if (
-            book_uuid is not None
-            and self.detail_panel.isVisible()
-            and self.detail_panel.is_near_thumbnail_bottom()
-        ):
-            QTimer.singleShot(0, lambda book_uuid=book_uuid: self._request_next_detail_thumbnail_batch(book_uuid))
+        if book_uuid is not None and self.detail_panel.isVisible():
+            self._viewmodel.refresh_detail_thumbnail_interest(book_uuid)
+            self.detail_panel.refresh_thumbnail_interest()
 
 
 def _localized_page_title(viewmodel: ShelfViewModel) -> str:

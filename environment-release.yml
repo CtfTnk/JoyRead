@@ -1,0 +1,7 @@
+channels:
+  - defaults
+dependencies:
+  - python=3.12.9
+  - pip
+  - pip:
+      - -e .[dev,release]

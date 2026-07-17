@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from PySide6.QtCore import QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QContextMenuEvent, QIcon, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -19,11 +19,7 @@ from PySide6.QtWidgets import (
 
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import (
-    ReaderBookmarkItem,
-    ReaderContentsItem,
-    ReaderTopicThumbnailBatch,
-)
+from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_detail import DetailThumbnailGrid
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -37,7 +33,8 @@ class ReaderTopicMode(StrEnum):
 
 
 class ReaderTopicPanel(QFrame):
-    thumbnail_batch_requested = QtSignal(int, int, tuple)
+    thumbnail_interest_changed = QtSignal(tuple, tuple, tuple)
+    thumbnail_interest_released = QtSignal()
     thumbnail_selected = QtSignal(int)
     bookmark_selected = QtSignal(int)
     contents_selected = QtSignal(int)
@@ -50,12 +47,10 @@ class ReaderTopicPanel(QFrame):
         self._resources = resources
         self._mode = ReaderTopicMode.THUMBNAILS
         self._page_count = 0
-        self._thumbnail_next_index = 0
-        self._thumbnail_has_more = False
-        self._thumbnail_pending = False
+        self._last_thumbnail_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
         self._thumbnail_check_timer = QTimer(self)
         self._thumbnail_check_timer.setSingleShot(True)
-        self._thumbnail_check_timer.timeout.connect(self._request_more_if_near_thumbnail_bottom)
+        self._thumbnail_check_timer.timeout.connect(self._emit_thumbnail_interest)
 
         self.setObjectName("ReaderTopicPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
@@ -86,7 +81,7 @@ class ReaderTopicPanel(QFrame):
             self._build_thumbnails_page(),
         )
         thumbnail_scrollbar = self._thumbnails_scroll.verticalScrollBar()
-        thumbnail_scrollbar.valueChanged.connect(self._request_more_if_near_thumbnail_bottom)
+        thumbnail_scrollbar.valueChanged.connect(self._defer_thumbnail_check)
         thumbnail_scrollbar.rangeChanged.connect(lambda _minimum, _maximum: self._defer_thumbnail_check())
         self._stack.addWidget(self._contents_scroll)
         self._stack.addWidget(self._bookmarks_scroll)
@@ -98,6 +93,8 @@ class ReaderTopicPanel(QFrame):
         return self._mode
 
     def set_mode(self, mode: ReaderTopicMode) -> None:
+        if self._mode == ReaderTopicMode.THUMBNAILS and mode != ReaderTopicMode.THUMBNAILS:
+            self._release_thumbnail_interest()
         self._mode = mode
         if mode == ReaderTopicMode.CONTENTS:
             self._stack.setCurrentWidget(self._contents_scroll)
@@ -109,26 +106,14 @@ class ReaderTopicPanel(QFrame):
 
     def reset_thumbnails(self, page_count: int) -> None:
         self._page_count = max(0, int(page_count))
-        self._thumbnail_next_index = 0
-        self._thumbnail_has_more = self._page_count > 0
-        self._thumbnail_pending = False
-        self._thumbnail_grid.reset_unknown()
+        self._thumbnail_grid.set_thumbnail_count(self._page_count, reset=True)
+        self._last_thumbnail_interest = ((), ())
         self._thumbnails_scroll.verticalScrollBar().setValue(0)
         if self._mode == ReaderTopicMode.THUMBNAILS and self.isVisible():
-            self._request_more_if_needed()
-
-    def apply_thumbnail_batch(self, batch: ReaderTopicThumbnailBatch) -> None:
-        self._thumbnail_pending = False
-        if batch.next_index > self._thumbnail_next_index:
-            self._thumbnail_grid.set_thumbnail_count(batch.next_index)
-            self._thumbnail_next_index = batch.next_index
-        for item in batch.items:
-            self._thumbnail_grid.set_thumbnail(item.page_index, item.image_bytes)
-        self._thumbnail_has_more = batch.has_more and self._thumbnail_next_index < self._page_count
-        if not self._thumbnail_has_more:
-            self._thumbnail_grid.mark_complete()
-        if self._mode == ReaderTopicMode.THUMBNAILS and self.isVisible():
             self._defer_thumbnail_check()
+
+    def set_thumbnail(self, page_index: int, image_bytes: bytes) -> None:
+        self._thumbnail_grid.set_thumbnail(page_index, image_bytes)
 
     def set_contents(self, items: tuple[ReaderContentsItem, ...]) -> None:
         """Populate CONTENTS mode with a TOC list. Empty tuple = placeholder."""
@@ -163,6 +148,14 @@ class ReaderTopicPanel(QFrame):
         super().showEvent(event)
         self._defer_thumbnail_check()
 
+    def hideEvent(self, event) -> None:  # type: ignore[override]
+        super().hideEvent(event)
+        self._release_thumbnail_interest()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._defer_thumbnail_check()
+
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
@@ -188,9 +181,8 @@ class ReaderTopicPanel(QFrame):
         )
         self._contents_layout.setSpacing(Theme.reader_topic_item_gap)
         self._contents_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        # Default state: empty placeholder until a viewmodel calls
-        # ``set_contents``. Manga reader leaves CONTENTS disabled so it
-        # never reaches this widget.
+        # Default state: empty placeholder until a reader viewmodel supplies
+        # archive folders or an EPUB table of contents.
         self.set_contents(())
         return self._contents_page
 
@@ -232,29 +224,33 @@ class ReaderTopicPanel(QFrame):
         self._scroll_handles.append(AutoHideScrollHandle(scroll, parent=self))
         return scroll
 
-    def _request_more_if_near_thumbnail_bottom(self) -> None:
-        scrollbar = self._thumbnails_scroll.verticalScrollBar()
-        if scrollbar.maximum() <= 0 or (scrollbar.maximum() - scrollbar.value()) <= Theme.reader_topic_scroll_threshold:
-            self._request_more_if_needed()
-
     def _defer_thumbnail_check(self) -> None:
         if not self._thumbnail_check_timer.isActive():
             self._thumbnail_check_timer.start(0)
 
-    def _request_more_if_needed(self) -> None:
-        if (
-            not self.isVisible()
-            or self._mode != ReaderTopicMode.THUMBNAILS
-            or self._thumbnail_pending
-            or not self._thumbnail_has_more
-        ):
+    def _emit_thumbnail_interest(self) -> None:
+        if not self.isVisible() or self._mode != ReaderTopicMode.THUMBNAILS or self._page_count <= 0:
             return
-        self._thumbnail_pending = True
-        self.thumbnail_batch_requested.emit(
-            self._thumbnail_next_index,
-            Theme.reader_topic_thumbnail_batch_size,
+        origin = self._thumbnail_grid.mapFrom(self._thumbnails_scroll.viewport(), QPoint(0, 0))
+        viewport_rect = QRect(origin, self._thumbnails_scroll.viewport().size())
+        visible, prefetch = self._thumbnail_grid.visible_and_prefetch_indices(viewport_rect, prefetch_rows=1)
+        interest = (visible, prefetch)
+        if interest == self._last_thumbnail_interest:
+            return
+        self._last_thumbnail_interest = interest
+        self._thumbnail_grid.set_interest((*visible, *prefetch))
+        self.thumbnail_interest_changed.emit(
+            visible,
+            prefetch,
             (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
         )
+
+    def _release_thumbnail_interest(self) -> None:
+        self._thumbnail_check_timer.stop()
+        self._thumbnail_grid.set_interest(())
+        if self._last_thumbnail_interest != ((), ()):
+            self.thumbnail_interest_released.emit()
+        self._last_thumbnail_interest = ((), ())
 
 
 class _TopicContentsRow(QFrame):
@@ -286,6 +282,11 @@ class _TopicContentsRow(QFrame):
         self._label.setProperty("class", "ReaderTopicItemLabel")
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label)
+
+        index = QLabel(t("reader.page_index", index=str(item.page_index + 1)))
+        index.setProperty("class", "ReaderTopicItemIndex")
+        index.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        layout.addWidget(index)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
