@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -863,7 +863,6 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject: Callable[[], None] | None = None
         self._on_skip: Callable[[], None] | None = None
         self._before_accept: Callable[[], bool] | None = None
-        self._key_forward_target: QLineEdit | None = None
 
         self._panel = JoyReadDialogPanel(self)
         self._panel.accepted.connect(self._accept)
@@ -942,8 +941,10 @@ class JoyReadDialogOverlay(QWidget):
             confirm_text or t("dialog.btn_confirm"),
         )
         content.submitted.connect(self._panel.accepted.emit)
-        self._show_centered()
-        self._focus_line_edit_deferred(content.field.line_edit, select_all_text=initial_text)
+        self._show_centered(
+            focus_target=content.field.line_edit,
+            select_all_text=initial_text,
+        )
 
     def show_password_input(
         self,
@@ -962,7 +963,6 @@ class JoyReadDialogOverlay(QWidget):
     ) -> None:
         content = DialogInputContent(
             header,
-            echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit,
             detail_text=detail_text,
         )
         if state_prompt:
@@ -991,8 +991,7 @@ class JoyReadDialogOverlay(QWidget):
             skip_text,
         )
         content.submitted.connect(self._panel.accepted.emit)
-        self._show_centered()
-        self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
+        self._show_centered(focus_target=content.field.line_edit)
 
     def show_multi_password_input(
         self,
@@ -1034,9 +1033,8 @@ class JoyReadDialogOverlay(QWidget):
             cancel_text or t("dialog.btn_cancel"),
             confirm_text or t("dialog.btn_confirm"),
         )
-        self._show_centered()
-        if content.fields:
-            self._focus_line_edit_deferred(content.fields[0].line_edit, select_all_text="")
+        focus_target = content.fields[0].line_edit if content.fields else None
+        self._show_centered(focus_target=focus_target)
 
     def show_collection_select(
         self,
@@ -1108,8 +1106,6 @@ class JoyReadDialogOverlay(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             event.accept()
             return
-        if self._forward_key_to_active_input(event):
-            return
         super().keyPressEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -1120,49 +1116,27 @@ class JoyReadDialogOverlay(QWidget):
         super().showEvent(event)
         self._position_panel()
 
-    def _show_centered(self) -> None:
+    def _show_centered(
+        self,
+        *,
+        focus_target: QLineEdit | None = None,
+        select_all_text: str | None = None,
+    ) -> None:
         self._panel.refresh_size()
         self._position_panel()
         self.show()
         self.raise_()
         self._panel.raise_()
-        self.setFocus(Qt.FocusReason.PopupFocusReason)
+        if focus_target is None:
+            self.setFocus(Qt.FocusReason.PopupFocusReason)
+            return
 
-    def _focus_line_edit_deferred(self, line_edit: QLineEdit, *, select_all_text: str) -> None:
-        self._key_forward_target = line_edit
-
-        def focus_line_edit() -> None:
-            if not self.isVisible() or not line_edit.isVisible():
-                return
-            line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
-            # If a fast first key arrived while the overlay still had focus,
-            # do not select that inserted text and make the next key replace it.
-            if line_edit.text() == select_all_text:
-                line_edit.selectAll()
-
-        QTimer.singleShot(0, focus_line_edit)
-
-    def _forward_key_to_active_input(self, event: QKeyEvent) -> bool:
-        target = self._key_forward_target
-        if target is None or not target.isVisible():
-            return False
-        if event.key() in {
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-            Qt.Key.Key_Escape,
-            Qt.Key.Key_Tab,
-            Qt.Key.Key_Backtab,
-        }:
-            return False
-        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier):
-            return False
-        text = event.text()
-        if not text:
-            return False
-        target.setFocus(Qt.FocusReason.PopupFocusReason)
-        target.insert(text)
-        event.accept()
-        return True
+        # A password archive may use an IME. Giving the actual editor focus
+        # synchronously lets Qt deliver its pre-edit/commit events natively;
+        # forwarding a raw first key from the overlay corrupts CJK composition.
+        focus_target.setFocus(Qt.FocusReason.PopupFocusReason)
+        if select_all_text is not None and focus_target.text() == select_all_text:
+            focus_target.selectAll()
 
     def _position_panel(self) -> None:
         x = (self.width() - self._panel.width()) // 2
@@ -1196,5 +1170,4 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject = None
         self._on_skip = None
         self._before_accept = None
-        self._key_forward_target = None
         self.hide()

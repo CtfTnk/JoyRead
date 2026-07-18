@@ -3,6 +3,7 @@ from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QInputMethodEvent
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QToolButton, QWidget
 from PIL import Image
 
@@ -597,7 +598,7 @@ def test_dialog_password_input_cancel_callback_and_unicode_text(qtbot) -> None:
     assert result == ["cancel"]
 
 
-def test_dialog_password_input_forwards_first_key_when_overlay_has_focus(qtbot) -> None:
+def test_dialog_archive_password_input_uses_visible_native_ime_focus(qtbot) -> None:
     apply_theme()
     root = QWidget()
     qtbot.addWidget(root)
@@ -608,17 +609,24 @@ def test_dialog_password_input_forwards_first_key_when_overlay_has_focus(qtbot) 
 
     result: list[str] = []
     overlay.show_password_input("Archive Password", "Password", on_confirm=result.append)
-    QApplication.processEvents()
     line_edit = overlay.panel.findChild(QLineEdit)
     assert line_edit is not None
+    assert line_edit.echoMode() == QLineEdit.EchoMode.Normal
 
-    overlay.setFocus(Qt.FocusReason.PopupFocusReason)
-    qtbot.keyClicks(overlay, "tan'ke")
+    # The overlay must not turn a raw pinyin key into committed text before
+    # Qt's input method has focused the editor.
+    qtbot.keyClicks(overlay, "t")
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is line_edit
+
+    input_event = QInputMethodEvent()
+    input_event.setCommitString("坦克")
+    QApplication.sendEvent(line_edit, input_event)
     QApplication.processEvents()
     qtbot.mouseClick(overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
     QApplication.processEvents()
 
-    assert result == ["tan'ke"]
+    assert result == ["坦克"]
 
 
 def test_dialog_password_input_shows_failure_prompt(qtbot) -> None:
