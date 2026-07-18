@@ -189,6 +189,9 @@ class BookDetailPanel(QFrame):
         self._thumbnail_interest_timer = QTimer(self)
         self._thumbnail_interest_timer.setSingleShot(True)
         self._thumbnail_interest_timer.timeout.connect(self._emit_thumbnail_interest)
+        self._tag_box_sync_timer = QTimer(self)
+        self._tag_box_sync_timer.setSingleShot(True)
+        self._tag_box_sync_timer.timeout.connect(self._sync_tag_box_height)
 
         self.setObjectName("BookDetailPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -269,7 +272,7 @@ class BookDetailPanel(QFrame):
             self._thumbnail_grid.reset_unknown()
             self._last_thumbnail_interest = ((), ())
         self._sync_tag_box_height()
-        QTimer.singleShot(0, self._sync_tag_box_height)
+        self._defer_tag_box_height_sync()
 
     def refresh_labels(self) -> None:
         """Re-apply translated labels after a runtime locale change."""
@@ -531,6 +534,10 @@ class BookDetailPanel(QFrame):
             return
         self._tag_box.set_compact_title_mode(self._title_field.display_line_count > 1)
 
+    def _defer_tag_box_height_sync(self) -> None:
+        if not self._tag_box_sync_timer.isActive():
+            self._tag_box_sync_timer.start(0)
+
     def _refresh_metadata_labels(self) -> None:
         book = self._book
         if book is None:
@@ -576,7 +583,7 @@ class BookDetailPanel(QFrame):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
-        QTimer.singleShot(0, self._sync_tag_box_height)
+        self._defer_tag_box_height_sync()
         self._apply_description_layout(self.width() < Theme.detail_description_narrow_threshold)
         self._defer_thumbnail_interest()
 

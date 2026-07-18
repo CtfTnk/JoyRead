@@ -8,12 +8,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QObject
 from PySide6.QtGui import QFileOpenEvent
-from PySide6.QtWidgets import QApplication, QMainWindow
+from PySide6.QtWidgets import QApplication
 
 
 logger = logging.getLogger(__name__)
 
-OpenFileHandler = Callable[[Path], QMainWindow]
+OpenFileHandler = Callable[[Path], None]
 
 
 def _supported_file_open_path(
@@ -67,12 +67,7 @@ class FileOpenRouter(QObject):
         self._supported_extensions = frozenset(supported_extensions)
         self._pending_paths: list[Path] = []
         self._open_handler: OpenFileHandler | None = None
-        self._opened_windows: dict[int, QMainWindow] = {}
         app.installEventFilter(self)
-
-    @property
-    def opened_windows(self) -> tuple[QMainWindow, ...]:
-        return tuple(self._opened_windows.values())
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
         if watched is self._app:
@@ -97,6 +92,11 @@ class FileOpenRouter(QObject):
             return None
         return self._pending_paths.pop(0)
 
+    def take_pending_paths(self) -> tuple[Path, ...]:
+        paths = tuple(self._pending_paths)
+        self._pending_paths.clear()
+        return paths
+
     def discard_pending(self, path: str | Path) -> None:
         target = Path(path).expanduser()
         self._pending_paths = [candidate for candidate in self._pending_paths if candidate != target]
@@ -111,7 +111,6 @@ class FileOpenRouter(QObject):
         self._app.removeEventFilter(self)
         self._open_handler = None
         self._pending_paths.clear()
-        self._opened_windows.clear()
 
     def _open(self, path: Path) -> None:
         handler = self._open_handler
@@ -119,9 +118,4 @@ class FileOpenRouter(QObject):
             self._pending_paths.append(path)
             return
         logger.info("Opening file from operating-system request path=%s", path)
-        window = handler(path)
-        key = id(window)
-        self._opened_windows[key] = window
-        window.destroyed.connect(
-            lambda _object=None, window_key=key: self._opened_windows.pop(window_key, None)
-        )
+        handler(path)

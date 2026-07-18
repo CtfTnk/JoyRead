@@ -105,6 +105,7 @@ if not extractor_path.is_file():
 
 extractor_destination = f"joyread/resources/extractors/7zip/{platform_directory}"
 datas = [
+    (str(ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt"), "."),
     (str(PACKAGE_ROOT / "ui" / "resources"), "joyread/ui/resources"),
     (str(PACKAGE_ROOT / "resources" / "locales"), "joyread/resources/locales"),
     (
@@ -116,6 +117,9 @@ datas = [
         "joyread/resources/extractors/7zip",
     ),
 ]
+hiddenimports = collect_submodules("py7zr")
+if sys.platform == "darwin":
+    hiddenimports.extend(["objc", "Foundation", "AppKit"])
 for legal_name in ("License.txt", "readme.txt", "History.txt"):
     legal_path = extractor_directory / legal_name
     if legal_path.is_file():
@@ -126,7 +130,7 @@ a = Analysis(
     pathex=[str(ROOT / "src")],
     binaries=[(str(extractor_path), extractor_destination)],
     datas=datas,
-    hiddenimports=collect_submodules("py7zr"),
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

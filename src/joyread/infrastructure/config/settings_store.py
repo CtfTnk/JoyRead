@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import logging
+from os import environ
 from pathlib import Path
 from typing import Any
 
@@ -195,6 +196,31 @@ class SettingsStore:
             app_data_root = Path(user_data_path(self._app_name, self._app_author, roaming=True))
             return app_data_root.parent / LIBRARY_DIRECTORY_NAME
         return Path.home() / ".local" / "share" / LIBRARY_DIRECTORY_NAME
+
+
+def create_environment_settings_store(
+    app_name: str = "JoyRead",
+    app_author: str = "JoyRead",
+    *,
+    runtime_dir: str | Path | None = None,
+) -> SettingsStore:
+    """Build the stable pre-database settings store for this runtime profile.
+
+    Startup instance arbitration and ``AppContext`` must resolve the same
+    support directory. Keeping that decision here prevents a secondary process
+    from touching a different lock before both processes reach settings load.
+    """
+
+    runtime_override = runtime_dir if runtime_dir is not None else environ.get("JOYREAD_RUNTIME_DIR")
+    if runtime_override is None:
+        return SettingsStore(app_name, app_author)
+    root = Path(runtime_override).expanduser().resolve()
+    return SettingsStore(
+        app_name,
+        app_author,
+        support_root=root / ".joyread_support",
+        default_storage_root=root / LIBRARY_DIRECTORY_NAME,
+    )
 
 
 def _looks_like_source_checkout(path: Path) -> bool:

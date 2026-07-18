@@ -460,7 +460,8 @@ def test_main_window_blocks_existing_epub_book(qtbot, tmp_path: Path, monkeypatc
     novel_path = write_tiny_epub(tmp_path / "story.epub")
     book = _novel_book(novel_path)
 
-    window = MainWindow(context)
+    launch_requests: list[object] = []
+    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
     qtbot.addWidget(window)
     # Replace the shelf after MainWindow.__init__ has run load_books();
     # the routing decision in open_reader_for_book reads ``books`` live.
@@ -468,7 +469,7 @@ def test_main_window_blocks_existing_epub_book(qtbot, tmp_path: Path, monkeypatc
     context.settings_store.update(individual_read_window=True)
 
     window.open_reader_for_book(book.uuid)
-    assert window._reader_windows == []
+    assert launch_requests == []
     assert not window.dialog_overlay.isHidden()
     assert window.dialog_overlay.panel.title_text == "Read"
 
@@ -481,12 +482,13 @@ def test_main_window_blocks_epub_file_open(qtbot, tmp_path: Path, monkeypatch) -
     context = create_app_context()
     novel_path = write_tiny_epub(tmp_path / "anything.epub")
 
-    window = MainWindow(context)
+    launch_requests: list[object] = []
+    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
     qtbot.addWidget(window)
 
     window.open_reader_for_file(novel_path, import_mode=True)
 
-    assert window._reader_windows == []
+    assert launch_requests == []
     assert not window.dialog_overlay.isHidden()
     assert window.dialog_overlay.panel.title_text == "Read"
 

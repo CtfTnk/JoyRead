@@ -11,6 +11,7 @@ from joyread.app import bootstrap
 from joyread.app.app_context import AppContext
 from joyread.app.bootstrap import create_application
 from joyread.app.file_open_router import FileOpenRouter
+from joyread.app.launch_intent import LaunchIntent
 from joyread.app.startup_window_coordinator import StartupWindowCoordinator
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
@@ -84,7 +85,6 @@ def test_direct_external_open_uses_reader_window_without_file_dialog(qtbot, tmp_
     monkeypatch.setattr(main_window_module.QFileDialog, "getOpenFileName", fail_file_dialog)
 
     app, context, window = create_application(["joyread", str(source)])
-    qtbot.addWidget(window)
 
     assert app.quitOnLastWindowClosed()
     assert isinstance(window, ReaderWindow)
@@ -100,7 +100,6 @@ def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) ->
     source.write_bytes(b"%PDF")
 
     app, context, window = create_application(["joyread", str(source)])
-    qtbot.addWidget(window)
 
     assert app.quitOnLastWindowClosed()
     assert isinstance(window, ReaderWindow)
@@ -116,7 +115,6 @@ def test_direct_external_open_does_not_accept_epub(qtbot, tmp_path: Path, monkey
     source.write_bytes(b"")
 
     app, context, window = create_application(["joyread", str(source)])
-    qtbot.addWidget(window)
 
     assert app.quitOnLastWindowClosed()
     assert isinstance(window, MainWindow)
@@ -126,7 +124,7 @@ def test_direct_external_open_does_not_accept_epub(qtbot, tmp_path: Path, monkey
     context.close()
 
 
-def test_file_open_event_is_queued_then_dispatched_to_a_retained_window(qtbot, tmp_path: Path) -> None:
+def test_file_open_event_is_queued_then_dispatched_without_router_ownership(qtbot, tmp_path: Path) -> None:
     app = QApplication.instance() or QApplication(["test"])
     previous_router = getattr(app, "_joyread_file_open_router", None)
     if isinstance(previous_router, FileOpenRouter):
@@ -143,19 +141,18 @@ def test_file_open_event_is_queued_then_dispatched_to_a_retained_window(qtbot, t
     opened_paths: list[Path] = []
     opened_windows: list[QMainWindow] = []
 
-    def open_file(path: Path) -> QMainWindow:
+    def open_file(path: Path) -> None:
         opened_paths.append(path)
         window = QMainWindow()
         qtbot.addWidget(window)
         opened_windows.append(window)
-        return window
 
     router.set_open_handler(open_file)
     live_event = QFileOpenEvent(str(source))
     assert QApplication.sendEvent(app, live_event)
 
     assert opened_paths == [source]
-    assert router.opened_windows == (opened_windows[0],)
+    assert opened_windows[0].isWindow()
 
     opened_windows[0].close()
     router.dispose()
@@ -187,10 +184,12 @@ def test_startup_file_open_event_creates_reader_without_main_window(qtbot, tmp_p
         return window
 
     router = FileOpenRouter(app, SUPPORTED_READER_EXTENSIONS)
+    def open_files(paths) -> tuple[QMainWindow, ...]:  # noqa: ANN001
+        return tuple(create_reader_window(path) for path in paths)
+
     coordinator = StartupWindowCoordinator(
-        create_main_window=create_main_window,
-        create_reader_window=create_reader_window,
-        present_window=lambda _window: None,
+        show_library=create_main_window,
+        open_files=open_files,
         file_open_grace_ms=25,
     )
     coordinator.start()
@@ -219,9 +218,8 @@ def test_startup_coordinator_builds_main_after_file_open_grace(qtbot) -> None:
         return window
 
     coordinator = StartupWindowCoordinator(
-        create_main_window=create_main_window,
-        create_reader_window=lambda _path: QMainWindow(),
-        present_window=lambda _window: None,
+        show_library=create_main_window,
+        open_files=lambda _paths: (),
         file_open_grace_ms=10,
     )
     coordinator.start()
@@ -234,17 +232,53 @@ def test_startup_coordinator_builds_main_after_file_open_grace(qtbot) -> None:
     coordinator.deleteLater()
 
 
-def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch) -> None:
+def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str] | None] = []
 
-    def cancel_startup(argv: list[str] | None = None):
-        calls.append(argv)
+    def cancel_startup(environment):  # noqa: ANN001
+        calls.append(environment.argv)
         raise StorageRecoveryCancelled
 
-    monkeypatch.setattr(bootstrap, "_create_application_runtime", cancel_startup)
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setattr(bootstrap, "_build_primary_runtime", cancel_startup)
+    monkeypatch.setattr(
+        bootstrap.SingleInstanceBroker,
+        "start",
+        lambda _broker, _intent: bootstrap.InstanceRole.PRIMARY,
+    )
 
     assert bootstrap.run(["joyread"]) == 0
     assert calls == [["joyread"]]
+
+
+def test_secondary_run_forwards_before_app_context_is_created(monkeypatch, tmp_path: Path) -> None:
+    source = tmp_path / "forwarded.cbz"
+    source.write_bytes(b"")
+    forwarded: list[LaunchIntent] = []
+    disposed: list[bool] = []
+
+    class SecondaryBroker:
+        def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
+        def start(self, intent: LaunchIntent):  # noqa: ANN201
+            forwarded.append(intent)
+            return bootstrap.InstanceRole.SECONDARY
+
+        def dispose(self) -> None:
+            disposed.append(True)
+
+    def fail_primary_runtime(_environment):  # noqa: ANN001
+        raise AssertionError("A secondary process must not create AppContext.")
+
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setattr(bootstrap, "SingleInstanceBroker", SecondaryBroker)
+    monkeypatch.setattr(bootstrap, "_build_primary_runtime", fail_primary_runtime)
+
+    assert bootstrap.run(["joyread", str(source), str(tmp_path / "ignored.epub")]) == 0
+    assert forwarded == [LaunchIntent.open_files((source,))]
+    assert disposed == [True]
+    assert not (tmp_path / "runtime" / "JoyRead-Library").exists()
 
 
 def test_storage_recovery_dialog_close_rejects_and_width_is_stable(qtbot) -> None:

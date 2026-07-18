@@ -6,12 +6,14 @@ from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+import shiboken6
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
+from joyread.app.application_window_manager import ApplicationWindowManager
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
 from joyread.infrastructure.i18n import locale_service
@@ -651,7 +653,8 @@ def test_reader_settings_vertical_switch_is_independent_from_reading_direction(q
 
 def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
-    window = MainWindow(context)
+    launch_requests: list[object] = []
+    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
     qtbot.addWidget(window)
     book = context.shelf_viewmodel.books[0]
 
@@ -659,7 +662,7 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 
     assert window._embedded_reader is not None
     assert not window._embedded_reader.header.back_button.isHidden()
-    assert not window._reader_windows
+    assert launch_requests == []
 
     window.close()
     context.close()
@@ -668,22 +671,23 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
-    window = MainWindow(context)
-    qtbot.addWidget(window)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
     book = context.shelf_viewmodel.books[0]
 
     window.open_reader_for_book(book.uuid)
 
     assert window._embedded_reader is None
-    assert len(window._reader_windows) == 1
-    reader = window._reader_windows[0]
+    assert len(manager.reader_windows) == 1
+    reader = manager.reader_windows[0]
     assert reader.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     assert not reader.header.back_button.isVisible()
 
     reader.close()
     qtbot.wait(0)
-    assert window._reader_windows == []
+    assert manager.reader_windows == ()
     window.close()
+    qtbot.wait(0)
     context.close()
 
 
@@ -801,20 +805,48 @@ def test_main_window_missing_book_dialog_cancel_keeps_book(qtbot, tmp_path: Path
     context.close()
 
 
-def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
+def test_main_window_close_keeps_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
-    window = MainWindow(context)
-    qtbot.addWidget(window)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
     book = context.shelf_viewmodel.books[0]
 
     window.open_reader_for_book(book.uuid)
-    assert len(window._reader_windows) == 1
+    assert len(manager.reader_windows) == 1
+    reader = manager.reader_windows[0]
 
     window.close()
     qtbot.wait(0)
 
-    assert window._reader_windows == []
+    assert manager.main_window is None
+    assert manager.reader_windows == (reader,)
+    assert reader.isVisible()
+    reader.close()
+    qtbot.wait(0)
+    context.close()
+
+
+def test_rebuilt_main_drops_error_subscribers_from_deleted_window(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    manager = ApplicationWindowManager(context)
+    first = manager.show_library()
+
+    first.close()
+    qtbot.waitUntil(lambda: not shiboken6.isValid(first), timeout=1000)
+    second = manager.show_library()
+
+    context.shelf_viewmodel.delete_failed.emit("Delete failed after Main rebuild.")
+
+    assert not second.dialog_overlay.isHidden()
+    assert second.dialog_overlay.panel.title_text == "Delete Failed"
+
+    second.close()
+    qtbot.wait(0)
     context.close()
 
 

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from os import environ
 from pathlib import Path
 
 from joyread.core.archive import ArchiveImageService
@@ -36,8 +35,11 @@ from joyread.core.services.tag_service import TagService
 from joyread.core.services.task_service import TaskService
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
-from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
-from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
+from joyread.infrastructure.config.settings_store import (
+    AppSettings,
+    SettingsStore,
+    create_environment_settings_store,
+)
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
@@ -283,17 +285,17 @@ class AppContext:
         self.cache_service.archive_extraction_pool = self.archive_extraction_pool
 
 
-def create_app_context(recovery_prompt: RecoveryPrompt | None = None) -> AppContext:
+def create_app_context(
+    recovery_prompt: RecoveryPrompt | None = None,
+    *,
+    config: AppConfig | None = None,
+    settings_store: SettingsStore | None = None,
+) -> AppContext:
     logger.info("Creating AppContext")
-    config = AppConfig()
-    runtime_override = environ.get("JOYREAD_RUNTIME_DIR")
-    support_root = Path(runtime_override) / ".joyread_support" if runtime_override else None
-    default_storage_root = Path(runtime_override) / LIBRARY_DIRECTORY_NAME if runtime_override else None
-    settings_store = SettingsStore(
+    config = config or AppConfig()
+    settings_store = settings_store or create_environment_settings_store(
         config.app_name,
         config.app_author,
-        support_root=support_root,
-        default_storage_root=default_storage_root,
     )
     # Resolve the storage root before anything is built: first-run init,
     # daily health check, and recovery all happen here so the rest of the

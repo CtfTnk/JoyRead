@@ -17,6 +17,8 @@ dependencies = [
     "rarfile>=4.2",
     "lxml>=5.0",
     "natsort>=8.4",
+    "pyobjc-core>=12.2.1,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=12.2.1,<13; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]

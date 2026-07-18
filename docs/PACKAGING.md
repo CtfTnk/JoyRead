@@ -92,11 +92,23 @@ A public macOS build still needs:
 5. A clean-machine Gatekeeper test.
 
 The macOS bundle registers JoyRead as an alternate viewer for supported manga
-archives and PDF files. The Qt `QFileOpenEvent` bridge handles Finder
-Open With requests both during startup and while JoyRead is already running.
+archives and PDF files. Qt `QFileOpenEvent` handles Finder Open With requests;
+the conditional PyObjC Cocoa dependency handles the exact Dock/Finder reopen
+Apple Event without treating Cmd-Tab activation as a Library request.
 After rebuilding, launch the new app once (or register it with Launch Services)
 before checking the Finder Open With list; registrations from an older bundle
 can remain cached temporarily.
+
+JoyRead is single-instance per OS user and support profile. A later process
+forwards all supported document paths to the existing process through a
+user-only local socket and exits before opening SQLite or caches. Include these
+cases in every packaged-app smoke test:
+
+- Reader A, then Open With B: both Readers remain open.
+- Reader A, then reopen JoyRead: Main appears and A remains open.
+- Main, then Open With A: Main remains and A opens once.
+- Main, then reopen JoyRead: the existing Main is focused.
+- Close Main while a Reader is open, then reopen JoyRead: Main is rebuilt.
 
 The app does not technically need to live in `/Applications`: launching it or
 registering it explicitly is enough for local builds. Public distributions
@@ -108,7 +120,7 @@ or deleted build directory.
 
 - Commit and tag the exact source used for the build.
 - Confirm `pyproject.toml` version and release notes.
-- Include the JoyRead license, font OFL, and 7-Zip license.
+- Include the JoyRead license, third-party notices, font OFL, and 7-Zip license.
 - Run tests and smoke tests on every advertised platform.
 - Verify writable data is outside the installation directory.
 - Record known limitations in the release notes.

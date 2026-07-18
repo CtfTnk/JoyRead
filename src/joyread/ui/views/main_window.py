@@ -6,11 +6,12 @@ import logging
 from collections.abc import Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext
+from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
@@ -21,9 +22,7 @@ from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
 from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
-from joyread.ui.views.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_shell import ReaderShellWidget
-from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
@@ -52,10 +51,17 @@ def _is_shelved_epub(path: Path) -> bool:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, context: AppContext) -> None:
+    closed = QtSignal()
+
+    def __init__(
+        self,
+        context: AppContext,
+        *,
+        standalone_reader_launcher: StandaloneReaderLauncher | None = None,
+    ) -> None:
         super().__init__()
         self._context = context
-        self._reader_windows: list[ReaderWindow | NovelReaderWindow] = []
+        self._standalone_reader_launcher = standalone_reader_launcher
         self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
         self._cover_editor_book_uuid: str | None = None
         self._cover_editor_thumbnail_viewmodel = CoverEditorThumbnailViewModel(
@@ -68,6 +74,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         self.resize(Theme.window_width, Theme.window_height)
         self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
 
@@ -175,9 +182,7 @@ class MainWindow(QMainWindow):
         # into the ShelfViewModel and re-render the sidebar so the Hidden
         # row + hidable collections appear/disappear in lockstep.
         context.settings_viewmodel.hidden_space_changed.connect(self._handle_hidden_space_changed)
-        context.settings_viewmodel.hidden_space_error.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.hidden_space_title"), message)
-        )
+        context.settings_viewmodel.hidden_space_error.connect(self._show_hidden_space_error)
         context.settings_viewmodel.language_changed.connect(self._on_language_changed)
         context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         # Shelf clicks travel through the viewmodel (book_card →
@@ -190,28 +195,14 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.book_open_requested.connect(self.open_reader_for_book)
         context.shelf_viewmodel.book_open_at_requested.connect(self.open_reader_for_book_at)
         context.shelf_viewmodel.missing_book_requested.connect(self._show_missing_book_dialog)
-        context.shelf_viewmodel.delete_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.delete_failed_title"), message)
-        )
-        context.shelf_viewmodel.favourite_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.favourite_failed_title"), message)
-        )
-        context.shelf_viewmodel.book_metadata_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.book_detail_title"), message)
-        )
+        context.shelf_viewmodel.delete_failed.connect(self._show_delete_failed)
+        context.shelf_viewmodel.favourite_failed.connect(self._show_favourite_failed)
+        context.shelf_viewmodel.book_metadata_failed.connect(self._show_book_metadata_failed)
         context.shelf_viewmodel.book_cover_updated.connect(self._handle_book_cover_updated)
-        context.shelf_viewmodel.book_cover_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.cover_editor_title"), message)
-        )
-        context.shelf_viewmodel.book_tags_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.book_tags_title"), message)
-        )
-        context.shelf_viewmodel.collection_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.collection_title"), message)
-        )
-        context.shelf_viewmodel.remove_failed.connect(
-            lambda message: self.dialog_overlay.show_info(t("dialog.remove_failed_title"), message)
-        )
+        context.shelf_viewmodel.book_cover_failed.connect(self._show_book_cover_failed)
+        context.shelf_viewmodel.book_tags_failed.connect(self._show_book_tags_failed)
+        context.shelf_viewmodel.collection_failed.connect(self._show_collection_failed)
+        context.shelf_viewmodel.remove_failed.connect(self._show_remove_failed)
         context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
@@ -434,14 +425,14 @@ class MainWindow(QMainWindow):
         title: str | None = None,
         start_page_index: int | None = None,
     ) -> None:  # noqa: ANN001
-        logger.debug("Showing reader window path=%s book=%s start_page=%s", path, getattr(book, "uuid", None), start_page_index)
-        reader = ReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
-        reader.progress_changed.connect(self._handle_reader_progress_changed)
-        reader.closed.connect(lambda reader=reader: self._forget_reader_window(reader))
-        reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
-        self._reader_windows.append(reader)
-        reader.show()
-        reader.raise_()
+        self._launch_standalone_reader(
+            StandaloneReaderRequest(
+                path=path,
+                book=book,
+                title=title,
+                start_page_index=start_page_index,
+            )
+        )
 
     def _show_embedded_reader(self, path: Path, *, book, start_page_index: int | None = None) -> None:  # noqa: ANN001
         root = self.centralWidget()
@@ -475,13 +466,14 @@ class MainWindow(QMainWindow):
         title: str | None = None,
         start_page_index: int | None = None,
     ) -> None:  # noqa: ANN001
-        reader = NovelReaderWindow(self._context, path, book=book, title=title, start_page_index=start_page_index)
-        reader.progress_changed.connect(self._handle_reader_progress_changed)
-        reader.closed.connect(lambda reader=reader: self._forget_reader_window(reader))
-        reader.destroyed.connect(lambda _obj=None, reader=reader: self._forget_reader_window(reader))
-        self._reader_windows.append(reader)
-        reader.show()
-        reader.raise_()
+        self._launch_standalone_reader(
+            StandaloneReaderRequest(
+                path=path,
+                book=book,
+                title=title,
+                start_page_index=start_page_index,
+            )
+        )
 
     def _show_embedded_novel_reader(
         self,
@@ -527,15 +519,21 @@ class MainWindow(QMainWindow):
             self._resize_grip.show()
             self._resize_grip.raise_()
 
-    def _forget_reader_window(self, reader: ReaderWindow | NovelReaderWindow) -> None:
-        if reader in self._reader_windows:
-            self._reader_windows.remove(reader)
-            logger.debug("Reader window forgotten active=%d", len(self._reader_windows))
+    def _launch_standalone_reader(self, request: StandaloneReaderRequest) -> None:
+        launcher = self._standalone_reader_launcher
+        if launcher is None:
+            raise RuntimeError("MainWindow requires a standalone reader launcher for window mode.")
+        logger.debug(
+            "Requesting standalone reader path=%s book=%s start_page=%s",
+            request.path,
+            getattr(request.book, "uuid", None),
+            request.start_page_index,
+        )
+        launcher(request)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._close_embedded_reader()
-        for reader in tuple(self._reader_windows):
-            reader.close()
+        self.closed.emit()
         super().closeEvent(event)
 
     def _handle_reader_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
@@ -546,6 +544,30 @@ class MainWindow(QMainWindow):
             progress_percent,
         )
         self._context.shelf_viewmodel.apply_reader_progress(book_uuid, page_index, progress_percent)
+
+    def _show_hidden_space_error(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.hidden_space_title"), message)
+
+    def _show_delete_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.delete_failed_title"), message)
+
+    def _show_favourite_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.favourite_failed_title"), message)
+
+    def _show_book_metadata_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.book_detail_title"), message)
+
+    def _show_book_cover_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.cover_editor_title"), message)
+
+    def _show_book_tags_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.book_tags_title"), message)
+
+    def _show_collection_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.collection_title"), message)
+
+    def _show_remove_failed(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("dialog.remove_failed_title"), message)
 
     def _settings_for_reader_launch(self):
         self._context.settings = self._context.settings_store.load()
