@@ -83,6 +83,23 @@ class CoverEditorThumbnailViewModel:
     def refresh(self) -> None:
         self._stream.refresh()
 
+    def invalidate_source(self) -> None:
+        """Discard an open picker source after the archive policy changes."""
+
+        book = self._book
+        if book is None:
+            return
+        self._generation += 1
+        if self._source_task is not None:
+            self._source_task.cancel()
+        self._source_task = None
+        self._source = None
+        self._stream.cancel()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._warmup_client_id)
+        self.source_ready.emit(book.uuid, 0)
+        self._open_source()
+
     def cancel(self) -> None:
         self._generation += 1
         if self._source_task is not None:
@@ -168,7 +185,6 @@ class CoverEditorThumbnailViewModel:
         coordinator.acquire(
             source.source_path,
             self._warmup_client_id,
-            nested_depth=source.nested_archive_max_depth,
-            global_depth=source.archive_global_file_max_depth,
+            limits=source.archive_limits,
             on_ready=self._stream.refresh,
         )

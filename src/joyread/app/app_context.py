@@ -6,7 +6,8 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from joyread.core.archive import ArchiveImageService
+from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
+from joyread.core.archive.limits import GIB, MEGAPIXEL
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
@@ -151,11 +152,18 @@ class AppContext:
         self.reload_storage_from_settings()
 
     def apply_archive_depth_settings(self) -> None:
+        """Compatibility entrypoint for older callers of depth-only settings."""
+
+        self.apply_archive_open_limits()
+
+    def apply_archive_open_limits(self) -> None:
         self.settings = self.settings_store.load()
-        self.thumbnail_service.set_archive_depth_limits(
-            self.settings.nested_archive_max_depth,
-            self.settings.archive_global_file_max_depth,
-        )
+        limits = _archive_open_limits_from_settings(self.settings)
+        self.thumbnail_service.set_archive_open_limits(limits)
+        self.import_service.set_archive_open_limits(limits)
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.invalidate()
+        self.shelf_viewmodel.invalidate_detail_thumbnail_source()
 
     def reload_storage_from_settings(self) -> None:
         # Rebuild every storage-rooted service in the right order: settings →
@@ -188,6 +196,7 @@ class AppContext:
             self.reader_session_service,
             nested_archive_max_depth=self.settings.nested_archive_max_depth,
             archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
+            archive_limits=_archive_open_limits_from_settings(self.settings),
         )
         self.import_service = ImportService(
             self.paths,
@@ -196,6 +205,7 @@ class AppContext:
             self.hash_service,
             self.settings.hash_algorithm,
             tag_service=self.tag_service,
+            archive_limits=_archive_open_limits_from_settings(self.settings),
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -242,6 +252,7 @@ class AppContext:
                 self.reader_session_service,
                 nested_archive_max_depth=self.settings.nested_archive_max_depth,
                 archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
+                archive_limits=_archive_open_limits_from_settings(self.settings),
             )
             self.import_service = ImportService(
                 self.paths,
@@ -250,6 +261,7 @@ class AppContext:
                 self.hash_service,
                 self.settings.hash_algorithm,
                 tag_service=self.tag_service,
+                archive_limits=_archive_open_limits_from_settings(self.settings),
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -340,6 +352,7 @@ def create_app_context(
         hash_service,
         settings.hash_algorithm,
         tag_service=tag_service,
+        archive_limits=_archive_open_limits_from_settings(settings),
     )
     export_service = ExportService(book_repository, hash_service)
     thumbnail_service = ThumbnailService(
@@ -349,6 +362,7 @@ def create_app_context(
         reader_session_service,
         nested_archive_max_depth=settings.nested_archive_max_depth,
         archive_global_file_max_depth=settings.archive_global_file_max_depth,
+        archive_limits=_archive_open_limits_from_settings(settings),
     )
     hidden_space_service = HiddenSpaceService(settings_store, library_service)
     main_window_viewmodel = MainWindowViewModel()
@@ -404,7 +418,7 @@ def create_app_context(
     # connection in AppContext keeps the viewmodel UI-only and makes the side
     # effects (resize/clear) easy to find from one place.
     settings_viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
-    settings_viewmodel.archive_depth_limits_changed.connect(context.apply_archive_depth_settings)
+    settings_viewmodel.archive_open_limits_changed.connect(context.apply_archive_open_limits)
     settings_viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
     logger.info(
         "AppContext ready (storage=%s, workers=%d, archive_cache_strategy=%s)",
@@ -450,4 +464,36 @@ def _create_sqlite_book_repository(database: DatabaseInterpreter, paths: PathSer
         resolver=paths.resolver,
         managed_books_root=paths.paths.books,
         thumbnails_root=paths.paths.thumbnails,
+    )
+
+
+def _archive_open_limits_from_settings(settings: AppSettings) -> ArchiveOpenLimits:
+    """Translate persisted settings once at the application composition root."""
+
+    guardrails_enabled = bool(settings.archive_resource_guardrails_enabled)
+
+    def resource_limit(value: int, multiplier: int) -> int | None:
+        if not guardrails_enabled or int(value) == -1:
+            return None
+        return int(value) * multiplier
+
+    return ArchiveOpenLimits(
+        nested_archive_max_depth=(
+            None if settings.nested_archive_max_depth == -1 else settings.nested_archive_max_depth
+        ),
+        global_file_max_depth=(
+            None if settings.archive_global_file_max_depth == -1 else settings.archive_global_file_max_depth
+        ),
+        max_source_bytes=(
+            settings.archive_max_source_size_gb * GIB
+            if settings.archive_max_source_size_enabled
+            else None
+        ),
+        max_extracted_item_bytes=resource_limit(settings.archive_max_extracted_item_gb, GIB),
+        max_operation_bytes=resource_limit(settings.archive_max_operation_data_gb, GIB),
+        max_image_pixels=resource_limit(settings.archive_max_image_megapixels, MEGAPIXEL),
+        external_command_timeout_seconds=resource_limit(
+            settings.archive_external_command_timeout_seconds,
+            1,
+        ),
     )

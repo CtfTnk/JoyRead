@@ -11,6 +11,7 @@ from joyread.core.archive import (
     ArchiveEmptyError,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
+    ArchiveResourceLimitError,
 )
 from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage, ReaderSettings
@@ -811,6 +812,19 @@ def test_reader_viewmodel_reports_password_cancel_as_undecrypted_archive(tmp_pat
     assert errors == ["Could not load images because the archive is encrypted and no password was provided."]
     assert viewmodel.error_message == errors[0]
     assert viewmodel.is_loading is False
+
+
+def test_reader_viewmodel_localizes_resource_limit_error_without_member_details(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+    sensitive_member = "private/secret-page.png"
+
+    viewmodel._handle_open_failure(
+        viewmodel._task_generation,
+        ArchiveResourceLimitError("image_pixels", subject=sensitive_member),
+    )
+
+    assert viewmodel.error_message == "This archive exceeds the current resource limits."
+    assert sensitive_member not in viewmodel.error_message
 
 
 def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) -> None:

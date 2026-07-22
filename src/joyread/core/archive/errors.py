@@ -45,3 +45,29 @@ class ArchivePasswordRejected(ArchiveError):
 
 class ArchiveDependencyMissing(ArchiveError):
     """An optional archive backend dependency is unavailable."""
+
+
+class ArchiveResourceLimitError(ArchiveError):
+    """A configured archive resource budget was exceeded.
+
+    The structured fields let import and reader surfaces provide a useful,
+    localized error without exposing command lines, passwords, or raw backend
+    diagnostics.
+    """
+
+    def __init__(
+        self,
+        limit: str,
+        *,
+        actual: int | None = None,
+        maximum: int | None = None,
+        subject: str | None = None,
+    ) -> None:
+        self.limit = limit
+        self.actual = actual
+        self.maximum = maximum
+        self.subject = subject
+        # User-facing layers map this structured error to localized text. Keep
+        # the exception string generic so an incidental fallback cannot expose
+        # archive paths, member names, passwords, or backend diagnostics.
+        super().__init__("Archive resource limit exceeded.")

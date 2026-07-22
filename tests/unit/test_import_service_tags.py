@@ -8,7 +8,7 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
 
-from joyread.core.archive import ArchiveImageService
+from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits, ArchiveValidationCode
 from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
@@ -43,6 +43,22 @@ def _make_services(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter, 
         tag_service=tag_service,
     )
     return service, database, paths, tag_service
+
+
+def test_import_preflight_preserves_archive_resource_limit_code(tmp_path: Path) -> None:
+    service, database, _paths, _tag_service = _make_services(tmp_path)
+    try:
+        source = tmp_path / "too-large.cbz"
+        _write_cbz(source)
+        service.set_archive_open_limits(ArchiveOpenLimits(max_source_bytes=1))
+
+        result = service.preflight_file(source)
+
+        assert result.can_import is False
+        assert result.status == "failed"
+        assert result.archive_validation_code == ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED
+    finally:
+        database.close()
 
 
 def test_import_manifest_creates_and_links_tags(tmp_path: Path) -> None:

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 
+from joyread.core.archive import ArchiveOpenLimits
 from joyread.core.reader import ReaderSessionService
 from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskService
 
@@ -18,8 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _WarmupState:
     path: Path
-    nested_depth: int
-    global_depth: int
+    limits: ArchiveOpenLimits
     callbacks: dict[str, Callable[[], None]] = field(default_factory=dict)
     handle: TaskHandle[None] | None = None
 
@@ -39,14 +39,23 @@ class ArchiveWarmupCoordinator:
         source_path: Path,
         client_id: str,
         *,
-        nested_depth: int,
-        global_depth: int,
         on_ready: Callable[[], None],
+        nested_depth: int | None = None,
+        global_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
     ) -> None:
-        key = self._source_key(source_path, nested_depth, global_depth)
+        effective_limits = limits or ArchiveOpenLimits(
+            nested_archive_max_depth=(
+                2 if nested_depth is None else _core_depth_limit(nested_depth)
+            ),
+            global_file_max_depth=(
+                100 if global_depth is None else _core_depth_limit(global_depth)
+            ),
+        )
+        key = self._source_key(source_path, effective_limits)
         state = self._states.get(key)
         if state is None:
-            state = _WarmupState(Path(source_path), int(nested_depth), int(global_depth))
+            state = _WarmupState(Path(source_path), effective_limits)
             self._states[key] = state
             self._queue.append(key)
         state.callbacks[client_id] = on_ready
@@ -55,6 +64,24 @@ class ArchiveWarmupCoordinator:
     def release(self, client_id: str) -> None:
         for state in self._states.values():
             state.callbacks.pop(client_id, None)
+
+    def invalidate(self) -> None:
+        """Retire warmups created under an older archive-limits snapshot.
+
+        Active workers are intentionally not force-cancelled: TaskService
+        suppresses completion callbacks for cancelled tasks, which would leave
+        the coordinator thinking that the worker still owns the sole warmup
+        slot. Clearing its consumers makes ``is_cancelled`` true and lets the
+        archive reader stop at its next chunk boundary, then normal completion
+        releases the slot for the replacement policy.
+        """
+
+        active_key = self._active_key
+        for key, state in tuple(self._states.items()):
+            state.callbacks.clear()
+            if key != active_key:
+                self._states.pop(key, None)
+        self._queue.clear()
 
     def close(self) -> None:
         for state in self._states.values():
@@ -78,13 +105,27 @@ class ArchiveWarmupCoordinator:
             self._active_key = key
 
             def work(key: str = key, state: _WarmupState = state) -> None:
-                self._session_service.warm_disk_cache(
-                    state.path,
-                    nested_archive_max_depth=state.nested_depth,
-                    archive_global_file_max_depth=state.global_depth,
-                    chunk_size=8,
-                    is_cancelled=lambda key=key: not self._has_consumers(key),
-                )
+                try:
+                    self._session_service.warm_disk_cache(
+                        state.path,
+                        limits=state.limits,
+                        chunk_size=8,
+                        is_cancelled=lambda key=key: not self._has_consumers(key),
+                    )
+                except TypeError as exc:
+                    if "limits" not in str(exc):
+                        raise
+                    self._session_service.warm_disk_cache(
+                        state.path,
+                        nested_archive_max_depth=_legacy_depth_limit(
+                            state.limits.nested_archive_max_depth
+                        ),
+                        archive_global_file_max_depth=_legacy_depth_limit(
+                            state.limits.global_file_max_depth
+                        ),
+                        chunk_size=8,
+                        is_cancelled=lambda key=key: not self._has_consumers(key),
+                    )
 
             kwargs = {
                 "on_success": lambda _result, key=key: self._finish(key, notify=True),
@@ -122,10 +163,19 @@ class ArchiveWarmupCoordinator:
         return state is not None and bool(state.callbacks)
 
     @staticmethod
-    def _source_key(source_path: Path, nested_depth: int, global_depth: int) -> str:
+    def _source_key(source_path: Path, limits: ArchiveOpenLimits) -> str:
         try:
             stat = source_path.stat()
             signature = f"{stat.st_mtime_ns}:{stat.st_size}"
         except OSError:
             signature = "missing"
-        return f"{source_path.resolve(strict=False)}:{signature}:{nested_depth}:{global_depth}"
+        return f"{source_path.resolve(strict=False)}:{signature}:{limits.cache_signature()}"
+
+
+def _core_depth_limit(value: object) -> int | None:
+    depth = int(value)
+    return None if depth == -1 else depth
+
+
+def _legacy_depth_limit(value: int | None) -> int:
+    return -1 if value is None else value

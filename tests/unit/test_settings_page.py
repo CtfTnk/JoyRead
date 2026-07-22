@@ -4,6 +4,7 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.app.app_context import create_app_context
+from joyread.core.archive.limits import GIB, MEGAPIXEL
 from joyread.core.models.cache import ArchiveCacheStrategy
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
@@ -45,6 +46,13 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_import_folder_max_depth(3)
     viewmodel.set_nested_archive_max_depth(4)
     viewmodel.set_archive_global_file_max_depth(250)
+    viewmodel.set_archive_max_source_size_enabled(False)
+    viewmodel.set_archive_max_source_size_gb(12)
+    viewmodel.set_archive_resource_guardrails_enabled(False)
+    viewmodel.set_archive_max_extracted_item_gb(8)
+    viewmodel.set_archive_max_operation_data_gb(32)
+    viewmodel.set_archive_max_image_megapixels(800)
+    viewmodel.set_archive_external_command_timeout_seconds(900)
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
@@ -56,7 +64,14 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.import_folder_max_depth == 3
     assert viewmodel.nested_archive_max_depth == 4
     assert viewmodel.archive_global_file_max_depth == 250
-    assert len(changes) == 9
+    assert viewmodel.archive_max_source_size_enabled is False
+    assert viewmodel.archive_max_source_size_gb == 12
+    assert viewmodel.archive_resource_guardrails_enabled is False
+    assert viewmodel.archive_max_extracted_item_gb == 8
+    assert viewmodel.archive_max_operation_data_gb == 32
+    assert viewmodel.archive_max_image_megapixels == 800
+    assert viewmodel.archive_external_command_timeout_seconds == 900
+    assert len(changes) == 16
 
 
 def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinels() -> None:
@@ -69,6 +84,8 @@ def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinel
 
     assert viewmodel.nested_archive_max_depth == -1
     assert viewmodel.archive_global_file_max_depth == -1
+    assert viewmodel.archive_open_limits.nested_archive_max_depth is None
+    assert viewmodel.archive_open_limits.global_file_max_depth is None
 
     viewmodel.set_nested_archive_max_depth(0)
     viewmodel.set_archive_global_file_max_depth(-2)
@@ -76,6 +93,46 @@ def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinel
     assert viewmodel.nested_archive_max_depth == -1
     assert viewmodel.archive_global_file_max_depth == -1
     assert len(depth_changes) == 2
+
+
+def test_settings_viewmodel_converts_archive_guardrails_to_none_without_losing_values() -> None:
+    viewmodel = SettingsViewModel()
+    limit_changes: list[None] = []
+    viewmodel.archive_open_limits_changed.connect(lambda: limit_changes.append(None))
+
+    viewmodel.set_archive_max_source_size_gb(9)
+    viewmodel.set_archive_max_extracted_item_gb(-1)
+    viewmodel.set_archive_max_operation_data_gb(12)
+    viewmodel.set_archive_max_image_megapixels(250)
+    viewmodel.set_archive_external_command_timeout_seconds(45)
+
+    limits = viewmodel.archive_open_limits
+    assert limits.max_source_bytes == 9 * GIB
+    assert limits.max_extracted_item_bytes is None
+    assert limits.max_operation_bytes == 12 * GIB
+    assert limits.max_image_pixels == 250 * MEGAPIXEL
+    assert limits.external_command_timeout_seconds == 45
+
+    viewmodel.set_archive_resource_guardrails_enabled(False)
+    disabled = viewmodel.archive_open_limits
+    assert disabled.max_source_bytes == 9 * GIB
+    assert disabled.max_extracted_item_bytes is None
+    assert disabled.max_operation_bytes is None
+    assert disabled.max_image_pixels is None
+    assert disabled.external_command_timeout_seconds is None
+    assert viewmodel.archive_max_operation_data_gb == 12
+
+    viewmodel.set_archive_resource_guardrails_enabled(True)
+    restored = viewmodel.archive_open_limits
+    assert restored.max_operation_bytes == 12 * GIB
+    assert restored.max_image_pixels == 250 * MEGAPIXEL
+    assert restored.external_command_timeout_seconds == 45
+
+    viewmodel.set_archive_max_operation_data_gb(0)
+    viewmodel.set_archive_max_image_megapixels(-2)
+    assert viewmodel.archive_max_operation_data_gb == 12
+    assert viewmodel.archive_max_image_megapixels == 250
+    assert len(limit_changes) == 7
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -133,10 +190,10 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
     # Four General rows (Storage moved to Privacy), three Import depth rows,
-    # and five Cache rows.
-    assert len(setting_items) == 12
+    # seven Archive rows, and five Cache rows.
+    assert len(setting_items) == 19
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 6
+    assert len(spin_buttons) == 11
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
 
@@ -157,7 +214,7 @@ def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
 
     assert "Use Native Title Control" not in labels
     assert "Inspect Windows/Linux Title Control" in labels
-    assert len(switches) == 3
+    assert len(switches) == 5
 
     inspect_item = next(
         item
@@ -466,6 +523,64 @@ def test_settings_store_migrates_legacy_archive_depth_and_persists_new_keys(tmp_
     assert saved["nested_archive_max_depth"] == -1
     assert saved["archive_global_file_max_depth"] == 100
     assert "archive_internal_max_depth" not in saved
+
+
+def test_settings_store_defaults_and_persists_archive_guardrail_values(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_max_source_size_enabled": False,
+                "archive_max_source_size_gb": 14,
+                "archive_resource_guardrails_enabled": True,
+                "archive_max_extracted_item_gb": -1,
+                "archive_max_operation_data_gb": 63,
+                "archive_max_image_megapixels": 999,
+                "archive_external_command_timeout_seconds": -1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+
+    assert settings.archive_max_source_size_enabled is False
+    assert settings.archive_max_source_size_gb == 14
+    assert settings.archive_resource_guardrails_enabled is True
+    assert settings.archive_max_extracted_item_gb == -1
+    assert settings.archive_max_operation_data_gb == 63
+    assert settings.archive_max_image_megapixels == 999
+    assert settings.archive_external_command_timeout_seconds == -1
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["archive_max_source_size_enabled"] is False
+    assert saved["archive_max_source_size_gb"] == 14
+    assert saved["archive_resource_guardrails_enabled"] is True
+    assert saved["archive_max_extracted_item_gb"] == -1
+    assert saved["archive_max_operation_data_gb"] == 63
+    assert saved["archive_max_image_megapixels"] == 999
+    assert saved["archive_external_command_timeout_seconds"] == -1
+
+    legacy_store = SettingsStore(
+        support_root=tmp_path / "legacy-support",
+        default_storage_root=tmp_path / "legacy-storage",
+    )
+    legacy_store.config_dir.mkdir(parents=True)
+    legacy_store.settings_path.write_text(
+        json.dumps({"storage_location": str(tmp_path / "legacy-storage")}),
+        encoding="utf-8",
+    )
+    defaults = legacy_store.load()
+    assert defaults.archive_max_source_size_enabled is True
+    assert defaults.archive_max_source_size_gb == 5
+    assert defaults.archive_resource_guardrails_enabled is True
+    assert defaults.archive_max_extracted_item_gb == 1
+    assert defaults.archive_max_operation_data_gb == 4
+    assert defaults.archive_max_image_megapixels == 400
+    assert defaults.archive_external_command_timeout_seconds == 300
 
 
 def test_settings_store_migrates_thumbnail_cache_key_and_viewmodel_persists_new_name(tmp_path) -> None:

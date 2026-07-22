@@ -1124,6 +1124,24 @@ class ShelfViewModel:
         if self.detail_book_uuid == book_uuid and self._detail_stream is not None:
             self._detail_stream.refresh()
 
+    def invalidate_detail_thumbnail_source(self) -> None:
+        """Reopen an active Detail source after archive policy changes."""
+
+        book_uuid = self.detail_book_uuid
+        if book_uuid is None:
+            return
+        if self._detail_source_task is not None:
+            self._detail_source_task.cancel()
+        self._detail_source_task = None
+        self._detail_source_handle = None
+        self._detail_load_token += 1
+        if self._detail_stream is not None:
+            self._detail_stream.cancel()
+        if self._archive_warmup_coordinator is not None:
+            self._archive_warmup_coordinator.release(self._detail_warmup_client_id)
+        self.detail_thumbnail_source_ready.emit(book_uuid, 0)
+        self.prepare_detail_thumbnail_source(book_uuid, self._detail_thumbnail_size)
+
     def _book_in_current_shelf(self, book: Book) -> bool:
         if self.current_shelf == ShelfKey.HIDDEN:
             # The Hidden shelf is the only built-in surface that shows
@@ -1396,8 +1414,7 @@ class ShelfViewModel:
         coordinator.acquire(
             source.source_path,
             self._detail_warmup_client_id,
-            nested_depth=source.nested_archive_max_depth,
-            global_depth=source.archive_global_file_max_depth,
+            limits=source.archive_limits,
             on_ready=lambda: self._detail_stream.refresh() if self._detail_stream is not None else None,
         )
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 from pathlib import Path
+import subprocess
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import py7zr
@@ -19,11 +20,16 @@ from joyread.core.archive import (
     ArchivePasswordRequired,
     ArchivePasswordPolicy,
     ArchivePasswordResponse,
+    ArchiveOpenLimits,
+    ArchiveResourceLimitError,
     ArchiveUnsupportedFormat,
     ArchiveValidationCode,
     ExtractionBackendResolver,
 )
 from joyread.core.archive.backends import SEVEN_ZIP_ENV_VAR
+from joyread.core.archive.formats import common as archive_common
+from joyread.core.archive.limits import ArchiveOperationBudget
+from joyread.core.archive.scanner import SCANNER_SCHEMA_VERSION
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 
 
@@ -46,6 +52,31 @@ def _zip_bytes(entries: dict[str, bytes]) -> bytes:
         for name, data in entries.items():
             archive.writestr(name, data)
     return buffer.getvalue()
+
+
+class _FakePopen:
+    """Small Popen stand-in for bounded external-extractor tests."""
+
+    def __init__(
+        self,
+        *,
+        stdout_target: object,
+        stderr_target: object,
+        stdout_data: bytes = b"",
+        stderr_data: bytes = b"",
+        returncode: int = 0,
+    ) -> None:
+        self.stdout = BytesIO(stdout_data) if stdout_target == subprocess.PIPE else None
+        self.stderr = BytesIO(stderr_data) if stderr_target == subprocess.PIPE else None
+        self._returncode = returncode
+        self.killed = False
+
+    def wait(self, timeout: float | None = None) -> int:
+        del timeout
+        return self._returncode
+
+    def kill(self) -> None:
+        self.killed = True
 
 
 def _encrypted_cbz_bytes(password: str = "secret", image_size: tuple[int, int] = (32, 16)) -> bytes:
@@ -279,6 +310,139 @@ def test_legacy_max_depth_alias_targets_nested_archives_and_rejects_conflicts(tm
         ArchiveImageService().open(archive_path, max_depth=1, max_nested_depth=2)
 
 
+def test_explicit_archive_limits_reject_conflicting_legacy_depth_parameters(tmp_path: Path) -> None:
+    archive_path = tmp_path / "limits-alias.cbz"
+    _write_zip(archive_path, {"nested.cbz": _zip_bytes({"1.png": _png_bytes((10, 10))})})
+    limits = ArchiveOpenLimits(
+        nested_archive_max_depth=1,
+        global_file_max_depth=100,
+        max_source_bytes=None,
+        max_extracted_item_bytes=None,
+        max_operation_bytes=None,
+        max_image_pixels=None,
+        external_command_timeout_seconds=None,
+    )
+
+    assert ArchiveImageService().open(archive_path, limits=limits).page_count == 1
+    with pytest.raises(ValueError, match="must match"):
+        ArchiveImageService().open(archive_path, limits=limits, max_nested_depth=2)
+
+
+def test_archive_open_limits_use_none_not_negative_values_for_unlimited() -> None:
+    with pytest.raises(ValueError, match="max_source_bytes"):
+        ArchiveOpenLimits(max_source_bytes=-1)
+    with pytest.raises(ValueError, match="nested_archive_max_depth"):
+        ArchiveOpenLimits(nested_archive_max_depth=-1)
+
+    unlimited = ArchiveOpenLimits(
+        nested_archive_max_depth=None,
+        max_source_bytes=None,
+        max_extracted_item_bytes=None,
+        max_operation_bytes=None,
+        max_image_pixels=None,
+        external_command_timeout_seconds=None,
+    )
+
+    assert unlimited.nested_archive_max_depth is None
+    assert unlimited.max_source_bytes is None
+
+
+def test_rarfile_configuration_lock_is_shared_by_archive_service_instances() -> None:
+    assert ArchiveImageService()._rar_lock is ArchiveImageService()._rar_lock
+
+
+def test_archive_source_size_limit_rejects_before_scanning_and_validates_cleanly(tmp_path: Path) -> None:
+    archive_path = tmp_path / "too-large.cbz"
+    _write_zip(archive_path, {"1.png": _png_bytes((10, 10))})
+    limits = ArchiveOpenLimits(max_source_bytes=1)
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        ArchiveImageService().open(archive_path, limits=limits)
+
+    assert error.value.limit == "source_bytes"
+    validation = ArchiveImageService().validate_archive(archive_path, limits=limits)
+    assert validation.code == ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED
+    assert validation.error_type == ArchiveResourceLimitError.__name__
+
+
+def test_archive_declared_item_limit_rejects_before_page_materialization(tmp_path: Path) -> None:
+    archive_path = tmp_path / "large-entry.cbz"
+    _write_zip(archive_path, {"1.png": _png_bytes((40, 20))})
+    limits = ArchiveOpenLimits(
+        max_source_bytes=None,
+        max_extracted_item_bytes=1,
+        max_operation_bytes=None,
+        max_image_pixels=None,
+        external_command_timeout_seconds=None,
+    )
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        ArchiveImageService().open(archive_path, limits=limits)
+
+    assert error.value.limit == "extracted_item_bytes"
+
+
+def test_archive_page_read_enforces_cumulative_operation_budget(tmp_path: Path) -> None:
+    archive_path = tmp_path / "operation-budget.cbz"
+    _write_zip(
+        archive_path,
+        {
+            "1.png": _png_bytes((40, 20)),
+            "2.png": _png_bytes((40, 20)),
+        },
+    )
+    limits = ArchiveOpenLimits(
+        max_source_bytes=None,
+        max_extracted_item_bytes=None,
+        max_operation_bytes=1,
+        max_image_pixels=None,
+        external_command_timeout_seconds=None,
+    )
+    session = ArchiveImageService().open(archive_path, limits=limits)
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        session.get_pages((0, 1))
+
+    assert error.value.limit == "operation_bytes"
+
+
+def test_archive_image_pixels_are_checked_after_cache_hits(tmp_path: Path) -> None:
+    archive_path = tmp_path / "pixel-limit.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "1.png")
+    service = ArchiveImageService(page_cache_dir=tmp_path / "archive-pages")
+
+    assert service.open(archive_path).get_page(0) is not None
+    strict_limits = ArchiveOpenLimits(
+        max_source_bytes=None,
+        max_extracted_item_bytes=None,
+        max_operation_bytes=None,
+        max_image_pixels=1,
+        external_command_timeout_seconds=None,
+    )
+    strict_session = service.open(archive_path, limits=strict_limits)
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        strict_session.get_page(0)
+
+    assert error.value.limit == "image_pixels"
+
+
+def test_extraction_cache_signature_includes_scanner_schema_and_limits(tmp_path: Path) -> None:
+    archive_path = tmp_path / "signature.cbz"
+    _write_zip(archive_path, {"1.png": _png_bytes((10, 10))})
+    service = ArchiveImageService(page_cache_dir=tmp_path / "archive-pages")
+
+    default_session = service.open(archive_path)
+    relaxed_session = service.open(
+        archive_path,
+        limits=ArchiveOpenLimits(max_operation_bytes=None),
+    )
+
+    assert f"scanner-v{SCANNER_SCHEMA_VERSION}" in default_session._cache_signature
+    assert default_session._cache_signature != relaxed_session._cache_signature
+
+
 def test_archive_global_file_depth_counts_normal_folders_from_archive_root(tmp_path: Path) -> None:
     archive_path = tmp_path / "depth.cbz"
     _write_zip(
@@ -447,6 +611,25 @@ def test_7z_archive_reads_images(tmp_path: Path) -> None:
     assert [session.get_dimensions(index) for index in session.index_range] == [(40, 20), (60, 20)]
 
 
+def test_7z_writer_enforces_operation_budget_before_unbounded_buffering(tmp_path: Path) -> None:
+    archive_path = tmp_path / "budget.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+    limits = ArchiveOpenLimits(
+        max_source_bytes=None,
+        max_extracted_item_bytes=None,
+        max_operation_bytes=1,
+        max_image_pixels=None,
+        external_command_timeout_seconds=None,
+    )
+    session = ArchiveImageService().open(archive_path, limits=limits)
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        session.get_page(0)
+
+    assert error.value.limit == "operation_bytes"
+
+
 def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive_path = tmp_path / "sample.cb7"
     with py7zr.SevenZipFile(archive_path, "w") as archive:
@@ -455,22 +638,76 @@ def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytes
 
     service = ArchiveImageService(page_cache_dir=tmp_path / "archive_pages")
     session = service.open(archive_path)
-    original = service._read_7z_entries
+    original = service._seven_zip_backend.read_entries
     calls: list[tuple[str, ...]] = []
 
-    def counted_read(source, entries):  # noqa: ANN001
+    def counted_read(source, entries, **kwargs):  # noqa: ANN001
         calls.append(tuple(name for name, _password in entries))
-        return original(source, entries)
+        return original(source, entries, **kwargs)
 
-    monkeypatch.setattr(service, "_read_7z_entries", counted_read)
+    monkeypatch.setattr(service._seven_zip_backend, "read_entries", counted_read)
 
     pages = session.get_pages((0, 1))
     assert [page.dimensions if page is not None else None for page in pages] == [(40, 20), (60, 20)]
     assert calls == [("001.png", "002.png")]
+    assert service._page_cache.get(archive_path, "001.png") is None
+    assert service._page_cache.get(archive_path, session._cache_page_key(0)) is not None
 
     second_session = service.open(archive_path)
+    assert second_session.get_dimensions(0) == (40, 20)
     assert second_session.get_page(0) is not None
     assert calls == [("001.png", "002.png")]
+
+
+def test_extraction_cache_pages_are_scoped_to_the_limit_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    archive_path = tmp_path / "policy.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+    service = ArchiveImageService(page_cache_dir=tmp_path / "archive-pages")
+    default_session = service.open(archive_path)
+    assert default_session.get_page(0) is not None
+
+    original = service._seven_zip_backend.read_entries
+    calls: list[tuple[str, ...]] = []
+
+    def counted_read(source, entries, **kwargs):  # noqa: ANN001
+        calls.append(tuple(name for name, _password in entries))
+        return original(source, entries, **kwargs)
+
+    monkeypatch.setattr(service._seven_zip_backend, "read_entries", counted_read)
+    changed_policy = service.open(archive_path, limits=ArchiveOpenLimits(max_operation_bytes=None))
+
+    assert default_session._cache_page_key(0) != changed_policy._cache_page_key(0)
+    assert changed_policy.get_page(0) is not None
+    assert calls == [("001.png",)]
+
+
+def test_external_file_extraction_output_is_bounded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    output_dir = tmp_path / "unar-output"
+    output_dir.mkdir()
+    (output_dir / "extra.bin").write_bytes(b"too much")
+
+    monkeypatch.setattr(
+        archive_common.subprocess,
+        "Popen",
+        lambda _command, stdout=None, stderr=None: _FakePopen(
+            stdout_target=stdout,
+            stderr_target=stderr,
+        ),
+    )
+
+    with pytest.raises(ArchiveResourceLimitError) as error:
+        archive_common.run_archive_file_command(
+            ["unar"],
+            "page.png",
+            password=None,
+            timeout_seconds=None,
+            output_directory=output_dir,
+            max_output_bytes=1,
+            budget=ArchiveOperationBudget(1024),
+        )
+
+    assert error.value.limit == "extracted_item_bytes"
 
 
 def test_7z_thumbnail_access_switches_from_cold_batch_to_ready_single_page(tmp_path: Path) -> None:
@@ -936,15 +1173,19 @@ def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pyt
     def fake_which(name: str) -> str | None:
         return "/usr/bin/bsdtar" if name == "bsdtar" else None
 
-    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
         assert command[:2] == ["/usr/bin/bsdtar", "-xOf"]
-        return archive_service.subprocess.CompletedProcess(command, 0, stdout=page_bytes, stderr=b"")
+        return _FakePopen(
+            stdout_target=stdout,
+            stderr_target=stderr,
+            stdout_data=page_bytes,
+        )
 
     monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
     from joyread.core.archive import backends
 
     monkeypatch.setattr(backends.shutil, "which", fake_which)
-    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(archive_common.subprocess, "Popen", fake_popen)
 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
     session = ArchiveImageService(backend_resolver=resolver).open(archive_path)
@@ -1016,15 +1257,19 @@ def test_encrypted_rar_read_prefers_7zip_backend(tmp_path: Path, monkeypatch: py
     def fake_which(name: str) -> str | None:
         return { "7zz": "/opt/joyread/7zz", "bsdtar": "/usr/bin/bsdtar" }.get(name)
 
-    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
         assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
         assert "-psecret" in command
         assert "/usr/bin/bsdtar" not in command
-        return archive_service.subprocess.CompletedProcess(command, 0, stdout=page_bytes, stderr=b"")
+        return _FakePopen(
+            stdout_target=stdout,
+            stderr_target=stderr,
+            stdout_data=page_bytes,
+        )
 
     monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
     monkeypatch.setattr(backends.shutil, "which", fake_which)
-    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(archive_common.subprocess, "Popen", fake_popen)
 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
     session = ArchiveImageService(backend_resolver=resolver).open(
@@ -1097,19 +1342,19 @@ def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
     def fake_which(name: str) -> str | None:
         return "/opt/joyread/7zz" if name == "7zz" else None
 
-    def fake_run(command, stdout, stderr, check=False):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
         assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
         assert "-pwrong" in command
-        return archive_service.subprocess.CompletedProcess(
-            command,
-            2,
-            stdout=b"",
-            stderr=b"ERROR: Data Error in encrypted file. Wrong password?",
+        return _FakePopen(
+            stdout_target=stdout,
+            stderr_target=stderr,
+            stderr_data=b"ERROR: Data Error in encrypted file. Wrong password?",
+            returncode=2,
         )
 
     monkeypatch.setattr(archive_service, "rarfile", FakeRarModule())
     monkeypatch.setattr(backends.shutil, "which", fake_which)
-    monkeypatch.setattr(archive_service.subprocess, "run", fake_run)
+    monkeypatch.setattr(archive_common.subprocess, "Popen", fake_popen)
 
     resolver = ExtractionBackendResolver(tmp_path / "empty-extractors")
     with pytest.raises(ArchivePasswordRejected):

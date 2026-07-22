@@ -9,8 +9,10 @@ from joyread.core.archive.errors import (
     ArchivePasswordRejected,
     ArchivePasswordRequired,
     ArchiveReadError,
+    ArchiveResourceLimitError,
     ArchiveUnsupportedFormat,
 )
+from joyread.core.archive.limits import ArchiveOpenLimits
 from joyread.core.archive.models import (
     ArchiveAccessMode,
     ArchiveContentsEntry,
@@ -35,6 +37,7 @@ __all__ = [
     "ArchiveImageService",
     "ArchiveImageSession",
     "ArchiveOpenError",
+    "ArchiveOpenLimits",
     "ArchivePage",
     "ArchivePasswordRejected",
     "ArchivePasswordPolicy",
@@ -42,6 +45,7 @@ __all__ = [
     "ArchivePasswordResponse",
     "ArchivePasswordRequired",
     "ArchiveReadError",
+    "ArchiveResourceLimitError",
     "ArchiveUnsupportedFormat",
     "ArchiveValidationCode",
     "ArchiveValidationResult",

@@ -8,7 +8,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
 
-from joyread.core.archive import ArchiveError, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.archive import (
+    ArchiveError,
+    ArchiveOpenLimits,
+    ArchivePasswordRejected,
+    ArchivePasswordRequired,
+    ArchiveResourceLimitError,
+)
 from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import (
     ReaderDirection,
@@ -41,6 +47,14 @@ from joyread.ui.viewmodels.thumbnail_stream import ThumbnailStreamController, Th
 
 
 logger = logging.getLogger(__name__)
+
+
+def _archive_error_message(error: ArchiveError) -> str:
+    """Map structured archive failures without leaking backend details into UI."""
+
+    if isinstance(error, ArchiveResourceLimitError):
+        return t("reader.archive_resource_limit_exceeded")
+    return str(error)
 
 
 @dataclass(frozen=True)
@@ -109,6 +123,7 @@ class ReaderViewModel:
         prefetch_after: int = 1,
         nested_archive_max_depth: int = 2,
         archive_global_file_max_depth: int = 100,
+        archive_limits: ArchiveOpenLimits | None = None,
         thumbnail_cache_client: ThumbnailCacheClient | None = None,
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
     ) -> None:
@@ -176,16 +191,20 @@ class ReaderViewModel:
         # prefetch toward the next page, not the previous one.
         self._prefetch_before = max(0, int(prefetch_before))
         self._prefetch_after = max(0, int(prefetch_after))
-        self._nested_archive_max_depth = _normalize_depth_limit(
-            nested_archive_max_depth,
-            default=2,
-            maximum=5,
+        self._archive_limits = archive_limits or ArchiveOpenLimits(
+            nested_archive_max_depth=_core_depth_limit(
+                nested_archive_max_depth,
+                default=2,
+                maximum=5,
+            ),
+            global_file_max_depth=_core_depth_limit(
+                archive_global_file_max_depth,
+                default=100,
+                maximum=1000,
+            ),
         )
-        self._archive_global_file_max_depth = _normalize_depth_limit(
-            archive_global_file_max_depth,
-            default=100,
-            maximum=1000,
-        )
+        self._nested_archive_max_depth = self._archive_limits.nested_archive_max_depth
+        self._archive_global_file_max_depth = self._archive_limits.global_file_max_depth
         # `_primary_index` is the LAYOUT anchor only. It decides which page's
         # aspect ratio drives single/double/wide-pan layout. It is intentionally
         # NOT the user-facing reading position: the indicator, slider value,
@@ -303,13 +322,11 @@ class ReaderViewModel:
         self._last_saved_progress = None
         self._emit_state()
         generation = self._task_generation
-        open_work = lambda: self._session_service.open_document(
-                self._source_path or source_path,
-                passwords=dict(self._archive_passwords),
-                skipped_archives=set(self._skipped_archives),
-                nested_archive_max_depth=self._nested_archive_max_depth,
-                archive_global_file_max_depth=self._archive_global_file_max_depth,
-            )
+        open_work = lambda: self._open_document(
+            self._source_path or source_path,
+            passwords=dict(self._archive_passwords),
+            skipped_archives=set(self._skipped_archives),
+        )
         open_kwargs = {
             "on_success": lambda session, generation=generation: self._handle_open_success(generation, session),
             "on_failure": lambda error, generation=generation: self._handle_open_failure(generation, error),
@@ -323,6 +340,35 @@ class ReaderViewModel:
             )
         except TypeError:
             self._open_handle = self._task_service.submit("reader-open", open_work, **open_kwargs)
+
+    def _open_document(
+        self,
+        source_path: str | Path,
+        *,
+        passwords: dict[str, str],
+        skipped_archives: set[str],
+    ):
+        """Call the new limits-aware session API with test-double compatibility."""
+
+        try:
+            return self._session_service.open_document(
+                source_path,
+                passwords=passwords,
+                skipped_archives=skipped_archives,
+                limits=self._archive_limits,
+            )
+        except TypeError as exc:
+            # Older embedders and focused VM test doubles implement the
+            # previous depth-only protocol. Do not mask unrelated TypeErrors.
+            if "limits" not in str(exc):
+                raise
+            return self._session_service.open_document(
+                source_path,
+                passwords=passwords,
+                skipped_archives=skipped_archives,
+                nested_archive_max_depth=_legacy_depth_limit(self._nested_archive_max_depth),
+                archive_global_file_max_depth=_legacy_depth_limit(self._archive_global_file_max_depth),
+            )
 
     def cancel(self, *, reset_passwords: bool = True) -> None:
         logger.debug(
@@ -875,7 +921,7 @@ class ReaderViewModel:
         self.is_loading = False
         self._set_contents(())
         if isinstance(error, ArchiveError):
-            self.error_message = str(error)
+            self.error_message = _archive_error_message(error)
         else:
             self.error_message = f"Could not open reader: {error}"
         self.error_changed.emit(self.error_message)
@@ -1029,7 +1075,7 @@ class ReaderViewModel:
         encrypted_generation = self._task_generation if self._archive_passwords or self._skipped_archives else 0
         return (
             f"{source_path.resolve(strict=False)}:{signature}:"
-            f"{self._nested_archive_max_depth}:{self._archive_global_file_max_depth}:"
+            f"{self._archive_limits.cache_signature()}:"
             f"auth-{encrypted_generation}"
         )
 
@@ -1142,7 +1188,7 @@ class ReaderViewModel:
     def _mark_page_unavailable(self, page_index: int, error: Exception | None = None) -> None:
         self._unavailable_pages.add(page_index)
         if page_index == self._primary_index:
-            detail = f": {error}" if error is not None else "."
+            detail = f": {_archive_error_message(error)}" if error is not None else "."
             self.error_message = t("reader.page_load_failed", page=str(page_index + 1), detail=detail)
             self._layout_result = None
             self.loading_page_index = None
@@ -1228,8 +1274,7 @@ class ReaderViewModel:
         coordinator.acquire(
             self._source_path,
             self._warmup_client_id,
-            nested_depth=self._nested_archive_max_depth,
-            global_depth=self._archive_global_file_max_depth,
+            limits=self._archive_limits,
             on_ready=self._topic_thumbnail_stream.refresh,
         )
 
@@ -1499,3 +1544,12 @@ def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
     if depth < 1:
         return default
     return min(maximum, depth)
+
+
+def _core_depth_limit(value: object, *, default: int, maximum: int) -> int | None:
+    normalized = _normalize_depth_limit(value, default=default, maximum=maximum)
+    return None if normalized == -1 else normalized
+
+
+def _legacy_depth_limit(value: int | None) -> int:
+    return -1 if value is None else value

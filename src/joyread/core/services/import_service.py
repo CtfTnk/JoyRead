@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 from pathlib import Path
@@ -11,7 +11,12 @@ import shutil
 import sqlite3
 from uuid import uuid4
 
-from joyread.core.archive import ArchiveImageService, ArchivePasswordPolicy, ArchiveValidationCode
+from joyread.core.archive import (
+    ArchiveImageService,
+    ArchiveOpenLimits,
+    ArchivePasswordPolicy,
+    ArchiveValidationCode,
+)
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
@@ -51,6 +56,7 @@ class ImportPreflightResult:
     can_import: bool
     status: str
     message: str | None = None
+    archive_validation_code: ArchiveValidationCode | None = None
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,7 @@ class _ValidationFailure:
 
     status: str
     message: str
+    archive_validation_code: ArchiveValidationCode | None = None
 
 
 class ImportService:
@@ -96,6 +103,7 @@ class ImportService:
         hash_algorithm: str = "sha256",
         pdf_service: PdfImageService | None = None,
         tag_service: TagService | None = None,
+        archive_limits: ArchiveOpenLimits | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -104,6 +112,12 @@ class ImportService:
         self._hash_service = hash_service
         self._hash_algorithm = hash_algorithm
         self._tag_service = tag_service
+        self._archive_limits = archive_limits or ArchiveOpenLimits()
+
+    def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
+        """Use new limits for later validation without disrupting active jobs."""
+
+        self._archive_limits = limits
 
     def import_manifest(
         self,
@@ -203,6 +217,7 @@ class ImportService:
                 can_import=False,
                 status=failure.status,
                 message=failure.message,
+                archive_validation_code=failure.archive_validation_code,
             )
         logger.debug("Import preflight ok path=%s", source_path)
         return ImportPreflightResult(str(source_path), True, "importable")
@@ -490,13 +505,21 @@ class ImportService:
             # archive service. That is intentionally slower than suffix checks:
             # it prevents creating a DB row for an archive the reader cannot
             # actually extract later.
+            limits = self._archive_limits
+            if nested_archive_max_depth is not None:
+                limits = replace(
+                    limits,
+                    nested_archive_max_depth=_core_depth_limit(nested_archive_max_depth),
+                )
+            if archive_global_file_max_depth is not None:
+                limits = replace(
+                    limits,
+                    global_file_max_depth=_core_depth_limit(archive_global_file_max_depth),
+                )
             validation = self._archive_service.validate_archive(
                 source_path,
                 password_policy=ArchivePasswordPolicy.FORBID,
-                max_nested_depth=nested_archive_max_depth if nested_archive_max_depth is not None else 2,
-                global_file_max_depth=(
-                    archive_global_file_max_depth if archive_global_file_max_depth is not None else 100
-                ),
+                limits=limits,
             )
             logger.debug(
                 "Archive import validation path=%s code=%s pages=%s",
@@ -506,8 +529,16 @@ class ImportService:
             )
             if validation.code != ArchiveValidationCode.OK:
                 if validation.code in {ArchiveValidationCode.PASSWORD_REQUIRED, ArchiveValidationCode.PASSWORD_REJECTED}:
-                    return _ValidationFailure("skipped", validation.message)
-                return _ValidationFailure("failed", validation.message)
+                    return _ValidationFailure(
+                        "skipped",
+                        validation.message,
+                        archive_validation_code=validation.code,
+                    )
+                return _ValidationFailure(
+                    "failed",
+                    validation.message,
+                    archive_validation_code=validation.code,
+                )
         if suffix in PDF_EXTENSIONS:
             validation = self._pdf_service.validate_pdf(source_path)
             logger.debug("PDF import validation path=%s valid=%s", source_path, validation.is_valid)
@@ -674,3 +705,8 @@ def _book_type_for_suffix(suffix: str) -> str:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
+
+
+def _core_depth_limit(value: object) -> int | None:
+    depth = int(value)
+    return None if depth == -1 else depth

@@ -747,6 +747,30 @@ def test_detail_open_submits_one_source_task_and_waits_for_viewport_interest() -
     assert task_service.submitted == [f"detail-thumbnail-source-{book.uuid}"]
 
 
+def test_detail_source_is_reopened_when_archive_limits_invalidate_it() -> None:
+    task_service = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        FakeThumbnailService(),  # type: ignore[arg-type]
+        task_service,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+    )
+    ready: list[tuple[str, int]] = []
+    vm.detail_thumbnail_source_ready.connect(lambda book_uuid, page_count: ready.append((book_uuid, page_count)))
+    vm.load_books()
+    book = next(book for book in vm.books if book.uuid == "mock-book-15")
+    vm.show_detail(book.uuid)
+    vm.set_detail_thumbnail_interest(book.uuid, (0,), (), (100, 142))
+
+    vm.invalidate_detail_thumbnail_source()
+
+    assert task_service.submitted == [
+        f"detail-thumbnail-source-{book.uuid}",
+        f"detail-thumbnail-source-{book.uuid}",
+    ]
+    assert ready == [(book.uuid, 0)]
+
+
 def test_detail_stream_emits_each_visible_item_and_advances_serially() -> None:
     task_service = RecordingTaskService()
     vm = ShelfViewModel(

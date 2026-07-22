@@ -47,6 +47,16 @@ class AppSettings:
     import_folder_max_depth: int = 1
     nested_archive_max_depth: int = 2
     archive_global_file_max_depth: int = 100
+    # Top-level archive size is deliberately independent from resource
+    # guardrails: users can accept large source files while still keeping
+    # extraction, image, and subprocess budgets enabled.
+    archive_max_source_size_enabled: bool = True
+    archive_max_source_size_gb: int = 5
+    archive_resource_guardrails_enabled: bool = True
+    archive_max_extracted_item_gb: int = 1
+    archive_max_operation_data_gb: int = 4
+    archive_max_image_megapixels: int = 400
+    archive_external_command_timeout_seconds: int = 300
     # Hidden Space (soft visibility layer for books + user collections).
     # ``hidden_space_password_hash is None`` is the sentinel for the
     # uninitiated state — the feature is only "armed" once the user
@@ -149,6 +159,36 @@ class SettingsStore:
                 raw.get("archive_global_file_max_depth"),
                 default=100,
                 maximum=1000,
+            ),
+            archive_max_source_size_enabled=bool(raw.get("archive_max_source_size_enabled", True)),
+            archive_max_source_size_gb=_coerce_int_in_range(
+                raw.get("archive_max_source_size_gb"),
+                default=5,
+                minimum=1,
+                maximum=15,
+            ),
+            archive_resource_guardrails_enabled=bool(
+                raw.get("archive_resource_guardrails_enabled", True)
+            ),
+            archive_max_extracted_item_gb=_coerce_limit_or_unlimited(
+                raw.get("archive_max_extracted_item_gb"),
+                default=1,
+                maximum=16,
+            ),
+            archive_max_operation_data_gb=_coerce_limit_or_unlimited(
+                raw.get("archive_max_operation_data_gb"),
+                default=4,
+                maximum=64,
+            ),
+            archive_max_image_megapixels=_coerce_limit_or_unlimited(
+                raw.get("archive_max_image_megapixels"),
+                default=400,
+                maximum=1000,
+            ),
+            archive_external_command_timeout_seconds=_coerce_limit_or_unlimited(
+                raw.get("archive_external_command_timeout_seconds"),
+                default=300,
+                maximum=3600,
             ),
             hidden_space_password_hash=_coerce_optional_str(raw.get("hidden_space_password_hash")),
             hidden_space_password_salt=_coerce_optional_str(raw.get("hidden_space_password_salt")),
@@ -275,3 +315,9 @@ def _coerce_depth_limit(value: object, *, default: int, maximum: int) -> int:
     if coerced < 1:
         return default
     return min(maximum, coerced)
+
+
+def _coerce_limit_or_unlimited(value: object, *, default: int, maximum: int) -> int:
+    """Parse a positive resource setting whose UI sentinel is ``-1``."""
+
+    return _coerce_depth_limit(value, default=default, maximum=maximum)

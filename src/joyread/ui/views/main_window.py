@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, 
 
 from joyread.app.app_context import AppContext
 from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
+from joyread.core.archive import ArchiveValidationCode
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
@@ -68,6 +69,9 @@ class MainWindow(QMainWindow):
             context.thumbnail_service,
             context.task_service,
             context.archive_warmup_coordinator,
+        )
+        context.settings_viewmodel.archive_open_limits_changed.connect(
+            self._invalidate_archive_thumbnail_sources
         )
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
@@ -330,10 +334,12 @@ class MainWindow(QMainWindow):
                 cancel_text=t("dialog.btn_cancel"),
             )
             return
-        self.dialog_overlay.show_info(
-            t("dialog.open_import_failed_title"),
-            result.message or t("dialog.open_import_unsupported"),
+        message = (
+            t("dialog.archive_resource_limit_exceeded")
+            if getattr(result, "archive_validation_code", None) == ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED
+            else result.message or t("dialog.open_import_unsupported")
         )
+        self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), message)
 
     def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
         logger.info("Open & Import starting path=%s", source_path)
@@ -535,6 +541,11 @@ class MainWindow(QMainWindow):
         self._close_embedded_reader()
         self.closed.emit()
         super().closeEvent(event)
+
+    def _invalidate_archive_thumbnail_sources(self) -> None:
+        """Refresh the active cover picker after a new limits snapshot."""
+
+        self._cover_editor_thumbnail_viewmodel.invalidate_source()
 
     def _handle_reader_progress_changed(self, book_uuid: str, page_index: int, progress_percent: float) -> None:
         logger.debug(

@@ -45,6 +45,7 @@ class ArchiveValidationCode(StrEnum):
     PASSWORD_REQUIRED = "password_required"
     PASSWORD_REJECTED = "password_rejected"
     DEPENDENCY_MISSING = "dependency_missing"
+    RESOURCE_LIMIT_EXCEEDED = "resource_limit_exceeded"
     OPEN_FAILED = "open_failed"
     UNKNOWN_ERROR = "unknown_error"
 

@@ -12,6 +12,7 @@ from joyread.core.models.cache import (
     ArchiveCacheStrategy,
     normalize_archive_cache_strategy,
 )
+from joyread.core.archive.limits import ArchiveOpenLimits, GIB, MEGAPIXEL
 from joyread.core.services.hidden_space_service import (
     HiddenSpacePasswordError,
     HiddenSpaceService,
@@ -55,6 +56,16 @@ NESTED_ARCHIVE_DEPTH_MAX = 5
 ARCHIVE_GLOBAL_FILE_DEPTH_MIN = 1
 ARCHIVE_GLOBAL_FILE_DEPTH_MAX = 1000
 UNLIMITED_DEPTH = -1
+ARCHIVE_MAX_SOURCE_SIZE_MIN_GB = 1
+ARCHIVE_MAX_SOURCE_SIZE_MAX_GB = 15
+ARCHIVE_MAX_EXTRACTED_ITEM_MIN_GB = 1
+ARCHIVE_MAX_EXTRACTED_ITEM_MAX_GB = 16
+ARCHIVE_MAX_OPERATION_DATA_MIN_GB = 1
+ARCHIVE_MAX_OPERATION_DATA_MAX_GB = 64
+ARCHIVE_MAX_IMAGE_MEGAPIXELS_MIN = 1
+ARCHIVE_MAX_IMAGE_MEGAPIXELS_MAX = 1000
+ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MIN_SECONDS = 1
+ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS = 3600
 ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
 
@@ -75,6 +86,7 @@ class SettingsViewModel:
         # current-usage label via ``refresh_archive_pool_usage``.
         self.cache_budgets_changed: Signal[None] = Signal()
         self.archive_depth_limits_changed: Signal[None] = Signal()
+        self.archive_open_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
         # Hidden Space side effects: surface password-setup outcome and
         # reset/revert events so MainWindow can refresh the shelf + sidebar
@@ -129,6 +141,37 @@ class SettingsViewModel:
             getattr(settings, "archive_global_file_max_depth", 100),
             default=100,
             maximum=ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
+        )
+        self.archive_max_source_size_enabled = bool(
+            getattr(settings, "archive_max_source_size_enabled", True)
+        )
+        self.archive_max_source_size_gb = _clamp_int(
+            getattr(settings, "archive_max_source_size_gb", 5),
+            ARCHIVE_MAX_SOURCE_SIZE_MIN_GB,
+            ARCHIVE_MAX_SOURCE_SIZE_MAX_GB,
+        )
+        self.archive_resource_guardrails_enabled = bool(
+            getattr(settings, "archive_resource_guardrails_enabled", True)
+        )
+        self.archive_max_extracted_item_gb = _normalize_limit(
+            getattr(settings, "archive_max_extracted_item_gb", 1),
+            default=1,
+            maximum=ARCHIVE_MAX_EXTRACTED_ITEM_MAX_GB,
+        )
+        self.archive_max_operation_data_gb = _normalize_limit(
+            getattr(settings, "archive_max_operation_data_gb", 4),
+            default=4,
+            maximum=ARCHIVE_MAX_OPERATION_DATA_MAX_GB,
+        )
+        self.archive_max_image_megapixels = _normalize_limit(
+            getattr(settings, "archive_max_image_megapixels", 400),
+            default=400,
+            maximum=ARCHIVE_MAX_IMAGE_MEGAPIXELS_MAX,
+        )
+        self.archive_external_command_timeout_seconds = _normalize_limit(
+            getattr(settings, "archive_external_command_timeout_seconds", 300),
+            default=300,
+            maximum=ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS,
         )
         self.archive_pool_current_bytes = 0
         # Hidden Space surface state. The service is the source of truth;
@@ -238,8 +281,7 @@ class SettingsViewModel:
             return
         self.nested_archive_max_depth = normalized
         self._persist(nested_archive_max_depth=normalized)
-        self.archive_depth_limits_changed.emit()
-        self.state_changed.emit()
+        self._emit_archive_limits_changed()
 
     def set_archive_global_file_max_depth(self, value: int) -> None:
         normalized = _normalize_depth_limit(
@@ -251,7 +293,114 @@ class SettingsViewModel:
             return
         self.archive_global_file_max_depth = normalized
         self._persist(archive_global_file_max_depth=normalized)
+        self._emit_archive_limits_changed()
+
+    @property
+    def archive_open_limits(self) -> ArchiveOpenLimits:
+        """Convert persisted UI values into the core's ``None``-based API."""
+
+        resource_enabled = self.archive_resource_guardrails_enabled
+        return ArchiveOpenLimits(
+            nested_archive_max_depth=_depth_to_core_limit(self.nested_archive_max_depth),
+            global_file_max_depth=_depth_to_core_limit(self.archive_global_file_max_depth),
+            max_source_bytes=(
+                self.archive_max_source_size_gb * GIB
+                if self.archive_max_source_size_enabled
+                else None
+            ),
+            max_extracted_item_bytes=(
+                _limit_to_bytes(self.archive_max_extracted_item_gb, GIB)
+                if resource_enabled
+                else None
+            ),
+            max_operation_bytes=(
+                _limit_to_bytes(self.archive_max_operation_data_gb, GIB)
+                if resource_enabled
+                else None
+            ),
+            max_image_pixels=(
+                _limit_to_bytes(self.archive_max_image_megapixels, MEGAPIXEL)
+                if resource_enabled
+                else None
+            ),
+            external_command_timeout_seconds=(
+                _limit_to_bytes(self.archive_external_command_timeout_seconds, 1)
+                if resource_enabled
+                else None
+            ),
+        )
+
+    def set_archive_max_source_size_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.archive_max_source_size_enabled:
+            return
+        self.archive_max_source_size_enabled = enabled
+        self._persist(archive_max_source_size_enabled=enabled)
+        self._emit_archive_limits_changed()
+
+    def set_archive_max_source_size_gb(self, value: int) -> None:
+        normalized = _clamp_int(
+            value,
+            ARCHIVE_MAX_SOURCE_SIZE_MIN_GB,
+            ARCHIVE_MAX_SOURCE_SIZE_MAX_GB,
+        )
+        if normalized == self.archive_max_source_size_gb:
+            return
+        self.archive_max_source_size_gb = normalized
+        self._persist(archive_max_source_size_gb=normalized)
+        self._emit_archive_limits_changed()
+
+    def set_archive_resource_guardrails_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.archive_resource_guardrails_enabled:
+            return
+        self.archive_resource_guardrails_enabled = enabled
+        self._persist(archive_resource_guardrails_enabled=enabled)
+        self._emit_archive_limits_changed()
+
+    def set_archive_max_extracted_item_gb(self, value: int) -> None:
+        self._set_resource_limit(
+            "archive_max_extracted_item_gb",
+            value,
+            default=self.archive_max_extracted_item_gb,
+            maximum=ARCHIVE_MAX_EXTRACTED_ITEM_MAX_GB,
+        )
+
+    def set_archive_max_operation_data_gb(self, value: int) -> None:
+        self._set_resource_limit(
+            "archive_max_operation_data_gb",
+            value,
+            default=self.archive_max_operation_data_gb,
+            maximum=ARCHIVE_MAX_OPERATION_DATA_MAX_GB,
+        )
+
+    def set_archive_max_image_megapixels(self, value: int) -> None:
+        self._set_resource_limit(
+            "archive_max_image_megapixels",
+            value,
+            default=self.archive_max_image_megapixels,
+            maximum=ARCHIVE_MAX_IMAGE_MEGAPIXELS_MAX,
+        )
+
+    def set_archive_external_command_timeout_seconds(self, value: int) -> None:
+        self._set_resource_limit(
+            "archive_external_command_timeout_seconds",
+            value,
+            default=self.archive_external_command_timeout_seconds,
+            maximum=ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS,
+        )
+
+    def _set_resource_limit(self, attribute: str, value: int, *, default: int, maximum: int) -> None:
+        normalized = _normalize_limit(value, default=default, maximum=maximum)
+        if normalized == getattr(self, attribute):
+            return
+        setattr(self, attribute, normalized)
+        self._persist(**{attribute: normalized})
+        self._emit_archive_limits_changed()
+
+    def _emit_archive_limits_changed(self) -> None:
         self.archive_depth_limits_changed.emit()
+        self.archive_open_limits_changed.emit()
         self.state_changed.emit()
 
     def request_clear_archive_pool(self) -> None:
@@ -392,3 +541,17 @@ def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
     if coerced < 1:
         return default
     return min(maximum, coerced)
+
+
+def _normalize_limit(value: object, *, default: int, maximum: int) -> int:
+    return _normalize_depth_limit(value, default=default, maximum=maximum)
+
+
+def _limit_to_bytes(value: int, multiplier: int) -> int | None:
+    return None if value == UNLIMITED_DEPTH else value * multiplier
+
+
+def _depth_to_core_limit(value: int) -> int | None:
+    """Convert the settings-only ``-1`` sentinel at the core boundary."""
+
+    return None if value == UNLIMITED_DEPTH else value

@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from typing import Protocol
 
-from joyread.core.archive import ArchiveImageService, ArchiveImageSession
+from joyread.core.archive import ArchiveImageService, ArchiveImageSession, ArchiveOpenLimits
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
@@ -65,8 +65,9 @@ class ReaderSessionService:
         passwords: dict[str, str] | None = None,
         skipped_archives: set[str] | None = None,
         *,
-        nested_archive_max_depth: int = 2,
-        archive_global_file_max_depth: int = 100,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
     ) -> ReaderImageSession:
         suffix = Path(path).suffix.lower()
         logger.info("Opening reader document: path=%s suffix=%s", path, suffix)
@@ -78,6 +79,7 @@ class ReaderSessionService:
                 skipped_archives=skipped_archives,
                 nested_archive_max_depth=nested_archive_max_depth,
                 archive_global_file_max_depth=archive_global_file_max_depth,
+                limits=limits,
             )
         if suffix in PDF_EXTENSIONS:
             return self._pdf_image_service.open(path)
@@ -99,8 +101,9 @@ class ReaderSessionService:
         passwords: dict[str, str] | None = None,
         skipped_archives: set[str] | None = None,
         *,
-        nested_archive_max_depth: int = 2,
-        archive_global_file_max_depth: int = 100,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
     ) -> ArchiveImageSession:
         provider = None
         password_map = dict(passwords or {})
@@ -123,6 +126,7 @@ class ReaderSessionService:
             password_provider=provider,
             max_nested_depth=nested_archive_max_depth,
             global_file_max_depth=archive_global_file_max_depth,
+            limits=limits,
         )
 
     def load_page(self, session: ReaderImageSession, page_index: int) -> ReaderPageImage | None:
@@ -162,8 +166,9 @@ class ReaderSessionService:
         path: str | Path,
         *,
         password: str | None = None,
-        nested_archive_max_depth: int = 2,
-        archive_global_file_max_depth: int = 100,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
         chunk_size: int = 8,
         is_cancelled=None,  # noqa: ANN001 - accepts TaskHandle-like status checks.
     ) -> None:
@@ -180,6 +185,7 @@ class ReaderSessionService:
             password=password,
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
+            limits=limits,
         )
         page_indices = list(range(session.page_count - 1, -1, -1))
         chunk_size = max(1, int(chunk_size))

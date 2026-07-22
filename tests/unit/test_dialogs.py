@@ -8,6 +8,7 @@ from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QToo
 from PIL import Image
 
 from joyread.app.app_context import create_app_context
+from joyread.core.archive import ArchiveValidationCode
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
@@ -1129,6 +1130,48 @@ def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, t
     assert window.dialog_overlay.isHidden()
     assert opened == [source]
     assert import_started == []
+    context.close()
+
+
+def test_open_import_resource_limit_uses_localized_message(qtbot, tmp_path: Path) -> None:
+    apply_theme()
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    window._handle_open_import_preflight(
+        tmp_path / "limited.cbz",
+        object(),
+        ImportPreflightResult(
+            source_path=str(tmp_path / "limited.cbz"),
+            can_import=False,
+            status="failed",
+            message="Archive resource limit exceeded: private/secret.png",
+            archive_validation_code=ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED,
+        ),
+    )
+    QApplication.processEvents()
+
+    texts = [label.text() for label in window.dialog_overlay.panel.findChildren(QLabel)]
+    assert "This archive exceeds the current resource limits." in texts
+    assert all("private/secret.png" not in text for text in texts)
+    context.close()
+
+
+def test_main_window_invalidates_cover_thumbnail_source_on_archive_limit_change(qtbot, monkeypatch) -> None:
+    apply_theme()
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    calls: list[None] = []
+    monkeypatch.setattr(window._cover_editor_thumbnail_viewmodel, "invalidate_source", lambda: calls.append(None))
+
+    context.settings_viewmodel.archive_open_limits_changed.emit()
+
+    assert calls == [None]
     context.close()
 
 

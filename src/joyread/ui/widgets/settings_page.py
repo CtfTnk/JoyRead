@@ -27,8 +27,18 @@ from joyread.infrastructure.i18n.locale_service import (
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import (
+    ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS,
+    ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MIN_SECONDS,
     ARCHIVE_GLOBAL_FILE_DEPTH_MAX,
     ARCHIVE_GLOBAL_FILE_DEPTH_MIN,
+    ARCHIVE_MAX_EXTRACTED_ITEM_MAX_GB,
+    ARCHIVE_MAX_EXTRACTED_ITEM_MIN_GB,
+    ARCHIVE_MAX_IMAGE_MEGAPIXELS_MAX,
+    ARCHIVE_MAX_IMAGE_MEGAPIXELS_MIN,
+    ARCHIVE_MAX_OPERATION_DATA_MAX_GB,
+    ARCHIVE_MAX_OPERATION_DATA_MIN_GB,
+    ARCHIVE_MAX_SOURCE_SIZE_MAX_GB,
+    ARCHIVE_MAX_SOURCE_SIZE_MIN_GB,
     ARCHIVE_POOL_MAX_MB,
     ARCHIVE_POOL_MIN_MB,
     ARCHIVE_CACHE_STRATEGY_OPTIONS,
@@ -322,6 +332,79 @@ class SettingsPageWidget(QFrame):
         )
         archive_global_depth_item.value_changed.connect(self._viewmodel.set_archive_global_file_max_depth)
 
+        archive_banner = SectionBanner(t("settings.banner_archive"), self._resources)
+
+        archive_size_switch = SettingsSwitchItem(
+            t("settings.archive_max_source_size_enabled"),
+            self._viewmodel.archive_max_source_size_enabled,
+        )
+        archive_size_switch.toggled.connect(self._viewmodel.set_archive_max_source_size_enabled)
+
+        archive_size_item = SettingsNumericItem(
+            t("settings.archive_max_source_size"),
+            self._viewmodel.archive_max_source_size_gb,
+            ARCHIVE_MAX_SOURCE_SIZE_MIN_GB,
+            ARCHIVE_MAX_SOURCE_SIZE_MAX_GB,
+            self._resources,
+            "GB",
+        )
+        archive_size_item.setEnabled(self._viewmodel.archive_max_source_size_enabled)
+        archive_size_item.value_changed.connect(self._viewmodel.set_archive_max_source_size_gb)
+
+        guardrails_switch = SettingsSwitchItem(
+            t("settings.archive_resource_guardrails"),
+            self._viewmodel.archive_resource_guardrails_enabled,
+        )
+        guardrails_switch.toggled.connect(self._viewmodel.set_archive_resource_guardrails_enabled)
+
+        extracted_item = SettingsNumericItem(
+            t("settings.archive_max_extracted_item"),
+            self._viewmodel.archive_max_extracted_item_gb,
+            ARCHIVE_MAX_EXTRACTED_ITEM_MIN_GB,
+            ARCHIVE_MAX_EXTRACTED_ITEM_MAX_GB,
+            self._resources,
+            "GB",
+            unlimited_sentinel=UNLIMITED_DEPTH,
+        )
+        extracted_item.setEnabled(self._viewmodel.archive_resource_guardrails_enabled)
+        extracted_item.value_changed.connect(self._viewmodel.set_archive_max_extracted_item_gb)
+
+        operation_data = SettingsNumericItem(
+            t("settings.archive_max_operation_data"),
+            self._viewmodel.archive_max_operation_data_gb,
+            ARCHIVE_MAX_OPERATION_DATA_MIN_GB,
+            ARCHIVE_MAX_OPERATION_DATA_MAX_GB,
+            self._resources,
+            "GB",
+            unlimited_sentinel=UNLIMITED_DEPTH,
+        )
+        operation_data.setEnabled(self._viewmodel.archive_resource_guardrails_enabled)
+        operation_data.value_changed.connect(self._viewmodel.set_archive_max_operation_data_gb)
+
+        image_megapixels = SettingsNumericItem(
+            t("settings.archive_max_image_megapixels"),
+            self._viewmodel.archive_max_image_megapixels,
+            ARCHIVE_MAX_IMAGE_MEGAPIXELS_MIN,
+            ARCHIVE_MAX_IMAGE_MEGAPIXELS_MAX,
+            self._resources,
+            "MP",
+            unlimited_sentinel=UNLIMITED_DEPTH,
+        )
+        image_megapixels.setEnabled(self._viewmodel.archive_resource_guardrails_enabled)
+        image_megapixels.value_changed.connect(self._viewmodel.set_archive_max_image_megapixels)
+
+        command_timeout = SettingsNumericItem(
+            t("settings.archive_external_command_timeout"),
+            self._viewmodel.archive_external_command_timeout_seconds,
+            ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MIN_SECONDS,
+            ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS,
+            self._resources,
+            "s",
+            unlimited_sentinel=UNLIMITED_DEPTH,
+        )
+        command_timeout.setEnabled(self._viewmodel.archive_resource_guardrails_enabled)
+        command_timeout.value_changed.connect(self._viewmodel.set_archive_external_command_timeout_seconds)
+
         # Cache sub-group: user-tunable cache budgets and a one-shot purge for
         # the disk pool. Live in General per design — there is no separate
         # "Performance" section.
@@ -382,6 +465,14 @@ class SettingsPageWidget(QFrame):
             import_folder_depth_item,
             nested_archive_depth_item,
             archive_global_depth_item,
+            archive_banner,
+            archive_size_switch,
+            archive_size_item,
+            guardrails_switch,
+            extracted_item,
+            operation_data,
+            image_megapixels,
+            command_timeout,
             cache_banner,
             reader_cache_item,
             detail_cache_item,

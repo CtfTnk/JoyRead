@@ -92,6 +92,7 @@ class ReaderShellWidget(QWidget):
             prefetch_after=context.config.page_prefetch_after,
             nested_archive_max_depth=app_settings.nested_archive_max_depth,
             archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
+            archive_limits=context.settings_viewmodel.archive_open_limits,
             thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
             archive_warmup_coordinator=context.archive_warmup_coordinator,
         )

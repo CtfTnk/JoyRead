@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 import re
@@ -12,7 +12,7 @@ from threading import Lock, RLock
 
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 
-from joyread.core.archive import ArchiveError, ArchiveImageService
+from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderImageSession, ReaderSessionService
@@ -58,8 +58,9 @@ class ThumbnailSourceHandle:
     session: ReaderImageSession
     access_lock: RLock
     source_path: Path
-    nested_archive_max_depth: int
-    archive_global_file_max_depth: int
+    nested_archive_max_depth: int | None
+    archive_global_file_max_depth: int | None
+    archive_limits: ArchiveOpenLimits = field(default_factory=ArchiveOpenLimits)
 
     def preferred_batch_size(self, page_index: int) -> int:
         provider = getattr(self.session, "thumbnail_batch_size", None)
@@ -91,20 +92,23 @@ class ThumbnailService:
         *,
         nested_archive_max_depth: int = 2,
         archive_global_file_max_depth: int = 100,
+        archive_limits: ArchiveOpenLimits | None = None,
     ) -> None:
         self._paths = paths
         self._archive_service = archive_service
         self._reader_session_service = reader_session_service or ReaderSessionService(archive_service)
         self._cache_service = cache_service
-        self._nested_archive_max_depth = _normalize_depth_limit(
-            nested_archive_max_depth,
-            default=2,
-            maximum=5,
-        )
-        self._archive_global_file_max_depth = _normalize_depth_limit(
-            archive_global_file_max_depth,
-            default=100,
-            maximum=1000,
+        self._archive_limits = archive_limits or ArchiveOpenLimits(
+            nested_archive_max_depth=_core_depth_limit(
+                nested_archive_max_depth,
+                default=2,
+                maximum=5,
+            ),
+            global_file_max_depth=_core_depth_limit(
+                archive_global_file_max_depth,
+                default=100,
+                maximum=1000,
+            ),
         )
         # The session cache keeps an open reader session per book so grid
         # covers and detail-thumbnail batches do not re-scan the source for
@@ -115,16 +119,23 @@ class ThumbnailService:
         self._session_cache_lock = Lock()
 
     def set_archive_depth_limits(self, nested_max_depth: int, global_file_max_depth: int) -> None:
-        nested = _normalize_depth_limit(nested_max_depth, default=2, maximum=5)
-        global_depth = _normalize_depth_limit(global_file_max_depth, default=100, maximum=1000)
+        self.set_archive_open_limits(
+            ArchiveOpenLimits(
+                nested_archive_max_depth=_core_depth_limit(nested_max_depth, default=2, maximum=5),
+                global_file_max_depth=_core_depth_limit(global_file_max_depth, default=100, maximum=1000),
+                max_source_bytes=self._archive_limits.max_source_bytes,
+                max_extracted_item_bytes=self._archive_limits.max_extracted_item_bytes,
+                max_operation_bytes=self._archive_limits.max_operation_bytes,
+                max_image_pixels=self._archive_limits.max_image_pixels,
+                external_command_timeout_seconds=self._archive_limits.external_command_timeout_seconds,
+            )
+        )
+
+    def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
         with self._session_cache_lock:
-            if (
-                nested == self._nested_archive_max_depth
-                and global_depth == self._archive_global_file_max_depth
-            ):
+            if limits == self._archive_limits:
                 return
-            self._nested_archive_max_depth = nested
-            self._archive_global_file_max_depth = global_depth
+            self._archive_limits = limits
             self._session_cache.clear()
             self._session_access_locks.clear()
 
@@ -152,8 +163,9 @@ class ThumbnailService:
             session=session,
             access_lock=access_lock,
             source_path=Path(book.file_path),
-            nested_archive_max_depth=self._nested_archive_max_depth,
-            archive_global_file_max_depth=self._archive_global_file_max_depth,
+            nested_archive_max_depth=self._archive_limits.nested_archive_max_depth,
+            archive_global_file_max_depth=self._archive_limits.global_file_max_depth,
+            archive_limits=self._archive_limits,
         )
 
     def stream_thumbnails(
@@ -477,9 +489,8 @@ class ThumbnailService:
 
     def _session_for(self, book: Book, signature: str) -> ReaderImageSession:
         with self._session_cache_lock:
-            nested_depth = self._nested_archive_max_depth
-            global_depth = self._archive_global_file_max_depth
-            cache_key = f"session:{book.uuid}:{signature}:{nested_depth}:{global_depth}"
+            limits = self._archive_limits
+            cache_key = f"session:{book.uuid}:{signature}:{limits.cache_signature()}"
             session = self._session_cache.get(cache_key)
         if session is not None:
             logger.debug("Thumbnail session cache hit book=%s", book.uuid)
@@ -490,14 +501,10 @@ class ThumbnailService:
         logger.debug("Thumbnail session cache miss book=%s source=%s", book.uuid, book.file_path)
         session = self._reader_session_service.open_document(
             book.file_path,
-            nested_archive_max_depth=nested_depth,
-            archive_global_file_max_depth=global_depth,
+            limits=limits,
         )
         with self._session_cache_lock:
-            if (
-                nested_depth == self._nested_archive_max_depth
-                and global_depth == self._archive_global_file_max_depth
-            ):
+            if limits == self._archive_limits:
                 self._session_cache[cache_key] = session
         return session
 
@@ -508,8 +515,7 @@ class ThumbnailService:
         except OSError:
             path = str(source.absolute())
         return (
-            f"{path}:{signature}:nested={self._nested_archive_max_depth}:"
-            f"global={self._archive_global_file_max_depth}"
+            f"{path}:{signature}:limits={self._archive_limits.cache_signature()}"
         )
 
     def _cover_path(self, book: Book, signature: str, size: SizeTuple) -> Path:
@@ -684,3 +690,8 @@ def _normalize_depth_limit(value: object, *, default: int, maximum: int) -> int:
     if depth < 1:
         return default
     return min(maximum, depth)
+
+
+def _core_depth_limit(value: object, *, default: int, maximum: int) -> int | None:
+    normalized = _normalize_depth_limit(value, default=default, maximum=maximum)
+    return None if normalized == -1 else normalized

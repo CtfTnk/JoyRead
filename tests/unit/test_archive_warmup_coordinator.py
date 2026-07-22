@@ -107,3 +107,31 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
 
     assert sessions.calls[-1] == (second, 2, 100, 8, True)
     assert ready == ["detail", "reader"]
+
+
+def test_archive_warmup_invalidation_waits_for_active_worker_before_replacement(tmp_path: Path) -> None:
+    first = tmp_path / "first.cbr"
+    second = tmp_path / "second.cb7"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(
+        sessions,  # type: ignore[arg-type]
+        tasks,  # type: ignore[arg-type]
+    )
+    ready: list[str] = []
+
+    coordinator.acquire(first, "old", on_ready=lambda: ready.append("old"))
+    coordinator.invalidate()
+    coordinator.acquire(second, "new", on_ready=lambda: ready.append("new"))
+
+    assert len(tasks.tasks) == 1
+    tasks.run(0)
+    assert sessions.calls == [(first, 2, 100, 8, True)]
+    assert ready == []
+    assert len(tasks.tasks) == 2
+
+    tasks.run(1)
+    assert sessions.calls[-1] == (second, 2, 100, 8, False)
+    assert ready == ["new"]
