@@ -953,23 +953,29 @@ def _refresh_book_file_states(
         return
 
     now = _now()
-    updates: list[tuple[str, str, str]] = []
+    updates: list[tuple[str, str | None, str, str]] = []
     missing_count = 0
     healthy_count = 0
     for row in rows:
         resolved = _resolve_managed(resolver, row["storage_path"])
         storage_path = Path(resolved).expanduser() if resolved else None
-        desired_state = "healthy" if storage_path is not None and storage_path.exists() else "missing"
+        path_exists = storage_path is not None and storage_path.exists()
+        # A normal action-time stat can only heal a transient missing state.
+        # ``unavailable`` is an integrity-audit finding and remains until a
+        # manual audit explicitly establishes that the bytes are healthy.
+        if path_exists and row["state"] == "unavailable":
+            continue
+        desired_state = "healthy" if path_exists else "missing"
         if row["state"] == desired_state:
             continue
-        updates.append((desired_state, now, row["file_id"]))
+        updates.append((desired_state, None, now, row["file_id"]))
         if desired_state == "missing":
             missing_count += 1
         else:
             healthy_count += 1
     if updates:
         connection.executemany(
-            "UPDATE book_files SET state = ?, updated_at = ? WHERE file_id = ?",
+            "UPDATE book_files SET state = ?, integrity_error_code = ?, updated_at = ? WHERE file_id = ?",
             updates,
         )
     if missing_count or healthy_count:
@@ -1043,6 +1049,7 @@ def _book_from_row(row: sqlite3.Row, *, resolver: StoragePathResolver | None = N
         ),
         is_favourite=bool(row["is_favourite"]),
         is_missing=row["state"] == "missing",
+        is_unavailable=row["state"] == "unavailable",
         is_hidden=bool(row["is_hidden"]),
         collection_ids=collection_ids,
         page_count=0,
@@ -1061,7 +1068,7 @@ def _export_record_from_row(
         original_file_name=_original_file_name_from_row(row),
         hash_algorithm=row["hash_algorithm"],
         content_hash=row["content_hash"],
-        is_missing=row["state"] == "missing",
+        is_missing=row["state"] != "healthy",
     )
 
 

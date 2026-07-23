@@ -47,15 +47,16 @@ class BookCardWidget(QFrame):
         super().__init__(parent)
         self.book = book
         self._resources = resources
-        self._is_missing = book.is_missing
+        self._is_unavailable = not book.is_available
         self.setProperty("class", "BookCard")
         self.setProperty("selected", "false")
         self.setProperty("missing", "true" if book.is_missing else "false")
+        self.setProperty("unavailable", "true" if book.is_unavailable else "false")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedSize(Theme.book_card_width, Theme.book_card_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self._apply_missing_state(book.is_missing, force=True)
+        self._apply_unavailable_state(not book.is_available, force=True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -122,7 +123,14 @@ class BookCardWidget(QFrame):
         self.book = book
         self._title.set_full_text(book.title)
         self._progress.set_progress(book.progress_percent)
-        self._apply_missing_state(book.is_missing)
+        missing = "true" if book.is_missing else "false"
+        unavailable = "true" if book.is_unavailable else "false"
+        state_changed = (
+            self.property("missing") != missing or self.property("unavailable") != unavailable
+        )
+        self.setProperty("missing", missing)
+        self.setProperty("unavailable", unavailable)
+        self._apply_unavailable_state(not book.is_available, force=state_changed)
         self.refresh_labels()
 
     def refresh_labels(self) -> None:
@@ -157,12 +165,11 @@ class BookCardWidget(QFrame):
     def _emit_option_menu(self, button: QToolButton) -> None:
         self.menu_requested.emit(self.book.uuid, button.mapToGlobal(QPoint(0, button.height())))
 
-    def _apply_missing_state(self, is_missing: bool, *, force: bool = False) -> None:
-        if not force and is_missing == self._is_missing:
+    def _apply_unavailable_state(self, is_unavailable: bool, *, force: bool = False) -> None:
+        if not force and is_unavailable == self._is_unavailable:
             return
-        self._is_missing = is_missing
-        self.setProperty("missing", "true" if is_missing else "false")
-        if is_missing:
+        self._is_unavailable = is_unavailable
+        if is_unavailable:
             opacity = QGraphicsOpacityEffect(self)
             opacity.setOpacity(Theme.missing_book_opacity)
             self.setGraphicsEffect(opacity)

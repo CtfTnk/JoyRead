@@ -26,7 +26,15 @@ from joyread.core.services.hash_service import HashService
 from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_service import LibraryService
-from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.core.services.library_maintenance_service import (
+    LibraryMaintenanceCoordinator,
+    LibraryMaintenanceLease,
+    LibraryMaintenanceService,
+)
+from joyread.core.services.storage_migration_service import (
+    StorageMigrationResult,
+    StorageMigrationService,
+)
 from joyread.core.services.storage_recovery_service import RecoveryPrompt, StorageRecoveryService
 from joyread.core.services.storage_validation_service import (
     StorageValidationResult,
@@ -56,6 +64,23 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class StorageTransition:
+    """Outcome of a worker-side storage mutation awaiting UI-side rebuild.
+
+    The coordinator lease intentionally remains held while the task result is
+    queued back to Qt.  ``finish_storage_transition`` rebuilds services on the
+    UI thread and releases it, preventing queued import/audit work from using
+    the closed database interpreter in the gap.
+    """
+
+    operation: str
+    lease: LibraryMaintenanceLease
+    result: StorageMigrationResult | StorageValidationResult | None = None
+    error: Exception | None = None
+    reload_required: bool = False
+
+
+@dataclass
 class AppContext:
     """Runtime dependency graph for the application.
 
@@ -81,6 +106,8 @@ class AppContext:
     hash_service: HashService
     tag_service: TagService
     import_service: ImportService
+    library_maintenance_coordinator: LibraryMaintenanceCoordinator
+    library_maintenance_service: LibraryMaintenanceService
     export_service: ExportService
     storage_migration_service: StorageMigrationService
     storage_validation_service: StorageValidationService
@@ -95,6 +122,7 @@ class AppContext:
     # Populated when startup recovery had to fall back to another library;
     # the main window shows it once on launch.
     storage_startup_notice: str | None = None
+    library_maintenance_recovery_conflicts: bool = False
 
     def close(self) -> None:
         logger.info("AppContext shutting down: cancelling tasks then closing database")
@@ -112,17 +140,12 @@ class AppContext:
         validation; the old storage is reopened and stays in use.
         """
 
-        old_root = Path(self.settings.storage_location)
-        logger.info("Move storage requested: %s -> parent %s", old_root, target_parent)
-        self.database_interpreter.close()
+        transition = self.begin_storage_move(target_parent)
         try:
-            self.storage_migration_service.move_to_parent(old_root, target_parent)
-        except Exception:
-            # Settings were not changed; rebuild against the old root so the
-            # app keeps running on the existing library.
-            self.reload_storage_from_settings()
-            raise
-        self.reload_storage_from_settings()
+            if transition.error is not None:
+                raise transition.error
+        finally:
+            self.finish_storage_transition(transition)
 
     def select_storage(self, existing_root: Path) -> StorageValidationResult:
         """Switch to an existing JoyRead library without copying or deleting.
@@ -131,25 +154,108 @@ class AppContext:
         re-pointed. On failure the current library keeps running.
         """
 
-        existing_root = existing_root.expanduser().resolve()
-        logger.info("Select existing library requested: %s", existing_root)
-        result = self.storage_validation_service.validate_full(existing_root)
-        if not result.ok:
-            logger.warning("Select rejected (%s): %s", result.code, result.message)
+        transition = self.begin_storage_select(existing_root)
+        try:
+            if transition.error is not None:
+                raise transition.error
+            result = transition.result
+            if not isinstance(result, StorageValidationResult):
+                raise RuntimeError("Storage selection did not produce a validation result.")
             return result
-        self.database_interpreter.close()
-        self.settings_store.update(storage_location=str(existing_root))
-        self.reload_storage_from_settings()
-        return result
+        finally:
+            self.finish_storage_transition(transition)
 
     def reset_storage(self) -> None:
         """Erase the current library and rebuild an empty one in place."""
 
+        transition = self.begin_storage_reset()
+        try:
+            if transition.error is not None:
+                raise transition.error
+        finally:
+            self.finish_storage_transition(transition)
+
+    def begin_storage_move(self, target_parent: Path) -> StorageTransition:
+        """Run the disk phase of Move while holding the maintenance gate.
+
+        Call :meth:`finish_storage_transition` on the UI thread after the
+        worker returns, even when ``error`` is populated.
+        """
+
+        lease = self.library_maintenance_coordinator.acquire("storage-move")
+        old_root = Path(self.settings.storage_location)
+        logger.info("Move storage requested: %s -> parent %s", old_root, target_parent)
+        try:
+            self.database_interpreter.close()
+            result = self.storage_migration_service.move_to_parent(old_root, target_parent)
+        except Exception as exc:
+            return StorageTransition(
+                "storage-move",
+                lease,
+                error=exc,
+                reload_required=True,
+            )
+        return StorageTransition("storage-move", lease, result=result, reload_required=True)
+
+    def begin_storage_select(self, existing_root: Path) -> StorageTransition:
+        """Validate and adopt a library while excluding import/audit work."""
+
+        lease = self.library_maintenance_coordinator.acquire("storage-select")
+        existing_root = existing_root.expanduser().resolve()
+        logger.info("Select existing library requested: %s", existing_root)
+        try:
+            result = self.storage_validation_service.validate_full(existing_root)
+        except Exception as exc:
+            lease.release()
+            return StorageTransition("storage-select", lease, error=exc)
+        if not result.ok:
+            logger.warning("Select rejected (%s): %s", result.code, result.message)
+            lease.release()
+            return StorageTransition("storage-select", lease, result=result)
+        try:
+            self.database_interpreter.close()
+            # Record the selected root as known-good, so startup recovery can
+            # safely return to it if a future configured path is unavailable.
+            self.settings_store.update(
+                storage_location=str(existing_root),
+                last_good_storage_location=str(existing_root),
+            )
+        except Exception as exc:
+            return StorageTransition(
+                "storage-select",
+                lease,
+                result=result,
+                error=exc,
+                reload_required=True,
+            )
+        return StorageTransition("storage-select", lease, result=result, reload_required=True)
+
+    def begin_storage_reset(self) -> StorageTransition:
+        """Run the destructive Reset phase while holding the maintenance gate."""
+
+        lease = self.library_maintenance_coordinator.acquire("storage-reset")
         root = Path(self.settings.storage_location)
         logger.info("Reset storage requested at %s", root)
-        self.database_interpreter.close()
-        self.storage_migration_service.reset_library(root)
-        self.reload_storage_from_settings()
+        try:
+            self.database_interpreter.close()
+            self.storage_migration_service.reset_library(root)
+        except Exception as exc:
+            return StorageTransition(
+                "storage-reset",
+                lease,
+                error=exc,
+                reload_required=True,
+            )
+        return StorageTransition("storage-reset", lease, reload_required=True)
+
+    def finish_storage_transition(self, transition: StorageTransition) -> None:
+        """Rebuild UI-facing services and release a worker-held storage lease."""
+
+        try:
+            if transition.reload_required:
+                self.reload_storage_from_settings()
+        finally:
+            transition.lease.release()
 
     def apply_archive_depth_settings(self) -> None:
         """Compatibility entrypoint for older callers of depth-only settings."""
@@ -161,6 +267,7 @@ class AppContext:
         limits = _archive_open_limits_from_settings(self.settings)
         self.thumbnail_service.set_archive_open_limits(limits)
         self.import_service.set_archive_open_limits(limits)
+        self.library_maintenance_service.set_archive_open_limits(limits)
         self.import_service.set_verify_imported_file_integrity(
             self.settings.verify_imported_file_integrity
         )
@@ -210,6 +317,17 @@ class AppContext:
             tag_service=self.tag_service,
             archive_limits=_archive_open_limits_from_settings(self.settings),
             verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
+            maintenance_coordinator=self.library_maintenance_coordinator,
+        )
+        self.library_maintenance_service = _create_library_maintenance_service(
+            self.paths,
+            self.database_interpreter,
+            self.hash_service,
+            self.archive_image_service,
+            self.thumbnail_service,
+            self.archive_extraction_pool,
+            _archive_open_limits_from_settings(self.settings),
+            self.library_maintenance_coordinator,
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -267,6 +385,17 @@ class AppContext:
                 tag_service=self.tag_service,
                 archive_limits=_archive_open_limits_from_settings(self.settings),
                 verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
+                maintenance_coordinator=self.library_maintenance_coordinator,
+            )
+            self.library_maintenance_service = _create_library_maintenance_service(
+                self.paths,
+                self.database_interpreter,
+                self.hash_service,
+                self.archive_image_service,
+                self.thumbnail_service,
+                self.archive_extraction_pool,
+                _archive_open_limits_from_settings(self.settings),
+                self.library_maintenance_coordinator,
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -344,6 +473,7 @@ def create_app_context(
     task_service = TaskService(config.max_background_workers)
     archive_warmup_coordinator = ArchiveWarmupCoordinator(reader_session_service, task_service)
     hash_service = HashService()
+    library_maintenance_coordinator = LibraryMaintenanceCoordinator()
     cache_service = CacheService(
         archive_extraction_pool=archive_extraction_pool,
         reader_page_cache_max_bytes=settings.reader_page_cache_mb * 1024 * 1024,
@@ -359,6 +489,7 @@ def create_app_context(
         tag_service=tag_service,
         archive_limits=_archive_open_limits_from_settings(settings),
         verify_imported_file_integrity=settings.verify_imported_file_integrity,
+        maintenance_coordinator=library_maintenance_coordinator,
     )
     export_service = ExportService(book_repository, hash_service)
     thumbnail_service = ThumbnailService(
@@ -370,6 +501,17 @@ def create_app_context(
         archive_global_file_max_depth=settings.archive_global_file_max_depth,
         archive_limits=_archive_open_limits_from_settings(settings),
     )
+    library_maintenance_service = _create_library_maintenance_service(
+        paths,
+        database_interpreter,
+        hash_service,
+        archive_image_service,
+        thumbnail_service,
+        archive_extraction_pool,
+        _archive_open_limits_from_settings(settings),
+        library_maintenance_coordinator,
+    )
+    maintenance_recovery = library_maintenance_service.recover_pending_journal()
     hidden_space_service = HiddenSpaceService(settings_store, library_service)
     main_window_viewmodel = MainWindowViewModel()
     shelf_viewmodel = ShelfViewModel(
@@ -404,6 +546,8 @@ def create_app_context(
         hash_service=hash_service,
         tag_service=tag_service,
         import_service=import_service,
+        library_maintenance_coordinator=library_maintenance_coordinator,
+        library_maintenance_service=library_maintenance_service,
         export_service=export_service,
         storage_migration_service=storage_migration_service,
         storage_validation_service=storage_validation_service,
@@ -415,6 +559,7 @@ def create_app_context(
         settings_viewmodel=settings_viewmodel,
         tag_management_viewmodel=tag_management_viewmodel,
         storage_startup_notice=startup.notice,
+        library_maintenance_recovery_conflicts=bool(maintenance_recovery.conflicts),
     )
     # The settings panel renders a live "used / budget" label for the disk
     # pool; provide it a thin lambda so the viewmodel can poll the current
@@ -475,6 +620,28 @@ def _create_sqlite_book_repository(database: DatabaseInterpreter, paths: PathSer
         resolver=paths.resolver,
         managed_books_root=paths.paths.books,
         thumbnails_root=paths.paths.thumbnails,
+    )
+
+
+def _create_library_maintenance_service(
+    paths: PathService,
+    database: DatabaseInterpreter,
+    hash_service: HashService,
+    archive_service: ArchiveImageService,
+    thumbnail_service: ThumbnailService,
+    extraction_cache: ArchiveExtractionCache,
+    archive_limits: ArchiveOpenLimits,
+    coordinator: LibraryMaintenanceCoordinator,
+) -> LibraryMaintenanceService:
+    return LibraryMaintenanceService(
+        paths,
+        database,
+        hash_service,
+        archive_service,
+        archive_limits=archive_limits,
+        extraction_cache=extraction_cache,
+        invalidate_file_cache=thumbnail_service.invalidate_file_cache,
+        coordinator=coordinator,
     )
 
 

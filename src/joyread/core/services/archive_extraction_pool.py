@@ -65,6 +65,8 @@ class ArchiveExtractionCache(Protocol):
 
     def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None: ...
 
+    def purge(self, document_cache_key: str) -> None: ...
+
     def resize(self, max_bytes: int) -> None: ...
 
     def clear(self) -> None: ...
@@ -198,6 +200,26 @@ class ArchiveExtractionPool:
                 logger.warning("Archive cache publish failed for key=%s: %s", book_key, exc)
                 return
             self._index[book_key] = _PoolEntry(final_path, stat.st_size, stat.st_mtime)
+
+    def purge(self, document_cache_key: str) -> None:
+        """Remove all extracted bytes for one immutable document identity."""
+
+        self._ensure_reconciled()
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            self._forget_locked(book_key)
+            if self._directory is None:
+                return
+            for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}"):
+                candidate = self._directory / f"{book_key}{suffix}"
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
         """Persist ``data`` under the bundle for ``document_cache_key``.
@@ -598,6 +620,27 @@ class HiddenImageExtractionPool:
 
     def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None:
         self.put(document_cache_key, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
+
+    def purge(self, document_cache_key: str) -> None:
+        """Remove all hidden-cache entries for one immutable document identity."""
+
+        self._ensure_reconciled()
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            for key in tuple(self._index):
+                if key[0] == book_key:
+                    self._forget_locked(key)
+            if self._directory is None:
+                return
+            book_dir = self._directory / book_key
+            if book_dir.is_symlink() or not book_dir.is_dir():
+                return
+            try:
+                shutil.rmtree(book_dir)
+            except OSError:
+                pass
 
     def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
         self.put_many(document_cache_key, {entry_name: data})

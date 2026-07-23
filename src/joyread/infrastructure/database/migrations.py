@@ -14,7 +14,92 @@ from joyread.infrastructure.filesystem.path_service import StoragePathResolver
 logger = logging.getLogger(__name__)
 
 
-MIGRATIONS: tuple[tuple[int, str], ...] = (
+MigrationStep = str | Callable[[sqlite3.Connection], None]
+
+
+def _migrate_book_files_v12(connection: sqlite3.Connection) -> None:
+    """Replace mutable source-metadata columns with audit state.
+
+    SQLite cannot drop the two legacy columns while preserving the existing
+    foreign-key graph. ``apply_migrations`` runs this callable with foreign
+    keys temporarily disabled, then checks the rebuilt graph before commit.
+    """
+
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+    }
+    if not columns:
+        raise sqlite3.OperationalError("book_files is missing before migration 12")
+    original_name = (
+        "COALESCE(original_file_name, joyread_basename(original_path))"
+        if "original_file_name" in columns
+        else "joyread_basename(original_path)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE book_files_v12 (
+            file_id TEXT PRIMARY KEY,
+            original_path TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            file_format TEXT NOT NULL,
+            hash_algorithm TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            state TEXT NOT NULL CHECK (state IN ('healthy', 'missing', 'unavailable')),
+            integrity_error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(hash_algorithm, content_hash)
+        )
+        """
+    )
+    connection.execute(
+        f"""
+        INSERT INTO book_files_v12(
+            file_id, original_path, original_file_name, storage_path, file_format,
+            hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
+        )
+        SELECT
+            file_id,
+            original_path,
+            {original_name},
+            storage_path,
+            file_format,
+            hash_algorithm,
+            content_hash,
+            CASE WHEN state IN ('healthy', 'missing') THEN state ELSE 'unavailable' END,
+            NULL,
+            created_at,
+            updated_at
+        FROM book_files
+        """
+    )
+    connection.execute("DROP TABLE book_files")
+    connection.execute("ALTER TABLE book_files_v12 RENAME TO book_files")
+    connection.execute(
+        "CREATE INDEX idx_book_files_hash ON book_files(hash_algorithm, content_hash)"
+    )
+    connection.execute("CREATE INDEX idx_book_files_state ON book_files(state)")
+    connection.execute(
+        """
+        CREATE TABLE library_maintenance_journal (
+            journal_id TEXT PRIMARY KEY,
+            operation_kind TEXT NOT NULL CHECK (operation_kind IN ('rename')),
+            file_id TEXT NOT NULL,
+            from_storage_path TEXT NOT NULL,
+            to_storage_path TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE INDEX idx_library_maintenance_journal_file ON library_maintenance_journal(file_id)"
+    )
+
+
+MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
     (
         1,
         """
@@ -318,6 +403,7 @@ MIGRATIONS: tuple[tuple[int, str], ...] = (
             WHERE cover_path IS NOT NULL;
         """,
     ),
+    (12, _migrate_book_files_v12),
 )
 
 
@@ -350,26 +436,29 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
         len(pending),
         pending,
     )
-    for version, sql in MIGRATIONS:
+    for version, migration in MIGRATIONS:
         if version in applied:
             continue
         logger.info("Applying migration %d", version)
         start = time.perf_counter()
         try:
-            connection.executescript(
-                f"""
-                BEGIN;
-                {sql}
-                INSERT INTO schema_migrations(version) VALUES ({int(version)});
-                COMMIT;
-                """
-            )
+            if isinstance(migration, str):
+                connection.executescript(
+                    f"""
+                    BEGIN;
+                    {migration}
+                    INSERT INTO schema_migrations(version) VALUES ({int(version)});
+                    COMMIT;
+                    """
+                )
+            else:
+                _apply_callable_migration(connection, version, migration)
         except Exception as exc:
             logger.error(
-                "Migration %d failed: %s\nSQL:\n%s",
+                "Migration %d failed: %s\nStep:\n%s",
                 version,
                 exc,
-                sql,
+                migration if isinstance(migration, str) else migration.__name__,
                 exc_info=True,
             )
             try:
@@ -385,6 +474,37 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
             raise
         elapsed_ms = (time.perf_counter() - start) * 1000.0
         logger.info("Migration %d applied in %.0f ms", version, elapsed_ms)
+
+
+def _apply_callable_migration(
+    connection: sqlite3.Connection,
+    version: int,
+    migration: Callable[[sqlite3.Connection], None],
+) -> None:
+    """Run a table-rebuild migration without weakening later connections."""
+
+    foreign_keys_enabled = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("BEGIN")
+        migration(connection)
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            first = violations[0]
+            raise sqlite3.IntegrityError(
+                f"foreign_key_check failed after migration {version}: {tuple(first)}"
+            )
+        connection.execute("INSERT INTO schema_migrations(version) VALUES (?)", (version,))
+        connection.execute("COMMIT")
+    except Exception:
+        try:
+            connection.execute("ROLLBACK")
+        except sqlite3.OperationalError:
+            pass
+        raise
+    finally:
+        if foreign_keys_enabled:
+            connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _sqlite_basename(value: object) -> str:

@@ -27,10 +27,9 @@ def _insert_book(database: DatabaseInterpreter, book_id: str, *, file_id: str | 
             """
             INSERT INTO book_files(
                 file_id, original_path, original_file_name, storage_path, file_format,
-                file_size, mtime_ns, hash_algorithm, content_hash, state,
-                created_at, updated_at
+                hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 'CBZ', 0, 0, 'sha256', ?, 'healthy', ?, ?)
+            VALUES (?, ?, ?, ?, 'CBZ', 'sha256', ?, 'healthy', NULL, ?, ?)
             """,
             (file_id, f"/tmp/{book_id}.cbz", f"{book_id}.cbz", f"/storage/{book_id}.cbz", book_id, now, now),
         )

@@ -57,6 +57,8 @@ def test_app_context_closes_tasks_before_database() -> None:
         hash_service=None,  # type: ignore[arg-type]
         tag_service=None,  # type: ignore[arg-type]
         import_service=None,  # type: ignore[arg-type]
+        library_maintenance_coordinator=None,  # type: ignore[arg-type]
+        library_maintenance_service=None,  # type: ignore[arg-type]
         export_service=None,  # type: ignore[arg-type]
         storage_migration_service=None,  # type: ignore[arg-type]
         storage_validation_service=None,  # type: ignore[arg-type]

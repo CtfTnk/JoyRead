@@ -10,7 +10,7 @@ from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QCloseEvent, QCursor, QIcon
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
-from joyread.app.app_context import AppContext
+from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
@@ -18,6 +18,8 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
+from joyread.core.services.library_maintenance_service import LibraryAuditPlan, LibraryAuditReport
+from joyread.core.services.task_service import TaskPriority
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
@@ -64,6 +66,8 @@ class MainWindow(QMainWindow):
         self._standalone_reader_launcher = standalone_reader_launcher
         self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
         self._cover_editor_book_uuid: str | None = None
+        self._library_maintenance_task_active = False
+        self._library_maintenance_plan_pending = False
         self._cover_editor_thumbnail_viewmodel = CoverEditorThumbnailViewModel(
             context.thumbnail_service,
             context.task_service,
@@ -115,6 +119,7 @@ class MainWindow(QMainWindow):
         self.settings_view.close_requested.connect(self._hide_settings_page)
         self.settings_view.tag_operation_completed.connect(self._handle_tag_operation_result)
         self.settings_view.tag_delete_requested.connect(self._confirm_delete_tags)
+        self.settings_view.library_maintenance_requested.connect(self._request_library_maintenance)
         self.settings_view.hide()
 
         self._resize_grip = QSizeGrip(root)
@@ -191,13 +196,14 @@ class MainWindow(QMainWindow):
         # Shelf clicks travel through the viewmodel (book_card →
         # shelf_view → vm.open_book) so every "open" is gated by
         # ``_refresh_book_state`` — that re-validates the
-        # ``is_missing`` snapshot per click and heals a stale row
+        # ``is_available`` snapshot per click and heals a stale missing row
         # (e.g. user restored a deleted file). MainWindow only sees
         # the VM's *decision* signals and never reads
-        # ``book.is_missing`` directly.
+        # ``book.is_available`` directly.
         context.shelf_viewmodel.book_open_requested.connect(self.open_reader_for_book)
         context.shelf_viewmodel.book_open_at_requested.connect(self.open_reader_for_book_at)
         context.shelf_viewmodel.missing_book_requested.connect(self._show_missing_book_dialog)
+        context.shelf_viewmodel.unavailable_book_requested.connect(self._show_unavailable_book_dialog)
         context.shelf_viewmodel.delete_failed.connect(self._show_delete_failed)
         context.shelf_viewmodel.favourite_failed.connect(self._show_favourite_failed)
         context.shelf_viewmodel.book_metadata_failed.connect(self._show_book_metadata_failed)
@@ -231,16 +237,27 @@ class MainWindow(QMainWindow):
                     t("dialog.storage_title"), message
                 ),
             )
+        if context.library_maintenance_recovery_conflicts:
+            QTimer.singleShot(
+                0,
+                lambda: self.dialog_overlay.show_info(
+                    t("dialog.library_maintenance_recovery_title"),
+                    t("dialog.library_maintenance_recovery_msg"),
+                ),
+            )
 
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
         # Invoked via ``shelf_viewmodel.book_open_requested`` — the VM
-        # has already refreshed file state and gated on ``is_missing``,
+        # has already refreshed file state and gated on ``is_available``,
         # so we only defend against the race where the book row was
         # deleted between the VM check and this slot.
         book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
         if book is None:
             logger.warning("open_reader_for_book: missing book uuid=%s", book_uuid)
             self.dialog_overlay.show_info(t("dialog.read_title"), t("dialog.book_no_longer_available"))
+            return
+        if not book.is_available:
+            self._show_unavailable_book_dialog(book_uuid)
             return
         source_path = Path(book.file_path)
         if _is_shelved_epub(source_path):
@@ -615,6 +632,113 @@ class MainWindow(QMainWindow):
             ),
         )
 
+    def _request_library_maintenance(self) -> None:
+        if self._library_maintenance_task_active or self._library_maintenance_plan_pending:
+            return
+        self._library_maintenance_task_active = True
+        self._submit_library_maintenance_task(
+            "library-maintenance-scan",
+            self._context.library_maintenance_service.scan,
+            on_success=self._handle_library_maintenance_scan,
+            on_failure=self._handle_library_maintenance_failure,
+            priority=TaskPriority.BACKGROUND,
+        )
+
+    def _handle_library_maintenance_scan(self, plan: LibraryAuditPlan) -> None:
+        self._library_maintenance_task_active = False
+        if not plan.has_changes:
+            self.dialog_overlay.show_info(
+                t("dialog.library_audit_title"),
+                t("dialog.library_audit_clean_msg"),
+            )
+            return
+        self._library_maintenance_plan_pending = True
+        self.dialog_overlay.show_confirm(
+            t("dialog.library_audit_title"),
+            t(
+                "dialog.library_audit_plan_msg",
+                changed=str(plan.changed_count),
+                merged=str(plan.merge_count),
+                missing=str(plan.missing_count),
+                unavailable=str(plan.unavailable_count),
+                repaired=str(plan.repair_count),
+                orphan_files=str(len(plan.orphan_files)),
+                orphan_cache=str(len(plan.orphan_cache_files)),
+                reclaimable=_format_byte_count(plan.reclaimable_bytes),
+            ),
+            on_confirm=lambda plan=plan: self._apply_library_maintenance(plan),
+            on_cancel=self._clear_pending_library_maintenance_plan,
+            confirm_text=t("dialog.btn_apply"),
+            cancel_text=t("dialog.btn_cancel"),
+        )
+
+    def _apply_library_maintenance(self, plan: LibraryAuditPlan) -> None:
+        self._library_maintenance_plan_pending = False
+        if self._library_maintenance_task_active:
+            return
+        self._library_maintenance_task_active = True
+        self._submit_library_maintenance_task(
+            "library-maintenance-apply",
+            lambda plan=plan: self._context.library_maintenance_service.apply(plan),
+            on_success=self._handle_library_maintenance_report,
+            on_failure=self._handle_library_maintenance_failure,
+            priority=TaskPriority.NORMAL,
+        )
+
+    def _handle_library_maintenance_report(self, report: LibraryAuditReport) -> None:
+        self._library_maintenance_task_active = False
+        self._context.shelf_viewmodel.load_books()
+        self._refresh_sidebar_collections()
+        self.shelf_view.render()
+        self._context.settings_viewmodel.refresh_archive_pool_usage()
+        self.dialog_overlay.show_info(
+            t("dialog.library_audit_title"),
+            t(
+                "dialog.library_audit_report_msg",
+                changed=str(report.changed_count),
+                merged=str(report.merged_count),
+                missing=str(report.missing_count),
+                unavailable=str(report.unavailable_count),
+                repaired=str(report.repaired_count),
+                cleaned_files=str(report.cleaned_file_count),
+                cleaned_cache=str(report.cleaned_cache_count),
+                reclaimed=_format_byte_count(report.reclaimed_bytes),
+                skipped=str(len(report.skipped)),
+                errors=str(len(report.errors)),
+            ),
+        )
+
+    def _handle_library_maintenance_failure(self, error: Exception) -> None:
+        self._library_maintenance_task_active = False
+        self._library_maintenance_plan_pending = False
+        logger.warning("Library maintenance task failed: %s", error, exc_info=True)
+        self.dialog_overlay.show_info(
+            t("dialog.library_audit_title"),
+            t("dialog.library_audit_failed_msg", message=str(error)),
+        )
+
+    def _clear_pending_library_maintenance_plan(self) -> None:
+        self._library_maintenance_plan_pending = False
+
+    def _submit_library_maintenance_task(self, name, callback, *, on_success, on_failure, priority) -> None:  # noqa: ANN001
+        """Use priority when the injected test task service supports it."""
+
+        try:
+            self._context.task_service.submit(
+                name,
+                callback,
+                on_success=on_success,
+                on_failure=on_failure,
+                priority=priority,
+            )
+        except TypeError:
+            self._context.task_service.submit(
+                name,
+                callback,
+                on_success=on_success,
+                on_failure=on_failure,
+            )
+
     def _select_export_folder(self, book_uuids: tuple[str, ...]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuids))
         if not target_ids:
@@ -696,6 +820,14 @@ class MainWindow(QMainWindow):
             on_cancel=None,
             confirm_text=t("dialog.btn_delete"),
             cancel_text=t("dialog.btn_keep"),
+        )
+
+    def _show_unavailable_book_dialog(self, book_uuid: str) -> None:
+        book = next((book for book in self._context.shelf_viewmodel.books if book.uuid == book_uuid), None)
+        title = book.title if book is not None else t("dialog.book_no_longer_available")
+        self.dialog_overlay.show_info(
+            t("dialog.unavailable_file_title"),
+            t("dialog.unavailable_file_msg", title=title),
         )
 
     def _show_hidden_space_setup_dialog(self) -> None:
@@ -860,15 +992,14 @@ class MainWindow(QMainWindow):
         )
         if not directory:
             return
-        old_root = Path(self._context.settings.storage_location)
         target_parent = Path(directory)
-        # The copy can be large, so the filesystem work runs on a worker; the
-        # storage rebuild happens back on the UI thread in the success handler.
-        self._context.database_interpreter.close()
+        # The copy can be large, so the filesystem work runs on a worker. Its
+        # maintenance lease remains held until the UI thread has rebuilt the
+        # services around the destination library.
         self._context.task_service.submit(
             "move-storage-location",
-            lambda: self._context.storage_migration_service.move_to_parent(old_root, target_parent),
-            on_success=lambda _result: self._handle_storage_location_changed(),
+            lambda: self._context.begin_storage_move(target_parent),
+            on_success=self._complete_storage_transition,
             on_failure=lambda error: self._handle_storage_location_failed(error),
         )
 
@@ -881,31 +1012,15 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         existing_root = Path(directory)
-        # Validate the chosen library off the UI thread; only adopt it if usable.
+        # Validation and adoption are one exclusive transition. Splitting them
+        # would let an import slip in after validation but before the selected
+        # storage root is adopted.
         self._context.task_service.submit(
-            "validate-storage-location",
-            lambda: self._context.storage_validation_service.validate_full(existing_root),
-            on_success=lambda result: self._apply_selected_storage(existing_root, result),
+            "select-storage-location",
+            lambda: self._context.begin_storage_select(existing_root),
+            on_success=self._complete_storage_transition,
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.storage_title"), str(error)),
         )
-
-    def _apply_selected_storage(self, existing_root: Path, result: object) -> None:
-        if not getattr(result, "ok", False):
-            message = getattr(result, "message", "") or t("dialog.storage_invalid_default")
-            self.dialog_overlay.show_info(
-                t("dialog.storage_title"),
-                t("dialog.storage_invalid_location", message=message),
-            )
-            return
-        resolved = str(existing_root.expanduser().resolve())
-        self._context.database_interpreter.close()
-        # Record as last_good so startup recovery can fall back to this library
-        # if a later location becomes unavailable.
-        self._context.settings_store.update(
-            storage_location=resolved,
-            last_good_storage_location=resolved,
-        )
-        self._handle_storage_location_changed()
 
     def _request_reset_storage(self) -> None:
         self.dialog_overlay.show_confirm(
@@ -928,17 +1043,38 @@ class MainWindow(QMainWindow):
         )
 
     def _execute_reset_storage(self) -> None:
-        root = Path(self._context.settings.storage_location)
-        self._context.database_interpreter.close()
         self._context.task_service.submit(
             "reset-storage",
-            lambda: self._context.storage_migration_service.reset_library(root),
-            on_success=lambda _result: self._handle_storage_location_changed(),
+            self._context.begin_storage_reset,
+            on_success=self._complete_storage_transition,
             on_failure=lambda error: self._handle_storage_location_failed(error),
         )
 
-    def _handle_storage_location_changed(self) -> None:
-        self._context.reload_storage_from_settings()
+    def _complete_storage_transition(self, transition: StorageTransition) -> None:
+        """Finish a worker-held storage mutation on the Qt/UI thread."""
+
+        try:
+            self._context.finish_storage_transition(transition)
+        except Exception as error:
+            logger.warning("Storage transition reload failed: %s", error, exc_info=True)
+            self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
+            return
+        if transition.error is not None:
+            self.dialog_overlay.show_info(t("dialog.storage_title"), str(transition.error))
+            return
+        result = transition.result
+        if result is not None and not getattr(result, "ok", True):
+            message = getattr(result, "message", "") or t("dialog.storage_invalid_default")
+            self.dialog_overlay.show_info(
+                t("dialog.storage_title"),
+                t("dialog.storage_invalid_location", message=message),
+            )
+            return
+        self._handle_storage_location_changed(reload=False)
+
+    def _handle_storage_location_changed(self, *, reload: bool = True) -> None:
+        if reload:
+            self._context.reload_storage_from_settings()
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
@@ -1495,3 +1631,16 @@ def _validate_collection_name(name: str) -> str | None:
 def _collection_uuid_from_key(collection_key: str) -> str:
     prefix = "collection:"
     return collection_key[len(prefix) :] if collection_key.startswith(prefix) else collection_key
+
+
+def _format_byte_count(value: int) -> str:
+    amount = max(0, int(value))
+    units = ("B", "KB", "MB", "GB", "TB")
+    unit_index = 0
+    displayed = float(amount)
+    while displayed >= 1024.0 and unit_index < len(units) - 1:
+        displayed /= 1024.0
+        unit_index += 1
+    if unit_index == 0:
+        return f"{amount} {units[unit_index]}"
+    return f"{displayed:.1f} {units[unit_index]}"

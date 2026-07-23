@@ -123,7 +123,7 @@ class BookListRowWidget(QFrame):
         self.setMinimumWidth(Theme.book_list_row_width)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        if book.is_missing:
+        if not book.is_available:
             opacity = QGraphicsOpacityEffect(self)
             opacity.setOpacity(Theme.missing_book_opacity)
             self.setGraphicsEffect(opacity)

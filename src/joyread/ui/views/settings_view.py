@@ -24,6 +24,7 @@ class SettingsView(QWidget):
     storage_move_requested = QtSignal()
     storage_select_requested = QtSignal()
     storage_reset_requested = QtSignal()
+    library_maintenance_requested = QtSignal()
     hidden_space_setup_requested = QtSignal()
     hidden_space_verify_requested = QtSignal()
     hidden_space_change_password_requested = QtSignal()
@@ -59,6 +60,7 @@ class SettingsView(QWidget):
         self.page.hidden_space_reset_requested.connect(self.hidden_space_reset_requested.emit)
         self.page.tag_operation_completed.connect(self.tag_operation_completed.emit)
         self.page.tag_delete_requested.connect(self.tag_delete_requested.emit)
+        viewmodel.library_maintenance_requested.connect(self.library_maintenance_requested.emit)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)

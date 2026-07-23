@@ -108,6 +108,7 @@ class ShelfViewModel:
         self.book_open_requested: Signal[str] = Signal()
         self.book_open_at_requested: Signal[tuple[str, int]] = Signal()
         self.missing_book_requested: Signal[str] = Signal()
+        self.unavailable_book_requested: Signal[str] = Signal()
         # cover_ready / page_thumbnail_ready / detail_thumbnail_source_ready
         # fire from the TaskService worker thread (the thumbnail jobs are
         # submitted to the QThreadPool). Receivers in widgets must marshal
@@ -434,8 +435,8 @@ class ShelfViewModel:
         book = self._refresh_book_state(book_uuid)
         if book is None:
             return
-        if book.is_missing:
-            self._emit_missing(book_uuid, "show_detail")
+        if not book.is_available:
+            self._emit_unavailable(book_uuid, "show_detail", book)
             return
         self._set_detail_book_uuid(book_uuid)
         self._emit_state()
@@ -450,8 +451,8 @@ class ShelfViewModel:
         book = self._refresh_book_state(book_uuid)
         if book is None:
             return
-        if book.is_missing:
-            self._emit_missing(book_uuid, "open_book")
+        if not book.is_available:
+            self._emit_unavailable(book_uuid, "open_book", book)
             return
         self.book_open_requested.emit(book_uuid)
 
@@ -459,8 +460,8 @@ class ShelfViewModel:
         book = self._refresh_book_state(book_uuid)
         if book is None:
             return
-        if book.is_missing:
-            self._emit_missing(book_uuid, "open_book_at")
+        if not book.is_available:
+            self._emit_unavailable(book_uuid, "open_book_at", book)
             return
         normalized_index = max(0, page_index)
         self.book_open_at_requested.emit(book_uuid, normalized_index)
@@ -1272,6 +1273,13 @@ class ShelfViewModel:
         # leaves a matching trace line behind for log triage.
         logger.debug("missing_book_requested action=%s book=%s", action, book_uuid)
         self.missing_book_requested.emit(book_uuid)
+
+    def _emit_unavailable(self, book_uuid: str, action: str, book: Book) -> None:
+        if book.is_missing:
+            self._emit_missing(book_uuid, action)
+            return
+        logger.debug("unavailable_book_requested action=%s book=%s", action, book_uuid)
+        self.unavailable_book_requested.emit(book_uuid)
 
     def _refresh_book_state(self, book_uuid: str) -> Book | None:
         # Query the repository on demand so actions reflect missing files

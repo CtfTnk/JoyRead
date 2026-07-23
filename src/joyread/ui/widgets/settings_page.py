@@ -461,6 +461,13 @@ class SettingsPageWidget(QFrame):
         )
         archive_pool_usage.clear_requested.connect(self._viewmodel.request_clear_archive_pool)
 
+        library_banner = SectionBanner(t("settings.banner_library"), self._resources)
+        verify_library = SettingsButtonItem(
+            t("settings.verify_library_and_clean_cache"),
+            t("settings.btn_verify"),
+        )
+        verify_library.clicked.connect(self._viewmodel.request_library_maintenance)
+
         return [
             general_banner,
             language,
@@ -486,6 +493,8 @@ class SettingsPageWidget(QFrame):
             archive_pool_item,
             archive_strategy_item,
             archive_pool_usage,
+            library_banner,
+            verify_library,
         ]
 
 

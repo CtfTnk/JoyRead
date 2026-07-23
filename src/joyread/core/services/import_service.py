@@ -19,6 +19,7 @@ from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
 from joyread.core.services.hash_service import HashService
+from joyread.core.services.library_maintenance_service import LibraryMaintenanceCoordinator
 from joyread.core.services.tag_service import TagService
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
@@ -102,6 +103,7 @@ class ImportService:
         tag_service: TagService | None = None,
         archive_limits: ArchiveOpenLimits | None = None,
         verify_imported_file_integrity: bool = True,
+        maintenance_coordinator: LibraryMaintenanceCoordinator | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -112,6 +114,7 @@ class ImportService:
         self._tag_service = tag_service
         self._archive_limits = archive_limits or ArchiveOpenLimits()
         self._verify_imported_file_integrity = bool(verify_imported_file_integrity)
+        self._maintenance_coordinator = maintenance_coordinator or LibraryMaintenanceCoordinator()
 
     def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
         """Use new limits for later validation without disrupting active jobs."""
@@ -243,6 +246,30 @@ class ImportService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
     ) -> ImportBatchResult:
+        """Serialize a complete import batch against audit and storage moves."""
+
+        with self._maintenance_coordinator.hold("import"):
+            limits = self._archive_limits_for(
+                nested_archive_max_depth,
+                archive_global_file_max_depth,
+            )
+            return self._import_items_locked(
+                items,
+                manifest_path=manifest_path,
+                nested_archive_max_depth=nested_archive_max_depth,
+                archive_global_file_max_depth=archive_global_file_max_depth,
+                limits=limits,
+            )
+
+    def _import_items_locked(
+        self,
+        items: list[dict[str, object]],
+        *,
+        manifest_path: Path | None,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits,
+    ) -> ImportBatchResult:
         """Core import loop: validate, hash, copy, insert per item.
 
         Each entry in ``items`` is a dict with at least ``source_path``;
@@ -286,8 +313,7 @@ class ImportService:
                     source_path=_resolve_source_path(source_value, manifest_dir),
                     source_display=source_value,
                     external_id=str(external_id) if external_id is not None else None,
-                    nested_archive_max_depth=nested_archive_max_depth,
-                    archive_global_file_max_depth=archive_global_file_max_depth,
+                    limits=limits,
                 )
             except Exception as exc:
                 logger.warning("Import item %s failed: %s", source_value, exc, exc_info=True)
@@ -393,8 +419,7 @@ class ImportService:
         source_path: Path,
         source_display: str,
         external_id: str | None,
-        nested_archive_max_depth: int | None,
-        archive_global_file_max_depth: int | None,
+        limits: ArchiveOpenLimits,
     ) -> ImportItemResult:
         failure = self._validate_source_candidate(source_path)
         if failure is not None:
@@ -412,10 +437,6 @@ class ImportService:
                 message=failure.message,
             )
 
-        limits = self._archive_limits_for(
-            nested_archive_max_depth,
-            archive_global_file_max_depth,
-        )
         size_failure = self._check_source_size(source_path, limits)
         if size_failure is not None:
             return self._record_item(
@@ -697,10 +718,10 @@ def _insert_imported_book(
         connection.execute(
             """
             INSERT INTO book_files(
-                file_id, original_path, original_file_name, storage_path, file_format, file_size,
-                mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
+                file_id, original_path, original_file_name, storage_path, file_format,
+                hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'healthy', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', NULL, ?, ?)
             """,
             (
                 file_id,

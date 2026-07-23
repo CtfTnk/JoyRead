@@ -190,8 +190,8 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
     # Five General rows (Storage moved to Privacy), three Import depth rows,
-    # seven Archive rows, and five Cache rows.
-    assert len(setting_items) == 20
+    # seven Archive rows, five Cache rows, and the Library maintenance action.
+    assert len(setting_items) == 21
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 11
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
@@ -232,6 +232,29 @@ def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
     QApplication.processEvents()
 
     assert viewmodel.inspect_non_native_title_control is True
+
+
+def test_general_tab_library_maintenance_button_emits_viewmodel_request(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    requested: list[bool] = []
+    viewmodel.library_maintenance_requested.connect(lambda: requested.append(True))
+
+    button = next(
+        item
+        for item in page.findChildren(SettingsButtonItem)
+        if any(
+            label.text() == "Verify Library & Clean Cache"
+            for label in item.findChildren(QLabel)
+        )
+    )
+    button.button.click()
+
+    assert requested == [True]
 
 
 def test_language_dropdown_displays_native_names_but_persists_canonical_value(qtbot, tmp_path) -> None:

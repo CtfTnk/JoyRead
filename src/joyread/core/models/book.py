@@ -40,6 +40,11 @@ class Book:
     last_read_at: datetime | None
     is_favourite: bool
     is_missing: bool = False
+    # ``unavailable`` means the managed path exists but a manual integrity
+    # audit could not safely probe its current bytes. It remains distinct from
+    # ``missing`` so a normal filesystem existence check cannot erase an audit
+    # finding.
+    is_unavailable: bool = False
     is_hidden: bool = False
     collection_ids: tuple[str, ...] = ()
     page_count: int = DEFAULT_PAGE_COUNT_PLACEHOLDER
@@ -62,3 +67,9 @@ class Book:
     @property
     def progress_percent(self) -> int:
         return round(max(0.0, min(1.0, self.progress)) * 100)
+
+    @property
+    def is_available(self) -> bool:
+        """Whether this shelf entry is currently safe to open or inspect."""
+
+        return not self.is_missing and not self.is_unavailable

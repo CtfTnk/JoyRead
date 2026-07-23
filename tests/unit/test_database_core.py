@@ -12,7 +12,7 @@ from PIL import Image
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import create_app_context
-from joyread.core.archive import ArchiveImageService
+from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.archive_extraction_pool import HiddenImageExtractionPool
@@ -165,9 +165,87 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
         }
     )
     assert "original_file_name" in book_file_columns
+    assert "file_size" not in book_file_columns
+    assert "mtime_ns" not in book_file_columns
+    assert "integrity_error_code" in book_file_columns
     assert "vertical_zoom_percent" in reader_settings_columns
     assert "vertical_fit_width" in reader_settings_columns
     database.close()
+
+
+def test_migration_v12_rebuilds_book_files_without_losing_foreign_key_links(tmp_path: Path) -> None:
+    """A v11 library keeps public/private ownership when v12 drops metadata."""
+
+    connection = open_sqlite_connection(tmp_path / "legacy-v11.sqlite3")
+    connection.create_function("joyread_basename", 1, lambda value: Path(str(value or "book")).name)
+    connection.create_function("joyread_storage_relative", 1, lambda value: value)
+    try:
+        for version, migration in MIGRATIONS:
+            if version >= 12:
+                break
+            assert isinstance(migration, str)
+            connection.executescript(
+                f"""
+                BEGIN;
+                {migration}
+                INSERT INTO schema_migrations(version) VALUES ({version});
+                COMMIT;
+                """
+            )
+        connection.executescript(
+            """
+            INSERT INTO book_files(
+                file_id, original_path, original_file_name, storage_path, file_format,
+                file_size, mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
+            ) VALUES (
+                'file-1', '/source/legacy.cbz', 'legacy.cbz', 'Books/aa/legacy.cbz', 'CBZ',
+                123, 456, 'sha256', 'legacy-hash', 'healthy', '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            INSERT INTO books(
+                book_id, file_id, title, author, language_tag, book_type,
+                cover_path, is_favourite, created_at, updated_at
+            ) VALUES (
+                'book-1', 'file-1', 'Public', 'Unknown', 'und', 'manga', NULL, 0,
+                '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            INSERT INTO private_books(
+                private_book_id, file_id, title, author, language_tag, book_type,
+                cover_path, encrypted_cover_path, encryption_status,
+                private_collection_id, created_at, updated_at
+            ) VALUES (
+                'private-1', 'file-1', 'Private', 'Unknown', 'und', 'manga', NULL, NULL,
+                'not_encrypted', NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            """
+        )
+
+        apply_migrations(connection)
+
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+        }
+        row = connection.execute(
+            "SELECT original_file_name, content_hash, state, integrity_error_code FROM book_files WHERE file_id = 'file-1'"
+        ).fetchone()
+        public_file_id = connection.execute(
+            "SELECT file_id FROM books WHERE book_id = 'book-1'"
+        ).fetchone()["file_id"]
+        private_file_id = connection.execute(
+            "SELECT file_id FROM private_books WHERE private_book_id = 'private-1'"
+        ).fetchone()["file_id"]
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        journal_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'library_maintenance_journal'"
+        ).fetchone()
+
+        assert {"file_size", "mtime_ns"}.isdisjoint(columns)
+        assert {"state", "integrity_error_code", "original_file_name"} <= columns
+        assert tuple(row) == ("legacy.cbz", "legacy-hash", "healthy", None)
+        assert public_file_id == private_file_id == "file-1"
+        assert violations == []
+        assert journal_table is not None
+    finally:
+        connection.close()
 
 
 def test_language_migration_normalizes_legacy_language_values(tmp_path: Path) -> None:
@@ -454,9 +532,9 @@ def test_migration_normalizes_absolute_managed_paths(tmp_path: Path) -> None:
             connection.execute(
                 """
                 INSERT INTO book_files(
-                    file_id, original_path, storage_path, file_format, file_size,
-                    mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
-                ) VALUES(?, 'orig', ?, 'CBZ', 1, 1, 'sha256', ?, 'healthy', 't', 't')
+                    file_id, original_path, original_file_name, storage_path, file_format,
+                    hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
+                ) VALUES(?, 'orig', 'inside.cbz', ?, 'CBZ', 'sha256', ?, 'healthy', NULL, 't', 't')
                 """,
                 (file_id, storage_path, content_hash),
             )
@@ -503,6 +581,34 @@ def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # no
     assert result.failed_count == 0
     assert books[0].file_format == "PDF"
     assert books[0].book_type == "manga"
+    database.close()
+
+
+def test_import_batch_keeps_one_archive_limits_snapshot(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "first.cbz"
+    second = tmp_path / "second.cbz"
+    _write_cbz(first)
+    _write_cbz(second, color="#cc4422")
+    service, database, _paths = _import_service(tmp_path)
+    initial_limits = ArchiveOpenLimits(max_source_bytes=5 * 1024 * 1024)
+    service.set_archive_open_limits(initial_limits)
+    observed_limits: list[ArchiveOpenLimits] = []
+    original_validate = service._validate_staged_file
+
+    def validate_staged(path: Path, limits: ArchiveOpenLimits):
+        observed_limits.append(limits)
+        if len(observed_limits) == 1:
+            # A settings update after the first staged probe applies to later
+            # batches, not remaining entries in this one.
+            service.set_archive_open_limits(ArchiveOpenLimits(max_source_bytes=1))
+        return original_validate(path, limits)
+
+    monkeypatch.setattr(service, "_validate_staged_file", validate_staged)
+
+    result = service.import_files([first, second])
+
+    assert result.imported_count == 2
+    assert observed_limits == [initial_limits, initial_limits]
     database.close()
 
 
@@ -1120,6 +1226,7 @@ def test_app_context_select_existing_library_switches_root(monkeypatch, tmp_path
 
     assert result.ok
     assert Path(context.settings.storage_location) == other.resolve()
+    assert Path(context.settings_store.load().last_good_storage_location) == other.resolve()
     assert other.exists()  # Select never deletes the chosen library.
     context.close()
 

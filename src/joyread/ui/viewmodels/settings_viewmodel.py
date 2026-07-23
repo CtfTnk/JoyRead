@@ -89,6 +89,9 @@ class SettingsViewModel:
         self.archive_open_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
         self.import_integrity_changed: Signal[None] = Signal()
+        # The ViewModel owns only the user intent. AppContext/MainWindow owns
+        # task scheduling, confirmation, and the maintenance service itself.
+        self.library_maintenance_requested: Signal[None] = Signal()
         # Hidden Space side effects: surface password-setup outcome and
         # reset/revert events so MainWindow can refresh the shelf + sidebar
         # without poking VM internals.
@@ -418,6 +421,9 @@ class SettingsViewModel:
 
     def request_clear_archive_pool(self) -> None:
         self.clear_archive_pool_requested.emit()
+
+    def request_library_maintenance(self) -> None:
+        self.library_maintenance_requested.emit()
 
     def set_archive_pool_bytes_provider(self, provider: Callable[[], int] | None) -> None:
         """Inject a callable that reports the disk pool's live byte usage.
