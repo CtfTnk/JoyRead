@@ -20,6 +20,7 @@ from joyread.core.archive import (
     ArchivePasswordRequired,
     ArchivePasswordPolicy,
     ArchivePasswordResponse,
+    ArchiveReadError,
     ArchiveOpenLimits,
     ArchiveResourceLimitError,
     ArchiveUnsupportedFormat,
@@ -637,7 +638,12 @@ def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytes
         archive.writestr(_png_bytes((60, 20)), "002.png")
 
     service = ArchiveImageService(page_cache_dir=tmp_path / "archive_pages")
-    session = service.open(archive_path)
+    cache_key = "file:managed-sample"
+    session = service.open(
+        archive_path,
+        document_cache_key=cache_key,
+        allow_persistent_cache=True,
+    )
     original = service._seven_zip_backend.read_entries
     calls: list[tuple[str, ...]] = []
 
@@ -650,10 +656,14 @@ def test_7z_batch_reads_and_reuses_disk_cache(tmp_path: Path, monkeypatch: pytes
     pages = session.get_pages((0, 1))
     assert [page.dimensions if page is not None else None for page in pages] == [(40, 20), (60, 20)]
     assert calls == [("001.png", "002.png")]
-    assert service._page_cache.get(archive_path, "001.png") is None
-    assert service._page_cache.get(archive_path, session._cache_page_key(0)) is not None
+    assert service._page_cache.get(cache_key, "001.png") is None
+    assert service._page_cache.get(cache_key, session._cache_page_key(0)) is not None
 
-    second_session = service.open(archive_path)
+    second_session = service.open(
+        archive_path,
+        document_cache_key=cache_key,
+        allow_persistent_cache=True,
+    )
     assert second_session.get_dimensions(0) == (40, 20)
     assert second_session.get_page(0) is not None
     assert calls == [("001.png", "002.png")]
@@ -716,7 +726,11 @@ def test_7z_thumbnail_access_switches_from_cold_batch_to_ready_single_page(tmp_p
         archive.writestr(_png_bytes((40, 20)), "001.png")
         archive.writestr(_png_bytes((60, 20)), "002.png")
     pool = ArchiveExtractionPool(tmp_path / "archive_pages", max_bytes=1 << 20)
-    session = ArchiveImageService(extraction_pool=pool).open(archive_path)
+    session = ArchiveImageService(extraction_pool=pool).open(
+        archive_path,
+        document_cache_key="file:managed-sample",
+        allow_persistent_cache=True,
+    )
 
     assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
     assert session.thumbnail_batch_size(0) == 8
@@ -773,12 +787,12 @@ def test_encrypted_zip_without_password_is_controlled(tmp_path: Path) -> None:
         ArchiveImageService().open(archive_path, password_provider=lambda _request: "wrong")
 
 
-def test_password_policy_forbid_skips_encrypted_archives_without_prompting(tmp_path: Path) -> None:
+def test_probe_reports_encrypted_archive_without_prompting(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
     _write_encrypted_cbz(archive_path)
     provider_calls = []
 
-    result = ArchiveImageService().validate_archive(
+    result = ArchiveImageService().probe_archive(
         archive_path,
         password_policy=ArchivePasswordPolicy.FORBID,
         password_provider=lambda request: provider_calls.append(request) or "secret",
@@ -787,11 +801,11 @@ def test_password_policy_forbid_skips_encrypted_archives_without_prompting(tmp_p
     assert result.is_valid is False
     assert result.code == ArchiveValidationCode.PASSWORD_REQUIRED
     assert result.error_type == "ArchivePasswordRequired"
-    assert "Skipped encrypted archive" in result.message
+    assert "Password-protected archive" in result.message
     assert provider_calls == []
 
 
-def test_nested_encrypted_archive_is_skipped_for_import_but_readable_when_opened(tmp_path: Path) -> None:
+def test_probe_does_not_recurse_into_nested_encrypted_archives(tmp_path: Path) -> None:
     archive_path = tmp_path / "outer.cbz"
     _write_zip(
         archive_path,
@@ -801,7 +815,7 @@ def test_nested_encrypted_archive_is_skipped_for_import_but_readable_when_opened
         },
     )
 
-    skipped = ArchiveImageService().validate_archive(
+    probe = ArchiveImageService().probe_archive(
         archive_path,
         password_policy=ArchivePasswordPolicy.FORBID,
     )
@@ -811,8 +825,9 @@ def test_nested_encrypted_archive_is_skipped_for_import_but_readable_when_opened
         password_provider=lambda request: requests.append(request.archive_path) or "secret",
     )
 
-    assert skipped.code == ArchiveValidationCode.PASSWORD_REQUIRED
-    assert "outer.cbz::nested.cbz" in skipped.message
+    assert probe.code == ArchiveValidationCode.OK
+    assert probe.has_direct_images is True
+    assert probe.has_nested_archive_candidates is True
     assert requests == ["outer.cbz::nested.cbz"]
     assert [session.get_dimensions(index) for index in session.index_range] == [(20, 10), (32, 16)]
 
@@ -970,7 +985,7 @@ def test_empty_corrupt_and_unsupported_archives_are_controlled(tmp_path: Path) -
         ArchiveImageService().open(unsupported_path)
 
 
-def test_archive_validation_returns_structured_success_and_failure_feedback(tmp_path: Path) -> None:
+def test_archive_probe_returns_structured_container_feedback(tmp_path: Path) -> None:
     service = ArchiveImageService()
     archive_path = tmp_path / "valid.cbz"
     _write_zip(archive_path, {"001.png": _png_bytes((20, 10)), "notes.txt": b"ignored"})
@@ -984,48 +999,52 @@ def test_archive_validation_returns_structured_success_and_failure_feedback(tmp_
     corrupt_path = tmp_path / "corrupt.cbz"
     corrupt_path.write_bytes(b"not a zip")
 
-    valid = service.validate_archive(archive_path)
+    valid = service.probe_archive(archive_path)
     assert valid.is_valid is True
     assert valid.code == ArchiveValidationCode.OK
-    assert valid.page_count == 1
     assert valid.archive_format == "CBZ"
-    assert valid.file_size == archive_path.stat().st_size
-    assert valid.mtime_ns == archive_path.stat().st_mtime_ns
+    assert valid.has_direct_images is True
+    assert valid.has_nested_archive_candidates is False
+    assert not hasattr(valid, "page_count")
+    assert not hasattr(valid, "file_size")
+    assert not hasattr(valid, "mtime_ns")
 
-    missing = service.validate_archive(missing_path)
+    missing = service.probe_archive(missing_path)
     assert missing.is_valid is False
     assert missing.code == ArchiveValidationCode.MISSING
     assert "does not exist" in missing.message
 
-    not_file = service.validate_archive(directory_path)
+    not_file = service.probe_archive(directory_path)
     assert not_file.code == ArchiveValidationCode.NOT_FILE
     assert not_file.error_type == "ArchiveOpenError"
 
-    unsupported = service.validate_archive(unsupported_path)
+    unsupported = service.probe_archive(unsupported_path)
     assert unsupported.code == ArchiveValidationCode.UNSUPPORTED_FORMAT
     assert unsupported.error_type == "ArchiveUnsupportedFormat"
 
-    empty = service.validate_archive(empty_path)
+    empty = service.probe_archive(empty_path)
     assert empty.code == ArchiveValidationCode.EMPTY
     assert empty.error_type == "ArchiveEmptyError"
 
-    corrupt = service.validate_archive(corrupt_path)
+    corrupt = service.probe_archive(corrupt_path)
     assert corrupt.code == ArchiveValidationCode.CORRUPT
     assert corrupt.error_type == "ArchiveCorruptError"
 
 
-def test_archive_validation_reports_listed_but_undecodable_first_page(tmp_path: Path) -> None:
+def test_probe_leaves_undecodable_image_errors_for_page_reads(tmp_path: Path) -> None:
     archive_path = tmp_path / "bad-image.cbz"
     _write_zip(archive_path, {"001.png": b"not an image"})
 
-    result = ArchiveImageService().validate_archive(archive_path)
+    service = ArchiveImageService()
+    result = service.probe_archive(archive_path)
 
-    assert result.is_valid is False
-    assert result.code == ArchiveValidationCode.READ_FAILED
-    assert result.error_type == "ArchiveReadError"
+    assert result.is_valid is True
+    assert result.code == ArchiveValidationCode.OK
+    with pytest.raises(ArchiveReadError):
+        service.open(archive_path).get_page(0)
 
 
-def test_archive_validation_reports_password_feedback(tmp_path: Path) -> None:
+def test_probe_does_not_use_password_to_verify_encrypted_archive(tmp_path: Path) -> None:
     archive_path = tmp_path / "encrypted.cbz"
     with pyzipper.AESZipFile(
         archive_path,
@@ -1038,19 +1057,39 @@ def test_archive_validation_reports_password_feedback(tmp_path: Path) -> None:
 
     service = ArchiveImageService()
 
-    required = service.validate_archive(archive_path)
+    required = service.probe_archive(archive_path)
     assert required.is_valid is False
     assert required.code == ArchiveValidationCode.PASSWORD_REQUIRED
     assert required.error_type == "ArchivePasswordRequired"
 
-    rejected = service.validate_archive(archive_path, password_provider=lambda _request: "wrong")
-    assert rejected.code == ArchiveValidationCode.PASSWORD_REJECTED
-    assert rejected.error_type == "ArchivePasswordRejected"
+    accepted = service.probe_archive(archive_path, password_provider=lambda _request: "secret")
+    assert accepted.code == ArchiveValidationCode.PASSWORD_REQUIRED
+    assert accepted.error_type == "ArchivePasswordRequired"
+    assert service.open(archive_path, password_provider=lambda _request: "secret").page_count == 1
 
-    accepted = service.validate_archive(archive_path, password_provider=lambda _request: "secret")
-    assert accepted.is_valid is True
-    assert accepted.code == ArchiveValidationCode.OK
-    assert accepted.page_count == 1
+
+def test_external_archive_sessions_do_not_share_persistent_extraction_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    archive_path = tmp_path / "external.cb7"
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+
+    service = ArchiveImageService(page_cache_dir=tmp_path / "archive-pages")
+    original = service._seven_zip_backend.read_entries
+    calls: list[tuple[str, ...]] = []
+
+    def counted_read(source, entries, **kwargs):  # noqa: ANN001
+        calls.append(tuple(name for name, _password in entries))
+        return original(source, entries, **kwargs)
+
+    monkeypatch.setattr(service._seven_zip_backend, "read_entries", counted_read)
+
+    assert service.open(archive_path).get_page(0) is not None
+    assert service.open(archive_path).get_page(0) is not None
+
+    assert calls == [("001.png",), ("001.png",)]
 
 
 def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

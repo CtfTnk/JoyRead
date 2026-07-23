@@ -45,6 +45,10 @@ class Book:
     page_count: int = DEFAULT_PAGE_COUNT_PLACEHOLDER
     language_name: str | None = None
     original_file_name: str | None = None
+    # ``file_id`` names immutable managed content and is deliberately
+    # independent of a filesystem path or source metadata. Derived archive
+    # caches use it; cover artifacts remain book-specific via ``uuid``.
+    file_id: str | None = None
 
     def with_favourite(self, value: bool) -> Book:
         return replace(self, is_favourite=value, updated_at=datetime.now())

@@ -25,7 +25,7 @@ from joyread.core.archive.formats.common import (
     run_archive_stdout_command,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
-from joyread.core.archive.records import ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 from joyread.core.archive.tree import safe_entry_name
 
@@ -49,6 +49,32 @@ class RarArchiveBackend:
         self._backend_resolver = backend_resolver
         self._lock = lock
         self._request_password = request_password
+
+    def probe_entries(self, source: ArchiveSource) -> ArchiveContainerProbe:
+        """Read RAR headers only, without invoking password verification."""
+
+        module = self._module_getter()
+        if module is None or not hasattr(module, "RarFile"):
+            raise ArchiveDependencyMissing("rarfile is required for RAR/CBR archives.")
+        try:
+            with self._lock:
+                self._configure_rarfile_tools(module)
+                with module.RarFile(source.open_arg(), "r") as archive:
+                    encrypted = bool(archive.needs_password())
+                    entries = () if encrypted else tuple(
+                        ArchiveEntry(info.filename, getattr(info, "file_size", None), None)
+                        for info in archive.infolist()
+                        if not info.isdir()
+                    )
+                    return ArchiveContainerProbe(entries, is_encrypted=encrypted)
+        except module.RarCannotExec as exc:
+            raise ArchiveDependencyMissing(self._backend_resolver.missing_message()) from exc
+        except module.NeedFirstVolume as exc:
+            raise ArchiveUnsupportedFormat("Multi-volume RAR archives are not supported yet.") from exc
+        except module.BadRarFile as exc:
+            raise ArchiveCorruptError(f"Corrupt RAR archive: {source.display_name}") from exc
+        except OSError as exc:
+            raise ArchiveOpenError(f"Could not open RAR archive: {source.display_name}") from exc
 
     def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
         module = self._module_getter()

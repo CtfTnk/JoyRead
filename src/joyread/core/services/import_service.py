@@ -7,14 +7,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 import json
 from pathlib import Path
-import shutil
 import sqlite3
 from uuid import uuid4
 
 from joyread.core.archive import (
     ArchiveImageService,
     ArchiveOpenLimits,
-    ArchivePasswordPolicy,
     ArchiveValidationCode,
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
@@ -78,20 +76,19 @@ class ImportService:
     """Orchestrates the multi-step process of importing books into the library.
 
     Each import (whether triggered from a file dialog, a folder scan, or a
-    JSON manifest) walks the same pipeline: validate source, hash content,
-    check for duplicates, copy file into the managed ``Books/`` directory,
-    insert the database rows (``book_files`` + ``books`` + ``import_items``),
-    and report a per-item result. The service depends on
+    JSON manifest) walks the same pipeline: establish a supported source
+    suffix, hash while copying to staging, probe only that staged managed copy,
+    atomically publish it into ``Books/``, insert the database rows
+    (``book_files`` + ``books`` + ``import_items``), and report a per-item
+    result. The service depends on
     :class:`HashService` for content hashing,
     :class:`ArchiveImageService` / :class:`PdfImageService` for validating
     that the file is actually openable, and a :class:`DatabaseInterpreter`
     for serialized writes.
 
-    Why hashing happens before copying: duplicate detection uses the content
-    hash, so we cannot decide whether the copy is needed until the hash is
-    known. The trade-off is that large duplicates are read twice (hash, then
-    copy), but the alternative (copy speculatively and unlink on duplicate)
-    leaves stray files when the process crashes mid-import.
+    ``verify_imported_file_integrity`` trades an extra source hash pass for a
+    strong source-vs-staging comparison. The normal disabled mode still hashes
+    every staged byte for content-addressed placement and duplicate detection.
     """
 
     def __init__(
@@ -104,6 +101,7 @@ class ImportService:
         pdf_service: PdfImageService | None = None,
         tag_service: TagService | None = None,
         archive_limits: ArchiveOpenLimits | None = None,
+        verify_imported_file_integrity: bool = True,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -113,11 +111,15 @@ class ImportService:
         self._hash_algorithm = hash_algorithm
         self._tag_service = tag_service
         self._archive_limits = archive_limits or ArchiveOpenLimits()
+        self._verify_imported_file_integrity = bool(verify_imported_file_integrity)
 
     def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
         """Use new limits for later validation without disrupting active jobs."""
 
         self._archive_limits = limits
+
+    def set_verify_imported_file_integrity(self, enabled: bool) -> None:
+        self._verify_imported_file_integrity = bool(enabled)
 
     def import_manifest(
         self,
@@ -184,13 +186,11 @@ class ImportService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
     ) -> ImportPreflightResult:
-        """Validate a source without copying or inserting any rows.
+        """Perform only source-path and supported-suffix checks.
 
-        Used by the "Open & Import" flow: before the reader opens the file,
-        the UI submits a preflight to ``TaskService`` so it can either start
-        the real import in the background or surface the failure dialog
-        synchronously. Cheap because it only stats and inspects the source,
-        no hashing or copying.
+        This method is retained for integrations that want to disable an
+        import command early. It intentionally does not probe an external
+        container: normal import validates only its staged managed copy.
         """
 
         source_path = Path(path).expanduser()
@@ -200,11 +200,7 @@ class ImportService:
             nested_archive_max_depth,
             archive_global_file_max_depth,
         )
-        failure = self._validate_source(
-            source_path,
-            nested_archive_max_depth,
-            archive_global_file_max_depth,
-        )
+        failure = self._validate_source_candidate(source_path)
         if failure is not None:
             logger.debug(
                 "Import preflight rejected path=%s status=%s message=%s",
@@ -400,11 +396,7 @@ class ImportService:
         nested_archive_max_depth: int | None,
         archive_global_file_max_depth: int | None,
     ) -> ImportItemResult:
-        failure = self._validate_source(
-            source_path,
-            nested_archive_max_depth,
-            archive_global_file_max_depth,
-        )
+        failure = self._validate_source_candidate(source_path)
         if failure is not None:
             logger.debug(
                 "Import item rejected source=%s status=%s message=%s",
@@ -420,35 +412,70 @@ class ImportService:
                 message=failure.message,
             )
 
-        logger.debug("Import item hashing source=%s algorithm=%s", source_path, self._hash_algorithm)
-        content_hash = self._hash_service.compute(source_path, self._hash_algorithm)
-        duplicate = self._find_duplicate(content_hash)
-        if duplicate is not None:
-            logger.info("Import duplicate detected source=%s book_id=%s", source_path, duplicate["book_id"])
+        limits = self._archive_limits_for(
+            nested_archive_max_depth,
+            archive_global_file_max_depth,
+        )
+        size_failure = self._check_source_size(source_path, limits)
+        if size_failure is not None:
             return self._record_item(
                 batch_id,
                 source_display,
                 external_id,
-                status="duplicate",
-                book_id=duplicate["book_id"],
-                file_id=duplicate["file_id"],
-                message="Book already exists in JoyRead.",
+                status=size_failure.status,
+                message=size_failure.message,
             )
 
-        storage_path = self._copy_to_books(source_path, content_hash)
-        logger.debug("Import item copied source=%s target=%s", source_path, storage_path)
-        copied_hash = self._hash_service.compute(storage_path, self._hash_algorithm)
-        if copied_hash != content_hash:
-            storage_path.unlink(missing_ok=True)
+        source_hash: str | None = None
+        if self._verify_imported_file_integrity:
+            logger.debug("Import item pre-hashing source=%s algorithm=%s", source_path, self._hash_algorithm)
+            source_hash = self._hash_service.compute(source_path, self._hash_algorithm)
+            duplicate = self._find_duplicate(source_hash)
+            if duplicate is not None:
+                return self._duplicate_result(batch_id, source_display, external_id, duplicate)
+
+        staging_path = self._staging_path(source_path)
+        try:
+            content_hash = self._hash_service.copy_with_hash(
+                source_path,
+                staging_path,
+                self._hash_algorithm,
+            )
+        except Exception:
+            staging_path.unlink(missing_ok=True)
+            raise
+
+        if source_hash is not None and source_hash != content_hash:
+            staging_path.unlink(missing_ok=True)
             return self._record_item(
                 batch_id,
                 source_display,
                 external_id,
                 status="failed",
-                message="Copied file hash did not match source hash.",
+                message="Source file changed while it was being imported.",
             )
 
-        stat = storage_path.stat()
+        duplicate = self._find_duplicate(content_hash)
+        if duplicate is not None:
+            staging_path.unlink(missing_ok=True)
+            return self._duplicate_result(batch_id, source_display, external_id, duplicate)
+
+        staged_failure = self._validate_staged_file(staging_path, limits)
+        if staged_failure is not None:
+            staging_path.unlink(missing_ok=True)
+            return self._record_item(
+                batch_id,
+                source_display,
+                external_id,
+                status=staged_failure.status,
+                message=staged_failure.message,
+            )
+
+        try:
+            storage_path, created_target = self._publish_staging(staging_path, content_hash)
+        except Exception:
+            staging_path.unlink(missing_ok=True)
+            raise
         file_id = str(uuid4())
         book_id = str(uuid4())
         now = _now()
@@ -457,25 +484,28 @@ class ImportService:
         # Persist the managed file location relative to the storage root so the
         # whole library folder can be moved or re-pointed without rewriting rows.
         relative_storage_path = self._paths.resolver.to_storage_relative(storage_path)
-        self._database.execute(
-            lambda connection: _insert_imported_book(
-                connection,
-                file_id=file_id,
-                book_id=book_id,
-                original_path=str(source_path),
-                original_file_name=source_path.name,
-                storage_path=relative_storage_path,
-                file_format=file_format,
-                file_size=stat.st_size,
-                mtime_ns=stat.st_mtime_ns,
-                hash_algorithm=self._hash_algorithm,
-                content_hash=content_hash,
-                title=source_path.stem,
-                book_type=book_type,
-                now=now,
-            ),
-            DatabasePriority.NORMAL,
-        )
+        try:
+            self._database.execute(
+                lambda connection: _insert_imported_book(
+                    connection,
+                    file_id=file_id,
+                    book_id=book_id,
+                    original_path=str(source_path),
+                    original_file_name=source_path.name,
+                    storage_path=relative_storage_path,
+                    file_format=file_format,
+                    hash_algorithm=self._hash_algorithm,
+                    content_hash=content_hash,
+                    title=source_path.stem,
+                    book_type=book_type,
+                    now=now,
+                ),
+                DatabasePriority.NORMAL,
+            )
+        except Exception:
+            if created_target:
+                storage_path.unlink(missing_ok=True)
+            raise
         return self._record_item(
             batch_id,
             source_display,
@@ -486,13 +516,10 @@ class ImportService:
             message="Imported.",
         )
 
-    def _validate_source(
-        self,
-        source_path: Path,
-        nested_archive_max_depth: int | None,
-        archive_global_file_max_depth: int | None,
-    ) -> _ValidationFailure | None:
-        logger.debug("Validating import source path=%s", source_path)
+    def _validate_source_candidate(self, source_path: Path) -> _ValidationFailure | None:
+        """Check only the source invariants that precede a streaming copy."""
+
+        logger.debug("Checking import source path=%s", source_path)
         if not source_path.exists():
             return _ValidationFailure("failed", f"Source file does not exist: {source_path}")
         if not source_path.is_file():
@@ -500,65 +527,103 @@ class ImportService:
         suffix = source_path.suffix.lower()
         if suffix not in BOOK_EXTENSIONS:
             return _ValidationFailure("failed", f"Unsupported book format: {suffix or source_path.name}")
-        if suffix in ARCHIVE_EXTENSIONS:
-            # Import validation decodes the first archive page through the
-            # archive service. That is intentionally slower than suffix checks:
-            # it prevents creating a DB row for an archive the reader cannot
-            # actually extract later.
-            limits = self._archive_limits
-            if nested_archive_max_depth is not None:
-                limits = replace(
-                    limits,
-                    nested_archive_max_depth=_core_depth_limit(nested_archive_max_depth),
-                )
-            if archive_global_file_max_depth is not None:
-                limits = replace(
-                    limits,
-                    global_file_max_depth=_core_depth_limit(archive_global_file_max_depth),
-                )
-            validation = self._archive_service.validate_archive(
-                source_path,
-                password_policy=ArchivePasswordPolicy.FORBID,
-                limits=limits,
-            )
-            logger.debug(
-                "Archive import validation path=%s code=%s pages=%s",
-                source_path,
-                validation.code.value,
-                validation.page_count,
-            )
-            if validation.code != ArchiveValidationCode.OK:
-                if validation.code in {ArchiveValidationCode.PASSWORD_REQUIRED, ArchiveValidationCode.PASSWORD_REJECTED}:
-                    return _ValidationFailure(
-                        "skipped",
-                        validation.message,
-                        archive_validation_code=validation.code,
-                    )
-                return _ValidationFailure(
-                    "failed",
-                    validation.message,
-                    archive_validation_code=validation.code,
-                )
-        if suffix in PDF_EXTENSIONS:
-            validation = self._pdf_service.validate_pdf(source_path)
-            logger.debug("PDF import validation path=%s valid=%s", source_path, validation.is_valid)
-            if not validation.is_valid:
-                return _ValidationFailure("failed", validation.message)
         return None
 
-    def _copy_to_books(self, source_path: Path, content_hash: str) -> Path:
+    def _archive_limits_for(
+        self,
+        nested_archive_max_depth: int | None,
+        archive_global_file_max_depth: int | None,
+    ) -> ArchiveOpenLimits:
+        limits = self._archive_limits
+        if nested_archive_max_depth is not None:
+            limits = replace(
+                limits,
+                nested_archive_max_depth=_core_depth_limit(nested_archive_max_depth),
+            )
+        if archive_global_file_max_depth is not None:
+            limits = replace(
+                limits,
+                global_file_max_depth=_core_depth_limit(archive_global_file_max_depth),
+            )
+        return limits
+
+    def _check_source_size(self, source_path: Path, limits: ArchiveOpenLimits) -> _ValidationFailure | None:
+        if source_path.suffix.lower() not in ARCHIVE_EXTENSIONS or limits.max_source_bytes is None:
+            return None
+        try:
+            source_size = source_path.stat().st_size
+        except OSError:
+            return _ValidationFailure("failed", f"Could not inspect source archive: {source_path}")
+        if source_size > limits.max_source_bytes:
+            return _ValidationFailure("failed", "Archive exceeds the configured maximum archive size.")
+        return None
+
+    def _validate_staged_file(
+        self,
+        staging_path: Path,
+        limits: ArchiveOpenLimits,
+    ) -> _ValidationFailure | None:
+        suffix = staging_path.suffix.lower()
+        if suffix in ARCHIVE_EXTENSIONS:
+            probe = self._archive_service.probe_archive(staging_path, limits=limits)
+            if probe.code != ArchiveValidationCode.OK:
+                status = (
+                    "skipped"
+                    if probe.code == ArchiveValidationCode.PASSWORD_REQUIRED
+                    else "failed"
+                )
+                message = (
+                    f"Skipped encrypted archive: {staging_path.name}"
+                    if probe.code == ArchiveValidationCode.PASSWORD_REQUIRED
+                    else probe.message
+                )
+                return _ValidationFailure(
+                    status,
+                    message,
+                    archive_validation_code=probe.code,
+                )
+        elif suffix in PDF_EXTENSIONS:
+            probe = self._pdf_service.probe_pdf(staging_path)
+            if not probe.is_valid:
+                return _ValidationFailure("failed", probe.message)
+        return None
+
+    def _staging_path(self, source_path: Path) -> Path:
         suffix = source_path.suffix.lower()
+        staging_dir = self._paths.paths.books / ".staging"
+        return staging_dir / f"{uuid4().hex}{suffix}"
+
+    def _publish_staging(self, staging_path: Path, content_hash: str) -> tuple[Path, bool]:
+        suffix = staging_path.suffix.lower()
         target_dir = self._paths.paths.books / content_hash[:2]
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / f"{content_hash}{suffix}"
         if target.exists():
-            logger.debug("Import copy target already exists: %s", target)
-            return target
-        temp = target.with_suffix(f"{target.suffix}.tmp-{uuid4().hex}")
-        logger.debug("Copying import source via temp file source=%s temp=%s target=%s", source_path, temp, target)
-        shutil.copy2(source_path, temp)
-        temp.replace(target)
-        return target
+            existing_hash = self._hash_service.compute(target, self._hash_algorithm)
+            if existing_hash != content_hash:
+                raise RuntimeError("Managed library target conflicts with a different file.")
+            staging_path.unlink(missing_ok=True)
+            return target, False
+        staging_path.replace(target)
+        return target, True
+
+    def _duplicate_result(
+        self,
+        batch_id: str,
+        source_display: str,
+        external_id: str | None,
+        duplicate: sqlite3.Row,
+    ) -> ImportItemResult:
+        logger.info("Import duplicate detected book_id=%s", duplicate["book_id"])
+        return self._record_item(
+            batch_id,
+            source_display,
+            external_id,
+            status="duplicate",
+            book_id=duplicate["book_id"],
+            file_id=duplicate["file_id"],
+            message="Book already exists in JoyRead.",
+        )
 
     def _find_duplicate(self, content_hash: str) -> sqlite3.Row | None:
         return self._database.execute(
@@ -621,8 +686,6 @@ def _insert_imported_book(
     original_file_name: str,
     storage_path: str,
     file_format: str,
-    file_size: int,
-    mtime_ns: int,
     hash_algorithm: str,
     content_hash: str,
     title: str,
@@ -637,7 +700,7 @@ def _insert_imported_book(
                 file_id, original_path, original_file_name, storage_path, file_format, file_size,
                 mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', ?, ?)
+            VALUES (?, ?, ?, ?, ?, 0, 0, ?, ?, 'healthy', ?, ?)
             """,
             (
                 file_id,
@@ -645,8 +708,6 @@ def _insert_imported_book(
                 original_file_name,
                 storage_path,
                 file_format,
-                file_size,
-                mtime_ns,
                 hash_algorithm,
                 content_hash,
                 now,

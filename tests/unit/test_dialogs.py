@@ -8,11 +8,9 @@ from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QToo
 from PIL import Image
 
 from joyread.app.app_context import create_app_context
-from joyread.core.archive import ArchiveValidationCode
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
-from joyread.core.services.import_service import ImportPreflightResult
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -1091,7 +1089,7 @@ def test_unsupported_book_cover_editor_shows_info_dialog(qtbot, monkeypatch, tmp
         context.close()
 
 
-def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, tmp_path: Path) -> None:
+def test_open_import_starts_reader_and_background_import_without_source_probe(qtbot, monkeypatch, tmp_path: Path) -> None:
     apply_theme()
     context = create_app_context()
     window = MainWindow(context)
@@ -1100,64 +1098,15 @@ def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, t
     window.show()
     QApplication.processEvents()
 
-    opened: list[Path] = []
     import_started: list[Path] = []
     source = tmp_path / "encrypted.cbz"
-    monkeypatch.setattr(window, "_show_reader_window", lambda path, **_kwargs: opened.append(Path(path)))
     monkeypatch.setattr(window, "_start_open_and_import", lambda path, _settings: import_started.append(Path(path)))
 
-    window._handle_open_import_preflight(
-        source,
-        object(),
-        ImportPreflightResult(
-            source_path=str(source),
-            can_import=False,
-            status="skipped",
-            message="Skipped encrypted archive.",
-        ),
-    )
+    window.open_reader_for_file(source, import_mode=True)
     QApplication.processEvents()
 
-    buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
-    assert window.dialog_overlay.isVisible()
-    assert [button.text for button in buttons] == ["Cancel", "Read Only"]
-    assert opened == []
-    assert import_started == []
-
-    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
-    QApplication.processEvents()
-
+    assert import_started == [source]
     assert window.dialog_overlay.isHidden()
-    assert opened == [source]
-    assert import_started == []
-    context.close()
-
-
-def test_open_import_resource_limit_uses_localized_message(qtbot, tmp_path: Path) -> None:
-    apply_theme()
-    context = create_app_context()
-    window = MainWindow(context)
-    qtbot.addWidget(window)
-    window.resize(Theme.window_width, Theme.window_height)
-    window.show()
-    QApplication.processEvents()
-
-    window._handle_open_import_preflight(
-        tmp_path / "limited.cbz",
-        object(),
-        ImportPreflightResult(
-            source_path=str(tmp_path / "limited.cbz"),
-            can_import=False,
-            status="failed",
-            message="Archive resource limit exceeded: private/secret.png",
-            archive_validation_code=ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED,
-        ),
-    )
-    QApplication.processEvents()
-
-    texts = [label.text() for label in window.dialog_overlay.panel.findChildren(QLabel)]
-    assert "This archive exceeds the current resource limits." in texts
-    assert all("private/secret.png" not in text for text in texts)
     context.close()
 
 

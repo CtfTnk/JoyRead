@@ -6,7 +6,6 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 import hashlib
 from io import BytesIO
-from pathlib import Path
 from threading import RLock
 
 from PIL import Image, UnidentifiedImageError
@@ -35,7 +34,7 @@ class ArchiveImageSession:
         read_entries: ReadEntries,
         contents: Iterable[ArchiveContentsEntry] = (),
         *,
-        document_path: Path | None = None,
+        document_cache_key: str | None = None,
         extraction_cache: ArchiveExtractionCache | None = None,
         cache_signature: str = "",
         limits: ArchiveOpenLimits | None = None,
@@ -43,7 +42,7 @@ class ArchiveImageSession:
         self._pages = list(pages)
         self._read_entries = read_entries
         self._contents = tuple(contents)
-        self._document_path = document_path
+        self._document_cache_key = document_cache_key
         self._extraction_cache = extraction_cache
         self._cache_signature = cache_signature
         self._limits = limits or ArchiveOpenLimits()
@@ -99,13 +98,13 @@ class ArchiveImageSession:
                 return False
             if any(not self._record_is_cacheable(record) for record in self._pages):
                 return False
-            assert self._document_path is not None
+            assert self._document_cache_key is not None
             assert self._extraction_cache is not None
             expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
-            if len(self._extraction_cache.get_many(self._document_path, expected_keys)) != self.page_count:
+            if len(self._extraction_cache.get_many(self._document_cache_key, expected_keys)) != self.page_count:
                 return False
             self._extraction_cache.mark_complete(
-                self._document_path,
+                self._document_cache_key,
                 self.page_count,
                 self._cache_signature,
             )
@@ -145,15 +144,14 @@ class ArchiveImageSession:
                 return record.dimensions
             budget = ArchiveOperationBudget(self._limits.max_operation_bytes)
             if self._record_is_cacheable(record):
-                assert self._document_path is not None
+                assert self._document_cache_key is not None
                 assert self._extraction_cache is not None
-                cached = self._extraction_cache.get(self._document_path, self._cache_page_key(index))
+                cached = self._extraction_cache.get(self._document_cache_key, self._cache_page_key(index))
                 if cached is not None:
                     ensure_item_size(len(cached), self._limits.max_extracted_item_bytes, record.display_path)
                     budget.consume(len(cached), record.display_path)
-                    dimensions = dimensions_from_bytes(cached, self._limits, record.display_path)
-                    if dimensions is not None:
-                        record.dimensions = dimensions
+                    dimensions = _required_dimensions(cached, self._limits, record.display_path)
+                    record.dimensions = dimensions
                     return dimensions
             payload = self._read_entries(
                 record.source,
@@ -162,13 +160,12 @@ class ArchiveImageSession:
             ).get(record.name)
             if payload is None:
                 return None
-            dimensions = dimensions_from_bytes(payload, self._limits, record.display_path)
-            if dimensions is not None:
-                record.dimensions = dimensions
-                if self._record_is_cacheable(record):
-                    assert self._document_path is not None
-                    assert self._extraction_cache is not None
-                    self._extraction_cache.put(self._document_path, self._cache_page_key(index), payload)
+            dimensions = _required_dimensions(payload, self._limits, record.display_path)
+            record.dimensions = dimensions
+            if self._record_is_cacheable(record):
+                assert self._document_cache_key is not None
+                assert self._extraction_cache is not None
+                self._extraction_cache.put(self._document_cache_key, self._cache_page_key(index), payload)
             return dimensions
 
     def get_page(self, index: int) -> ArchivePage | None:
@@ -186,9 +183,9 @@ class ArchiveImageSession:
                     continue
                 record = self._pages[page_index]
                 if self._record_is_cacheable(record):
-                    assert self._document_path is not None
+                    assert self._document_cache_key is not None
                     assert self._extraction_cache is not None
-                    cached = self._extraction_cache.get(self._document_path, self._cache_page_key(page_index))
+                    cached = self._extraction_cache.get(self._document_cache_key, self._cache_page_key(page_index))
                     if cached is not None:
                         # A cache hit is still an archive read for the current
                         # session policy: check both byte budgets and pixels.
@@ -224,9 +221,9 @@ class ArchiveImageSession:
                         cache_payloads[self._cache_page_key(page_index)] = payload
 
             if cache_payloads:
-                assert self._document_path is not None
+                assert self._document_cache_key is not None
                 assert self._extraction_cache is not None
-                self._extraction_cache.put_many(self._document_path, cache_payloads)
+                self._extraction_cache.put_many(self._document_cache_key, cache_payloads)
 
             return results
 
@@ -278,7 +275,7 @@ class ArchiveImageSession:
     def _can_use_document_cache(self) -> bool:
         return (
             self._uses_expensive_cache
-            and self._document_path is not None
+            and self._document_cache_key is not None
             and self._extraction_cache is not None
         )
 
@@ -292,17 +289,16 @@ class ArchiveImageSession:
     def _cache_is_complete(self) -> bool:
         if not self._can_use_document_cache():
             return False
-        assert self._document_path is not None
+        assert self._document_cache_key is not None
         assert self._extraction_cache is not None
         return self._extraction_cache.is_complete(
-            self._document_path,
+            self._document_cache_key,
             self.page_count,
             self._cache_signature,
         )
 
     def _cache_page_key(self, page_index: int) -> str:
-        # The source fingerprint is the extraction pool's outer key. Scope
-        # page indices to the scanner/policy signature as well: a changed
+        # Scope page indices to the scanner/policy signature as well: a changed
         # depth limit can legitimately assign a different image to the same
         # flattened index while a partial old bundle still exists on disk.
         policy_key = hashlib.sha256(self._cache_signature.encode("utf-8")).hexdigest()[:16]
@@ -316,9 +312,7 @@ def archive_page_from_bytes(
     limits: ArchiveOpenLimits,
 ) -> ArchivePage | None:
     ensure_item_size(len(payload), limits.max_extracted_item_bytes, record.display_path)
-    dimensions = dimensions_from_bytes(payload, limits, record.display_path)
-    if dimensions is None:
-        return None
+    dimensions = _required_dimensions(payload, limits, record.display_path)
     return ArchivePage(
         index=index,
         image_bytes=payload,
@@ -346,3 +340,14 @@ def dimensions_from_bytes(
             return (width, height)
     except (OSError, UnidentifiedImageError):
         return None
+
+
+def _required_dimensions(
+    payload: bytes,
+    limits: ArchiveOpenLimits,
+    subject: str,
+) -> tuple[int, int]:
+    dimensions = dimensions_from_bytes(payload, limits, subject)
+    if dimensions is None:
+        raise ArchiveReadError(f"Could not decode archive image: {subject}")
+    return dimensions

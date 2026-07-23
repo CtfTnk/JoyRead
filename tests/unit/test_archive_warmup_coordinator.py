@@ -74,6 +74,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
     coordinator.acquire(
         first,
         "detail",
+        document_cache_key="file:first",
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("detail"),
@@ -81,6 +82,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
     coordinator.acquire(
         first,
         "reader",
+        document_cache_key="file:first",
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("reader"),
@@ -88,6 +90,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
     coordinator.acquire(
         second,
         "editor",
+        document_cache_key="file:second",
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("editor"),

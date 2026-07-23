@@ -13,7 +13,7 @@ from joyread.core.archive.errors import (
 )
 from joyread.core.archive.formats.common import looks_like_password_error, read_stream_bounded
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
-from joyread.core.archive.records import ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 
 
@@ -29,6 +29,32 @@ class ZipArchiveBackend:
         self._zipper_getter = zipper_getter
         self._bad_file_errors_getter = bad_file_errors_getter
         self._request_password = request_password
+
+    def probe_entries(self, source: ArchiveSource) -> ArchiveContainerProbe:
+        """List ZIP metadata without reading members or prompting for a key."""
+
+        zipper = self._zipper_getter()
+        if zipper is None:
+            raise ArchiveDependencyMissing("pyzipper is required for ZIP/CBZ archives.")
+        bad_file_errors = self._bad_file_errors_getter()
+        try:
+            with zipper.AESZipFile(source.open_arg(), "r") as archive:
+                infos = archive.infolist()
+                return ArchiveContainerProbe(
+                    entries=tuple(
+                        ArchiveEntry(info.filename, getattr(info, "file_size", None), None)
+                        for info in infos
+                        if not info.is_dir()
+                    ),
+                    is_encrypted=any(
+                        not info.is_dir() and bool(info.flag_bits & 0x1)
+                        for info in infos
+                    ),
+                )
+        except bad_file_errors as exc:
+            raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc
+        except OSError as exc:
+            raise ArchiveOpenError(f"Could not open ZIP archive: {source.display_name}") from exc
 
     def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
         zipper = self._zipper_getter()

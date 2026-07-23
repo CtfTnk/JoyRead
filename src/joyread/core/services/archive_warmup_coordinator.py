@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 from joyread.core.archive import ArchiveOpenLimits
 from joyread.core.reader import ReaderSessionService
@@ -20,6 +21,8 @@ logger = logging.getLogger(__name__)
 class _WarmupState:
     path: Path
     limits: ArchiveOpenLimits
+    document_cache_key: str
+    allow_persistent_cache: bool
     callbacks: dict[str, Callable[[], None]] = field(default_factory=dict)
     handle: TaskHandle[None] | None = None
 
@@ -43,6 +46,8 @@ class ArchiveWarmupCoordinator:
         nested_depth: int | None = None,
         global_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
     ) -> None:
         effective_limits = limits or ArchiveOpenLimits(
             nested_archive_max_depth=(
@@ -52,10 +57,16 @@ class ArchiveWarmupCoordinator:
                 100 if global_depth is None else _core_depth_limit(global_depth)
             ),
         )
-        key = self._source_key(source_path, effective_limits)
+        cache_key = document_cache_key or f"session:{uuid4().hex}"
+        key = self._source_key(cache_key, effective_limits)
         state = self._states.get(key)
         if state is None:
-            state = _WarmupState(Path(source_path), effective_limits)
+            state = _WarmupState(
+                Path(source_path),
+                effective_limits,
+                cache_key,
+                allow_persistent_cache,
+            )
             self._states[key] = state
             self._queue.append(key)
         state.callbacks[client_id] = on_ready
@@ -109,11 +120,18 @@ class ArchiveWarmupCoordinator:
                     self._session_service.warm_disk_cache(
                         state.path,
                         limits=state.limits,
+                        document_cache_key=state.document_cache_key,
+                        allow_persistent_cache=state.allow_persistent_cache,
                         chunk_size=8,
                         is_cancelled=lambda key=key: not self._has_consumers(key),
                     )
                 except TypeError as exc:
-                    if "limits" not in str(exc):
+                    unsupported = str(exc)
+                    if (
+                        "limits" not in unsupported
+                        and "document_cache_key" not in unsupported
+                        and "allow_persistent_cache" not in unsupported
+                    ):
                         raise
                     self._session_service.warm_disk_cache(
                         state.path,
@@ -163,13 +181,8 @@ class ArchiveWarmupCoordinator:
         return state is not None and bool(state.callbacks)
 
     @staticmethod
-    def _source_key(source_path: Path, limits: ArchiveOpenLimits) -> str:
-        try:
-            stat = source_path.stat()
-            signature = f"{stat.st_mtime_ns}:{stat.st_size}"
-        except OSError:
-            signature = "missing"
-        return f"{source_path.resolve(strict=False)}:{signature}:{limits.cache_signature()}"
+    def _source_key(document_cache_key: str, limits: ArchiveOpenLimits) -> str:
+        return f"{document_cache_key}:limits={limits.cache_signature()}"
 
 
 def _core_depth_limit(value: object) -> int | None:

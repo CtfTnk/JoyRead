@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from threading import RLock
+from uuid import uuid4
 
 from joyread.core.archive import (
     ArchiveError,
@@ -124,6 +125,7 @@ class ReaderViewModel:
         nested_archive_max_depth: int = 2,
         archive_global_file_max_depth: int = 100,
         archive_limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
         thumbnail_cache_client: ThumbnailCacheClient | None = None,
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
     ) -> None:
@@ -155,6 +157,11 @@ class ReaderViewModel:
         self._skipped_archives: set[str] = set()
         self._pending_password_archive: str | None = None
         self._book_uuid = book_uuid
+        # A direct Open With reader must not share disk extraction cache with a
+        # later external invocation. Managed books pass ``file:<file_id>`` via
+        # ReaderShell; all other readers receive one ephemeral namespace.
+        self._document_cache_key = document_cache_key or f"session:{uuid4().hex}"
+        self._allow_persistent_archive_cache = self._document_cache_key.startswith("file:")
         self._open_handle: TaskHandle[ReaderImageSession] | None = None
         self._page_handles: dict[int, TaskHandle[ReaderPageImage | None]] = {}
         self._warm_handle: TaskHandle[None] | None = None
@@ -356,12 +363,25 @@ class ReaderViewModel:
                 passwords=passwords,
                 skipped_archives=skipped_archives,
                 limits=self._archive_limits,
+                document_cache_key=self._document_cache_key,
+                allow_persistent_cache=self._allow_persistent_archive_cache,
             )
         except TypeError as exc:
             # Older embedders and focused VM test doubles implement the
-            # previous depth-only protocol. Do not mask unrelated TypeErrors.
+            # previous limits/depth-only protocols. Do not mask unrelated
+            # TypeErrors raised inside their actual open implementation.
+            if "document_cache_key" in str(exc) or "allow_persistent_cache" in str(exc):
+                try:
+                    return self._session_service.open_document(
+                        source_path,
+                        passwords=passwords,
+                        skipped_archives=skipped_archives,
+                        limits=self._archive_limits,
+                    )
+                except TypeError as fallback_exc:
+                    exc = fallback_exc
             if "limits" not in str(exc):
-                raise
+                raise exc
             return self._session_service.open_document(
                 source_path,
                 passwords=passwords,
@@ -1033,7 +1053,7 @@ class ReaderViewModel:
         source_path = self._source_path
         if source_path is None:
             return
-        source_id = self._topic_thumbnail_source_id(source_path)
+        source_id = self._topic_thumbnail_source_id()
         session_service = self._session_service
 
         def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
@@ -1066,15 +1086,16 @@ class ReaderViewModel:
             batch_size_for=batch_size_for,
         )
 
-    def _topic_thumbnail_source_id(self, source_path: Path) -> str:
-        try:
-            stat = source_path.stat()
-            signature = f"{stat.st_mtime_ns}:{stat.st_size}"
-        except OSError:
-            signature = "missing"
+    def _topic_thumbnail_source_id(self) -> str:
+        """Return a cache identity scoped to this managed file or reader session.
+
+        Source paths and their filesystem metadata are deliberately excluded:
+        managed documents are identified by ``file_id`` and externally opened
+        files are isolated by the random session key created at construction.
+        """
         encrypted_generation = self._task_generation if self._archive_passwords or self._skipped_archives else 0
         return (
-            f"{source_path.resolve(strict=False)}:{signature}:"
+            f"{self._document_cache_key}:"
             f"{self._archive_limits.cache_signature()}:"
             f"auth-{encrypted_generation}"
         )
@@ -1275,6 +1296,8 @@ class ReaderViewModel:
             self._source_path,
             self._warmup_client_id,
             limits=self._archive_limits,
+            document_cache_key=self._document_cache_key,
+            allow_persistent_cache=self._allow_persistent_archive_cache,
             on_ready=self._topic_thumbnail_stream.refresh,
         )
 

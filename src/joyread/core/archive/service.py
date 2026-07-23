@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 from threading import RLock
 from typing import Sequence
+from uuid import uuid4
 from zipfile import BadZipFile
 
 from joyread.core.file_types import ARCHIVE_EXTENSIONS
@@ -35,6 +36,7 @@ from joyread.core.archive.models import (
     ArchivePasswordPolicy,
     ArchivePasswordRequest,
     ArchivePasswordResponse,
+    ArchiveProbeResult,
     ArchiveValidationCode,
     ArchiveValidationResult,
     PasswordProvider,
@@ -50,6 +52,7 @@ from joyread.core.archive.records import ArchiveEntry as _ArchiveEntry
 from joyread.core.archive.records import ArchiveSource as _ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext as _ScanContext
 from joyread.core.archive.scanner import (
+    IMAGE_EXTENSIONS,
     SCANNER_SCHEMA_VERSION,
     ArchiveScanner,
     ArchiveSourceSkipped as _ArchiveSourceSkipped,
@@ -58,6 +61,8 @@ from joyread.core.archive.session import ArchiveImageSession, EXPENSIVE_ARCHIVE_
 from joyread.core.archive.tree import (
     disambiguate_nested_archive_labels as _disambiguate_nested_archive_labels,
     flatten_archive_tree as _flatten_archive_tree,
+    is_metadata_entry as _is_metadata_entry,
+    safe_entry_name as _safe_entry_name,
 )
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache, ArchiveExtractionPool
 
@@ -151,7 +156,7 @@ class ArchiveImageService:
         }
         self._scanner = ArchiveScanner(self._list_entries, self._read_entry)
 
-    def validate_archive(
+    def probe_archive(
         self,
         archive_path: str | Path,
         password_provider: PasswordProvider | None = None,
@@ -160,11 +165,12 @@ class ArchiveImageService:
         max_nested_depth: int | None = None,
         global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
-    ) -> ArchiveValidationResult:
-        """Return structured feedback without raising controlled archive errors.
+    ) -> ArchiveProbeResult:
+        """Perform a lightweight, non-interactive supported-content probe.
 
-        Use this for import/preflight/UI paths. Reader code that needs page
-        access should still call `open()` and keep the returned session alive.
+        Password-related arguments remain accepted for source compatibility,
+        but are deliberately ignored: an import must never prompt for a source
+        password and a reader must call :meth:`open` for the real access path.
         """
 
         path = Path(archive_path)
@@ -178,7 +184,7 @@ class ArchiveImageService:
         )
 
         if not path.exists():
-            return self._validation_result(
+            return self._probe_result(
                 path,
                 ArchiveValidationCode.MISSING,
                 f"Archive file does not exist: {path}",
@@ -186,7 +192,7 @@ class ArchiveImageService:
                 error_type=ArchiveOpenError.__name__,
             )
         if not path.is_file():
-            return self._validation_result(
+            return self._probe_result(
                 path,
                 ArchiveValidationCode.NOT_FILE,
                 f"Archive path is not a file: {path}",
@@ -194,7 +200,7 @@ class ArchiveImageService:
                 error_type=ArchiveOpenError.__name__,
             )
         if suffix not in ARCHIVE_EXTENSIONS:
-            return self._validation_result(
+            return self._probe_result(
                 path,
                 ArchiveValidationCode.UNSUPPORTED_FORMAT,
                 f"Unsupported archive format: {suffix or path.name}",
@@ -203,16 +209,12 @@ class ArchiveImageService:
             )
 
         try:
-            session = self.open(
-                path,
-                password_provider=password_provider,
-                password_policy=password_policy,
-                limits=effective_limits,
-            )
-            first_page = session.get_page(0)
+            self._assert_source_size(path, effective_limits)
+            source = _ArchiveSource(label=path.name, suffix=suffix, path=path)
+            inspection = self._backend_for(source).probe_entries(source)
         except ArchiveError as exc:
             code = _validation_code_for_error(exc)
-            return self._validation_result(
+            return self._probe_result(
                 path,
                 code,
                 str(exc),
@@ -220,23 +222,73 @@ class ArchiveImageService:
                 error_type=type(exc).__name__,
             )
 
-        if first_page is None:
-            return self._validation_result(
+        if inspection.is_encrypted:
+            return self._probe_result(
                 path,
-                ArchiveValidationCode.READ_FAILED,
-                f"Archive pages were listed but the first image could not be decoded: {path}",
+                ArchiveValidationCode.PASSWORD_REQUIRED,
+                f"Password-protected archive cannot be imported: {path}",
                 archive_format=archive_format,
-                page_count=session.page_count,
-                error_type=ArchiveReadError.__name__,
+                is_encrypted=True,
+                error_type=ArchivePasswordRequired.__name__,
             )
 
-        return self._validation_result(
+        has_direct_images = False
+        has_nested_archives = False
+        for entry in inspection.entries:
+            safe_name = _safe_entry_name(entry.name)
+            if safe_name is None or _is_metadata_entry(safe_name):
+                continue
+            entry_suffix = Path(safe_name).suffix.lower()
+            if entry_suffix in IMAGE_EXTENSIONS:
+                has_direct_images = True
+            elif entry_suffix in ARCHIVE_EXTENSIONS:
+                has_nested_archives = True
+            if has_direct_images and has_nested_archives:
+                break
+
+        if not has_direct_images and not has_nested_archives:
+            return self._probe_result(
+                path,
+                ArchiveValidationCode.EMPTY,
+                f"No supported image or nested archive entries found: {path}",
+                archive_format=archive_format,
+                error_type=ArchiveEmptyError.__name__,
+            )
+
+        return self._probe_result(
             path,
             ArchiveValidationCode.OK,
-            f"Archive is readable with {session.page_count} image page(s).",
+            "Archive container contains supported image content.",
             archive_format=archive_format,
-            page_count=session.page_count,
             is_valid=True,
+            has_direct_images=has_direct_images,
+            has_nested_archive_candidates=has_nested_archives,
+        )
+
+    def validate_archive(
+        self,
+        archive_path: str | Path,
+        password_provider: PasswordProvider | None = None,
+        password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
+        max_depth: int | None = None,
+        max_nested_depth: int | None = None,
+        global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
+    ) -> ArchiveValidationResult:
+        """Compatibility alias for :meth:`probe_archive`.
+
+        The old method name remains available, but it no longer opens an image
+        page or accepts passwords as proof that an archive is readable.
+        """
+
+        return self.probe_archive(
+            archive_path,
+            password_provider=password_provider,
+            password_policy=password_policy,
+            max_depth=max_depth,
+            max_nested_depth=max_nested_depth,
+            global_file_max_depth=global_file_max_depth,
+            limits=limits,
         )
 
     def open(
@@ -248,6 +300,8 @@ class ArchiveImageService:
         max_nested_depth: int | None = None,
         global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
     ) -> ArchiveImageSession:
         effective_limits = _resolve_open_limits(
             limits,
@@ -273,7 +327,12 @@ class ArchiveImageService:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
         self._assert_source_size(path, effective_limits)
 
-        source = _ArchiveSource(label=path.name, suffix=suffix, path=path)
+        source = _ArchiveSource(
+            label=path.name,
+            suffix=suffix,
+            path=path,
+            allow_persistent_cache=allow_persistent_cache,
+        )
         context = _ScanContext(
             password_provider=password_provider,
             password_policy=password_policy,
@@ -305,7 +364,7 @@ class ArchiveImageService:
                 budget=budget,
             ),
             contents,
-            document_path=path,
+            document_cache_key=document_cache_key or f"session:{uuid4().hex}",
             extraction_cache=self._page_cache,
             cache_signature=cache_signature,
             limits=effective_limits,
@@ -328,37 +387,28 @@ class ArchiveImageService:
                 subject=path.name,
             )
 
-    def _validation_result(
+    def _probe_result(
         self,
         path: Path,
         code: ArchiveValidationCode,
         message: str,
         *,
         archive_format: str | None,
-        page_count: int | None = None,
         is_valid: bool = False,
+        is_encrypted: bool = False,
+        has_direct_images: bool = False,
+        has_nested_archive_candidates: bool = False,
         error_type: str | None = None,
-    ) -> ArchiveValidationResult:
-        file_size: int | None = None
-        mtime_ns: int | None = None
-        try:
-            if path.is_file():
-                stat = path.stat()
-                file_size = stat.st_size
-                mtime_ns = stat.st_mtime_ns
-        except OSError:
-            # Validation must be safe for UI/import scans; stat failures are
-            # reported through the main validation code instead of bubbling up.
-            pass
-        return ArchiveValidationResult(
+    ) -> ArchiveProbeResult:
+        return ArchiveProbeResult(
             path=path,
             is_valid=is_valid,
             code=code,
             message=message,
             archive_format=archive_format,
-            page_count=page_count,
-            file_size=file_size,
-            mtime_ns=mtime_ns,
+            is_encrypted=is_encrypted,
+            has_direct_images=has_direct_images,
+            has_nested_archive_candidates=has_nested_archive_candidates,
             error_type=error_type,
         )
 

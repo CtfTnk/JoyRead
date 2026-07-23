@@ -161,22 +161,38 @@ class PdfImageService:
         return PdfImageSession(source, dimensions, normalize_margins=self._normalize_margins)
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:
+        """Compatibility alias for the lightweight :meth:`probe_pdf`."""
+
+        return self.probe_pdf(path)
+
+    def probe_pdf(self, path: str | Path) -> PdfValidationResult:
+        """Confirm that a PDF container opens and declares at least one page.
+
+        Rendering stays on the reader's normal page-read path. Import should
+        never rasterise page one simply to decide whether a staged file is a
+        supported document.
+        """
+
         source = Path(path)
         try:
-            session = self.open(source)
-            first_page = session.get_page(0)
+            if not source.exists():
+                raise PdfOpenError(f"PDF does not exist: {source}")
+            if not source.is_file():
+                raise PdfOpenError(f"PDF path is not a file: {source}")
+            if source.suffix.lower() not in PDF_EXTENSIONS:
+                raise PdfOpenError(f"Unsupported PDF format: {source.suffix or source.name}")
+            document = _load_document(source)
+            try:
+                page_count = document.pageCount()
+            finally:
+                document.close()
+            if page_count <= 0:
+                raise PdfEmptyError(f"No pages found in PDF: {source}")
         except PdfError as exc:
             return PdfValidationResult(False, str(exc), error_type=type(exc).__name__)
         except OSError as exc:
             return PdfValidationResult(False, str(exc), error_type=type(exc).__name__)
-        if first_page is None:
-            return PdfValidationResult(
-                False,
-                f"PDF pages were listed but the first page could not be rendered: {source}",
-                page_count=session.page_count,
-                error_type=PdfReadError.__name__,
-            )
-        return PdfValidationResult(True, f"PDF is readable with {session.page_count} page(s).", session.page_count)
+        return PdfValidationResult(True, "PDF container contains page content.", page_count)
 
 
 def _load_document(path: Path) -> QPdfDocument:

@@ -15,7 +15,7 @@ from joyread.core.archive.errors import (
     ArchiveResourceLimitError,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
-from joyread.core.archive.records import ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 
 
@@ -29,6 +29,32 @@ class SevenZipArchiveBackend:
     ) -> None:
         self._module_getter = module_getter
         self._request_password = request_password
+
+    def probe_entries(self, source: ArchiveSource) -> ArchiveContainerProbe:
+        """Inspect 7Z metadata without retrying or asking for a password."""
+
+        module = self._module_getter()
+        if module is None:
+            raise ArchiveDependencyMissing("py7zr is required for 7Z/CB7 archives.")
+        try:
+            with module.SevenZipFile(source.open_arg(), "r") as archive:
+                if archive.needs_password():
+                    return ArchiveContainerProbe((), is_encrypted=True)
+                return ArchiveContainerProbe(
+                    tuple(
+                        ArchiveEntry(info.filename, getattr(info, "uncompressed", None), None)
+                        for info in archive.list()
+                        if getattr(info, "is_file", False)
+                    )
+                )
+        except module.PasswordRequired:
+            # Header-encrypted 7z files cannot expose names until a password
+            # is supplied. Import must reject them without starting UI input.
+            return ArchiveContainerProbe((), is_encrypted=True)
+        except module.Bad7zFile as exc:
+            raise ArchiveCorruptError(f"Corrupt 7Z archive: {source.display_name}") from exc
+        except OSError as exc:
+            raise ArchiveOpenError(f"Could not open 7Z archive: {source.display_name}") from exc
 
     def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
         module = self._module_getter()

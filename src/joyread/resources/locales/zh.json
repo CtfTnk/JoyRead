@@ -23,6 +23,7 @@
     "banner_storage": "存储",
     "language": "语言",
     "import_when_opening": "打开时导入书籍",
+    "verify_imported_file_integrity": "验证导入文件完整性",
     "individual_read_window": "独立阅读窗口",
     "inspect_title_control": "检查 Windows/Linux 标题栏控件",
     "import_folder_depth": "导入文件夹层级",

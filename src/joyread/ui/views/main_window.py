@@ -12,7 +12,6 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, 
 
 from joyread.app.app_context import AppContext
 from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
-from joyread.core.archive import ArchiveValidationCode
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
@@ -293,53 +292,17 @@ class MainWindow(QMainWindow):
             self._show_reader_window(source_path, title=source_path.stem)
             return
 
+        # Reader access is independent from managed-library import. Open the
+        # source immediately; the background job validates only the staged
+        # managed copy and a failure must never close this reader window.
         settings = self._settings_for_reader_launch()
-        self._context.task_service.submit(
-            "open-and-import-preflight",
-            lambda: self._context.import_service.preflight_file(
-                source_path,
-                nested_archive_max_depth=settings.nested_archive_max_depth,
-                archive_global_file_max_depth=settings.archive_global_file_max_depth,
-            ),
-            on_success=lambda result, source_path=source_path, settings=settings: self._handle_open_import_preflight(
-                source_path,
-                settings,
-                result,
-            ),
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
-        )
+        self._start_open_and_import(source_path, settings)
 
     def _show_epub_unavailable(self) -> None:
         self.dialog_overlay.show_info(
             t("dialog.read_title"),
             t("dialog.epub_temporarily_unavailable"),
         )
-
-    def _handle_open_import_preflight(self, source_path: Path, settings, result) -> None:  # noqa: ANN001
-        logger.debug(
-            "Open & Import preflight result path=%s can_import=%s status=%s",
-            source_path,
-            result.can_import,
-            result.status,
-        )
-        if result.can_import:
-            self._start_open_and_import(source_path, settings)
-            return
-        if result.status == "skipped":
-            self.dialog_overlay.show_confirm(
-                t("dialog.open_read_only_title"),
-                t("dialog.open_read_only_msg"),
-                on_confirm=lambda source_path=source_path: self._show_reader_window(source_path, title=source_path.stem),
-                confirm_text=t("dialog.btn_read_only"),
-                cancel_text=t("dialog.btn_cancel"),
-            )
-            return
-        message = (
-            t("dialog.archive_resource_limit_exceeded")
-            if getattr(result, "archive_validation_code", None) == ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED
-            else result.message or t("dialog.open_import_unsupported")
-        )
-        self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), message)
 
     def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
         logger.info("Open & Import starting path=%s", source_path)
@@ -351,7 +314,7 @@ class MainWindow(QMainWindow):
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
-            on_success=lambda _result: self._reload_after_background_import(),
+            on_success=self._handle_open_and_import_finished,
             on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
         )
 
@@ -593,6 +556,20 @@ class MainWindow(QMainWindow):
         self._context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
+
+    def _handle_open_and_import_finished(self, result) -> None:  # noqa: ANN001
+        """Refresh the shelf without coupling Reader lifetime to import result."""
+
+        self._reload_after_background_import()
+        problem = next(
+            (item for item in result.items if item.status not in {"imported", "duplicate"}),
+            None,
+        )
+        if problem is not None:
+            self.dialog_overlay.show_info(
+                t("dialog.open_import_failed_title"),
+                problem.message or t("dialog.open_import_unsupported"),
+            )
 
     def _select_import_manifest(self) -> None:
         manifest_path, _selected_filter = QFileDialog.getOpenFileName(

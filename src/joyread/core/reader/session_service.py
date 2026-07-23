@@ -68,6 +68,8 @@ class ReaderSessionService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
     ) -> ReaderImageSession:
         suffix = Path(path).suffix.lower()
         logger.info("Opening reader document: path=%s suffix=%s", path, suffix)
@@ -80,6 +82,8 @@ class ReaderSessionService:
                 nested_archive_max_depth=nested_archive_max_depth,
                 archive_global_file_max_depth=archive_global_file_max_depth,
                 limits=limits,
+                document_cache_key=document_cache_key,
+                allow_persistent_cache=allow_persistent_cache,
             )
         if suffix in PDF_EXTENSIONS:
             return self._pdf_image_service.open(path)
@@ -104,6 +108,8 @@ class ReaderSessionService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
     ) -> ArchiveImageSession:
         provider = None
         password_map = dict(passwords or {})
@@ -127,6 +133,8 @@ class ReaderSessionService:
             max_nested_depth=nested_archive_max_depth,
             global_file_max_depth=archive_global_file_max_depth,
             limits=limits,
+            document_cache_key=document_cache_key,
+            allow_persistent_cache=allow_persistent_cache,
         )
 
     def load_page(self, session: ReaderImageSession, page_index: int) -> ReaderPageImage | None:
@@ -169,6 +177,8 @@ class ReaderSessionService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
         chunk_size: int = 8,
         is_cancelled=None,  # noqa: ANN001 - accepts TaskHandle-like status checks.
     ) -> None:
@@ -186,6 +196,8 @@ class ReaderSessionService:
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
             limits=limits,
+            document_cache_key=document_cache_key,
+            allow_persistent_cache=allow_persistent_cache,
         )
         page_indices = list(range(session.page_count - 1, -1, -1))
         chunk_size = max(1, int(chunk_size))

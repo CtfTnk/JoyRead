@@ -95,6 +95,20 @@ def _import_service(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter,
     return service, database, paths
 
 
+class _RecordingHashService(HashService):
+    def __init__(self) -> None:
+        self.compute_paths: list[Path] = []
+        self.copy_paths: list[tuple[Path, Path]] = []
+
+    def compute(self, path: Path, algorithm: str = "sha256") -> str:
+        self.compute_paths.append(Path(path))
+        return super().compute(path, algorithm)
+
+    def copy_with_hash(self, source: Path, destination: Path, algorithm: str = "sha256") -> str:
+        self.copy_paths.append((Path(source), Path(destination)))
+        return super().copy_with_hash(source, destination, algorithm)
+
+
 def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) -> None:
     database = _database(tmp_path)
 
@@ -330,6 +344,37 @@ def test_duplicate_manifest_import_reuses_existing_book(tmp_path: Path) -> None:
     assert first.imported_count == 1
     assert second.duplicate_count == 1
     assert len(books) == 1
+    database.close()
+
+
+@pytest.mark.parametrize("verify_integrity", [True, False])
+def test_import_hashes_staging_copy_in_both_integrity_modes(
+    tmp_path: Path,
+    verify_integrity: bool,
+) -> None:
+    source = tmp_path / "hash-mode.cbz"
+    _write_cbz(source)
+    paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
+    paths.ensure_directories()
+    database = _database(paths.paths.database)
+    hash_service = _RecordingHashService()
+    service = ImportService(
+        paths,
+        database,
+        ArchiveImageService(),
+        hash_service,
+        verify_imported_file_integrity=verify_integrity,
+    )
+
+    result = service.import_files([source])
+    book = SqliteBookRepository(database).list_books()[0]
+
+    assert result.imported_count == 1
+    assert book.file_id == result.items[0].file_id
+    assert hash_service.copy_paths and hash_service.copy_paths[0][0] == source
+    assert hash_service.copy_paths[0][1].parent == paths.paths.books / ".staging"
+    assert hash_service.compute_paths == ([source] if verify_integrity else [])
+    assert list((paths.paths.books / ".staging").iterdir()) == []
     database.close()
 
 
@@ -578,18 +623,18 @@ def test_import_skips_encrypted_archives_without_adding_books(tmp_path: Path) ->
     database.close()
 
 
-def test_import_skips_unencrypted_archives_containing_encrypted_archives(tmp_path: Path) -> None:
+def test_import_probes_only_top_level_and_allows_nested_encrypted_archives(tmp_path: Path) -> None:
     source = tmp_path / "outer.cbz"
     _write_cbz_with_nested_encrypted_archive(source)
     service, database, _paths = _import_service(tmp_path)
 
     result = service.import_files([source])
 
-    assert result.imported_count == 0
-    assert result.skipped_count == 1
+    assert result.imported_count == 1
+    assert result.skipped_count == 0
     assert result.failed_count == 0
-    assert "outer.cbz::nested.cbz" in (result.items[0].message or "")
-    assert SqliteBookRepository(database).list_books() == []
+    assert result.items[0].status == "imported"
+    assert [book.title for book in SqliteBookRepository(database).list_books()] == ["outer"]
     database.close()
 
 

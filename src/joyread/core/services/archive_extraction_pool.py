@@ -8,7 +8,7 @@ where every read otherwise re-runs the decompressor.
 Layout: each source archive is built in a resumable
 ``<book_key>.partial.zip`` bundle, then atomically published as
 ``<book_key>.zip`` after its ready manifest is written. ``book_key`` is a
-stable ``sha256(abspath:mtime_ns:size)`` of the source. Page entries live
+stable hash of the caller-supplied document cache key. Page entries live
 inside the zip under their original entry name (sanitised to remove path
 separators).
 
@@ -51,19 +51,19 @@ class ArchiveExtractionCache(Protocol):
     @property
     def current_bytes(self) -> int: ...
 
-    def get(self, source_path: Path | str, entry_name: str) -> bytes | None: ...
+    def get(self, document_cache_key: str, entry_name: str) -> bytes | None: ...
 
-    def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None: ...
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None: ...
 
-    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None: ...
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None: ...
 
-    def contains(self, source_path: Path | str, entry_name: str) -> bool: ...
+    def contains(self, document_cache_key: str, entry_name: str) -> bool: ...
 
-    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]: ...
+    def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]: ...
 
-    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool: ...
+    def is_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool: ...
 
-    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None: ...
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None: ...
 
     def resize(self, max_bytes: int) -> None: ...
 
@@ -85,11 +85,10 @@ class ArchiveExtractionPool:
     whole bundles are deleted in mtime order until under budget.
     """
 
-    # Stored in the zip metadata header for forward-compat sanity checks; not
-    # used as the primary integrity guard (mtime+size on the source already
-    # catches edits because the book_key changes).
     _ZIP_SUFFIX = ".zip"
     _MANIFEST_ENTRY = "__joyread_ready_manifest__.json"
+    _SCHEMA_MARKER = ".joyread-archive-cache-schema"
+    _SCHEMA_VERSION = "2"
 
     def __init__(self, directory: Path | None, max_bytes: int) -> None:
         if max_bytes < 0:
@@ -118,14 +117,13 @@ class ArchiveExtractionPool:
         with self._lock:
             return self._current_bytes
 
-    def get(self, source_path: Path | str, entry_name: str) -> bytes | None:
-        """Return cached bytes for ``(source_path, entry_name)`` or ``None``."""
+    def get(self, document_cache_key: str, entry_name: str) -> bytes | None:
+        """Return cached bytes for ``(document_cache_key, entry_name)``."""
 
         self._ensure_reconciled()
         if self._directory is None or not entry_name:
             return None
-        source = Path(source_path)
-        book_key = self._book_key_for(source)
+        book_key = self._book_key_for(document_cache_key)
         if book_key is None:
             return None
         with self._lock:
@@ -168,25 +166,24 @@ class ArchiveExtractionPool:
             self._current_bytes += refreshed.size - entry.size
             return payload
 
-    def contains(self, source_path: Path | str, entry_name: str) -> bool:
-        return self.get(source_path, entry_name) is not None
+    def contains(self, document_cache_key: str, entry_name: str) -> bool:
+        return self.get(document_cache_key, entry_name) is not None
 
-    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
+    def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
         payloads: dict[str, bytes] = {}
         for entry_name in entry_names:
-            payload = self.get(source_path, entry_name)
+            payload = self.get(document_cache_key, entry_name)
             if payload is not None:
                 payloads[entry_name] = payload
         return payloads
 
-    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool:
-        payload = self.get(source_path, self._MANIFEST_ENTRY)
+    def is_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
+        payload = self.get(document_cache_key, self._MANIFEST_ENTRY)
         return _manifest_matches(payload, page_count, signature)
 
-    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None:
-        self.put(source_path, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
-        source = Path(source_path)
-        book_key = self._book_key_for(source)
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None:
+        self.put(document_cache_key, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
+        book_key = self._book_key_for(document_cache_key)
         if book_key is None or self._directory is None:
             return
         with self._lock:
@@ -198,12 +195,12 @@ class ArchiveExtractionPool:
                 os.replace(entry.path, final_path)
                 stat = final_path.stat()
             except OSError as exc:
-                logger.warning("Archive cache publish failed for %s: %s", source, exc)
+                logger.warning("Archive cache publish failed for key=%s: %s", book_key, exc)
                 return
             self._index[book_key] = _PoolEntry(final_path, stat.st_size, stat.st_mtime)
 
-    def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None:
-        """Persist ``data`` under the bundle for ``source_path``.
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
+        """Persist ``data`` under the bundle for ``document_cache_key``.
 
         The bundle is rewritten atomically: existing entries are copied into
         a sibling ``.tmp.zip`` along with the new entry, then ``os.replace``
@@ -215,8 +212,7 @@ class ArchiveExtractionPool:
         if self._directory is None or not entry_name:
             return
         self._ensure_reconciled()
-        source = Path(source_path)
-        book_key = self._book_key_for(source)
+        book_key = self._book_key_for(document_cache_key)
         if book_key is None:
             return
         safe_name = self._safe_entry_name(entry_name)
@@ -256,7 +252,7 @@ class ArchiveExtractionPool:
             self._current_bytes += entry.size
             self._evict_locked(protect_key=book_key)
 
-    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None:
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None:
         """Persist several entries with one zip rewrite.
 
         Reader cache warm-up extracts pages in descending chunks. Rewriting the
@@ -267,8 +263,7 @@ class ArchiveExtractionPool:
         if self._directory is None or not payloads:
             return
         self._ensure_reconciled()
-        source = Path(source_path)
-        book_key = self._book_key_for(source)
+        book_key = self._book_key_for(document_cache_key)
         if book_key is None:
             return
         safe_payloads = {
@@ -333,7 +328,7 @@ class ArchiveExtractionPool:
         if self._directory is not None:
             try:
                 for path in self._directory.iterdir():
-                    if path.is_file():
+                    if not path.is_symlink() and path.is_file():
                         path.unlink(missing_ok=True)
             except OSError:
                 pass
@@ -350,8 +345,29 @@ class ArchiveExtractionPool:
             if self._reconciled:
                 return
             self._reconciled = True
-            if self._directory is None or not self._directory.exists():
+            if self._directory is None:
                 return
+            self._directory.mkdir(parents=True, exist_ok=True)
+            marker = self._directory / self._SCHEMA_MARKER
+            try:
+                marker_version = marker.read_text(encoding="ascii").strip() if marker.exists() else ""
+            except OSError:
+                marker_version = ""
+            if marker_version != self._SCHEMA_VERSION:
+                # v1 bundles were keyed by external path/mtime/size. They can
+                # neither be matched nor trusted after cache identity moved to
+                # immutable managed file ids, so clear them in one upgrade.
+                for path in self._directory.iterdir():
+                    if path == marker or path.is_symlink() or not path.is_file():
+                        continue
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                try:
+                    marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
+                except OSError:
+                    pass
             scanned: list[tuple[str, _PoolEntry]] = []
             try:
                 entries = list(self._directory.iterdir())
@@ -362,6 +378,8 @@ class ArchiveExtractionPool:
                 return
             for path in entries:
                 if not path.is_file():
+                    continue
+                if path.name == self._SCHEMA_MARKER:
                     continue
                 if path.name.endswith(".tmp.zip") or path.suffix == ".tmp":
                     # Orphan ``.tmp`` files come from an interrupted write —
@@ -406,17 +424,11 @@ class ArchiveExtractionPool:
                 self._current_bytes += entry.size
             self._evict_locked()
 
-    def _book_key_for(self, source: Path) -> str | None:
-        try:
-            stat = source.stat()
-        except OSError as exc:
-            logger.debug("Archive pool stat failed for %s: %s", source, exc)
+    def _book_key_for(self, document_cache_key: str) -> str | None:
+        key = str(document_cache_key or "").strip()
+        if not key:
             return None
-        # The book key fingerprints the source file itself (path + mtime +
-        # size). Editing the source produces a different key, so stale
-        # bundles age out of the LRU naturally.
-        digest_source = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
-        return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+        return hashlib.sha256(f"archive-cache-v2:{key}".encode("utf-8")).hexdigest()
 
     @staticmethod
     def _safe_entry_name(entry_name: str) -> str:
@@ -511,6 +523,8 @@ class HiddenImageExtractionPool:
 
     _PAGE_SUFFIX = ".jrcache"
     _MANIFEST_ENTRY = "__joyread_ready_manifest__.json"
+    _SCHEMA_MARKER = ".joyread-archive-cache-schema"
+    _SCHEMA_VERSION = "2"
 
     def __init__(self, directory: Path | None, max_bytes: int) -> None:
         if max_bytes < 0:
@@ -537,12 +551,11 @@ class HiddenImageExtractionPool:
         with self._lock:
             return self._current_bytes
 
-    def get(self, source_path: Path | str, entry_name: str) -> bytes | None:
+    def get(self, document_cache_key: str, entry_name: str) -> bytes | None:
         self._ensure_reconciled()
         if self._directory is None or not entry_name:
             return None
-        source = Path(source_path)
-        book_key = _book_key_for_source(source)
+        book_key = _book_key_for_document_cache_key(document_cache_key)
         if book_key is None:
             return None
         entry_key = self._entry_key_for(entry_name)
@@ -568,33 +581,32 @@ class HiddenImageExtractionPool:
             self._current_bytes += refreshed.size - entry.size
             return payload
 
-    def contains(self, source_path: Path | str, entry_name: str) -> bool:
-        return self.get(source_path, entry_name) is not None
+    def contains(self, document_cache_key: str, entry_name: str) -> bool:
+        return self.get(document_cache_key, entry_name) is not None
 
-    def get_many(self, source_path: Path | str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
+    def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
         payloads: dict[str, bytes] = {}
         for entry_name in entry_names:
-            payload = self.get(source_path, entry_name)
+            payload = self.get(document_cache_key, entry_name)
             if payload is not None:
                 payloads[entry_name] = payload
         return payloads
 
-    def is_complete(self, source_path: Path | str, page_count: int, signature: str) -> bool:
-        payload = self.get(source_path, self._MANIFEST_ENTRY)
+    def is_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
+        payload = self.get(document_cache_key, self._MANIFEST_ENTRY)
         return _manifest_matches(payload, page_count, signature)
 
-    def mark_complete(self, source_path: Path | str, page_count: int, signature: str) -> None:
-        self.put(source_path, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None:
+        self.put(document_cache_key, self._MANIFEST_ENTRY, _manifest_bytes(page_count, signature))
 
-    def put(self, source_path: Path | str, entry_name: str, data: bytes) -> None:
-        self.put_many(source_path, {entry_name: data})
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
+        self.put_many(document_cache_key, {entry_name: data})
 
-    def put_many(self, source_path: Path | str, payloads: Mapping[str, bytes]) -> None:
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None:
         if self._directory is None or not payloads:
             return
         self._ensure_reconciled()
-        source = Path(source_path)
-        book_key = _book_key_for_source(source)
+        book_key = _book_key_for_document_cache_key(document_cache_key)
         if book_key is None:
             return
         written: list[tuple[tuple[str, str], _PoolEntry]] = []
@@ -660,14 +672,48 @@ class HiddenImageExtractionPool:
             if self._reconciled:
                 return
             self._reconciled = True
-            if self._directory is None or not self._directory.exists():
+            if self._directory is None:
                 return
+            try:
+                self._directory.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                return
+            marker = self._directory / self._SCHEMA_MARKER
+            try:
+                marker_version = marker.read_text(encoding="ascii").strip() if marker.exists() else ""
+            except OSError:
+                marker_version = ""
+            if marker_version != self._SCHEMA_VERSION:
+                # Older hidden-page caches were keyed by source path metadata.
+                # They cannot be associated with an immutable ``file:<id>``
+                # identity, so discard only files/directories owned by this
+                # cache root before indexing the new layout.
+                try:
+                    children = tuple(self._directory.iterdir())
+                except OSError:
+                    children = ()
+                for child in children:
+                    if child == marker or child.is_symlink():
+                        continue
+                    try:
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        elif child.is_file():
+                            child.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+                try:
+                    marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
+                except OSError:
+                    pass
             scanned: list[tuple[tuple[str, str], _PoolEntry]] = []
             try:
                 book_dirs = list(self._directory.iterdir())
             except OSError:
                 return
             for book_dir in book_dirs:
+                if book_dir.name == self._SCHEMA_MARKER:
+                    continue
                 if not book_dir.is_dir():
                     try:
                         book_dir.unlink(missing_ok=True)
@@ -732,13 +778,11 @@ class HiddenImageExtractionPool:
             self._forget_locked(oldest_key)
 
 
-def _book_key_for_source(source: Path) -> str | None:
-    try:
-        stat = source.stat()
-    except OSError:
+def _book_key_for_document_cache_key(document_cache_key: str) -> str | None:
+    key = str(document_cache_key or "").strip()
+    if not key:
         return None
-    digest_source = f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}"
-    return hashlib.sha256(digest_source.encode("utf-8")).hexdigest()
+    return hashlib.sha256(f"archive-cache-v2:{key}".encode("utf-8")).hexdigest()
 
 
 def _manifest_bytes(page_count: int, signature: str) -> bytes:

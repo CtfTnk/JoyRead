@@ -281,6 +281,25 @@ class SharedThumbnailCache:
             self._items.clear()
             self._current_bytes = 0
 
+    def purge(self, predicate: Callable[[ThumbnailCacheKey], bool]) -> int:
+        """Drop cached rendered thumbnails selected by a stable source key."""
+
+        removed = 0
+        with self._lock:
+            for key in tuple(self._items):
+                if not predicate(key):
+                    continue
+                _value, size = self._items.pop(key)
+                self._current_bytes -= size
+                removed += 1
+            for client_id, pinned in tuple(self._pins_by_client.items()):
+                retained = frozenset(key for key in pinned if not predicate(key))
+                if retained:
+                    self._pins_by_client[client_id] = retained
+                else:
+                    self._pins_by_client.pop(client_id, None)
+        return removed
+
     def _enforce_budget_locked(self) -> tuple[ThumbnailCacheKey, ...]:
         pinned = set().union(*self._pins_by_client.values()) if self._pins_by_client else set()
         evicted: list[ThumbnailCacheKey] = []
@@ -364,6 +383,12 @@ class CacheService:
 
     def issue_thumbnail_client(self, client_id: str | None = None) -> ThumbnailCacheClient:
         return self.thumbnail_cache.issue_client(client_id)
+
+    def purge_thumbnail_source(self, document_cache_key: str) -> int:
+        """Invalidate only thumbnail variants derived from one managed file."""
+
+        prefix = f"{document_cache_key}:"
+        return self.thumbnail_cache.purge(lambda key: key.source_id.startswith(prefix))
 
     def apply_cache_budgets(
         self,

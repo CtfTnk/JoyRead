@@ -31,6 +31,10 @@ class AppSettings:
     hash_algorithm: str = "sha256"
     language: str = "English"
     import_book_when_opening: bool = False
+    # When enabled, the source is hashed before copy and the staging copy must
+    # produce the same digest. Disabling it avoids a separate source pass while
+    # retaining a content hash calculated during the required copy pass.
+    verify_imported_file_integrity: bool = True
     individual_read_window: bool = False
     shelf_sort_field: str = "Add Time"
     shelf_sort_ascending: bool = False
@@ -132,6 +136,7 @@ class SettingsStore:
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
             language=str(raw.get("language") or "English"),
             import_book_when_opening=bool(raw.get("import_book_when_opening", False)),
+            verify_imported_file_integrity=bool(raw.get("verify_imported_file_integrity", True)),
             individual_read_window=bool(raw.get("individual_read_window", False)),
             shelf_sort_field=str(raw.get("shelf_sort_field") or "Add Time"),
             shelf_sort_ascending=bool(raw.get("shelf_sort_ascending", False)),

@@ -93,6 +93,7 @@ class ReaderShellWidget(QWidget):
             nested_archive_max_depth=app_settings.nested_archive_max_depth,
             archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
             archive_limits=context.settings_viewmodel.archive_open_limits,
+            document_cache_key=(f"file:{book.file_id}" if book is not None and book.file_id else None),
             thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
             archive_warmup_coordinator=context.archive_warmup_coordinator,
         )

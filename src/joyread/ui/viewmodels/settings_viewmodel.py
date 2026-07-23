@@ -88,6 +88,7 @@ class SettingsViewModel:
         self.archive_depth_limits_changed: Signal[None] = Signal()
         self.archive_open_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
+        self.import_integrity_changed: Signal[None] = Signal()
         # Hidden Space side effects: surface password-setup outcome and
         # reset/revert events so MainWindow can refresh the shelf + sidebar
         # without poking VM internals.
@@ -106,6 +107,9 @@ class SettingsViewModel:
         self.current_section = SettingsSectionKey.GENERAL
         self.language = settings.language
         self.import_book_when_opening = settings.import_book_when_opening
+        self.verify_imported_file_integrity = bool(
+            getattr(settings, "verify_imported_file_integrity", True)
+        )
         self.individual_read_window = settings.individual_read_window
         self.inspect_non_native_title_control = False
         self.storage_location = settings.storage_location
@@ -205,6 +209,15 @@ class SettingsViewModel:
             return
         self.import_book_when_opening = enabled
         self._persist(import_book_when_opening=enabled)
+        self.state_changed.emit()
+
+    def set_verify_imported_file_integrity(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.verify_imported_file_integrity:
+            return
+        self.verify_imported_file_integrity = enabled
+        self._persist(verify_imported_file_integrity=enabled)
+        self.import_integrity_changed.emit()
         self.state_changed.emit()
 
     def set_individual_read_window(self, enabled: bool) -> None:

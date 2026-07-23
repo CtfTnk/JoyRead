@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import time
 from pathlib import Path
 from zipfile import ZipFile
@@ -203,19 +202,18 @@ def test_corrupted_bundle_is_dropped_and_returns_none_for_reads(tmp_path: Path) 
     assert not bundles[0].exists()
 
 
-def test_source_file_edit_invalidates_cached_bundle(tmp_path: Path) -> None:
+def test_document_cache_key_is_independent_of_source_file_metadata(tmp_path: Path) -> None:
     pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
     source = _write_source(tmp_path)
+    document_cache_key = "file:stable-id"
 
-    pool.put(source, "001.png", b"old")
+    pool.put(document_cache_key, "001.png", b"old")
 
     source.write_bytes(b"fake-archive-modified")
-    new_mtime = source.stat().st_mtime_ns + 1_000_000_000
-    os.utime(source, ns=(new_mtime, new_mtime))
 
-    # Editing the source produces a different book_key, so the previous
-    # bundle is no longer reachable for the new source identity.
-    assert pool.get(source, "001.png") is None
+    # Source changes are discovered by the manual library audit. Cache identity
+    # is the immutable managed file id, not mutable source metadata.
+    assert pool.get(document_cache_key, "001.png") == b"old"
 
 
 def test_zip_pool_put_many_writes_one_bundle_with_multiple_entries(tmp_path: Path) -> None:
@@ -278,11 +276,29 @@ def test_hidden_image_pool_uses_hidden_folder_and_non_image_extension(tmp_path: 
     pool.put(source, "chapter/001.png", b"PNG-PAYLOAD")
 
     assert pool.get(source, "chapter/001.png") == b"PNG-PAYLOAD"
-    files = [path for path in directory.rglob("*") if path.is_file()]
+    files = [
+        path
+        for path in directory.rglob("*")
+        if path.is_file() and path.name != ".joyread-archive-cache-schema"
+    ]
     assert files
     assert all(path.suffix == ".jrcache" for path in files)
     assert all("001" not in path.name and ".png" not in path.name for path in files)
     assert directory.name.startswith(".")
+
+
+def test_hidden_image_pool_clears_legacy_metadata_keyed_cache_on_upgrade(tmp_path: Path) -> None:
+    directory = tmp_path / ".archive_image_pages"
+    legacy_dir = directory / "legacy-book-key"
+    legacy_dir.mkdir(parents=True)
+    legacy_payload = legacy_dir / "legacy-page.jrcache"
+    legacy_payload.write_bytes(b"legacy")
+
+    pool = HiddenImageExtractionPool(directory, max_bytes=4096)
+
+    assert pool.current_bytes == 0
+    assert not legacy_payload.exists()
+    assert (directory / ".joyread-archive-cache-schema").read_text(encoding="ascii") == "2"
 
 
 def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> None:

@@ -161,6 +161,9 @@ class AppContext:
         limits = _archive_open_limits_from_settings(self.settings)
         self.thumbnail_service.set_archive_open_limits(limits)
         self.import_service.set_archive_open_limits(limits)
+        self.import_service.set_verify_imported_file_integrity(
+            self.settings.verify_imported_file_integrity
+        )
         if self.archive_warmup_coordinator is not None:
             self.archive_warmup_coordinator.invalidate()
         self.shelf_viewmodel.invalidate_detail_thumbnail_source()
@@ -206,6 +209,7 @@ class AppContext:
             self.settings.hash_algorithm,
             tag_service=self.tag_service,
             archive_limits=_archive_open_limits_from_settings(self.settings),
+            verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -262,6 +266,7 @@ class AppContext:
                 self.settings.hash_algorithm,
                 tag_service=self.tag_service,
                 archive_limits=_archive_open_limits_from_settings(self.settings),
+                verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -353,6 +358,7 @@ def create_app_context(
         settings.hash_algorithm,
         tag_service=tag_service,
         archive_limits=_archive_open_limits_from_settings(settings),
+        verify_imported_file_integrity=settings.verify_imported_file_integrity,
     )
     export_service = ExportService(book_repository, hash_service)
     thumbnail_service = ThumbnailService(
@@ -420,6 +426,11 @@ def create_app_context(
     settings_viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
     settings_viewmodel.archive_open_limits_changed.connect(context.apply_archive_open_limits)
     settings_viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
+    settings_viewmodel.import_integrity_changed.connect(
+        lambda: context.import_service.set_verify_imported_file_integrity(
+            context.settings_store.load().verify_imported_file_integrity
+        )
+    )
     logger.info(
         "AppContext ready (storage=%s, workers=%d, archive_cache_strategy=%s)",
         settings.storage_location,

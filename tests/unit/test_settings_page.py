@@ -189,9 +189,9 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four General rows (Storage moved to Privacy), three Import depth rows,
+    # Five General rows (Storage moved to Privacy), three Import depth rows,
     # seven Archive rows, and five Cache rows.
-    assert len(setting_items) == 19
+    assert len(setting_items) == 20
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 11
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
@@ -214,7 +214,7 @@ def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
 
     assert "Use Native Title Control" not in labels
     assert "Inspect Windows/Linux Title Control" in labels
-    assert len(switches) == 5
+    assert len(switches) == 6
 
     inspect_item = next(
         item

@@ -64,18 +64,31 @@ class ArchiveAccessMode(StrEnum):
 
 
 @dataclass(frozen=True)
-class ArchiveValidationResult:
-    """Non-throwing archive check result for import/UI feedback paths."""
+class ArchiveProbeResult:
+    """Result of a shallow, non-interactive archive container probe.
+
+    A probe intentionally establishes only that an archive container can be
+    listed and advertises at least one supported direct image or nested archive
+    candidate.  It does not build a page tree, read image bytes, decode pixels,
+    or request a password.  Those operations belong to ``open()`` and the
+    reader's controlled error path.
+    """
 
     path: Path
     is_valid: bool
     code: ArchiveValidationCode
     message: str
     archive_format: str | None = None
-    page_count: int | None = None
-    file_size: int | None = None
-    mtime_ns: int | None = None
+    is_encrypted: bool = False
+    has_direct_images: bool = False
+    has_nested_archive_candidates: bool = False
     error_type: str | None = None
+
+
+# ``validate_archive`` was the public name before probes became deliberately
+# lightweight. Keep imports and annotations from integrations source-compatible
+# while returning the new shallow result shape.
+ArchiveValidationResult = ArchiveProbeResult
 
 
 @dataclass(frozen=True)

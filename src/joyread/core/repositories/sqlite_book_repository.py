@@ -899,6 +899,7 @@ def _list_books(
             books.is_hidden,
             books.created_at,
             books.updated_at,
+            book_files.file_id,
             book_files.storage_path,
             book_files.original_path,
             book_files.original_file_name,
@@ -1046,6 +1047,7 @@ def _book_from_row(row: sqlite3.Row, *, resolver: StoragePathResolver | None = N
         collection_ids=collection_ids,
         page_count=0,
         original_file_name=_original_file_name_from_row(row),
+        file_id=row["file_id"],
     )
 
 

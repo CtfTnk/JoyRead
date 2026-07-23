@@ -40,6 +40,14 @@ class ArchiveEntry:
     password: str | None
 
 
+@dataclass(frozen=True)
+class ArchiveContainerProbe:
+    """Metadata returned by a backend without attempting entry extraction."""
+
+    entries: tuple[ArchiveEntry, ...]
+    is_encrypted: bool = False
+
+
 @dataclass
 class PageRecord:
     """A page address retained by a session without retaining image bytes."""

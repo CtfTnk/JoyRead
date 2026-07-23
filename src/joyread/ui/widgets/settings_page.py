@@ -289,6 +289,12 @@ class SettingsPageWidget(QFrame):
         )
         import_switch.toggled.connect(self._viewmodel.set_import_book_when_opening)
 
+        verify_import_switch = SettingsSwitchItem(
+            t("settings.verify_imported_file_integrity"),
+            self._viewmodel.verify_imported_file_integrity,
+        )
+        verify_import_switch.toggled.connect(self._viewmodel.set_verify_imported_file_integrity)
+
         window_switch = SettingsSwitchItem(
             t("settings.individual_read_window"),
             self._viewmodel.individual_read_window,
@@ -459,6 +465,7 @@ class SettingsPageWidget(QFrame):
             general_banner,
             language,
             import_switch,
+            verify_import_switch,
             window_switch,
             inspect_title_switch,
             import_banner,

@@ -23,6 +23,7 @@
     "banner_storage": "ストレージ",
     "language": "言語",
     "import_when_opening": "開く際に書籍をインポート",
+    "verify_imported_file_integrity": "インポートしたファイルの整合性を検証",
     "individual_read_window": "独立した読書ウィンドウ",
     "inspect_title_control": "Windows/Linux タイトルコントロールを検査",
     "import_folder_depth": "インポートフォルダーの深さ",
