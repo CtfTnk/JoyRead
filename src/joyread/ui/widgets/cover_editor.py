@@ -8,6 +8,7 @@ from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, Si
 from PySide6.QtGui import (
     QColor,
     QIcon,
+    QImage,
     QMouseEvent,
     QPainter,
     QPaintEvent,
@@ -44,7 +45,7 @@ class CoverEditorOverlay(QWidget):
     thumbnail_interest_released = QtSignal()
     picker_visibility_changed = QtSignal(bool)
     thumbnail_selected = QtSignal(int)
-    save_requested = QtSignal(object, object)
+    save_requested = QtSignal(object)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -72,12 +73,8 @@ class CoverEditorOverlay(QWidget):
         self.editor.refresh_labels()
         self.picker.refresh_labels()
 
-    @property
-    def source_bytes(self) -> bytes | None:
-        return self.editor.source_bytes
-
-    def open_editor(self, source_bytes: bytes, source_id: str) -> bool:
-        if not self.editor.set_source(source_bytes, source_id):
+    def open_editor(self, frame: QImage, source_id: str) -> bool:
+        if not self.editor.set_source(frame, source_id):
             return False
         self._show_editor()
         self._position_panel()
@@ -86,8 +83,8 @@ class CoverEditorOverlay(QWidget):
         self.setFocus(Qt.FocusReason.PopupFocusReason)
         return True
 
-    def set_source(self, source_bytes: bytes, source_id: str) -> bool:
-        if not self.editor.set_source(source_bytes, source_id):
+    def set_source(self, frame: QImage, source_id: str) -> bool:
+        if not self.editor.set_source(frame, source_id):
             return False
         self._show_editor()
         return True
@@ -128,10 +125,9 @@ class CoverEditorOverlay(QWidget):
         self.picker.refresh_interest()
 
     def _emit_save_requested(self) -> None:
-        source_bytes = self.editor.source_bytes
-        if source_bytes is None:
+        if not self.editor.has_source:
             return
-        self.save_requested.emit(source_bytes, self.editor.crop_state())
+        self.save_requested.emit(self.editor.crop_state())
 
     def _position_panel(self) -> None:
         self._stack.move(
@@ -148,7 +144,6 @@ class CoverEditorWidget(QFrame):
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._source_bytes: bytes | None = None
         self.setObjectName("CoverEditorPanel")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedSize(Theme.cover_editor_width, Theme.cover_editor_height)
@@ -219,13 +214,12 @@ class CoverEditorWidget(QFrame):
         self.refresh_labels()
 
     @property
-    def source_bytes(self) -> bytes | None:
-        return self._source_bytes
+    def has_source(self) -> bool:
+        return self.canvas.has_source
 
-    def set_source(self, source_bytes: bytes, source_id: str) -> bool:
-        if not self.canvas.set_source(source_bytes, source_id):
+    def set_source(self, frame: QImage, source_id: str) -> bool:
+        if not self.canvas.set_source(frame, source_id):
             return False
-        self._source_bytes = source_bytes
         self._sync_zoom_range()
         self._sync_zoom_control(self.canvas.zoom_percent)
         return True
@@ -400,11 +394,14 @@ class CoverAdjustCanvas(QFrame):
     def minimum_zoom_percent(self) -> float:
         return self._minimum_zoom_percent
 
-    def set_source(self, source_bytes: bytes, source_id: str) -> bool:
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(source_bytes):
+    @property
+    def has_source(self) -> bool:
+        return not self._pixmap.isNull()
+
+    def set_source(self, frame: QImage, source_id: str) -> bool:
+        if not isinstance(frame, QImage) or frame.isNull():
             return False
-        self._pixmap = pixmap
+        self._pixmap = QPixmap.fromImage(frame)
         self._source_id = source_id
         self._pan = QPointF(0, 0)
         self._zoom_percent = 100.0
@@ -430,11 +427,12 @@ class CoverAdjustCanvas(QFrame):
         self.update()
 
     def crop_state(self) -> CoverCropState:
+        max_x, max_y = self._maximum_pan()
         return CoverCropState(
             source_id=self._source_id,
             zoom_percent=self._zoom_percent,
-            pan_x=self._pan.x(),
-            pan_y=self._pan.y(),
+            pan_x=(self._pan.x() / max_x) if max_x > 0 else 0.0,
+            pan_y=(self._pan.y() / max_y) if max_y > 0 else 0.0,
             crop_size=(Theme.cover_width, Theme.cover_height),
         )
 
@@ -541,14 +539,21 @@ class CoverAdjustCanvas(QFrame):
         if self._pixmap.isNull():
             self._pan = QPointF(0, 0)
             return
-        scale = self._fill_scale() * self._zoom_percent / 100.0
-        display_width = self._pixmap.width() * scale
-        display_height = self._pixmap.height() * scale
-        max_x = max(0.0, (display_width - Theme.cover_width) / 2)
-        max_y = max(0.0, (display_height - Theme.cover_height) / 2)
+        max_x, max_y = self._maximum_pan()
         self._pan = QPointF(
             max(-max_x, min(max_x, self._pan.x())),
             max(-max_y, min(max_y, self._pan.y())),
+        )
+
+    def _maximum_pan(self) -> tuple[float, float]:
+        if self._pixmap.isNull():
+            return 0.0, 0.0
+        scale = self._fill_scale() * self._zoom_percent / 100.0
+        display_width = self._pixmap.width() * scale
+        display_height = self._pixmap.height() * scale
+        return (
+            max(0.0, (display_width - Theme.cover_width) / 2),
+            max(0.0, (display_height - Theme.cover_height) / 2),
         )
 
 

@@ -6,7 +6,7 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 import hashlib
 from io import BytesIO
-from threading import RLock
+from threading import BoundedSemaphore, RLock
 
 from PIL import Image, UnidentifiedImageError
 
@@ -15,9 +15,16 @@ from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudge
 from joyread.core.archive.models import ArchiveAccessMode, ArchiveContentsEntry, ArchivePage
 from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
+from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 
 
 EXPENSIVE_ARCHIVE_EXTENSIONS = frozenset({".7z", ".cb7", ".rar", ".cbr"})
+
+# Pillow's process-global threshold would impose an undocumented ~179 MP hard
+# failure even when JoyRead's configurable guardrail is 400 MP or unlimited.
+# Archive payloads are checked against ``ArchiveOpenLimits.max_image_pixels``
+# immediately after this header read and before any Qt/Pillow pixel decode.
+Image.MAX_IMAGE_PIXELS = None
 
 
 ReadEntries = Callable[
@@ -36,21 +43,43 @@ class ArchiveImageSession:
         *,
         document_cache_key: str | None = None,
         extraction_cache: ArchiveExtractionCache | None = None,
+        cache_lease: ArchiveCacheLease | None = None,
         cache_signature: str = "",
         limits: ArchiveOpenLimits | None = None,
     ) -> None:
-        self._pages = list(pages)
+        self._pages = tuple(pages)
         self._read_entries = read_entries
         self._contents = tuple(contents)
-        self._document_cache_key = document_cache_key
-        self._extraction_cache = extraction_cache
+        if cache_lease is not None and (document_cache_key is not None or extraction_cache is not None):
+            raise ValueError("Pass cache_lease or legacy cache arguments, not both.")
+        if cache_lease is None and document_cache_key is not None and extraction_cache is not None:
+            cache_lease = ArchiveCacheLease(
+                extraction_cache,
+                document_cache_key,
+                ArchiveCacheScope.PERSISTENT,
+            )
+        self._cache_lease = cache_lease
         self._cache_signature = cache_signature
         self._limits = limits or ArchiveOpenLimits()
-        self._lock = RLock()
+        self._state_lock = RLock()
+        self._closed = False
         self._uses_expensive_cache = any(
             record.source.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS
             for record in self._pages
         )
+        self._requires_sequential_warmup = any(
+            record.source.requires_sequential_warmup
+            for record in self._pages
+            if record.source.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS
+        )
+        # Every read opens an independent backend handle. Plain ZIP can sustain
+        # two concurrent random reads; encrypted ZIP and expensive formats are
+        # serialized per document to avoid extractor contention.
+        supports_two_reads = all(
+            record.source.suffix in {".zip", ".cbz"} and record.password is None
+            for record in self._pages
+        )
+        self._read_slots = BoundedSemaphore(2 if supports_two_reads else 1)
         self.current_index = 0
 
     @property
@@ -67,48 +96,46 @@ class ArchiveImageSession:
 
     @property
     def access_mode(self) -> ArchiveAccessMode:
-        with self._lock:
-            if not self._uses_expensive_cache:
-                return ArchiveAccessMode.DIRECT
-            return (
-                ArchiveAccessMode.EXPENSIVE_READY
-                if self._cache_is_complete()
-                else ArchiveAccessMode.EXPENSIVE_COLD
-            )
+        if not self._uses_expensive_cache:
+            return ArchiveAccessMode.DIRECT
+        return (
+            ArchiveAccessMode.EXPENSIVE_READY
+            if self._cache_is_complete()
+            else ArchiveAccessMode.EXPENSIVE_COLD
+        )
 
     def access_mode_for(self, page_index: int) -> ArchiveAccessMode:
-        with self._lock:
-            if not self.is_valid_index(page_index):
-                return ArchiveAccessMode.DIRECT
-            record = self._pages[page_index]
-            if record.source.suffix not in EXPENSIVE_ARCHIVE_EXTENSIONS:
-                return ArchiveAccessMode.DIRECT
-            return (
-                ArchiveAccessMode.EXPENSIVE_READY
-                if self._cache_is_complete()
-                else ArchiveAccessMode.EXPENSIVE_COLD
-            )
+        if not self.is_valid_index(page_index):
+            return ArchiveAccessMode.DIRECT
+        record = self._pages[page_index]
+        if record.source.suffix not in EXPENSIVE_ARCHIVE_EXTENSIONS:
+            return ArchiveAccessMode.DIRECT
+        return (
+            ArchiveAccessMode.EXPENSIVE_READY
+            if self._cache_is_complete()
+            else ArchiveAccessMode.EXPENSIVE_COLD
+        )
+
+    @property
+    def requires_sequential_warmup(self) -> bool:
+        return self._requires_sequential_warmup and not self._cache_is_complete()
 
     def thumbnail_batch_size(self, page_index: int) -> int:
-        return 8 if self.access_mode_for(page_index) == ArchiveAccessMode.EXPENSIVE_COLD else 1
+        if self.access_mode_for(page_index) != ArchiveAccessMode.EXPENSIVE_COLD:
+            return 1
+        return 8 if self._pages[page_index].source.requires_sequential_warmup else 1
 
     def mark_thumbnail_cache_ready(self) -> bool:
-        with self._lock:
-            if not self._uses_expensive_cache or not self._can_use_document_cache():
-                return False
-            if any(not self._record_is_cacheable(record) for record in self._pages):
-                return False
-            assert self._document_cache_key is not None
-            assert self._extraction_cache is not None
-            expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
-            if len(self._extraction_cache.get_many(self._document_cache_key, expected_keys)) != self.page_count:
-                return False
-            self._extraction_cache.mark_complete(
-                self._document_cache_key,
-                self.page_count,
-                self._cache_signature,
-            )
-            return self._cache_is_complete()
+        if not self._uses_expensive_cache or not self._can_use_document_cache():
+            return False
+        if any(not self._record_is_cacheable(record) for record in self._pages):
+            return False
+        expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
+        assert self._cache_lease is not None
+        if len(self._cache_lease.get_many(expected_keys)) != self.page_count:
+            return False
+        self._cache_lease.mark_complete(self.page_count, self._cache_signature)
+        return self._cache_is_complete()
 
     def is_not_empty(self) -> bool:
         return self.page_count > 0
@@ -117,12 +144,12 @@ class ArchiveImageSession:
         return 0 <= index < self.page_count
 
     def has_next(self, index: int | None = None) -> bool:
-        with self._lock:
+        with self._state_lock:
             checked_index = self.current_index if index is None else index
             return self.is_valid_index(checked_index + 1)
 
     def has_previous(self, index: int | None = None) -> bool:
-        with self._lock:
+        with self._state_lock:
             checked_index = self.current_index if index is None else index
             return self.is_valid_index(checked_index - 1)
 
@@ -136,43 +163,29 @@ class ArchiveImageSession:
         return [page.image_bytes if page is not None else None for page in self.get_pages(range(start, start + count))]
 
     def get_dimensions(self, index: int) -> tuple[int, int] | None:
-        with self._lock:
-            if not self.is_valid_index(index):
-                return None
-            record = self._pages[index]
-            if record.dimensions is not None:
-                return record.dimensions
-            budget = ArchiveOperationBudget(self._limits.max_operation_bytes)
-            if self._record_is_cacheable(record):
-                assert self._document_cache_key is not None
-                assert self._extraction_cache is not None
-                cached = self._extraction_cache.get(self._document_cache_key, self._cache_page_key(index))
-                if cached is not None:
-                    ensure_item_size(len(cached), self._limits.max_extracted_item_bytes, record.display_path)
-                    budget.consume(len(cached), record.display_path)
-                    dimensions = _required_dimensions(cached, self._limits, record.display_path)
-                    record.dimensions = dimensions
-                    return dimensions
-            payload = self._read_entries(
-                record.source,
-                ((record.name, record.password),),
-                budget,
-            ).get(record.name)
-            if payload is None:
-                return None
-            dimensions = _required_dimensions(payload, self._limits, record.display_path)
-            record.dimensions = dimensions
-            if self._record_is_cacheable(record):
-                assert self._document_cache_key is not None
-                assert self._extraction_cache is not None
-                self._extraction_cache.put(self._document_cache_key, self._cache_page_key(index), payload)
-            return dimensions
+        page = self.read_pages((index,))[0]
+        return page.dimensions if page is not None else None
 
     def get_page(self, index: int) -> ArchivePage | None:
-        return self.get_pages((index,))[0]
+        return self.read_pages((index,))[0]
 
     def get_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
-        with self._lock:
+        """Blocking compatibility alias for :meth:`read_pages`."""
+
+        return self.read_pages(indices)
+
+    def read_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
+        """Read bounded page payloads for worker-side consumers.
+
+        No mutable page metadata is written here. Backend reads are limited by
+        the document capability semaphore while cache I/O uses the pool's own
+        lock, so unrelated cache operations do not serialize the whole call.
+        """
+
+        with self._state_lock:
+            if self._closed:
+                return [None for _index in indices]
+        with self._read_slots:
             requested = list(indices)
             results: list[ArchivePage | None] = [None] * len(requested)
             missing: list[tuple[int, int, PageRecord]] = []
@@ -183,9 +196,8 @@ class ArchiveImageSession:
                     continue
                 record = self._pages[page_index]
                 if self._record_is_cacheable(record):
-                    assert self._document_cache_key is not None
-                    assert self._extraction_cache is not None
-                    cached = self._extraction_cache.get(self._document_cache_key, self._cache_page_key(page_index))
+                    assert self._cache_lease is not None
+                    cached = self._cache_lease.get(self._cache_page_key(page_index))
                     if cached is not None:
                         # A cache hit is still an archive read for the current
                         # session policy: check both byte budgets and pixels.
@@ -193,7 +205,6 @@ class ArchiveImageSession:
                         budget.consume(len(cached), record.display_path)
                         page = archive_page_from_bytes(page_index, record, cached, self._limits)
                         if page is not None:
-                            record.dimensions = page.dimensions
                             results[result_index] = page
                             continue
                 missing.append((result_index, page_index, record))
@@ -215,15 +226,13 @@ class ArchiveImageSession:
                     page = archive_page_from_bytes(page_index, record, payload, self._limits)
                     if page is None:
                         continue
-                    record.dimensions = page.dimensions
                     results[result_index] = page
                     if self._record_is_cacheable(record):
                         cache_payloads[self._cache_page_key(page_index)] = payload
 
             if cache_payloads:
-                assert self._document_cache_key is not None
-                assert self._extraction_cache is not None
-                self._extraction_cache.put_many(self._document_cache_key, cache_payloads)
+                assert self._cache_lease is not None
+                self._cache_lease.put_many(cache_payloads)
 
             return results
 
@@ -248,35 +257,38 @@ class ArchiveImageSession:
         return (sum(width for width, _height in ratios), 1.0)
 
     def current(self) -> bytes | None:
-        with self._lock:
-            return self.get_image(self.current_index)
+        with self._state_lock:
+            index = self.current_index
+        return self.get_image(index)
 
     def seek(self, index: int) -> bool:
-        with self._lock:
+        with self._state_lock:
             if not self.is_valid_index(index):
                 return False
             self.current_index = index
             return True
 
     def next(self) -> bytes | None:
-        with self._lock:
-            if not self.has_next():
+        with self._state_lock:
+            if not self.is_valid_index(self.current_index + 1):
                 return None
             self.current_index += 1
-            return self.get_image(self.current_index)
+            index = self.current_index
+        return self.get_image(index)
 
     def previous(self) -> bytes | None:
-        with self._lock:
-            if not self.has_previous():
+        with self._state_lock:
+            if not self.is_valid_index(self.current_index - 1):
                 return None
             self.current_index -= 1
-            return self.get_image(self.current_index)
+            index = self.current_index
+        return self.get_image(index)
 
     def _can_use_document_cache(self) -> bool:
         return (
             self._uses_expensive_cache
-            and self._document_cache_key is not None
-            and self._extraction_cache is not None
+            and self._cache_lease is not None
+            and not self._cache_lease.is_closed
         )
 
     def _record_is_cacheable(self, record: PageRecord) -> bool:
@@ -289,13 +301,26 @@ class ArchiveImageSession:
     def _cache_is_complete(self) -> bool:
         if not self._can_use_document_cache():
             return False
-        assert self._document_cache_key is not None
-        assert self._extraction_cache is not None
-        return self._extraction_cache.is_complete(
-            self._document_cache_key,
+        assert self._cache_lease is not None
+        return self._cache_lease.is_complete(
             self.page_count,
             self._cache_signature,
         )
+
+    def promote_cache(self, persistent_key: str) -> bool:
+        with self._state_lock:
+            if self._closed:
+                return False
+            lease = self._cache_lease
+        return lease.promote(persistent_key) if lease is not None else False
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+        if self._cache_lease is not None:
+            self._cache_lease.close()
 
     def _cache_page_key(self, page_index: int) -> str:
         # Scope page indices to the scanner/policy signature as well: a changed

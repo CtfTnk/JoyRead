@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from joyread.core.services.cache_service import SharedThumbnailCache
-from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskStatus
+from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
 from joyread.ui.viewmodels.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 
 

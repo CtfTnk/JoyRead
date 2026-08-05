@@ -19,7 +19,7 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
 )
-from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
+from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
@@ -41,7 +41,10 @@ from joyread.core.services.storage_validation_service import (
     StorageValidationService,
 )
 from joyread.core.services.tag_service import TagService
-from joyread.core.services.task_service import TaskService
+from joyread.infrastructure.qt_task_service import TaskService
+from joyread.infrastructure.pdf_image_service import PdfImageService
+from joyread.infrastructure.reader_image_decoder import qimage_frame_bytes
+from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import (
@@ -100,6 +103,7 @@ class AppContext:
     archive_extraction_pool: ArchiveExtractionCache
     archive_image_service: ArchiveImageService
     reader_session_service: ReaderSessionService
+    pdf_image_service: PdfImageService
     library_service: LibraryService
     task_service: TaskService
     cache_service: CacheService
@@ -118,6 +122,7 @@ class AppContext:
     shelf_viewmodel: ShelfViewModel
     settings_viewmodel: SettingsViewModel
     tag_management_viewmodel: TagManagementViewModel
+    thumbnail_renderer: QtThumbnailRenderer | None = None
     archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None
     # Populated when startup recovery had to fall back to another library;
     # the main window shows it once on launch.
@@ -129,6 +134,8 @@ class AppContext:
         if self.archive_warmup_coordinator is not None:
             self.archive_warmup_coordinator.close()
         self.task_service.shutdown()
+        if self.thumbnail_service is not None:
+            self.thumbnail_service.close()
         self.database_interpreter.close()
         logger.info("AppContext shutdown complete")
 
@@ -280,6 +287,7 @@ class AppContext:
         # path service → archive pool → archive reading stack → database. A
         # piecemeal swap risks dangling references to the previous storage
         # root, so the whole subtree is reconstructed atomically here.
+        self.thumbnail_service.close()
         self.settings = self.settings_store.load()
         logger.info("Reloading storage from settings root=%s", self.settings.storage_location)
         self.paths = _create_path_service(self.config, self.settings_store, self.settings)
@@ -307,6 +315,7 @@ class AppContext:
             nested_archive_max_depth=self.settings.nested_archive_max_depth,
             archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
             archive_limits=_archive_open_limits_from_settings(self.settings),
+            thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
         )
         self.import_service = ImportService(
             self.paths,
@@ -318,6 +327,7 @@ class AppContext:
             archive_limits=_archive_open_limits_from_settings(self.settings),
             verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
             maintenance_coordinator=self.library_maintenance_coordinator,
+            pdf_service=self.pdf_image_service,
         )
         self.library_maintenance_service = _create_library_maintenance_service(
             self.paths,
@@ -328,6 +338,7 @@ class AppContext:
             self.archive_extraction_pool,
             _archive_open_limits_from_settings(self.settings),
             self.library_maintenance_coordinator,
+            self.pdf_image_service,
         )
         self.export_service = ExportService(self.book_repository, self.hash_service)
         self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -351,11 +362,11 @@ class AppContext:
         self.settings = self.settings_store.load()
         next_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         logger.info(
-            "Applying cache settings: strategy=%s->%s reader_mb=%s pool_mb=%s thumbnail_mb=%s",
+            "Applying cache settings: strategy=%s->%s reader_mb=%s pool_gb=%s thumbnail_mb=%s",
             previous_strategy.value,
             next_strategy.value,
             self.settings.reader_page_cache_mb,
-            self.settings.archive_extraction_pool_mb,
+            self.settings.archive_extraction_pool_gb,
             self.settings.thumbnail_cache_mb,
         )
         if next_strategy != previous_strategy:
@@ -364,6 +375,7 @@ class AppContext:
             # layouts. The old pool's bytes must be cleared and the dependent
             # archive/thumbnail/import services rebuilt against the new pool
             # so they don't keep a reference to the old object.
+            self.thumbnail_service.close()
             self.archive_extraction_pool.clear()
             self.archive_extraction_pool = _create_archive_extraction_cache(self.paths, self.settings)
             self._rebuild_archive_reading_services()
@@ -375,6 +387,7 @@ class AppContext:
                 nested_archive_max_depth=self.settings.nested_archive_max_depth,
                 archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
                 archive_limits=_archive_open_limits_from_settings(self.settings),
+                thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
             )
             self.import_service = ImportService(
                 self.paths,
@@ -386,6 +399,7 @@ class AppContext:
                 archive_limits=_archive_open_limits_from_settings(self.settings),
                 verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
                 maintenance_coordinator=self.library_maintenance_coordinator,
+                pdf_service=self.pdf_image_service,
             )
             self.library_maintenance_service = _create_library_maintenance_service(
                 self.paths,
@@ -396,6 +410,7 @@ class AppContext:
                 self.archive_extraction_pool,
                 _archive_open_limits_from_settings(self.settings),
                 self.library_maintenance_coordinator,
+                self.pdf_image_service,
             )
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
@@ -407,7 +422,7 @@ class AppContext:
             self.cache_service.apply_cache_budgets(
                 reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
                 thumbnail_cache_bytes=self.settings.thumbnail_cache_mb * 1024 * 1024,
-                archive_extraction_pool_bytes=self.settings.archive_extraction_pool_mb * 1024 * 1024,
+                archive_extraction_pool_bytes=self.settings.archive_extraction_pool_gb * 1024 * 1024 * 1024,
             )
         self._refresh_settings_pool_usage()
 
@@ -425,7 +440,10 @@ class AppContext:
     def _rebuild_archive_reading_services(self) -> None:
         logger.debug("Rebuilding archive reader services for cache=%s", type(self.archive_extraction_pool).__name__)
         self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
-        self.reader_session_service = ReaderSessionService(self.archive_image_service)
+        self.reader_session_service = ReaderSessionService(
+            self.archive_image_service,
+            self.pdf_image_service,
+        )
         if self.archive_warmup_coordinator is not None:
             self.archive_warmup_coordinator.replace_session_service(self.reader_session_service)
         self.cache_service.archive_extraction_pool = self.archive_extraction_pool
@@ -468,7 +486,8 @@ def create_app_context(
     tag_service = TagService(tag_repository)
     archive_extraction_pool = _create_archive_extraction_cache(paths, settings)
     archive_image_service = ArchiveImageService(extraction_pool=archive_extraction_pool)
-    reader_session_service = ReaderSessionService(archive_image_service)
+    pdf_image_service = PdfImageService()
+    reader_session_service = ReaderSessionService(archive_image_service, pdf_image_service)
     library_service = LibraryService(book_repository)
     task_service = TaskService(config.max_background_workers)
     archive_warmup_coordinator = ArchiveWarmupCoordinator(reader_session_service, task_service)
@@ -479,7 +498,9 @@ def create_app_context(
         reader_page_cache_max_bytes=settings.reader_page_cache_mb * 1024 * 1024,
         thumbnail_cache_max_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
         cover_index_max_items=config.cover_index_max_items,
+        reader_frame_sizer=qimage_frame_bytes,
     )
+    thumbnail_renderer = QtThumbnailRenderer()
     import_service = ImportService(
         paths,
         database_interpreter,
@@ -490,6 +511,7 @@ def create_app_context(
         archive_limits=_archive_open_limits_from_settings(settings),
         verify_imported_file_integrity=settings.verify_imported_file_integrity,
         maintenance_coordinator=library_maintenance_coordinator,
+        pdf_service=pdf_image_service,
     )
     export_service = ExportService(book_repository, hash_service)
     thumbnail_service = ThumbnailService(
@@ -500,6 +522,7 @@ def create_app_context(
         nested_archive_max_depth=settings.nested_archive_max_depth,
         archive_global_file_max_depth=settings.archive_global_file_max_depth,
         archive_limits=_archive_open_limits_from_settings(settings),
+        thumbnail_renderer=thumbnail_renderer,
     )
     library_maintenance_service = _create_library_maintenance_service(
         paths,
@@ -510,6 +533,7 @@ def create_app_context(
         archive_extraction_pool,
         _archive_open_limits_from_settings(settings),
         library_maintenance_coordinator,
+        pdf_image_service,
     )
     maintenance_recovery = library_maintenance_service.recover_pending_journal()
     hidden_space_service = HiddenSpaceService(settings_store, library_service)
@@ -539,6 +563,7 @@ def create_app_context(
         archive_extraction_pool=archive_extraction_pool,
         archive_image_service=archive_image_service,
         reader_session_service=reader_session_service,
+        pdf_image_service=pdf_image_service,
         archive_warmup_coordinator=archive_warmup_coordinator,
         library_service=library_service,
         task_service=task_service,
@@ -553,6 +578,7 @@ def create_app_context(
         storage_validation_service=storage_validation_service,
         storage_recovery_service=storage_recovery_service,
         thumbnail_service=thumbnail_service,
+        thumbnail_renderer=thumbnail_renderer,
         hidden_space_service=hidden_space_service,
         main_window_viewmodel=main_window_viewmodel,
         shelf_viewmodel=shelf_viewmodel,
@@ -596,7 +622,7 @@ def _create_path_service(config: AppConfig, settings_store: SettingsStore, setti
 
 def _create_archive_extraction_cache(paths: PathService, settings: AppSettings) -> ArchiveExtractionCache:
     strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
-    max_bytes = settings.archive_extraction_pool_mb * 1024 * 1024
+    max_bytes = settings.archive_extraction_pool_gb * 1024 * 1024 * 1024
     logger.debug("Creating archive extraction cache strategy=%s max_bytes=%d", strategy.value, max_bytes)
     if strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES:
         return HiddenImageExtractionPool(
@@ -632,6 +658,7 @@ def _create_library_maintenance_service(
     extraction_cache: ArchiveExtractionCache,
     archive_limits: ArchiveOpenLimits,
     coordinator: LibraryMaintenanceCoordinator,
+    pdf_service: PdfImageService,
 ) -> LibraryMaintenanceService:
     return LibraryMaintenanceService(
         paths,
@@ -642,6 +669,7 @@ def _create_library_maintenance_service(
         extraction_cache=extraction_cache,
         invalidate_file_cache=thumbnail_service.invalidate_file_cache,
         coordinator=coordinator,
+        pdf_service=pdf_service,
     )
 
 

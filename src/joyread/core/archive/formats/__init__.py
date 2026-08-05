@@ -6,7 +6,7 @@ from collections.abc import Sequence
 from typing import Protocol
 
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
-from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 
 from joyread.core.archive.formats.rar_backend import RarArchiveBackend
@@ -19,7 +19,7 @@ class ArchiveFormatBackend(Protocol):
 
     def probe_entries(self, source: ArchiveSource) -> ArchiveContainerProbe: ...
 
-    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]: ...
+    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> ArchiveListing: ...
 
     def read_entries(
         self,

@@ -51,6 +51,7 @@ def test_app_context_closes_tasks_before_database() -> None:
         archive_extraction_pool=None,  # type: ignore[arg-type]
         archive_image_service=None,  # type: ignore[arg-type]
         reader_session_service=None,  # type: ignore[arg-type]
+        pdf_image_service=None,  # type: ignore[arg-type]
         library_service=None,  # type: ignore[arg-type]
         task_service=_RecordingTaskService(calls),  # type: ignore[arg-type]
         cache_service=None,  # type: ignore[arg-type]

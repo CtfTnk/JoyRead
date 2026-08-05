@@ -17,7 +17,7 @@ from joyread.core.archive import (
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
-from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
+from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.library_maintenance_service import LibraryMaintenanceCoordinator
 from joyread.core.services.tag_service import TagService
@@ -99,7 +99,7 @@ class ImportService:
         archive_service: ArchiveImageService,
         hash_service: HashService,
         hash_algorithm: str = "sha256",
-        pdf_service: PdfImageService | None = None,
+        pdf_service: PdfImageServicePort | None = None,
         tag_service: TagService | None = None,
         archive_limits: ArchiveOpenLimits | None = None,
         verify_imported_file_integrity: bool = True,
@@ -108,7 +108,7 @@ class ImportService:
         self._paths = paths
         self._database = database
         self._archive_service = archive_service
-        self._pdf_service = pdf_service or PdfImageService()
+        self._pdf_service = pdf_service
         self._hash_service = hash_service
         self._hash_algorithm = hash_algorithm
         self._tag_service = tag_service
@@ -604,6 +604,8 @@ class ImportService:
                     archive_validation_code=probe.code,
                 )
         elif suffix in PDF_EXTENSIONS:
+            if self._pdf_service is None:
+                return _ValidationFailure("failed", "PDF support is unavailable in this runtime.")
             probe = self._pdf_service.probe_pdf(staging_path)
             if not probe.is_valid:
                 return _ValidationFailure("failed", probe.message)

@@ -1,7 +1,8 @@
 import logging
-from threading import Event
+from threading import Event, get_ident
 
-from joyread.core.services.task_service import TaskPriority, TaskService, TaskStatus
+from joyread.app.tasking import TaskPriority, TaskStatus
+from joyread.infrastructure.qt_task_service import TaskService
 
 
 class _ImmediateThreadPool:
@@ -33,13 +34,31 @@ def test_task_service_submit_runs_callback_on_background_pool(qtbot) -> None:
     assert results == ["done"]
 
 
+def test_task_service_runs_work_off_gui_and_callbacks_on_gui_thread(qtbot) -> None:
+    service = TaskService(max_workers=1)
+    gui_thread = get_ident()
+    worker_threads: list[int] = []
+    callback_threads: list[int] = []
+
+    handle = service.submit(
+        "thread-affinity",
+        lambda: worker_threads.append(get_ident()),
+        on_success=lambda _result: callback_threads.append(get_ident()),
+    )
+
+    qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
+    assert worker_threads and worker_threads[0] != gui_thread
+    assert callback_threads == [gui_thread]
+    service.shutdown(timeout_ms=10)
+
+
 def test_task_service_debug_logs_include_callback_name(qtbot, caplog) -> None:
     service = TaskService(max_workers=1)
 
     def work() -> str:
         return "done"
 
-    with caplog.at_level(logging.DEBUG, logger="joyread.core.services.task_service"):
+    with caplog.at_level(logging.DEBUG, logger="joyread.infrastructure.qt_task_service"):
         handle = service.submit("trace", work)
         qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
 
@@ -129,4 +148,37 @@ def test_cancelled_task_ignores_late_success_callback(qtbot) -> None:
 
     assert handle.status == TaskStatus.CANCELLED
     assert results == []
+    service.shutdown(timeout_ms=10)
+
+
+def test_cancelled_task_discards_resource_result_on_worker(qtbot) -> None:
+    service = TaskService(max_workers=1)
+    started = Event()
+    release = Event()
+    discarded = Event()
+    callback_threads: list[int] = []
+    gui_thread = get_ident()
+
+    def open_resource() -> object:
+        started.set()
+        release.wait(timeout=1)
+        return object()
+
+    def discard_resource(_resource: object) -> None:
+        callback_threads.append(get_ident())
+        discarded.set()
+
+    handle = service.submit(
+        "resource",
+        open_resource,
+        on_discard=discard_resource,
+    )
+    assert started.wait(timeout=1)
+
+    handle.cancel()
+    release.set()
+
+    assert discarded.wait(timeout=1)
+    assert callback_threads[0] != gui_thread
+    qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
     service.shutdown(timeout_ms=10)

@@ -21,14 +21,14 @@ from joyread.core.search import (
     parse_book_search_query,
 )
 from joyread.core.services.library_service import LibraryService
-from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
+from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.tag_service import TagService
-from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskService
+from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
 from joyread.core.services.thumbnail_service import ThumbnailService, ThumbnailSourceHandle
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.signals import Signal
-from joyread.ui.viewmodels.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
+from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 
 
 logger = logging.getLogger(__name__)
@@ -96,7 +96,7 @@ class ShelfViewModel:
         self,
         library_service: LibraryService,
         thumbnail_service: ThumbnailService | None = None,
-        task_service: TaskService | None = None,
+        task_service: TaskExecutor | None = None,
         cover_size: tuple[int, int] | None = None,
         settings: AppSettings | None = None,
         settings_store: SettingsStore | None = None,
@@ -1082,6 +1082,7 @@ class ShelfViewModel:
                 lambda book=book: open_source(book),
                 on_success=success,
                 on_failure=lambda error, token=token: self._handle_detail_source_failure(token, error),
+                on_discard=lambda source: source.close() if source is not None else None,
                 priority=TaskPriority.HIGH,
             )
         except TypeError:
@@ -1134,6 +1135,8 @@ class ShelfViewModel:
         if self._detail_source_task is not None:
             self._detail_source_task.cancel()
         self._detail_source_task = None
+        if self._detail_source_handle is not None:
+            self._detail_source_handle.close()
         self._detail_source_handle = None
         self._detail_load_token += 1
         if self._detail_stream is not None:
@@ -1369,8 +1372,12 @@ class ShelfViewModel:
         size: tuple[int, int],
     ) -> None:
         if token != self._detail_load_token or self.detail_book_uuid != book_uuid:
+            if source is not None:
+                source.close()
             return
         self._detail_source_task = None
+        if self._detail_source_handle is not None and self._detail_source_handle is not source:
+            self._detail_source_handle.close()
         self._detail_source_handle = source
         if source is None or self._detail_stream is None or self._thumbnail_service is None:
             self.detail_thumbnail_source_ready.emit(book_uuid, 0)
@@ -1416,13 +1423,19 @@ class ShelfViewModel:
         coordinator = self._archive_warmup_coordinator
         if source is None or coordinator is None:
             return
-        access_mode = getattr(source.session, "access_mode", None)
+        access_mode = source.access_mode
         if getattr(access_mode, "value", access_mode) != "expensive_cold":
+            return
+        if not source.requires_sequential_warmup:
+            return
+        if source.persistent_cache_key is None:
             return
         coordinator.acquire(
             source.source_path,
             self._detail_warmup_client_id,
             limits=source.archive_limits,
+            document_cache_key=source.persistent_cache_key,
+            allow_persistent_cache=True,
             on_ready=lambda: self._detail_stream.refresh() if self._detail_stream is not None else None,
         )
 
@@ -1450,6 +1463,8 @@ class ShelfViewModel:
         if self._detail_source_task is not None:
             self._detail_source_task.cancel()
         self._detail_source_task = None
+        if self._detail_source_handle is not None:
+            self._detail_source_handle.close()
         self._detail_source_handle = None
         self._detail_pending_interest = ((), ())
         if self._detail_stream is not None:

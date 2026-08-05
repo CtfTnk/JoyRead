@@ -9,6 +9,7 @@ from joyread.core.services.cache_service import (
     NamespacedPageCache,
     SharedThumbnailCache,
     ThumbnailCacheKey,
+    ThumbnailSourceIdentity,
 )
 
 
@@ -187,3 +188,28 @@ def test_shared_thumbnail_cache_allows_pinned_overage_then_shrinks_on_release() 
     assert cache.current_bytes == 4
     assert detail.get(detail_key) is None
     assert reader.get(reader_key) == b"bbbb"
+
+
+def test_thumbnail_source_identity_separates_limits_and_sensitive_sessions() -> None:
+    shared = ThumbnailSourceIdentity("file:42", "limits-a").cache_id
+    other_limits = ThumbnailSourceIdentity("file:42", "limits-b").cache_id
+    sensitive = ThumbnailSourceIdentity("file:42", "limits-a", "session-auth-7").cache_id
+
+    assert shared != other_limits
+    assert shared != sensitive
+    assert ThumbnailSourceIdentity("file:42", "limits-a").cache_id == shared
+
+
+def test_shared_thumbnail_cache_promotes_payloads_and_viewport_pins() -> None:
+    cache = SharedThumbnailCache(max_bytes=8)
+    reader = cache.issue_client("reader")
+    old = ThumbnailCacheKey("session:old", 2, 100, 142)
+    target = ThumbnailCacheKey("external:sha256:abc", 2, 100, 142)
+    reader.set_pins(frozenset({old}))
+    reader.put(old, b"page")
+
+    reader.promote_source(old.source_id, target.source_id)
+
+    assert reader.get(old) is None
+    assert reader.get(target) == b"page"
+    assert reader.pins == frozenset({target})

@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.core.archive.limits import GIB
 from joyread.infrastructure.i18n.locale_service import (
     LANGUAGE_DISPLAY_OPTIONS,
     language_display_name,
@@ -39,8 +40,8 @@ from joyread.ui.viewmodels.settings_viewmodel import (
     ARCHIVE_MAX_OPERATION_DATA_MIN_GB,
     ARCHIVE_MAX_SOURCE_SIZE_MAX_GB,
     ARCHIVE_MAX_SOURCE_SIZE_MIN_GB,
-    ARCHIVE_POOL_MAX_MB,
-    ARCHIVE_POOL_MIN_MB,
+    ARCHIVE_POOL_MAX_GB,
+    ARCHIVE_POOL_MIN_GB,
     ARCHIVE_CACHE_STRATEGY_OPTIONS,
     THUMBNAIL_CACHE_MAX_MB,
     THUMBNAIL_CACHE_MIN_MB,
@@ -438,13 +439,13 @@ class SettingsPageWidget(QFrame):
 
         archive_pool_item = SettingsNumericItem(
             t("settings.archive_extraction_pool"),
-            self._viewmodel.archive_extraction_pool_mb,
-            ARCHIVE_POOL_MIN_MB,
-            ARCHIVE_POOL_MAX_MB,
+            self._viewmodel.archive_extraction_pool_gb,
+            ARCHIVE_POOL_MIN_GB,
+            ARCHIVE_POOL_MAX_GB,
             self._resources,
-            "MB",
+            "GB",
         )
-        archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_mb)
+        archive_pool_item.value_changed.connect(self._viewmodel.set_archive_extraction_pool_gb)
 
         archive_strategy_item = SettingsDropdownItem(
             t("settings.archive_cache_strategy"),
@@ -457,7 +458,7 @@ class SettingsPageWidget(QFrame):
         archive_pool_usage = SettingsCacheStatusItem(
             t("settings.archive_pool_usage"),
             current_bytes=self._viewmodel.archive_pool_current_bytes,
-            budget_mb=self._viewmodel.archive_extraction_pool_mb,
+            budget_bytes=self._viewmodel.archive_extraction_pool_gb * GIB,
         )
         archive_pool_usage.clear_requested.connect(self._viewmodel.request_clear_archive_pool)
 
@@ -1164,7 +1165,7 @@ class SettingsCacheStatusItem(QFrame):
         self,
         name: str,
         current_bytes: int,
-        budget_mb: int,
+        budget_bytes: int,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1191,7 +1192,7 @@ class SettingsCacheStatusItem(QFrame):
         option_layout.setContentsMargins(0, 0, Theme.settings_address_option_padding_right, 0)
         option_layout.setSpacing(Theme.settings_address_option_gap)
 
-        self._usage_label = QLabel(_format_usage_label(current_bytes, budget_mb))
+        self._usage_label = QLabel(_format_usage_label(current_bytes, budget_bytes))
         self._usage_label.setObjectName("SettingsCacheUsageLabel")
         self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         option_layout.addWidget(self._usage_label, stretch=1)
@@ -1202,10 +1203,11 @@ class SettingsCacheStatusItem(QFrame):
 
         layout.addWidget(option)
 
-    def set_usage(self, current_bytes: int, budget_mb: int) -> None:
-        self._usage_label.setText(_format_usage_label(current_bytes, budget_mb))
+    def set_usage(self, current_bytes: int, budget_bytes: int) -> None:
+        self._usage_label.setText(_format_usage_label(current_bytes, budget_bytes))
 
 
-def _format_usage_label(current_bytes: int, budget_mb: int) -> str:
-    used_mb = max(0, current_bytes) / (1024 * 1024)
-    return f"{used_mb:.1f} / {budget_mb} MB"
+def _format_usage_label(current_bytes: int, budget_bytes: int) -> str:
+    used_gb = max(0, current_bytes) / GIB
+    budget_gb = max(0, budget_bytes) / GIB
+    return f"{used_gb:.1f} / {budget_gb:g} GB"

@@ -8,11 +8,12 @@ from typing import Protocol
 
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession, ArchiveOpenLimits
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
-from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
+from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
 from joyread.core.reader.epub_session import EPUB_EXTENSIONS, EpubReaderSession, open_epub_session
 from joyread.core.reader.models import ReaderPageImage
-from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
+from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
+from joyread.core.services.archive_cache_lease import ArchiveCacheLease
 
 
 logger = logging.getLogger(__name__)
@@ -22,10 +23,10 @@ class ReaderImageSession(Protocol):
     """Common interface every image-style reader session implements.
 
     Archive (CBZ/CBR/ZIP/RAR/7Z) and PDF sessions both expose the same
-    surface: a flat ``page_count``, an indexable ``get_page`` for a single
-    page, and ``get_pages`` for batched fetches. The ViewModel only knows
-    the protocol — concrete implementations live in
-    :mod:`joyread.core.archive` and :mod:`joyread.core.reader.pdf_session`.
+    surface: a flat ``page_count`` plus blocking compatibility page helpers.
+    The asynchronous Reader consumes these sessions through the Application
+    ``ReaderDocumentSource`` adapter. Archive implementation stays in Core;
+    the Qt PDF implementation lives in Infrastructure.
     """
 
     page_count: int
@@ -53,10 +54,10 @@ class ReaderSessionService:
     def __init__(
         self,
         archive_image_service: ArchiveImageService,
-        pdf_image_service: PdfImageService | None = None,
+        pdf_image_service: PdfImageServicePort | None = None,
     ) -> None:
         self._archive_image_service = archive_image_service
-        self._pdf_image_service = pdf_image_service or PdfImageService()
+        self._pdf_image_service = pdf_image_service
 
     def open_document(
         self,
@@ -70,6 +71,7 @@ class ReaderSessionService:
         limits: ArchiveOpenLimits | None = None,
         document_cache_key: str | None = None,
         allow_persistent_cache: bool = False,
+        cache_lease: ArchiveCacheLease | None = None,
     ) -> ReaderImageSession:
         suffix = Path(path).suffix.lower()
         logger.info("Opening reader document: path=%s suffix=%s", path, suffix)
@@ -84,8 +86,11 @@ class ReaderSessionService:
                 limits=limits,
                 document_cache_key=document_cache_key,
                 allow_persistent_cache=allow_persistent_cache,
+                cache_lease=cache_lease,
             )
         if suffix in PDF_EXTENSIONS:
+            if self._pdf_image_service is None:
+                raise RuntimeError("No PDF image service is configured.")
             return self._pdf_image_service.open(path)
         raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
 
@@ -110,6 +115,7 @@ class ReaderSessionService:
         limits: ArchiveOpenLimits | None = None,
         document_cache_key: str | None = None,
         allow_persistent_cache: bool = False,
+        cache_lease: ArchiveCacheLease | None = None,
     ) -> ArchiveImageSession:
         provider = None
         password_map = dict(passwords or {})
@@ -135,6 +141,7 @@ class ReaderSessionService:
             limits=limits,
             document_cache_key=document_cache_key,
             allow_persistent_cache=allow_persistent_cache,
+            cache_lease=cache_lease,
         )
 
     def load_page(self, session: ReaderImageSession, page_index: int) -> ReaderPageImage | None:
@@ -151,7 +158,8 @@ class ReaderSessionService:
         session: ReaderImageSession,
         page_indices: list[int] | tuple[int, ...],
     ) -> dict[int, ReaderPageImage]:
-        pages = session.get_pages(page_indices)
+        read_pages = getattr(session, "read_pages", session.get_pages)
+        pages = read_pages(page_indices)
         loaded: dict[int, ReaderPageImage] = {}
         for page in pages:
             if page is None:
@@ -166,9 +174,6 @@ class ReaderSessionService:
             )
         return loaded
 
-    def should_warm_disk_cache(self, path: str | Path) -> bool:
-        return Path(path).suffix.lower() in EXPENSIVE_ARCHIVE_EXTENSIONS
-
     def warm_disk_cache(
         self,
         path: str | Path,
@@ -179,10 +184,11 @@ class ReaderSessionService:
         limits: ArchiveOpenLimits | None = None,
         document_cache_key: str | None = None,
         allow_persistent_cache: bool = False,
+        cache_lease: ArchiveCacheLease | None = None,
         chunk_size: int = 8,
         is_cancelled=None,  # noqa: ANN001 - accepts TaskHandle-like status checks.
     ) -> None:
-        """Warm extracted-page disk cache in descending page order.
+        """Warm extracted-page disk cache in forward page order.
 
         The reader keeps its own foreground session. Warm-up opens a separate
         archive session so slow whole-book extraction never holds the visible
@@ -198,17 +204,23 @@ class ReaderSessionService:
             limits=limits,
             document_cache_key=document_cache_key,
             allow_persistent_cache=allow_persistent_cache,
+            cache_lease=cache_lease,
         )
-        page_indices = list(range(session.page_count - 1, -1, -1))
-        chunk_size = max(1, int(chunk_size))
-        for start in range(0, len(page_indices), chunk_size):
-            if is_cancelled is not None and is_cancelled():
-                logger.debug("Disk cache warm cancelled at chunk start=%d", start)
-                return
-            self.load_pages(session, tuple(page_indices[start : start + chunk_size]))
-        mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
-        if callable(mark_ready):
-            mark_ready()
+        try:
+            page_indices = list(range(session.page_count))
+            chunk_size = max(1, int(chunk_size))
+            for start in range(0, len(page_indices), chunk_size):
+                if is_cancelled is not None and is_cancelled():
+                    logger.debug("Disk cache warm cancelled at chunk start=%d", start)
+                    return
+                self.load_pages(session, tuple(page_indices[start : start + chunk_size]))
+            mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
+            if callable(mark_ready):
+                mark_ready()
+        finally:
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
         logger.debug("Disk cache warm complete for %s", path)
 
     def password_request_label(self, request: ArchivePasswordRequest) -> str:

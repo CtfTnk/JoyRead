@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import json
 import logging
+from math import ceil
 from os import environ
 from pathlib import Path
 from typing import Any
@@ -40,13 +41,12 @@ class AppSettings:
     shelf_sort_ascending: bool = False
     shelf_file_filter: str = "ALL"
     shelf_view_mode: str = "grid"
-    # Cache budgets (MB). Defaults intentionally match AppConfig so a missing
-    # settings.json or an upgrade from an older build behaves identically to a
-    # fresh install. Reader cache is the *total* shared budget across every
-    # open reader window — see CacheService.reader_page_cache.
+    # In-memory cache budgets use MB; the archive disk pool uses GB. Defaults
+    # intentionally match AppConfig so missing settings remain upgrade-safe.
+    # Reader cache is the total shared budget across all open reader windows.
     reader_page_cache_mb: int = 512
     thumbnail_cache_mb: int = 64
-    archive_extraction_pool_mb: int = 1024
+    archive_extraction_pool_gb: int = 5
     archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
     import_folder_max_depth: int = 1
     nested_archive_max_depth: int = 2
@@ -147,7 +147,7 @@ class SettingsStore:
                 raw.get("thumbnail_cache_mb", raw.get("detail_thumbnail_cache_mb")),
                 default=64,
             ),
-            archive_extraction_pool_mb=_coerce_positive_int(raw.get("archive_extraction_pool_mb"), default=1024),
+            archive_extraction_pool_gb=_coerce_archive_pool_gb(raw),
             archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
             import_folder_max_depth=_coerce_int_in_range(
                 raw.get("import_folder_max_depth"),
@@ -201,10 +201,10 @@ class SettingsStore:
             show_hidden_collection=bool(raw.get("show_hidden_collection", False)),
         )
         logger.debug(
-            "Settings loaded storage=%s reader_cache_mb=%d archive_pool_mb=%d",
+            "Settings loaded storage=%s reader_cache_mb=%d archive_pool_gb=%d",
             settings.storage_location,
             settings.reader_page_cache_mb,
-            settings.archive_extraction_pool_mb,
+            settings.archive_extraction_pool_gb,
         )
         return settings
 
@@ -287,6 +287,23 @@ def _coerce_positive_int(value: object, *, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return coerced if coerced > 0 else default
+
+
+def _coerce_archive_pool_gb(raw: dict[str, Any]) -> int:
+    """Load the GB budget, migrating the legacy MB value when necessary."""
+
+    if "archive_extraction_pool_gb" in raw:
+        return _coerce_int_in_range(
+            raw.get("archive_extraction_pool_gb"),
+            default=5,
+            minimum=1,
+            maximum=50,
+        )
+    legacy_mb = _coerce_positive_int(
+        raw.get("archive_extraction_pool_mb"),
+        default=5 * 1024,
+    )
+    return max(1, min(50, ceil(legacy_mb / 1024)))
 
 
 def _coerce_optional_str(value: object) -> str | None:

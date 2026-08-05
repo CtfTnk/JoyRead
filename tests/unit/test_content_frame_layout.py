@@ -4,7 +4,8 @@ from io import BytesIO
 from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSize, Qt
+from PySide6.QtCore import QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
@@ -60,12 +61,16 @@ def make_test_image_bytes(size: tuple[int, int] = (40, 60), color: str = "#cc442
     return buffer.getvalue()
 
 
+def make_test_qimage(size: tuple[int, int] = (40, 60), color: str = "#cc4422") -> QImage:
+    return QImage.fromData(make_test_image_bytes(size, color))
+
+
 def test_cover_editor_matches_figma_geometry_and_zoom_bounds(qtbot) -> None:
     apply_theme()
     editor = CoverEditorWidget(ResourceLoader())
     qtbot.addWidget(editor)
     editor.show()
-    assert editor.set_source(make_test_image_bytes((320, 80)), "page:1")
+    assert editor.set_source(make_test_qimage((320, 80)), "page:1")
     QApplication.processEvents()
 
     crop_rect = editor.canvas._crop_rect()
@@ -117,9 +122,9 @@ def test_cover_editor_drag_changes_pan_and_confirm_emits_crop_state(qtbot) -> No
     overlay = CoverEditorOverlay(ResourceLoader())
     qtbot.addWidget(overlay)
     overlay.resize(Theme.window_width, Theme.window_height)
-    source = make_test_image_bytes((320, 80))
-    emitted: list[tuple[bytes, object]] = []
-    overlay.save_requested.connect(lambda image_bytes, crop_state: emitted.append((image_bytes, crop_state)))
+    source = make_test_qimage((320, 80))
+    emitted: list[object] = []
+    overlay.save_requested.connect(emitted.append)
 
     assert overlay.open_editor(source, "page:1")
     QApplication.processEvents()
@@ -135,8 +140,27 @@ def test_cover_editor_drag_changes_pan_and_confirm_emits_crop_state(qtbot) -> No
 
     assert canvas.crop_state().pan_x > 0
     assert len(emitted) == 1
-    assert emitted[0][0] == source
-    assert emitted[0][1].source_id == "page:1"
+    assert emitted[0].source_id == "page:1"
+
+
+def test_cover_editor_crop_pan_is_normalized_across_preview_resolutions(qtbot) -> None:
+    apply_theme()
+    low = CoverEditorWidget(ResourceLoader())
+    high = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(low)
+    qtbot.addWidget(high)
+    assert low.set_source(make_test_qimage((320, 80)), "page:1")
+    assert high.set_source(make_test_qimage((640, 160)), "page:1")
+
+    for editor in (low, high):
+        editor.canvas.set_zoom_percent(200)
+        max_x, max_y = editor.canvas._maximum_pan()
+        editor.canvas._pan = QPointF(max_x * 0.5, max_y * -0.25)
+
+    low_state = low.crop_state()
+    high_state = high.crop_state()
+    assert low_state.pan_x == high_state.pan_x == 0.5
+    assert low_state.pan_y == high_state.pan_y == -0.25
 
 
 def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
@@ -151,7 +175,7 @@ def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
     )
     overlay.thumbnail_selected.connect(selected.append)
 
-    assert overlay.open_editor(make_test_image_bytes((80, 120)), "page:1")
+    assert overlay.open_editor(make_test_qimage((80, 120)), "page:1")
     overlay.set_thumbnail_page_count(3)
     browse_button = overlay.editor.findChild(QToolButton, "CoverEditorBrowseButton")
     assert browse_button is not None

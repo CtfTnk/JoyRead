@@ -18,7 +18,7 @@ from types import SimpleNamespace
 import pytest
 
 from joyread.core.reader.models import ReaderSettings
-from joyread.core.services.task_service import TaskService
+from joyread.infrastructure.qt_task_service import TaskService
 from joyread.infrastructure.database.database_interpreter import (
     DatabaseInterpreter,
     DatabasePriority,
@@ -119,7 +119,7 @@ def test_task_service_logs_callback_exception(caplog: pytest.LogCaptureFixture) 
     def boom() -> None:
         raise RuntimeError("simulated task failure")
 
-    with caplog.at_level(logging.ERROR, logger="joyread.core.services.task_service"):
+    with caplog.at_level(logging.ERROR, logger="joyread.infrastructure.qt_task_service"):
         handle = service.submit("logging-test", boom, on_failure=failures.append)
         from time import perf_counter, sleep
 

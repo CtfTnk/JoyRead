@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 
 from joyread.core.archive.errors import (
@@ -14,7 +14,7 @@ from joyread.core.archive.errors import (
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
 from joyread.core.archive.models import ArchivePasswordPolicy, PasswordProvider
-from joyread.core.archive.records import ArchiveEntry, ArchiveSource, PageRecord
+from joyread.core.archive.records import ArchiveListing, ArchiveSource, PageRecord
 from joyread.core.archive.tree import (
     ArchiveTreeNode,
     ensure_folder_path,
@@ -47,7 +47,7 @@ class ArchiveSourceSkipped(Exception):
     """Internal control flow for a user-skipped encrypted archive source."""
 
 
-ListEntries = Callable[[ArchiveSource, ArchiveScanContext], list[ArchiveEntry]]
+ListEntries = Callable[[ArchiveSource, ArchiveScanContext], ArchiveListing]
 ReadEntry = Callable[
     [ArchiveSource, str, str | None],
     bytes,
@@ -80,9 +80,14 @@ class ArchiveScanner:
         """
 
         try:
-            entries = self._list_entries(source, context)
+            listing = self._list_entries(source, context)
         except ArchiveSourceSkipped:
             return ArchiveTreeNode("", "", "root")
+        source = replace(
+            source,
+            requires_sequential_warmup=listing.requires_sequential_warmup,
+        )
+        entries = listing.entries
         entry_prefix = transparent_single_root_prefix(entries)
         root = ArchiveTreeNode("", "", "root")
 

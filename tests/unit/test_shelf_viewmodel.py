@@ -1,15 +1,14 @@
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
-from threading import RLock
 
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.models.tag import Tag
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
-from joyread.core.services.task_service import TaskHandle, TaskStatus
-from joyread.core.services.thumbnail_service import DetailThumbnailItem, ThumbnailSourceHandle
+from joyread.app.tasking import TaskHandle, TaskStatus
+from joyread.core.services.thumbnail_service import DetailThumbnailItem
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
@@ -675,22 +674,31 @@ class FakeThumbnailService:
         return self.cache_service.issue_thumbnail_client(client_id)
 
     def open_thumbnail_source(self, book):  # noqa: ANN001
-        session = type("FakeThumbnailSession", (), {"page_count": 28})()
-        return ThumbnailSourceHandle(
-            source_id=f"source:{book.uuid}",
-            page_count=28,
-            suffix=".cbz",
-            session=session,  # type: ignore[arg-type]
-            access_lock=RLock(),
-            source_path=Path(book.file_path),
-            nested_archive_max_depth=2,
-            archive_global_file_max_depth=100,
-        )
+        return _FakeThumbnailSource(book)
 
     def stream_thumbnails(self, source, page_indices, size, emit_item):  # noqa: ANN001
         del source, size
         for index in page_indices:
             emit_item(DetailThumbnailItem(page_index=index, image_bytes=f"page-{index}".encode()))
+
+
+class _FakeThumbnailSource:
+    def __init__(self, book) -> None:  # noqa: ANN001
+        self.source_id = f"source:{book.uuid}"
+        self.page_count = 28
+        self.suffix = ".cbz"
+        self.source_path = Path(book.file_path)
+        self.archive_limits = None
+        self.persistent_cache_key = None
+        self.access_mode = None
+        self.requires_sequential_warmup = False
+        self.closed = False
+
+    def preferred_batch_size(self, _page_index: int) -> int:
+        return 1
+
+    def close(self) -> None:
+        self.closed = True
 
 
 def test_load_books_does_not_queue_all_covers_until_view_requests_visible_books() -> None:

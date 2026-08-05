@@ -15,7 +15,7 @@ from pathlib import Path
 
 from joyread.core.reader.epub import EpubAssetReader, EpubBook, flatten_toc
 from joyread.core.reader.epub_session import EpubChapter, EpubReaderSession
-from joyread.core.services.task_service import TaskHandle, TaskService
+from joyread.app.tasking import TaskExecutor, TaskHandle
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderBookmarkItem,
@@ -46,7 +46,7 @@ class NovelReaderViewModel:
 
     def __init__(
         self,
-        task_service: TaskService,
+        task_service: TaskExecutor,
         library_service=None,  # noqa: ANN001 - LibraryService import cycle
         *,
         book_uuid: str | None = None,

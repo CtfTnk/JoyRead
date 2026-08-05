@@ -9,6 +9,7 @@ from PySide6.QtGui import (
     QColor,
     QFont,
     QFontMetrics,
+    QImage,
     QMouseEvent,
     QPainter,
     QPainterPath,
@@ -20,7 +21,8 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from joyread.core.reader import ReaderLayoutResult, ReaderPageImage
+from joyread.app.reader_page_pipeline import PreparedReaderPage
+from joyread.core.reader import ReaderLayoutResult
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 
@@ -58,6 +60,7 @@ class ReaderCanvas(QWidget):
         self.setMouseTracking(True)
         self._layout_result: ReaderLayoutResult | None = None
         self._pixmaps: dict[int, QPixmap] = {}
+        self._failed_pages: set[int] = set()
         self._pan_x = 0.0
         self._status_text = t("reader.loading")
         # Spinner phase advances while any visible page is still loading. The
@@ -75,7 +78,7 @@ class ReaderCanvas(QWidget):
         self._refresh_spinner_state()
         self.update()
 
-    def set_page_image(self, image: ReaderPageImage) -> None:
+    def set_page_frame(self, image: PreparedReaderPage) -> None:
         # Drop pages that are no longer in the current layout. The reader VM
         # may emit ``page_ready`` after the user has already navigated away,
         # and rendering those stale pages would paint last spread's content
@@ -84,25 +87,28 @@ class ReaderCanvas(QWidget):
         if self._layout_result is not None and not self._layout_draws_page(image.page_index):
             logger.debug("ReaderCanvas drop stale page=%d", image.page_index)
             return
-        existing = self._pixmaps.get(image.page_index)
-        if existing is not None and not existing.isNull():
-            return
-        pixmap = QPixmap()
-        if pixmap.loadFromData(image.image_bytes):
+        frame = image.frame
+        pixmap = QPixmap.fromImage(frame) if isinstance(frame, QImage) else QPixmap()
+        if not pixmap.isNull():
             self._pixmaps[image.page_index] = pixmap
+            self._failed_pages.discard(image.page_index)
             self._refresh_spinner_state()
             self.update()
             logger.debug("ReaderCanvas accept page=%d", image.page_index)
         else:
-            logger.warning(
-                "ReaderCanvas failed to decode page=%d bytes=%d",
-                image.page_index,
-                len(image.image_bytes),
-            )
+            self.set_page_failed(image.page_index)
+            logger.warning("ReaderCanvas received invalid frame page=%d", image.page_index)
+
+    def set_page_failed(self, page_index: int) -> None:
+        self._pixmaps.pop(page_index, None)
+        self._failed_pages.add(page_index)
+        self._refresh_spinner_state()
+        self.update()
 
     def clear_pages(self) -> None:
         self._layout_result = None
         self._pixmaps.clear()
+        self._failed_pages.clear()
         self._pan_x = 0.0
         if self._spinner_timer.isActive():
             self._spinner_timer.stop()
@@ -160,7 +166,10 @@ class ReaderCanvas(QWidget):
             )
             pixmap = self._pixmaps.get(draw.page_index)
             if pixmap is None or pixmap.isNull():
-                _draw_placeholder_page(painter, rect, self._spinner_phase)
+                if draw.page_index in self._failed_pages:
+                    _draw_error_page(painter, rect)
+                else:
+                    _draw_placeholder_page(painter, rect, self._spinner_phase)
             else:
                 painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
         painter.end()
@@ -189,7 +198,7 @@ class ReaderCanvas(QWidget):
             return False
         for draw in self._layout_result.page_draws:
             pixmap = self._pixmaps.get(draw.page_index)
-            if pixmap is None or pixmap.isNull():
+            if (pixmap is None or pixmap.isNull()) and draw.page_index not in self._failed_pages:
                 return True
         return False
 
@@ -201,11 +210,13 @@ class ReaderCanvas(QWidget):
     def _prune_pixmaps_to_layout(self) -> None:
         if self._layout_result is None:
             self._pixmaps.clear()
+            self._failed_pages.clear()
             return
         visible = {draw.page_index for draw in self._layout_result.page_draws}
         for page_index in tuple(self._pixmaps):
             if page_index not in visible:
                 self._pixmaps.pop(page_index, None)
+        self._failed_pages.intersection_update(visible)
 
     def _tick_spinner(self) -> None:
         # Phase advances monotonically; ``%`` keeps the value small so the
@@ -245,6 +256,19 @@ def _draw_placeholder_page(painter: QPainter, rect: QRectF, spinner_phase: float
             painter.fillRect(x, y, square, square, colors[((x // square) + (y // square)) % 2])
     painter.fillRect(rect, QColor(0, 0, 0, 36))
     _draw_loading_indicator(painter, rect, spinner_phase)
+    painter.restore()
+
+
+def _draw_error_page(painter: QPainter, rect: QRectF) -> None:
+    """Static failed state; unlike pending pages it never runs the spinner."""
+
+    painter.save()
+    painter.fillRect(rect, QColor("#d8d8d8"))
+    font = QFont(painter.font())
+    font.setPixelSize(max(18, min(48, round(min(rect.width(), rect.height()) * 0.12))))
+    painter.setFont(font)
+    painter.setPen(QColor(Theme.color_text_muted))
+    painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "!")
     painter.restore()
 
 

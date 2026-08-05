@@ -39,7 +39,7 @@
     "archive_external_command_timeout": "外部解压超时",
     "reader_page_cache": "阅读器页面缓存（内存）",
     "thumbnail_cache": "缩略图缓存（内存）",
-    "archive_extraction_pool": "压缩包解压池（磁盘）",
+    "archive_extraction_pool": "压缩包解压池（磁盘，GB）",
     "archive_cache_strategy": "压缩包缓存策略",
     "archive_pool_usage": "解压池使用情况",
     "verify_library_and_clean_cache": "验证书库并清理缓存",

@@ -13,7 +13,7 @@ from joyread.core.archive.errors import (
 )
 from joyread.core.archive.formats.common import looks_like_password_error, read_stream_bounded
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
-from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 
 
@@ -56,7 +56,7 @@ class ZipArchiveBackend:
         except OSError as exc:
             raise ArchiveOpenError(f"Could not open ZIP archive: {source.display_name}") from exc
 
-    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
+    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> ArchiveListing:
         zipper = self._zipper_getter()
         if zipper is None:
             raise ArchiveDependencyMissing("pyzipper is required for ZIP/CBZ archives.")
@@ -80,11 +80,13 @@ class ZipArchiveBackend:
                         limits=context.limits,
                         budget=context.budget,
                     )
-                return [
-                    ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
-                    for info in infos
-                    if not info.is_dir()
-                ]
+                return ArchiveListing(
+                    tuple(
+                        ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
+                        for info in infos
+                        if not info.is_dir()
+                    )
+                )
         except bad_file_errors as exc:
             raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc
         except OSError as exc:

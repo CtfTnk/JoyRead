@@ -18,7 +18,7 @@ class AppConfig:
     # and as the defaults applied when no user setting exists yet.
     reader_page_cache_mb: int = 512
     thumbnail_cache_mb: int = 64
-    archive_extraction_pool_mb: int = 1024
+    archive_extraction_pool_gb: int = 5
     cover_index_max_items: int = 1024
     page_prefetch_before: int = 2
     page_prefetch_after: int = 4

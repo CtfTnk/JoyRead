@@ -25,7 +25,7 @@ from joyread.core.archive.formats.common import (
     run_archive_stdout_command,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
-from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 from joyread.core.archive.tree import safe_entry_name
 
@@ -76,7 +76,7 @@ class RarArchiveBackend:
         except OSError as exc:
             raise ArchiveOpenError(f"Could not open RAR archive: {source.display_name}") from exc
 
-    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
+    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> ArchiveListing:
         module = self._module_getter()
         if module is None or not hasattr(module, "RarFile"):
             raise ArchiveDependencyMissing("rarfile is required for RAR/CBR archives.")
@@ -106,11 +106,14 @@ class RarArchiveBackend:
                                 limits=context.limits,
                                 budget=context.budget,
                             )
-                    return [
-                        ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
-                        for info in archive.infolist()
-                        if not info.isdir()
-                    ]
+                    return ArchiveListing(
+                        tuple(
+                            ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
+                            for info in archive.infolist()
+                            if not info.isdir()
+                        ),
+                        requires_sequential_warmup=True,
+                    )
         except module.RarCannotExec as exc:
             raise ArchiveDependencyMissing(
                 self._backend_resolver.missing_message(encrypted=password is not None)

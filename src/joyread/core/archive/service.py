@@ -48,7 +48,7 @@ from joyread.core.archive.formats import (
     SevenZipArchiveBackend,
     ZipArchiveBackend,
 )
-from joyread.core.archive.records import ArchiveEntry as _ArchiveEntry
+from joyread.core.archive.records import ArchiveListing as _ArchiveListing
 from joyread.core.archive.records import ArchiveSource as _ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext as _ScanContext
 from joyread.core.archive.scanner import (
@@ -65,6 +65,7 @@ from joyread.core.archive.tree import (
     safe_entry_name as _safe_entry_name,
 )
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache, ArchiveExtractionPool
+from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 
 try:  # pragma: no cover - exercised through dependency-missing branches.
     import py7zr
@@ -302,7 +303,12 @@ class ArchiveImageService:
         limits: ArchiveOpenLimits | None = None,
         document_cache_key: str | None = None,
         allow_persistent_cache: bool = False,
+        cache_lease: ArchiveCacheLease | None = None,
     ) -> ArchiveImageSession:
+        if cache_lease is not None and (document_cache_key is not None or allow_persistent_cache):
+            raise ValueError(
+                "Pass cache_lease or legacy document_cache_key/allow_persistent_cache, not both."
+            )
         effective_limits = _resolve_open_limits(
             limits,
             max_depth=max_depth,
@@ -327,11 +333,19 @@ class ArchiveImageService:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
         self._assert_source_size(path, effective_limits)
 
+        effective_lease = cache_lease
+        if effective_lease is None and allow_persistent_cache and document_cache_key and self._page_cache:
+            effective_lease = ArchiveCacheLease(
+                self._page_cache,
+                document_cache_key,
+                ArchiveCacheScope.PERSISTENT,
+            )
+
         source = _ArchiveSource(
             label=path.name,
             suffix=suffix,
             path=path,
-            allow_persistent_cache=allow_persistent_cache,
+            allow_persistent_cache=effective_lease is not None,
         )
         context = _ScanContext(
             password_provider=password_provider,
@@ -364,8 +378,7 @@ class ArchiveImageService:
                 budget=budget,
             ),
             contents,
-            document_cache_key=document_cache_key or f"session:{uuid4().hex}",
-            extraction_cache=self._page_cache,
+            cache_lease=effective_lease,
             cache_signature=cache_signature,
             limits=effective_limits,
         )
@@ -416,7 +429,7 @@ class ArchiveImageService:
         self,
         source: _ArchiveSource,
         context: _ScanContext,
-    ) -> list[_ArchiveEntry]:
+    ) -> _ArchiveListing:
         return self._backend_for(source).list_entries(source, context)
 
     def _read_entry(

@@ -29,6 +29,7 @@ from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriorit
 from joyread.infrastructure.database.migrations import MIGRATIONS
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
 from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.infrastructure.pdf_image_service import PdfImageService
 
 
 def _database(tmp_path: Path) -> DatabaseInterpreter:
@@ -91,7 +92,13 @@ def _import_service(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter,
     paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
     paths.ensure_directories()
     database = _database(paths.paths.database)
-    service = ImportService(paths, database, ArchiveImageService(), HashService())
+    service = ImportService(
+        paths,
+        database,
+        ArchiveImageService(),
+        HashService(),
+        pdf_service=PdfImageService(),
+    )
     return service, database, paths
 
 

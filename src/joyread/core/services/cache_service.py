@@ -2,8 +2,8 @@
 
 The coordinator (``CacheService``) owns four shared caches:
 
-- ``reader_page_cache`` — a single byte-budgeted LRU shared across every open
-  reader window. Reader viewmodels never touch this directly; they receive a
+- ``reader_page_cache`` — viewport-sized immutable frames in one byte-budgeted
+  LRU shared across every open reader window. Reader viewmodels receive a
   ``NamespacedPageCache`` adapter from :meth:`CacheService.issue_reader_namespace`
   so that closing a window can purge only that session's bytes.
 - ``cover_index`` — a small in-memory map of book uuid to cover file path. The
@@ -43,6 +43,24 @@ class ThumbnailCacheKey:
     page_index: int
     width: int
     height: int
+
+
+@dataclass(frozen=True)
+class ThumbnailSourceIdentity:
+    """Canonical cache identity shared by every thumbnail presentation."""
+
+    document_key: str
+    limits_signature: str
+    security_scope: str = "shared"
+
+    @property
+    def cache_id(self) -> str:
+        document_key = self.document_key.strip()
+        limits = self.limits_signature.strip()
+        scope = self.security_scope.strip() or "shared"
+        if not document_key:
+            raise ValueError("document_key must not be empty")
+        return f"{document_key}:limits={limits}:scope={scope}"
 
 
 def _default_sizer(value: object) -> int:
@@ -177,25 +195,67 @@ class NamespacedPageCache:
 
     def __init__(
         self,
-        backing: BoundedByteCache[tuple[str, int], bytes],
+        backing: BoundedByteCache[tuple, object],
         session_id: str | None = None,
     ) -> None:
         self._backing = backing
         self._session_id = session_id or uuid4().hex
+        self._buckets: dict[int, set[tuple[int, int]]] = {}
+        self._lock = RLock()
 
     @property
     def session_id(self) -> str:
         return self._session_id
 
-    def get(self, page_index: int) -> bytes | None:
-        return self._backing.get((self._session_id, page_index))
+    def get(self, page_index: int, width: int = 0, height: int = 0):  # noqa: ANN201
+        key = self._key(page_index, width, height)
+        value = self._backing.get(key)
+        if value is not None or width > 0 or height > 0:
+            return value
+        with self._lock:
+            buckets = sorted(
+                self._buckets.get(page_index, ()),
+                key=lambda size: size[0] * size[1],
+                reverse=True,
+            )
+        for bucket_width, bucket_height in buckets:
+            value = self._backing.get(self._key(page_index, bucket_width, bucket_height))
+            if value is not None:
+                return value
+        return None
 
-    def put(self, page_index: int, value: bytes) -> None:
-        self._backing.put((self._session_id, page_index), value)
+    def put(self, page_index: int, value: object, width: int = 0, height: int = 0) -> None:
+        with self._lock:
+            self._buckets.setdefault(page_index, set()).add((width, height))
+        self._backing.put(self._key(page_index, width, height), value)
+
+    def get_suitable(self, page_index: int, target_width: int, target_height: int):  # noqa: ANN201
+        with self._lock:
+            buckets = tuple(self._buckets.get(page_index, ()))
+        suitable = sorted(
+            (
+                (width, height)
+                for width, height in buckets
+                if width * 1.2 >= target_width and height * 1.2 >= target_height
+            ),
+            key=lambda size: size[0] * size[1],
+        )
+        for width, height in suitable:
+            value = self.get(page_index, width, height)
+            if value is not None:
+                return value
+        return None
 
     def clear(self) -> int:
         session_id = self._session_id
+        with self._lock:
+            self._buckets.clear()
         return self._backing.purge(lambda key: key[0] == session_id)
+
+    def _key(self, page_index: int, width: int, height: int) -> tuple:
+        if width <= 0 or height <= 0:
+            return (self._session_id, page_index)
+        return (self._session_id, page_index, int(width), int(height))
 
 
 class SharedThumbnailCache:
@@ -300,6 +360,39 @@ class SharedThumbnailCache:
                     self._pins_by_client.pop(client_id, None)
         return removed
 
+    def promote_source(self, source_id: str, target_id: str) -> tuple[ThumbnailCacheKey, ...]:
+        """Move rendered variants to a stronger document identity.
+
+        Existing target entries win because they may have been rendered by a
+        newer session. Viewport pins are migrated atomically with the payloads.
+        """
+
+        source = str(source_id).strip()
+        target = str(target_id).strip()
+        if not source or not target or source == target:
+            return ()
+        with self._lock:
+            for key in tuple(self._items):
+                if key.source_id != source:
+                    continue
+                value, size = self._items.pop(key)
+                self._current_bytes -= size
+                promoted = ThumbnailCacheKey(target, key.page_index, key.width, key.height)
+                if promoted in self._items:
+                    self._items.move_to_end(promoted)
+                    continue
+                self._items[promoted] = (value, size)
+                self._current_bytes += size
+            for client_id, pinned in tuple(self._pins_by_client.items()):
+                migrated = frozenset(
+                    ThumbnailCacheKey(target, key.page_index, key.width, key.height)
+                    if key.source_id == source
+                    else key
+                    for key in pinned
+                )
+                self._pins_by_client[client_id] = migrated
+            return self._enforce_budget_locked()
+
     def _enforce_budget_locked(self) -> tuple[ThumbnailCacheKey, ...]:
         pinned = set().union(*self._pins_by_client.values()) if self._pins_by_client else set()
         evicted: list[ThumbnailCacheKey] = []
@@ -343,12 +436,21 @@ class ThumbnailCacheClient:
         self._pins = frozenset()
         return self._backing.release_client(self._client_id)
 
+    def promote_source(self, source_id: str, target_id: str) -> tuple[ThumbnailCacheKey, ...]:
+        self._pins = frozenset(
+            ThumbnailCacheKey(target_id, key.page_index, key.width, key.height)
+            if key.source_id == source_id
+            else key
+            for key in self._pins
+        )
+        return self._backing.promote_source(source_id, target_id)
+
 
 class CacheService:
     """App-scope coordinator for shared caches.
 
-    Reader page bytes are shared across every open reader window through a
-    single byte-budgeted LRU. Each :class:`ReaderViewModel` receives a
+    Prepared reader frames are shared across every open reader window through
+    a single byte-budgeted LRU. Each :class:`ReaderViewModel` receives a
     :class:`NamespacedPageCache` issued by :meth:`issue_reader_namespace` so
     that the shared budget is enforced globally but per-session cleanup stays
     deterministic.
@@ -362,10 +464,12 @@ class CacheService:
         reader_page_cache_max_bytes: int,
         thumbnail_cache_max_bytes: int = 64 * 1024 * 1024,
         cover_index_max_items: int = 1024,
+        reader_frame_sizer: Callable[[object], int] | None = None,
     ) -> None:
         self.archive_extraction_pool = archive_extraction_pool
-        self.reader_page_cache: BoundedByteCache[tuple[str, int], bytes] = BoundedByteCache(
+        self.reader_page_cache: BoundedByteCache[tuple, object] = BoundedByteCache(
             max_bytes=reader_page_cache_max_bytes,
+            sizer=reader_frame_sizer,
         )
         self.thumbnail_cache = SharedThumbnailCache(max_bytes=thumbnail_cache_max_bytes)
         # The cover index stores filesystem path strings only; the bytes live

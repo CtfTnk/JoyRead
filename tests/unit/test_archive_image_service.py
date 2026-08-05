@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 import subprocess
+from threading import Lock
+import time
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import py7zr
@@ -16,6 +19,7 @@ from joyread.core.archive import (
     ArchiveDependencyMissing,
     ArchiveEmptyError,
     ArchiveImageService,
+    ArchiveImageSession,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
     ArchivePasswordPolicy,
@@ -30,6 +34,7 @@ from joyread.core.archive import (
 from joyread.core.archive.backends import SEVEN_ZIP_ENV_VAR
 from joyread.core.archive.formats import common as archive_common
 from joyread.core.archive.limits import ArchiveOperationBudget
+from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.archive.scanner import SCANNER_SCHEMA_VERSION
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 
@@ -158,7 +163,7 @@ def test_session_bounds_ranged_reads_dimensions_and_navigation(tmp_path: Path) -
     assert session.seek(1) is True
 
 
-def test_session_caches_dimensions_without_retaining_archive_page_bytes(tmp_path: Path) -> None:
+def test_session_returns_dimensions_without_mutating_page_records(tmp_path: Path) -> None:
     archive_path = tmp_path / "memory.cbz"
     _write_zip(
         archive_path,
@@ -173,7 +178,7 @@ def test_session_caches_dimensions_without_retaining_archive_page_bytes(tmp_path
     pages = session.get_pages((0, 1))
 
     assert [page.dimensions if page is not None else None for page in pages] == [(20, 10), (30, 10)]
-    assert [record.dimensions for record in session._pages] == [(20, 10), (30, 10)]
+    assert all(not hasattr(record, "dimensions") for record in session._pages)
     assert all(not hasattr(record, "_page") for record in session._pages)
 
 
@@ -733,16 +738,36 @@ def test_7z_thumbnail_access_switches_from_cold_batch_to_ready_single_page(tmp_p
     )
 
     assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
+    assert session.requires_sequential_warmup is True
     assert session.thumbnail_batch_size(0) == 8
 
     assert all(page is not None for page in session.get_pages((0, 1)))
     assert session.mark_thumbnail_cache_ready()
     assert session.access_mode == ArchiveAccessMode.EXPENSIVE_READY
+    assert session.requires_sequential_warmup is False
     assert session.thumbnail_batch_size(0) == 1
 
     pool.clear()
 
     assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
+
+
+def test_non_solid_7z_uses_single_page_random_access_without_warmup(tmp_path: Path) -> None:
+    archive_path = tmp_path / "single-page.cb7"
+    # A one-member 7z has one independent block and py7zr reports it as
+    # non-solid, so JoyRead can serve it on demand without a whole-book pass.
+    with py7zr.SevenZipFile(archive_path, "w") as archive:
+        archive.writestr(_png_bytes((40, 20)), "001.png")
+    pool = ArchiveExtractionPool(tmp_path / "archive_pages", max_bytes=1 << 20)
+    session = ArchiveImageService(extraction_pool=pool).open(
+        archive_path,
+        document_cache_key="file:non-solid",
+        allow_persistent_cache=True,
+    )
+
+    assert session.access_mode == ArchiveAccessMode.EXPENSIVE_COLD
+    assert session.requires_sequential_warmup is False
+    assert session.thumbnail_batch_size(0) == 1
 
 
 def test_encrypted_zip_uses_password_provider(tmp_path: Path) -> None:
@@ -1401,3 +1426,39 @@ def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
             archive_path,
             password_provider=lambda _request: "wrong",
         )
+
+
+@pytest.mark.parametrize(
+    ("suffix", "password", "expected_concurrency"),
+    ((".zip", None, 2), (".zip", "secret", 1), (".rar", None, 1)),
+)
+def test_archive_session_enforces_backend_read_concurrency(
+    suffix: str,
+    password: str | None,
+    expected_concurrency: int,
+) -> None:
+    source = ArchiveSource("sample", suffix, data=b"container")
+    pages = (
+        PageRecord("sample/001.png", source, "001.png", password),
+        PageRecord("sample/002.png", source, "002.png", password),
+    )
+    active = 0
+    maximum_active = 0
+    counter_lock = Lock()
+
+    def read_entries(_source, entries, _budget):  # noqa: ANN001
+        nonlocal active, maximum_active
+        with counter_lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        time.sleep(0.04)
+        with counter_lock:
+            active -= 1
+        return {name: _png_bytes((20, 30)) for name, _entry_password in entries}
+
+    session = ArchiveImageSession(pages, read_entries)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(executor.map(session.get_page, (0, 1)))
+
+    assert all(page is not None for page in results)
+    assert maximum_active == expected_concurrency

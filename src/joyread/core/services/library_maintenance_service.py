@@ -25,8 +25,11 @@ from uuid import uuid4
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits, ArchiveValidationCode
 from joyread.core.file_types import ARCHIVE_EXTENSIONS
-from joyread.core.reader.pdf_session import PDF_EXTENSIONS, PdfImageService
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
+from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionCache,
+    archive_cache_storage_key,
+)
 from joyread.core.services.hash_service import HashService
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
@@ -197,7 +200,7 @@ class LibraryMaintenanceService:
         hash_service: HashService,
         archive_service: ArchiveImageService,
         *,
-        pdf_service: PdfImageService | None = None,
+        pdf_service: PdfImageServicePort | None = None,
         archive_limits: ArchiveOpenLimits | None = None,
         extraction_cache: ArchiveExtractionCache | None = None,
         invalidate_file_cache: Callable[[str], None] | None = None,
@@ -207,7 +210,7 @@ class LibraryMaintenanceService:
         self._database = database
         self._hash_service = hash_service
         self._archive_service = archive_service
-        self._pdf_service = pdf_service or PdfImageService()
+        self._pdf_service = pdf_service
         self._archive_limits = archive_limits or ArchiveOpenLimits()
         self._extraction_cache = extraction_cache
         self._invalidate_file_cache = invalidate_file_cache
@@ -574,6 +577,8 @@ class LibraryMaintenanceService:
                 probe = self._archive_service.probe_archive(path, limits=limits)
                 return probe.is_valid, probe.code.value, probe.message
             if suffix in PDF_EXTENSIONS:
+                if self._pdf_service is None:
+                    return False, "pdf_backend_unavailable", "PDF support is unavailable in this runtime."
                 probe = self._pdf_service.probe_pdf(path)
                 return probe.is_valid, probe.error_type, probe.message
         except Exception as exc:  # A malformed third-party container must not abort the whole audit.
@@ -672,15 +677,15 @@ class LibraryMaintenanceService:
         return sorted(orphans, key=lambda orphan: str(orphan.path))
 
     def _find_extraction_cache_orphans(self, items: list[LibraryAuditItem]) -> list[LibraryAuditOrphan]:
-        """Find stale cache entries whose opaque ``file:<id>`` key has no row.
+        """Find stale managed cache entries whose ``file:<id>`` has no row.
 
-        External reader sessions are intentionally non-persistent, so every
-        persistent extraction entry should map to a current ``book_files`` ID.
-        We recognize only the two cache layouts owned by this application and
-        never follow links while walking them.
+        Content-addressed external caches are legitimate global LRU data and
+        are not database orphans. Ephemeral entries are reclaimed by pool
+        startup reconciliation. Only the managed ``m-`` namespace participates
+        in this audit.
         """
 
-        known_keys = {_archive_cache_key(f"file:{item.file_id}") for item in items}
+        known_keys = {archive_cache_storage_key(f"file:{item.file_id}") for item in items}
         orphans: list[LibraryAuditOrphan] = []
         zip_root = self._paths.paths.cache / ".archive_zip_bundles"
         if zip_root.exists():
@@ -692,7 +697,7 @@ class LibraryMaintenanceService:
                 if not self._is_regular_file(path, self._paths.paths.cache):
                     continue
                 key = _zip_bundle_key(path.name)
-                if key is None or key in known_keys:
+                if key is None or not key.startswith("m-") or key in known_keys:
                     continue
                 orphan = _orphan_from_path(path, "extraction-cache")
                 if orphan is not None:
@@ -705,7 +710,7 @@ class LibraryMaintenanceService:
             except OSError:
                 directories = ()
             for directory in directories:
-                if directory.name in known_keys:
+                if not directory.name.startswith("m-") or directory.name in known_keys:
                     continue
                 try:
                     files = tuple(directory.rglob("*")) if directory.is_dir() and not directory.is_symlink() else ()
@@ -992,10 +997,6 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def _archive_cache_key(document_cache_key: str) -> str:
-    return hashlib.sha256(f"archive-cache-v2:{document_cache_key}".encode("utf-8")).hexdigest()
-
-
 def _zip_bundle_key(filename: str) -> str | None:
     if filename.endswith(".partial.zip"):
         key = filename[: -len(".partial.zip")]
@@ -1003,7 +1004,11 @@ def _zip_bundle_key(filename: str) -> str | None:
         key = filename[: -len(".zip")]
     else:
         return None
-    if len(key) != 64 or any(character not in "0123456789abcdef" for character in key):
+    if (
+        len(key) != 66
+        or key[:2] not in {"m-", "x-", "e-"}
+        or any(character not in "0123456789abcdef" for character in key[2:])
+    ):
         return None
     return key
 

@@ -15,7 +15,7 @@ from joyread.core.archive.errors import (
     ArchiveResourceLimitError,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
-from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveSource
+from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
 
 
@@ -56,7 +56,7 @@ class SevenZipArchiveBackend:
         except OSError as exc:
             raise ArchiveOpenError(f"Could not open 7Z archive: {source.display_name}") from exc
 
-    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> list[ArchiveEntry]:
+    def list_entries(self, source: ArchiveSource, context: ArchiveScanContext) -> ArchiveListing:
         module = self._module_getter()
         if module is None:
             raise ArchiveDependencyMissing("py7zr is required for 7Z/CB7 archives.")
@@ -67,11 +67,7 @@ class SevenZipArchiveBackend:
             with module.SevenZipFile(source.open_arg(), "r") as archive:
                 needs_password = archive.needs_password()
                 if not needs_password:
-                    return [
-                        ArchiveEntry(info.filename, getattr(info, "uncompressed", None), None)
-                        for info in archive.list()
-                        if getattr(info, "is_file", False)
-                    ]
+                    return _listing_from_archive(archive, password=None)
         except module.PasswordRequired:
             needs_password = True
         except module.Bad7zFile as exc:
@@ -83,11 +79,7 @@ class SevenZipArchiveBackend:
             password = self._request_password(source, context, reason="7z archive is encrypted")
         try:
             with module.SevenZipFile(source.open_arg(), "r", password=password) as archive:
-                return [
-                    ArchiveEntry(info.filename, getattr(info, "uncompressed", None), password)
-                    for info in archive.list()
-                    if getattr(info, "is_file", False)
-                ]
+                return _listing_from_archive(archive, password=password)
         except module.PasswordRequired as exc:
             raise ArchivePasswordRejected(
                 f"Password rejected for 7Z archive: {source.display_name}",
@@ -150,6 +142,35 @@ class SevenZipArchiveBackend:
             raise ArchiveReadError(f"Could not decompress 7Z entry: {targets[0]}") from exc
         except module.Bad7zFile as exc:
             raise ArchiveReadError(f"Could not read 7Z entry: {targets[0]}") from exc
+
+
+def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  # noqa: ANN001
+    """Build a listing while the 7z handle can still expose solid metadata.
+
+    ``archiveinfo()`` is the public API for path-backed archives. py7zr cannot
+    currently use it for a BytesIO-backed nested archive because it calls
+    ``os.stat``; its private predicate is the only metadata-only fallback in
+    that case. Unknown capability is handled conservatively as sequential.
+    """
+
+    solid: bool | None = None
+    try:
+        solid = bool(archive.archiveinfo().solid)
+    except (AssertionError, OSError, TypeError, ValueError):
+        predicate = getattr(archive, "_is_solid", None)
+        if callable(predicate):
+            try:
+                solid = bool(predicate())
+            except (AttributeError, TypeError, ValueError):
+                solid = None
+    return ArchiveListing(
+        tuple(
+            ArchiveEntry(info.filename, getattr(info, "uncompressed", None), password)
+            for info in archive.list()
+            if getattr(info, "is_file", False)
+        ),
+        requires_sequential_warmup=solid is not False,
+    )
 
 
 class _BudgetedBytesFactory:

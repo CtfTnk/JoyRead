@@ -18,6 +18,7 @@ class ArchiveSource:
     path: Path | None = None
     data: bytes | None = None
     allow_persistent_cache: bool = True
+    requires_sequential_warmup: bool = False
 
     @property
     def display_name(self) -> str:
@@ -48,7 +49,15 @@ class ArchiveContainerProbe:
     is_encrypted: bool = False
 
 
-@dataclass
+@dataclass(frozen=True)
+class ArchiveListing:
+    """Entries plus the backend access policy discovered while listing."""
+
+    entries: tuple[ArchiveEntry, ...]
+    requires_sequential_warmup: bool = False
+
+
+@dataclass(frozen=True)
 class PageRecord:
     """A page address retained by a session without retaining image bytes."""
 
@@ -57,4 +66,3 @@ class PageRecord:
     name: str
     password: str | None
     size: int | None = None
-    dimensions: tuple[int, int] | None = None

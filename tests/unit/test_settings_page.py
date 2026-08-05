@@ -15,6 +15,7 @@ from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.widgets.settings_page import (
     SettingsAddressItem,
+    SettingsCacheStatusItem,
     SettingsContentPanel,
     SettingsDropdownButton,
     SettingsPageWidget,
@@ -630,6 +631,47 @@ def test_settings_store_migrates_thumbnail_cache_key_and_viewmodel_persists_new_
 
     assert saved["thumbnail_cache_mb"] == 96
     assert "detail_thumbnail_cache_mb" not in saved
+
+
+def test_settings_store_migrates_archive_pool_mb_to_gb_and_saves_only_gb(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_extraction_pool_mb": 1537,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+    assert settings.archive_extraction_pool_gb == 2
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["archive_extraction_pool_gb"] == 2
+    assert "archive_extraction_pool_mb" not in saved
+
+
+def test_settings_archive_pool_uses_five_gb_default_and_one_to_fifty_range(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    assert store.load().archive_extraction_pool_gb == 5
+
+    viewmodel = SettingsViewModel(store.load(), store)
+    viewmodel.set_archive_extraction_pool_gb(0)
+    assert viewmodel.archive_extraction_pool_gb == 1
+    viewmodel.set_archive_extraction_pool_gb(75)
+    assert viewmodel.archive_extraction_pool_gb == 50
+    assert store.load().archive_extraction_pool_gb == 50
+
+
+def test_archive_pool_usage_can_display_soft_budget_overrun(qtbot) -> None:
+    item = SettingsCacheStatusItem("Archive pool usage", int(6.2 * GIB), 5 * GIB)
+    qtbot.addWidget(item)
+
+    assert item.findChild(QLabel, "SettingsCacheUsageLabel").text() == "6.2 / 5 GB"
 
 
 def test_main_window_opens_centered_floating_settings_overlay_and_restores_sidebar(qtbot) -> None:

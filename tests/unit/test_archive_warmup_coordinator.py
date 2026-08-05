@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from joyread.core.services.archive_warmup_coordinator import ArchiveWarmupCoordinator
-from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskStatus
+from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
+from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
 
 
 @dataclass
@@ -36,24 +36,27 @@ class _ManualTaskService:
 
 class _FakeSessionService:
     def __init__(self) -> None:
-        self.calls: list[tuple[Path, int, int, int, bool]] = []
+        self.calls: list[tuple[Path, int, int, int, bool, str, bool]] = []
 
     def warm_disk_cache(
         self,
         path: Path,
         *,
-        nested_archive_max_depth: int,
-        archive_global_file_max_depth: int,
+        limits,
+        document_cache_key: str,
+        allow_persistent_cache: bool,
         chunk_size: int,
         is_cancelled,
     ) -> None:  # noqa: ANN001
         self.calls.append(
             (
                 path,
-                nested_archive_max_depth,
-                archive_global_file_max_depth,
+                limits.nested_archive_max_depth,
+                limits.global_file_max_depth,
                 chunk_size,
                 bool(is_cancelled()),
+                document_cache_key,
+                allow_persistent_cache,
             )
         )
 
@@ -75,6 +78,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
         first,
         "detail",
         document_cache_key="file:first",
+        allow_persistent_cache=True,
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("detail"),
@@ -83,6 +87,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
         first,
         "reader",
         document_cache_key="file:first",
+        allow_persistent_cache=True,
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("reader"),
@@ -91,6 +96,7 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
         second,
         "editor",
         document_cache_key="file:second",
+        allow_persistent_cache=True,
         nested_depth=2,
         global_depth=100,
         on_ready=lambda: ready.append("editor"),
@@ -101,14 +107,14 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
 
     tasks.run(0)
 
-    assert sessions.calls == [(first, 2, 100, 8, False)]
+    assert sessions.calls == [(first, 2, 100, 8, False, "file:first", True)]
     assert ready == ["detail", "reader"]
     assert len(tasks.tasks) == 2
 
     coordinator.release("editor")
     tasks.run(1)
 
-    assert sessions.calls[-1] == (second, 2, 100, 8, True)
+    assert sessions.calls[-1] == (second, 2, 100, 8, True, "file:second", True)
     assert ready == ["detail", "reader"]
 
 
@@ -131,10 +137,14 @@ def test_archive_warmup_invalidation_waits_for_active_worker_before_replacement(
 
     assert len(tasks.tasks) == 1
     tasks.run(0)
-    assert sessions.calls == [(first, 2, 100, 8, True)]
+    first_cache_key = sessions.calls[0][5]
+    assert sessions.calls == [(first, 2, 100, 8, True, first_cache_key, False)]
+    assert first_cache_key.startswith("session:")
     assert ready == []
     assert len(tasks.tasks) == 2
 
     tasks.run(1)
-    assert sessions.calls[-1] == (second, 2, 100, 8, False)
+    second_cache_key = sessions.calls[-1][5]
+    assert sessions.calls[-1] == (second, 2, 100, 8, False, second_cache_key, False)
+    assert second_cache_key.startswith("session:")
     assert ready == ["new"]

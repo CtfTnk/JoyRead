@@ -12,6 +12,7 @@ from pathlib import Path
 import sys
 
 from PIL import Image
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication, QFileDialog, QToolButton, QWidget
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -37,7 +38,7 @@ def main() -> int:
 
     overlay = CoverEditorOverlay(resources, root)
     overlay.setGeometry(root.rect())
-    overlay.open_editor(_placeholder_png(), "playground")
+    overlay.open_editor(QImage.fromData(_placeholder_png()), "playground")
     browse_button = overlay.editor.findChild(QToolButton, "CoverEditorBrowseButton")
     if browse_button is not None:
         browse_button.hide()
@@ -50,10 +51,10 @@ def main() -> int:
             "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
         )
         if file_path:
-            overlay.set_source(Path(file_path).read_bytes(), f"import:{Path(file_path).name}")
+            overlay.set_source(QImage(file_path), f"import:{Path(file_path).name}")
 
     overlay.import_requested.connect(import_image)
-    overlay.save_requested.connect(lambda _bytes, state: print(f"crop_state={state}"))
+    overlay.save_requested.connect(lambda state: print(f"crop_state={state}"))
 
     root.show()
     overlay.raise_()

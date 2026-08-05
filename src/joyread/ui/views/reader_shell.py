@@ -9,10 +9,14 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt, Sig
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
+from joyread.app.reader_page_pipeline import PreparedReaderPage
+from joyread.app.reader_document_runtime import ReaderDocumentRuntime
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
+from joyread.core.reader import ReaderDirection, ReaderProgress, ReaderSettings
 from joyread.infrastructure.i18n.locale_service import t
+from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
+from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
@@ -80,7 +84,14 @@ class ReaderShellWidget(QWidget):
             show_back_button,
         )
         self.viewmodel = ReaderViewModel(
-            context.reader_session_service,
+            ReaderDocumentRuntime(
+                context.reader_session_service,
+                document_cache_key=(
+                    f"file:{book.file_id}" if book is not None and book.file_id else None
+                ),
+                archive_extraction_cache=context.archive_extraction_pool,
+                hash_service=context.hash_service,
+            ),
             context.task_service,
             context.cache_service.issue_reader_namespace(),
             context.library_service if book is not None else None,
@@ -93,9 +104,10 @@ class ReaderShellWidget(QWidget):
             nested_archive_max_depth=app_settings.nested_archive_max_depth,
             archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
             archive_limits=context.settings_viewmodel.archive_open_limits,
-            document_cache_key=(f"file:{book.file_id}" if book is not None and book.file_id else None),
             thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
             archive_warmup_coordinator=context.archive_warmup_coordinator,
+            page_decoder=QtPageFrameDecoder(),
+            thumbnail_renderer=context.thumbnail_renderer or QtThumbnailRenderer(),
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
@@ -163,6 +175,7 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.state_changed.connect(self._sync_state)
         self.viewmodel.layout_changed.connect(self._sync_layout)
         self.viewmodel.page_ready.connect(self._sync_page)
+        self.viewmodel.page_failed.connect(self.canvas.set_page_failed)
         self.viewmodel.error_changed.connect(self._show_reader_error)
         self.viewmodel.password_required.connect(self._show_password_dialog)
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
@@ -240,8 +253,8 @@ class ReaderShellWidget(QWidget):
     def _sync_layout(self, _result) -> None:  # noqa: ANN001 - signal carries the layout dataclass.
         self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x)
 
-    def _sync_page(self, image: ReaderPageImage) -> None:
-        self.canvas.set_page_image(image)
+    def _sync_page(self, image: PreparedReaderPage) -> None:
+        self.canvas.set_page_frame(image)
 
     def _show_reader_error(self, message: str | None) -> None:
         if message:
@@ -397,7 +410,11 @@ class ReaderShellWidget(QWidget):
         self.dialog_overlay.setGeometry(rect)
         self._position_settings_panel()
         self._raise_settings_panel_if_visible()
-        self.viewmodel.set_viewport_size(self.width(), self.height())
+        self.viewmodel.set_viewport_size(
+            self.width(),
+            self.height(),
+            self.devicePixelRatioF(),
+        )
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

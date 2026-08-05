@@ -2,11 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import hashlib
 from uuid import uuid4
 
+import py7zr
 from PIL import Image
 
 from joyread.core.archive import (
+    ArchiveImageService,
     ArchiveContentsEntry,
     ArchiveEmptyError,
     ArchivePasswordRejected,
@@ -14,10 +17,20 @@ from joyread.core.archive import (
     ArchiveResourceLimitError,
 )
 from joyread.core.models.bookmark import Bookmark
-from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage, ReaderSettings
+from joyread.core.reader import (
+    ReaderDirection,
+    ReaderDisplayMode,
+    ReaderPageImage,
+    ReaderSessionService,
+    ReaderSettings,
+)
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
-from joyread.core.services.task_service import TaskHandle, TaskStatus
+from joyread.core.services.hash_service import HashService
+from joyread.app.reader_document_runtime import ReaderDocumentRuntime
+from joyread.app.reader_page_pipeline import PreparedReaderPage
+from joyread.app.tasking import TaskHandle, TaskStatus
+from joyread.infrastructure.thumbnail_renderer import PillowThumbnailRenderer
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
 
 
@@ -202,6 +215,30 @@ class _FakeSessionService:
         return loaded
 
 
+class _CountingSessionService(_FakeSessionService):
+    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
+        super().__init__(dimensions)
+        self.page_requests: list[tuple[int, ...]] = []
+
+    def load_pages(self, session: _FakeSession, page_indices: tuple[int, ...]) -> dict[int, ReaderPageImage]:
+        self.page_requests.append(page_indices)
+        return super().load_pages(session, page_indices)
+
+
+class _RecordingThumbnailRenderer:
+    def __init__(self) -> None:
+        self.prepared_calls: list[tuple[object, tuple[int, int]]] = []
+        self.encoded_calls: list[tuple[bytes, tuple[int, int]]] = []
+
+    def render_prepared(self, frame: object, size: tuple[int, int]) -> bytes:
+        self.prepared_calls.append((frame, size))
+        return b"prepared-thumbnail"
+
+    def render_encoded(self, image_bytes: bytes, size: tuple[int, int]) -> bytes:
+        self.encoded_calls.append((image_bytes, size))
+        return b"encoded-thumbnail"
+
+
 class _FakeLibraryService:
     def __init__(self) -> None:
         self.progress_calls: list[tuple[str, int, float]] = []
@@ -343,7 +380,7 @@ def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path
     assert viewmodel.current_display_indices == (1, 2)
 
 
-def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None:
+def test_reader_viewmodel_publishes_primary_before_spread_is_complete(tmp_path: Path) -> None:
     viewmodel = _viewmodel(tmp_path)
     layout_modes: list[ReaderDisplayMode] = []
     viewmodel.layout_changed.connect(lambda result: layout_modes.append(result.mode))
@@ -352,7 +389,7 @@ def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None
     viewmodel.set_viewport_size(1600, 900)
 
     assert layout_modes
-    assert ReaderDisplayMode.SINGLE not in layout_modes
+    assert ReaderDisplayMode.SINGLE in layout_modes
     assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
 
 
@@ -829,7 +866,7 @@ def test_reader_viewmodel_localizes_resource_limit_error_without_member_details(
 
 def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) -> None:
     vm = ReaderViewModel(
-        _RejectedPasswordSessionService(),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_RejectedPasswordSessionService()),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -852,7 +889,7 @@ def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) ->
 
 def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_path: Path) -> None:
     vm = ReaderViewModel(
-        _RejectedPagePasswordSessionService(),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_RejectedPagePasswordSessionService()),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -875,7 +912,7 @@ def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_pa
 def test_reader_viewmodel_skip_password_request_reopens_with_skipped_archive(tmp_path: Path) -> None:
     session_service = _RequiredThenSkipSessionService()
     vm = ReaderViewModel(
-        session_service,  # type: ignore[arg-type]
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -896,7 +933,7 @@ def test_reader_viewmodel_skip_password_request_reopens_with_skipped_archive(tmp
 def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipped(tmp_path: Path) -> None:
     session_service = _SkipLeavesNoPagesSessionService()
     vm = ReaderViewModel(
-        session_service,  # type: ignore[arg-type]
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -919,7 +956,7 @@ def test_reader_viewmodel_exposes_archive_contents_and_clears_them_on_cancel(tmp
         ArchiveContentsEntry("Part2", 3, 1),
     )
     vm = ReaderViewModel(
-        _FakeSessionService(contents=contents),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_FakeSessionService(contents=contents)),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -999,6 +1036,65 @@ def test_reader_viewmodel_streams_topic_thumbnails_from_active_session(tmp_path:
     assert all(image_bytes for _page_index, image_bytes in items)
 
 
+def test_reader_topic_reuses_sufficient_prepared_frame_without_archive_read(tmp_path: Path) -> None:
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    session_service = _CountingSessionService()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-reuse"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((0,), (), (100, 142))
+
+    assert session_service.page_requests == []
+    assert renderer.prepared_calls
+    assert renderer.encoded_calls == []
+    assert ready == [(0, b"prepared-thumbnail")]
+
+
+def test_reader_topic_falls_back_when_prepared_frame_is_too_small(tmp_path: Path) -> None:
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    session_service = _CountingSessionService()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    page_cache = cache.issue_reader_namespace()
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        page_cache,
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-fallback"),
+    )
+
+    vm.open_path(source)
+    page_cache.clear()
+    page_cache.put(
+        0,
+        PreparedReaderPage(0, b"tiny", (600, 900), (10, 10), vm._task_generation),
+        10,
+        10,
+    )
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((0,), (), (100, 142))
+
+    assert session_service.page_requests == [(0,)]
+    assert renderer.prepared_calls == []
+    assert renderer.encoded_calls
+
+
 def _cache_service(tmp_path: Path) -> CacheService:
     pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
     return CacheService(archive_extraction_pool=pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
@@ -1018,7 +1114,7 @@ def _viewmodel(
     source.write_bytes(b"fake")
     cache = cache_service or _cache_service(tmp_path)
     return ReaderViewModel(
-        _FakeSessionService(dimensions),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_FakeSessionService(dimensions)),  # type: ignore[arg-type]
         task_service or _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         library_service,  # type: ignore[arg-type]
@@ -1026,6 +1122,7 @@ def _viewmodel(
         title="Book",
         prefetch_before=prefetch_before,
         prefetch_after=prefetch_after,
+        thumbnail_renderer=PillowThumbnailRenderer(),
     )
 
 
@@ -1047,7 +1144,7 @@ def test_reader_viewmodel_cancel_clears_only_its_namespace_in_shared_cache(tmp_p
     bytes_after = cache_service.reader_page_cache.current_bytes
     assert bytes_after > 0
     assert bytes_after < bytes_before
-    assert vm_a._session is None
+    assert vm_a._document is None
     assert vm_a._pages == {}
     assert vm_a._layout_result is None
     assert vm_a.page_count == 0
@@ -1091,7 +1188,6 @@ def test_reader_viewmodel_ignores_late_page_results_after_cancel(tmp_path: Path)
 
     assert ready == []
     assert vm._pages == {}
-    assert vm._page_handles == {}
 
 
 def test_reader_viewmodel_keeps_prefetch_pages_out_of_resident_pages(tmp_path: Path) -> None:
@@ -1246,3 +1342,63 @@ def _png_bytes() -> bytes:
     output = BytesIO()
     Image.new("RGB", (8, 12), "#336699").save(output, format="PNG")
     return output.getvalue()
+
+
+def test_external_expensive_reader_promotes_ephemeral_cache_after_first_frame(tmp_path: Path) -> None:
+    source = tmp_path / "external.cb7"
+    with py7zr.SevenZipFile(source, "w") as archive:
+        archive.writestr(_png_bytes(), "001.png")
+        archive.writestr(_png_bytes(), "002.png")
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    cache = CacheService(pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(
+            ReaderSessionService(ArchiveImageService(extraction_pool=pool)),
+            archive_extraction_cache=pool,
+            hash_service=HashService(),
+        ),
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+    )
+
+    vm.open_path(source)
+
+    assert list((tmp_path / "pool").glob("x-*.partial.zip"))
+    assert not list((tmp_path / "pool").glob("e-*.zip"))
+
+    vm.cancel()
+
+    assert list((tmp_path / "pool").glob("x-*.partial.zip"))
+    assert not list((tmp_path / "pool").glob("e-*"))
+
+
+def test_external_cache_is_not_promoted_when_source_changes_during_hash(tmp_path: Path) -> None:
+    class _MutatingHashService:
+        def compute(self, path: Path, _algorithm: str = "sha256") -> str:
+            original = path.read_bytes()
+            digest = hashlib.sha256(original).hexdigest()
+            path.write_bytes(original + b"changed-during-hash")
+            return digest
+
+    source = tmp_path / "changing.cb7"
+    with py7zr.SevenZipFile(source, "w") as archive:
+        archive.writestr(_png_bytes(), "001.png")
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    cache = CacheService(pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(
+            ReaderSessionService(ArchiveImageService(extraction_pool=pool)),
+            archive_extraction_cache=pool,
+            hash_service=_MutatingHashService(),  # type: ignore[arg-type]
+        ),
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+    )
+
+    vm.open_path(source)
+    assert not list((tmp_path / "pool").glob("x-*"))
+
+    vm.cancel()
+
+    assert not list((tmp_path / "pool").glob("e-*"))
+    assert not list((tmp_path / "pool").glob("x-*"))

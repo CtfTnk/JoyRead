@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from zipfile import ZipFile
 
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool, HiddenImageExtractionPool
+from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionPool,
+    HiddenImageExtractionPool,
+    archive_cache_storage_key,
+)
 
 
 def _write_source(tmp_path: Path, name: str = "book.7z", body: bytes = b"fake-archive") -> Path:
@@ -254,6 +260,45 @@ def test_zip_pool_partial_build_publishes_ready_manifest_atomically(tmp_path: Pa
     assert reopened.get(source, "pages/00000001") == b"two"
 
 
+def test_zip_pool_reconciliation_publishes_completed_crash_partial(tmp_path: Path) -> None:
+    directory = tmp_path / "cache"
+    source = "file:managed-content"
+    pool = ArchiveExtractionPool(directory, max_bytes=4096)
+    pool.put(source, "pages/00000000", b"page")
+    pool.put(
+        source,
+        "__joyread_ready_manifest__.json",
+        json.dumps(
+            {
+                "schema": 3,
+                "page_count": 1,
+                "signature": "limits-v1",
+                "identity_kind": "managed",
+                "build_state": "ready",
+            }
+        ).encode(),
+    )
+    assert list(directory.glob("*.partial.zip"))
+
+    reopened = ArchiveExtractionPool(directory, max_bytes=4096)
+
+    assert reopened.is_complete(source, 1, "limits-v1")
+    assert list(directory.glob("*.partial.zip")) == []
+    assert len(list(directory.glob("*.zip"))) == 1
+
+
+def test_zip_pool_replaces_an_existing_ready_manifest(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    source = "file:managed-content"
+    pool.put(source, "pages/00000000", b"page")
+    pool.mark_complete(source, 1, "old-limits")
+
+    pool.mark_complete(source, 1, "new-limits")
+
+    assert not pool.is_complete(source, 1, "old-limits")
+    assert pool.is_complete(source, 1, "new-limits")
+
+
 def test_hidden_pool_page_eviction_invalidates_ready_manifest(tmp_path: Path) -> None:
     pool = HiddenImageExtractionPool(tmp_path / ".archive_image_pages", max_bytes=4096)
     source = _write_source(tmp_path)
@@ -266,6 +311,23 @@ def test_hidden_pool_page_eviction_invalidates_ready_manifest(tmp_path: Path) ->
 
     assert pool.get(source, "pages/00000000") is None
     assert not pool.is_complete(source, 1, "depth=2")
+
+
+def test_hidden_pool_soft_budget_evicts_an_inactive_document_as_one_unit(tmp_path: Path) -> None:
+    pool = HiddenImageExtractionPool(tmp_path / ".archive_image_pages", max_bytes=100)
+    first = "file:first"
+    second = "file:second"
+
+    pool.put_many(first, {"pages/0": b"A" * 80, "pages/1": b"B" * 80})
+    # The current document is the protected writer and may exceed the budget.
+    assert pool.get(first, "pages/0") is not None
+    assert pool.get(first, "pages/1") is not None
+
+    pool.put(second, "pages/0", b"C" * 80)
+
+    assert pool.get(first, "pages/0") is None
+    assert pool.get(first, "pages/1") is None
+    assert pool.get(second, "pages/0") == b"C" * 80
 
 
 def test_hidden_image_pool_uses_hidden_folder_and_non_image_extension(tmp_path: Path) -> None:
@@ -298,7 +360,108 @@ def test_hidden_image_pool_clears_legacy_metadata_keyed_cache_on_upgrade(tmp_pat
 
     assert pool.current_bytes == 0
     assert not legacy_payload.exists()
-    assert (directory / ".joyread-archive-cache-schema").read_text(encoding="ascii") == "2"
+    assert (directory / ".joyread-archive-cache-schema").read_text(encoding="ascii") == "3"
+
+
+def test_ephemeral_lease_is_removed_on_close(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"temporary")
+
+    lease.close()
+
+    assert pool.get("session:reader", "001.png") is None
+
+
+def test_ephemeral_lease_promotes_to_cross_session_content_key(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put_many({"001.png": b"one", "002.png": b"two"})
+
+    assert lease.promote("external:sha256:digest")
+    lease.close()
+
+    assert pool.get("session:reader", "001.png") is None
+    assert pool.get("external:sha256:digest", "001.png") == b"one"
+    assert pool.get("external:sha256:digest", "002.png") == b"two"
+
+
+def test_promotion_merges_missing_pages_into_a_ready_target(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    target = "external:sha256:digest"
+    pool.put(target, "pages/00000000", b"target-page")
+    pool.mark_complete(target, 1, "ready-limits")
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("pages/00000001", b"ephemeral-page")
+
+    assert lease.promote(target)
+    lease.close()
+
+    assert pool.get(target, "pages/00000000") == b"target-page"
+    assert pool.get(target, "pages/00000001") == b"ephemeral-page"
+    assert pool.is_complete(target, 1, "ready-limits")
+
+
+def test_failed_promotion_keeps_lease_ephemeral_for_close_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"temporary")
+    monkeypatch.setattr(pool, "promote", lambda _source, _target: False)
+
+    assert lease.promote("external:sha256:digest") is False
+    assert lease.scope == ArchiveCacheScope.EPHEMERAL
+    assert lease.document_cache_key == "session:reader"
+
+    lease.close()
+    assert pool.get("session:reader", "001.png") is None
+
+
+def test_zip_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"temporary")
+    target = "external:sha256:digest"
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"outside")
+    target_path = directory / f"{archive_cache_storage_key(target)}.partial.zip"
+    target_path.symlink_to(outside)
+
+    assert lease.promote(target) is False
+    assert outside.read_bytes() == b"outside"
+
+    lease.close()
+
+
+def test_hidden_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
+    directory = tmp_path / ".archive_image_pages"
+    pool = HiddenImageExtractionPool(directory, max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"temporary")
+    target = "external:sha256:digest"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    target_path = directory / archive_cache_storage_key(target)
+    target_path.symlink_to(outside, target_is_directory=True)
+
+    assert lease.promote(target) is False
+    assert tuple(outside.iterdir()) == ()
+
+    lease.close()
+
+
+def test_active_lease_may_exceed_soft_budget_until_close(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=256)
+    lease = ArchiveCacheLease(pool, "external:sha256:large", ArchiveCacheScope.PERSISTENT)
+    lease.put("001.png", b"x" * 1024)
+
+    assert pool.current_bytes > pool.max_bytes
+
+    lease.close()
+    assert pool.current_bytes <= pool.max_bytes
 
 
 def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> None:

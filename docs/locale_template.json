@@ -58,7 +58,7 @@
     "archive_external_command_timeout": "External extraction timeout",
     "reader_page_cache": "Reader page cache (in-memory)",
     "thumbnail_cache": "Thumbnail cache (in-memory)",
-    "archive_extraction_pool": "Archive extraction pool (disk)",
+    "archive_extraction_pool": "Archive extraction pool (disk, GB)",
     "archive_cache_strategy": "Archive cache strategy",
     "archive_pool_usage": "Archive pool usage",
     "verify_library_and_clean_cache": "Verify Library & Clean Cache",

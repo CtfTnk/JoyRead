@@ -47,8 +47,8 @@ THUMBNAIL_CACHE_MIN_MB = 8
 THUMBNAIL_CACHE_MAX_MB = 512
 DETAIL_THUMBNAIL_CACHE_MIN_MB = THUMBNAIL_CACHE_MIN_MB
 DETAIL_THUMBNAIL_CACHE_MAX_MB = THUMBNAIL_CACHE_MAX_MB
-ARCHIVE_POOL_MIN_MB = 128
-ARCHIVE_POOL_MAX_MB = 8192
+ARCHIVE_POOL_MIN_GB = 1
+ARCHIVE_POOL_MAX_GB = 50
 IMPORT_FOLDER_DEPTH_MIN = 1
 IMPORT_FOLDER_DEPTH_MAX = 5
 NESTED_ARCHIVE_DEPTH_MIN = 1
@@ -126,10 +126,10 @@ class SettingsViewModel:
             THUMBNAIL_CACHE_MIN_MB,
             THUMBNAIL_CACHE_MAX_MB,
         )
-        self.archive_extraction_pool_mb = _clamp_int(
-            getattr(settings, "archive_extraction_pool_mb", 1024),
-            ARCHIVE_POOL_MIN_MB,
-            ARCHIVE_POOL_MAX_MB,
+        self.archive_extraction_pool_gb = _clamp_int(
+            getattr(settings, "archive_extraction_pool_gb", 5),
+            ARCHIVE_POOL_MIN_GB,
+            ARCHIVE_POOL_MAX_GB,
         )
         self.archive_cache_strategy = normalize_archive_cache_strategy(
             getattr(settings, "archive_cache_strategy", ArchiveCacheStrategy.ZIP_BUNDLE.value)
@@ -261,12 +261,12 @@ class SettingsViewModel:
         self.cache_budgets_changed.emit()
         self.state_changed.emit()
 
-    def set_archive_extraction_pool_mb(self, value: int) -> None:
-        clamped = _clamp_int(value, ARCHIVE_POOL_MIN_MB, ARCHIVE_POOL_MAX_MB)
-        if clamped == self.archive_extraction_pool_mb:
+    def set_archive_extraction_pool_gb(self, value: int) -> None:
+        clamped = _clamp_int(value, ARCHIVE_POOL_MIN_GB, ARCHIVE_POOL_MAX_GB)
+        if clamped == self.archive_extraction_pool_gb:
             return
-        self.archive_extraction_pool_mb = clamped
-        self._persist(archive_extraction_pool_mb=clamped)
+        self.archive_extraction_pool_gb = clamped
+        self._persist(archive_extraction_pool_gb=clamped)
         self.cache_budgets_changed.emit()
         self.state_changed.emit()
 

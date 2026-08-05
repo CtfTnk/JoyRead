@@ -9,9 +9,9 @@ import logging
 from pathlib import Path
 from uuid import uuid4
 
+from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
 from joyread.core.archive import ArchiveOpenLimits
 from joyread.core.reader import ReaderSessionService
-from joyread.core.services.task_service import TaskHandle, TaskPriority, TaskService
 
 
 logger = logging.getLogger(__name__)
@@ -28,9 +28,9 @@ class _WarmupState:
 
 
 class ArchiveWarmupCoordinator:
-    """Runs at most one whole-document warmup and deduplicates consumers."""
+    """Run one whole-document warmup at a time and deduplicate consumers."""
 
-    def __init__(self, session_service: ReaderSessionService, task_service: TaskService) -> None:
+    def __init__(self, session_service: ReaderSessionService, task_service: TaskExecutor) -> None:
         self._session_service = session_service
         self._task_service = task_service
         self._states: dict[str, _WarmupState] = {}
@@ -77,15 +77,7 @@ class ArchiveWarmupCoordinator:
             state.callbacks.pop(client_id, None)
 
     def invalidate(self) -> None:
-        """Retire warmups created under an older archive-limits snapshot.
-
-        Active workers are intentionally not force-cancelled: TaskService
-        suppresses completion callbacks for cancelled tasks, which would leave
-        the coordinator thinking that the worker still owns the sole warmup
-        slot. Clearing its consumers makes ``is_cancelled`` true and lets the
-        archive reader stop at its next chunk boundary, then normal completion
-        releases the slot for the replacement policy.
-        """
+        """Retire warmups created under an older archive-limits snapshot."""
 
         active_key = self._active_key
         for key, state in tuple(self._states.items()):

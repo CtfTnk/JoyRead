@@ -39,7 +39,7 @@
     "archive_external_command_timeout": "外部展開のタイムアウト",
     "reader_page_cache": "リーダーページキャッシュ（メモリ）",
     "thumbnail_cache": "サムネイルキャッシュ（メモリ）",
-    "archive_extraction_pool": "アーカイブ展開プール（ディスク）",
+    "archive_extraction_pool": "アーカイブ展開プール（ディスク、GB）",
     "archive_cache_strategy": "アーカイブキャッシュ戦略",
     "archive_pool_usage": "展開プール使用量",
     "verify_library_and_clean_cache": "ライブラリを検証してキャッシュを削除",

@@ -1018,8 +1018,29 @@ def test_detail_cover_editor_opens_and_confirm_save_calls_viewmodel(
         context.shelf_viewmodel.books = [book]
         saved: list[tuple[str, Path]] = []
         target_path = tmp_path / "edited-cover.png"
+
+        class _CoverSource:
+            source_id = "session:cover-test"
+            page_count = 1
+
+            @staticmethod
+            def preferred_batch_size(_page_index: int) -> int:
+                return 1
+
+            @staticmethod
+            def read_page(_page_index: int):  # noqa: ANN205
+                return type("Page", (), {"image_bytes": source})()
+
+            @staticmethod
+            def close() -> None:
+                return None
+
         monkeypatch.setattr(context.thumbnail_service, "can_generate_from", lambda _book: True)
-        monkeypatch.setattr(context.thumbnail_service, "load_cover_source_page", lambda _book, _page_index: source)
+        monkeypatch.setattr(
+            context.thumbnail_service,
+            "open_thumbnail_source",
+            lambda _book: _CoverSource(),
+        )
         monkeypatch.setattr(context.thumbnail_service, "save_edited_cover", lambda *_args: target_path)
         monkeypatch.setattr(
             context.shelf_viewmodel,

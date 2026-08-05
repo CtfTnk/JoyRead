@@ -205,11 +205,6 @@ class BookCoverWidget(QFrame):
         pixmap = QPixmap(str(path))
         self.set_pixmap(pixmap)
 
-    def set_pixmap_from_bytes(self, image_bytes: bytes) -> None:
-        pixmap = QPixmap()
-        if pixmap.loadFromData(image_bytes):
-            self.set_pixmap(pixmap)
-
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
