@@ -127,6 +127,14 @@ class ThumbnailSourceHandle:
             return max(1, min(8, int(provider(page_index))))
         return 8 if self.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS else 1
 
+    def plan_read_batch(self, candidates: tuple[int, ...]) -> tuple[int, ...]:
+        provider = getattr(self._entry.session, "plan_read_batch", None)
+        if callable(provider):
+            return tuple(int(index) for index in provider(candidates))
+        if not candidates:
+            return ()
+        return candidates[: self.preferred_batch_size(candidates[0])]
+
     def read_pages(self, page_indices: Iterable[int]) -> list[object | None]:
         return self._owner._read_thumbnail_pages(self, tuple(page_indices), None)
 

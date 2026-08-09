@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from zipfile import ZipFile
 
+import pytest
+
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
@@ -453,11 +455,45 @@ def test_hidden_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
     lease.close()
 
 
-def test_active_lease_may_exceed_soft_budget_until_close(tmp_path: Path) -> None:
-    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=256)
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_persistent_oversized_bundle_survives_close_and_restart(tmp_path: Path, pool_type) -> None:  # noqa: ANN001
+    directory = tmp_path / "cache"
+    pool = pool_type(directory, max_bytes=256)
     lease = ArchiveCacheLease(pool, "external:sha256:large", ArchiveCacheScope.PERSISTENT)
     lease.put("001.png", b"x" * 1024)
 
+    assert pool.current_bytes > pool.max_bytes
+
+    lease.close()
+    assert pool.current_bytes > pool.max_bytes
+    assert pool.get("external:sha256:large", "001.png") == b"x" * 1024
+
+    reopened = pool_type(directory, max_bytes=256)
+    assert reopened.current_bytes > reopened.max_bytes
+    assert reopened.get("external:sha256:large", "001.png") == b"x" * 1024
+
+
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_competing_writer_evicts_inactive_oversized_bundle(tmp_path: Path, pool_type) -> None:  # noqa: ANN001
+    pool = pool_type(tmp_path / "cache", max_bytes=256)
+    lease = ArchiveCacheLease(pool, "external:sha256:large", ArchiveCacheScope.PERSISTENT)
+    lease.put("001.png", b"x" * 1024)
+    lease.close()
+
+    pool.put("external:sha256:next", "001.png", b"next")
+
+    assert pool.get("external:sha256:large", "001.png") is None
+    assert pool.get("external:sha256:next", "001.png") == b"next"
+    assert pool.current_bytes <= pool.max_bytes
+
+
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_explicit_resize_finishes_when_active_oversized_lease_closes(tmp_path: Path, pool_type) -> None:  # noqa: ANN001
+    pool = pool_type(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "external:sha256:large", ArchiveCacheScope.PERSISTENT)
+    lease.put("001.png", b"x" * 1024)
+
+    pool.resize(256)
     assert pool.current_bytes > pool.max_bytes
 
     lease.close()

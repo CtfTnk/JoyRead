@@ -1043,13 +1043,12 @@ class ReaderViewModel:
                     continue
                 emit_item(ThumbnailStreamItem(page_index, rendered))
 
-        batch_size_for = lambda index: max(1, min(8, int(document.thumbnail_batch_size(index))))
         self._topic_thumbnail_stream.set_source(
             source_id,
             document.page_count,
             size,
             load,
-            batch_size_for=batch_size_for,
+            batch_planner=document.plan_read_batch,
         )
 
     def _topic_thumbnail_source_id(self) -> str:

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Protocol
 
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession, ArchiveOpenLimits
+from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_ITEMS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
@@ -207,13 +208,29 @@ class ReaderSessionService:
             cache_lease=cache_lease,
         )
         try:
-            page_indices = list(range(session.page_count))
+            pending = tuple(range(session.page_count))
             chunk_size = max(1, int(chunk_size))
-            for start in range(0, len(page_indices), chunk_size):
+            completed = 0
+            planner = getattr(session, "plan_read_batch", None)
+            while pending:
                 if is_cancelled is not None and is_cancelled():
-                    logger.debug("Disk cache warm cancelled at chunk start=%d", start)
+                    logger.debug("Disk cache warm cancelled after pages=%d", completed)
                     return
-                self.load_pages(session, tuple(page_indices[start : start + chunk_size]))
+                if callable(planner):
+                    candidate_limit = min(chunk_size, MAX_SEQUENTIAL_BATCH_ITEMS)
+                    batch = tuple(
+                        planner(
+                            pending[:candidate_limit],
+                            max_items=candidate_limit,
+                        )
+                    )
+                else:
+                    batch = pending[:chunk_size]
+                if not batch or batch != pending[: len(batch)]:
+                    batch = pending[:1]
+                self.load_pages(session, batch)
+                pending = pending[len(batch) :]
+                completed += len(batch)
             mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
             if callable(mark_ready):
                 mark_ready()

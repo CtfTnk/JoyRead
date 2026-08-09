@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from io import BytesIO
+from time import perf_counter
 
 from joyread.core.archive.errors import (
     ArchiveCorruptError,
@@ -17,6 +18,7 @@ from joyread.core.archive.errors import (
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
 from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
+from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 
 
 class SevenZipArchiveBackend:
@@ -109,17 +111,23 @@ class SevenZipArchiveBackend:
 
         targets = [name for name, _password in entries]
         password = entries[0][1]
+        perf_enabled = reader_perf_enabled()
+        started = perf_counter() if perf_enabled else 0.0
+        factory: _BudgetedBytesFactory | None = None
         try:
-            factory = _BudgetedBytesFactory(limits, budget)
+            factory = _BudgetedBytesFactory(
+                limits,
+                budget,
+                track_buffered_bytes=perf_enabled,
+            )
             with module.SevenZipFile(source.open_arg(), "r", password=password) as archive:
                 archive.extract(targets=targets, factory=factory)
             payloads: dict[str, bytes] = {}
             for name in targets:
-                product = factory.products.get(name)
+                product = factory.products.pop(name, None)
                 if product is None:
                     continue
-                product.seek(0)
-                payload = product.read()
+                payload = product.take_bytes()
                 ensure_item_size(len(payload), limits.max_extracted_item_bytes, name)
                 payloads[name] = payload
             missing = [name for name in targets if name not in payloads]
@@ -142,6 +150,14 @@ class SevenZipArchiveBackend:
             raise ArchiveReadError(f"Could not decompress 7Z entry: {targets[0]}") from exc
         except module.Bad7zFile as exc:
             raise ArchiveReadError(f"Could not read 7Z entry: {targets[0]}") from exc
+        finally:
+            if perf_enabled:
+                reader_perf_event(
+                    "archive.7z.extract",
+                    targets=len(targets),
+                    buffered_bytes=factory.peak_buffered_bytes if factory is not None else 0,
+                    elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+                )
 
 
 def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  # noqa: ANN001
@@ -176,32 +192,59 @@ def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  
 class _BudgetedBytesFactory:
     """py7zr writer factory that rejects data before it becomes unbounded RAM."""
 
-    def __init__(self, limits: ArchiveOpenLimits, budget: ArchiveOperationBudget) -> None:
+    def __init__(
+        self,
+        limits: ArchiveOpenLimits,
+        budget: ArchiveOperationBudget,
+        *,
+        track_buffered_bytes: bool = False,
+    ) -> None:
         self._limits = limits
         self._budget = budget
+        self._track_buffered_bytes = track_buffered_bytes
         self.products: dict[str, _BudgetedBytesIO] = {}
+        self.buffered_bytes = 0
+        self.peak_buffered_bytes = 0
 
     def create(self, filename: str) -> "_BudgetedBytesIO":
-        product = _BudgetedBytesIO(filename, self._limits, self._budget)
+        on_write = self._record_write if self._track_buffered_bytes else None
+        product = _BudgetedBytesIO(filename, self._limits, self._budget, on_write)
         self.products[filename] = product
         return product
+
+    def _record_write(self, byte_count: int) -> None:
+        self.buffered_bytes += max(0, int(byte_count))
+        self.peak_buffered_bytes = max(self.peak_buffered_bytes, self.buffered_bytes)
 
 
 class _BudgetedBytesIO:
     """Minimal ``py7zr.io.Py7zIO``-compatible, budget-aware in-memory sink."""
 
-    def __init__(self, filename: str, limits: ArchiveOpenLimits, budget: ArchiveOperationBudget) -> None:
+    def __init__(
+        self,
+        filename: str,
+        limits: ArchiveOpenLimits,
+        budget: ArchiveOperationBudget,
+        on_write: Callable[[int], None] | None = None,
+    ) -> None:
         self._filename = filename
         self._limits = limits
         self._budget = budget
         self._buffer = BytesIO()
+        self._on_write = on_write
 
     def write(self, data: bytes | bytearray) -> int:
-        payload = bytes(data)
-        projected_size = max(self.size(), self._buffer.tell() + len(payload))
+        data_size = len(data)
+        previous_size = self.size()
+        write_offset = self._buffer.tell()
+        projected_size = max(previous_size, write_offset + data_size)
         ensure_item_size(projected_size, self._limits.max_extracted_item_bytes, self._filename)
-        self._budget.consume(len(payload), self._filename)
-        return self._buffer.write(payload)
+        self._budget.consume(data_size, self._filename)
+        written = self._buffer.write(data)
+        if self._on_write is not None:
+            resulting_size = max(previous_size, write_offset + written)
+            self._on_write(max(0, resulting_size - previous_size))
+        return written
 
     def read(self, size: int | None = None) -> bytes:
         return self._buffer.read(size)
@@ -216,6 +259,11 @@ class _BudgetedBytesIO:
         # py7zr calls this after each member. Keep the buffer available for
         # the backend to collect after ``extract()`` returns.
         return None
+
+    def take_bytes(self) -> bytes:
+        payload = self._buffer.getvalue()
+        self._buffer.close()
+        return payload
 
     def size(self) -> int:
         current = self._buffer.tell()

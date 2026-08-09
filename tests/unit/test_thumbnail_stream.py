@@ -111,3 +111,26 @@ def test_thumbnail_stream_batches_cold_archive_io_but_emits_each_item() -> None:
     assert ready == [3, 2, 4, 1, 5, 6, 7, 8]
     assert len(tasks.tasks) == 2
     assert controller.active_indices == (9,)
+
+
+def test_thumbnail_stream_uses_memory_bounded_batch_planner() -> None:
+    tasks = _ManualTaskService()
+    controller = _controller(tasks)
+    planned_candidates: list[tuple[int, ...]] = []
+
+    def planner(candidates: tuple[int, ...]) -> tuple[int, ...]:
+        planned_candidates.append(candidates)
+        return candidates[:2]
+
+    controller.set_source(
+        "bounded-book",
+        20,
+        (100, 142),
+        lambda indices, emit: [emit(ThumbnailStreamItem(index, b"page")) for index in indices],
+        batch_size_for=lambda _index: 8,
+        batch_planner=planner,
+    )
+    controller.set_interest((2, 3, 4), (1, 5, 6, 7, 8, 9))
+
+    assert planned_candidates == [(3, 2, 4, 1, 5, 6, 7, 8)]
+    assert controller.active_indices == (3, 2)

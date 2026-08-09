@@ -377,11 +377,13 @@ class CoverEditorThumbnailViewModel:
                     lambda item: emit_item(ThumbnailStreamItem(item.page_index, item.image_bytes)),
                 )
 
+            planner = getattr(source, "plan_read_batch", None)
             self._stream.set_source(
                 source.source_id,
                 source.page_count,
                 size,
                 load,
+                batch_planner=planner if callable(planner) else None,
                 batch_size_for=source.preferred_batch_size,
             )
             self.source_ready.emit(self._book.uuid, source.page_count)

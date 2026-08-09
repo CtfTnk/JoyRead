@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
 from PySide6.QtGui import QImage, QImageReader
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage, ReaderPagePayload, ReaderPageRequest
+from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 
 
 class QtPageFrameDecoder:
@@ -16,6 +19,8 @@ class QtPageFrameDecoder:
         payload: ReaderPagePayload,
         request: ReaderPageRequest,
     ) -> PreparedReaderPage[QImage]:
+        perf_enabled = reader_perf_enabled()
+        started = perf_counter() if perf_enabled else 0.0
         byte_array = QByteArray(payload.image_bytes)
         buffer = QBuffer(byte_array)
         if not buffer.open(QIODevice.OpenModeFlag.ReadOnly):
@@ -39,9 +44,23 @@ class QtPageFrameDecoder:
         if image.isNull():
             raise RuntimeError(f"Could not decode page {payload.page_index + 1}.")
         image.setDevicePixelRatio(max(1.0, request.device_pixel_ratio))
+        copy_started = perf_counter() if perf_enabled else 0.0
+        prepared_frame = image.copy()
+        if perf_enabled:
+            reader_perf_event(
+                "archive.decode",
+                page=payload.page_index,
+                generation=request.generation,
+                payload_bytes=len(payload.image_bytes),
+                target=(request.target_width, request.target_height),
+                rendered=(image.width(), image.height()),
+                frame_bytes=image.bytesPerLine() * image.height(),
+                copy_ms=round((perf_counter() - copy_started) * 1000.0, 3),
+                total_ms=round((perf_counter() - started) * 1000.0, 3),
+            )
         return PreparedReaderPage(
             page_index=payload.page_index,
-            frame=image.copy(),
+            frame=prepared_frame,
             source_dimensions=source_dimensions,
             rendered_dimensions=(image.width(), image.height()),
             generation=request.generation,

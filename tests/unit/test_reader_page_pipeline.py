@@ -33,8 +33,11 @@ class _ManualExecutor:
 
 
 class _ImmediateExecutor:
+    def __init__(self) -> None:
+        self.priorities: list[TaskPriority] = []
+
     def submit(self, name, callback, *, on_success=None, on_failure=None, priority=0):  # noqa: ANN001
-        del priority
+        self.priorities.append(TaskPriority(priority))
         handle = TaskHandle(task_id=name, status=TaskStatus.RUNNING)
         try:
             result = callback()
@@ -236,6 +239,7 @@ def test_pipeline_owns_document_open_and_close_lifecycle() -> None:
     pipeline.cancel()
 
     assert source.closed
+    assert executor.priorities[-1] == TaskPriority.HIGH
 
 
 def test_qimage_frame_cache_uses_scanline_bytes_and_twenty_percent_resize_bucket() -> None:

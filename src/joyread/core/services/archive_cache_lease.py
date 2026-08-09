@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from enum import StrEnum
 from threading import RLock
 
+from joyread.core.diagnostics import cache_identity_kind, reader_perf_event
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 
 
@@ -102,8 +103,14 @@ class ArchiveCacheLease:
                 return self._key == target
             if not self._cache.promote(self._key, target):
                 return False
+            previous_kind = cache_identity_kind(self._key)
             self._key = target
             self._scope = ArchiveCacheScope.PERSISTENT
+            reader_perf_event(
+                "archive.lease.promoted",
+                previous_identity_kind=previous_kind,
+                identity_kind=cache_identity_kind(target),
+            )
             return True
 
     def close(self) -> None:
@@ -116,3 +123,8 @@ class ArchiveCacheLease:
             if callable(release):
                 release(self._key)
             self._closed = True
+            reader_perf_event(
+                "archive.lease.closed",
+                scope=self._scope.value,
+                identity_kind=cache_identity_kind(self._key),
+            )

@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 import subprocess
-from threading import Lock
+from threading import Event, Lock, Thread
 import time
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -33,6 +33,7 @@ from joyread.core.archive import (
 )
 from joyread.core.archive.backends import SEVEN_ZIP_ENV_VAR
 from joyread.core.archive.formats import common as archive_common
+from joyread.core.archive.formats.seven_zip_backend import _BudgetedBytesFactory
 from joyread.core.archive.limits import ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.archive.scanner import SCANNER_SCHEMA_VERSION
@@ -83,6 +84,33 @@ class _FakePopen:
 
     def kill(self) -> None:
         self.killed = True
+
+
+class _TrackingLease:
+    document_cache_key = "file:two-phase-close"
+
+    def __init__(self) -> None:
+        self.is_closed = False
+        self.close_count = 0
+        self.put_count = 0
+
+    def get(self, _entry_name: str) -> bytes | None:
+        return None
+
+    def get_many(self, _entry_names: tuple[str, ...]) -> dict[str, bytes]:
+        return {}
+
+    def put_many(self, payloads: dict[str, bytes]) -> None:
+        if self.is_closed:
+            raise AssertionError("cache write happened after lease close")
+        self.put_count += len(payloads)
+
+    def is_complete(self, _page_count: int, _signature: str) -> bool:
+        return False
+
+    def close(self) -> None:
+        self.close_count += 1
+        self.is_closed = True
 
 
 def _encrypted_cbz_bytes(password: str = "secret", image_size: tuple[int, int] = (32, 16)) -> bytes:
@@ -180,6 +208,84 @@ def test_session_returns_dimensions_without_mutating_page_records(tmp_path: Path
     assert [page.dimensions if page is not None else None for page in pages] == [(20, 10), (30, 10)]
     assert all(not hasattr(record, "dimensions") for record in session._pages)
     assert all(not hasattr(record, "_page") for record in session._pages)
+
+
+def test_session_close_defers_lease_release_until_registered_read_finishes(tmp_path: Path) -> None:
+    source = ArchiveSource(
+        label="slow.7z",
+        suffix=".7z",
+        path=tmp_path / "slow.7z",
+    )
+    record = PageRecord("001.png", source, "001.png", None, size=128)
+    started = Event()
+    release = Event()
+    lease = _TrackingLease()
+    payload = _png_bytes((20, 10))
+
+    def read_entries(_source, entries, _budget):  # noqa: ANN001, ANN202
+        started.set()
+        assert release.wait(timeout=2)
+        return {name: payload for name, _password in entries}
+
+    session = ArchiveImageSession(
+        (record,),
+        read_entries,
+        cache_lease=lease,  # type: ignore[arg-type]
+    )
+    results: list[object] = []
+    worker = Thread(target=lambda: results.extend(session.read_pages((0,))))
+    worker.start()
+    assert started.wait(timeout=2)
+
+    session.close()
+
+    assert lease.close_count == 0
+    assert session.read_pages((0,)) == [None]
+    release.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert results[0] is not None
+    assert lease.put_count == 1
+    assert lease.close_count == 1
+    session.close()
+    assert lease.close_count == 1
+
+
+def test_session_close_finalizes_after_a_registered_read_failure(tmp_path: Path) -> None:
+    source = ArchiveSource(label="broken.7z", suffix=".7z", path=tmp_path / "broken.7z")
+    record = PageRecord("001.png", source, "001.png", None, size=128)
+    started = Event()
+    release = Event()
+    lease = _TrackingLease()
+
+    def fail_read(_source, _entries, _budget):  # noqa: ANN001, ANN202
+        started.set()
+        assert release.wait(timeout=2)
+        raise ArchiveReadError("simulated failure")
+
+    session = ArchiveImageSession(
+        (record,),
+        fail_read,
+        cache_lease=lease,  # type: ignore[arg-type]
+    )
+    failures: list[Exception] = []
+
+    def run() -> None:
+        try:
+            session.read_pages((0,))
+        except Exception as exc:  # noqa: BLE001 - assertion helper captures worker failure.
+            failures.append(exc)
+
+    worker = Thread(target=run)
+    worker.start()
+    assert started.wait(timeout=2)
+    session.close()
+    release.set()
+    worker.join(timeout=2)
+
+    assert isinstance(failures[0], ArchiveReadError)
+    assert lease.close_count == 1
 
 
 def test_nested_cbz_pages_follow_root_pages_and_create_contents(tmp_path: Path) -> None:
@@ -723,6 +829,22 @@ def test_external_file_extraction_output_is_bounded(tmp_path: Path, monkeypatch:
         )
 
     assert error.value.limit == "extracted_item_bytes"
+
+
+def test_7z_buffer_peak_tracking_is_opt_in() -> None:
+    limits = ArchiveOpenLimits()
+    untracked = _BudgetedBytesFactory(limits, ArchiveOperationBudget(None))
+    untracked.create("untracked.png").write(b"page")
+
+    tracked = _BudgetedBytesFactory(
+        limits,
+        ArchiveOperationBudget(None),
+        track_buffered_bytes=True,
+    )
+    tracked.create("tracked.png").write(b"page")
+
+    assert untracked.peak_buffered_bytes == 0
+    assert tracked.peak_buffered_bytes == 4
 
 
 def test_7z_thumbnail_access_switches_from_cold_batch_to_ready_single_page(tmp_path: Path) -> None:

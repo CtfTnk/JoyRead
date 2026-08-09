@@ -94,6 +94,9 @@ class ReaderDocumentHandle(ReaderDocumentSource):
     def thumbnail_batch_size(self, page_index: int) -> int:
         return self._source.thumbnail_batch_size(page_index)
 
+    def plan_read_batch(self, candidates: tuple[int, ...]) -> tuple[int, ...]:
+        return self._source.plan_read_batch(candidates)
+
     def read_page(self, page_index: int) -> ReaderPagePayload | None:
         return self._source.read_page(page_index)
 

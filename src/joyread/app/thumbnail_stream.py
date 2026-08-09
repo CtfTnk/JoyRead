@@ -7,12 +7,14 @@ from dataclasses import dataclass
 
 from joyread.app.event_hook import EventHook
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
+from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_ITEMS
 from joyread.core.services.cache_service import ThumbnailCacheClient, ThumbnailCacheKey
 
 
 ThumbnailEmitter = Callable[["ThumbnailStreamItem"], None]
 ThumbnailLoader = Callable[[tuple[int, ...], ThumbnailEmitter], None]
 BatchSizeProvider = Callable[[int], int]
+BatchPlanner = Callable[[tuple[int, ...]], tuple[int, ...]]
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,7 @@ class ThumbnailStreamController:
         self._size = (1, 1)
         self._loader: ThumbnailLoader | None = None
         self._batch_size_for: BatchSizeProvider = lambda _index: 1
+        self._batch_planner: BatchPlanner | None = None
         self._visible: tuple[int, ...] = ()
         self._prefetch: tuple[int, ...] = ()
         self._interest: frozenset[int] = frozenset()
@@ -71,6 +74,7 @@ class ThumbnailStreamController:
         loader: ThumbnailLoader,
         *,
         batch_size_for: BatchSizeProvider | None = None,
+        batch_planner: BatchPlanner | None = None,
     ) -> None:
         normalized_size = (max(1, int(size[0])), max(1, int(size[1])))
         if (
@@ -86,6 +90,7 @@ class ThumbnailStreamController:
         self._size = normalized_size
         self._loader = loader
         self._batch_size_for = batch_size_for or (lambda _index: 1)
+        self._batch_planner = batch_planner
 
     def promote_source(self, source_id: str) -> None:
         """Re-key cached variants after an external document gains a hash identity."""
@@ -167,6 +172,7 @@ class ThumbnailStreamController:
         self._page_count = 0
         self._loader = None
         self._batch_size_for = lambda _index: 1
+        self._batch_planner = None
 
     def refresh(self) -> None:
         visible = self._visible
@@ -184,8 +190,7 @@ class ThumbnailStreamController:
             return
 
         first = self._queue[0]
-        batch_size = max(1, min(8, int(self._batch_size_for(first))))
-        selected = tuple(self._queue[:batch_size])
+        selected = self._planned_prefix()
         self._queue = self._queue[len(selected) :]
         self._active_indices = selected
         generation = self._generation
@@ -242,6 +247,24 @@ class ThumbnailStreamController:
         finally:
             self._submitting = False
             self._resume_deferred_pump()
+
+    def _planned_prefix(self) -> tuple[int, ...]:
+        candidates = tuple(self._queue[:MAX_SEQUENTIAL_BATCH_ITEMS])
+        if not candidates:
+            return ()
+        if self._batch_planner is None:
+            batch_size = max(
+                1,
+                min(MAX_SEQUENTIAL_BATCH_ITEMS, int(self._batch_size_for(candidates[0]))),
+            )
+            return candidates[:batch_size]
+        planned = tuple(dict.fromkeys(int(index) for index in self._batch_planner(candidates)))
+        prefix: list[int] = []
+        for candidate in candidates:
+            if candidate not in planned:
+                break
+            prefix.append(candidate)
+        return tuple(prefix) or (candidates[0],)
 
     def _handle_collected(self, generation: int, items: list[ThumbnailStreamItem]) -> None:
         for item in items:

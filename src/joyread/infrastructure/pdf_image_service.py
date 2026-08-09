@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
 from threading import BoundedSemaphore, RLock
+from time import perf_counter
 
 from PIL import Image, ImageChops
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
@@ -13,6 +14,7 @@ from PySide6.QtGui import QImage
 from PySide6.QtPdf import QPdfDocument
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage, ReaderPageRequest
+from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import (
     PDF_EXTENSIONS,
@@ -70,22 +72,44 @@ class PdfImageSession:
         with self._state_lock:
             if self._closed:
                 raise PdfReadError("PDF session is closed.")
+        perf_enabled = reader_perf_enabled()
+        total_started = perf_counter() if perf_enabled else 0.0
         with self._render_slot:
+            load_started = perf_counter() if perf_enabled else 0.0
             document = _load_document(self._path)
+            load_ms = (perf_counter() - load_started) * 1000.0 if perf_enabled else 0.0
             try:
                 target = _fit_render_size(
                     self._dimensions[request.page_index],
                     (request.target_width, request.target_height),
                 )
+                render_started = perf_counter() if perf_enabled else 0.0
                 image = document.render(request.page_index, QSize(*target))
+                render_ms = (perf_counter() - render_started) * 1000.0 if perf_enabled else 0.0
             finally:
                 document.close()
         if image.isNull():
             raise PdfReadError(f"Could not render PDF page {request.page_index + 1}.")
         image.setDevicePixelRatio(max(1.0, request.device_pixel_ratio))
+        copy_started = perf_counter() if perf_enabled else 0.0
+        prepared_frame = image.copy()
+        copy_ms = (perf_counter() - copy_started) * 1000.0 if perf_enabled else 0.0
+        if perf_enabled:
+            reader_perf_event(
+                "pdf.prepare",
+                page=request.page_index,
+                generation=request.generation,
+                target=(request.target_width, request.target_height),
+                rendered=(image.width(), image.height()),
+                frame_bytes=image.bytesPerLine() * image.height(),
+                load_ms=round(load_ms, 3),
+                render_ms=round(render_ms, 3),
+                copy_ms=round(copy_ms, 3),
+                total_ms=round((perf_counter() - total_started) * 1000.0, 3),
+            )
         return PreparedReaderPage(
             page_index=request.page_index,
-            frame=image.copy(),
+            frame=prepared_frame,
             source_dimensions=self._dimensions[request.page_index],
             rendered_dimensions=(image.width(), image.height()),
             generation=request.generation,
@@ -161,6 +185,8 @@ class PdfImageService:
     def open(self, path: str | Path) -> PdfImageSession:
         source = Path(path)
         _validate_source(source)
+        perf_enabled = reader_perf_enabled()
+        started = perf_counter() if perf_enabled else 0.0
         document = _load_document(source)
         try:
             page_count = document.pageCount()
@@ -169,6 +195,12 @@ class PdfImageService:
             dimensions = tuple(_source_dimensions(document, index) for index in range(page_count))
         finally:
             document.close()
+        if perf_enabled:
+            reader_perf_event(
+                "pdf.open",
+                page_count=len(dimensions),
+                elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+            )
         return PdfImageSession(source, dimensions, normalize_margins=self._normalize_margins)
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:

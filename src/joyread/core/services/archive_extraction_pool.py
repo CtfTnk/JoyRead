@@ -38,6 +38,8 @@ from typing import Protocol
 from uuid import uuid4
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
 
+from joyread.core.diagnostics import cache_identity_kind, reader_perf_event
+
 
 logger = logging.getLogger(__name__)
 _MANIFEST_SCHEMA_VERSION = 3
@@ -52,6 +54,9 @@ class ArchiveExtractionCache(Protocol):
 
     @property
     def current_bytes(self) -> int: ...
+
+    @property
+    def active_lease_count(self) -> int: ...
 
     def get(self, document_cache_key: str, entry_name: str) -> bytes | None: ...
 
@@ -112,6 +117,7 @@ class ArchiveExtractionPool:
         self._lock = RLock()
         self._reconciled = False
         self._active: dict[str, int] = {}
+        self._strict_eviction_pending = False
 
     @property
     def directory(self) -> Path | None:
@@ -127,6 +133,12 @@ class ArchiveExtractionPool:
         self._ensure_reconciled()
         with self._lock:
             return self._current_bytes
+
+    @property
+    def active_lease_count(self) -> int:
+        self._ensure_reconciled()
+        with self._lock:
+            return sum(self._active.values())
 
     def get(self, document_cache_key: str, entry_name: str) -> bytes | None:
         """Return cached bytes for ``(document_cache_key, entry_name)``."""
@@ -323,7 +335,7 @@ class ArchiveExtractionPool:
             self._active[book_key] = self._active.get(book_key, 0) + 1
 
     def release(self, document_cache_key: str) -> None:
-        """Release a live pin and immediately enforce the soft budget."""
+        """Release a live pin without evicting a normal soft-budget overage."""
 
         self._ensure_reconciled()
         book_key = self._book_key_for(document_cache_key)
@@ -335,7 +347,18 @@ class ArchiveExtractionPool:
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
-            self._evict_locked()
+            if self._strict_eviction_pending:
+                self._evict_locked()
+                self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            reader_perf_event(
+                "archive.pool.release",
+                strategy="zip_bundle",
+                identity_kind=cache_identity_kind(document_cache_key),
+                active=self._active.get(book_key, 0),
+                current_bytes=self._current_bytes,
+                budget_bytes=self._max_bytes,
+                strict_pending=self._strict_eviction_pending,
+            )
 
     def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
         self.put_many(document_cache_key, {entry_name: data})
@@ -390,6 +413,7 @@ class ArchiveExtractionPool:
         with self._lock:
             self._max_bytes = int(max_bytes)
             self._evict_locked()
+            self._strict_eviction_pending = self._current_bytes > self._max_bytes
 
     def clear(self) -> None:
         """Drop every cached bundle and remove the on-disk files."""
@@ -404,6 +428,7 @@ class ArchiveExtractionPool:
             self._index.clear()
             self._active.clear()
             self._current_bytes = 0
+            self._strict_eviction_pending = False
         if self._directory is not None:
             try:
                 for path in self._directory.iterdir():
@@ -534,7 +559,8 @@ class ArchiveExtractionPool:
             for book_key, entry in scanned:
                 self._index[book_key] = entry
                 self._current_bytes += entry.size
-            self._evict_locked()
+            newest_key = scanned[-1][0] if scanned else None
+            self._evict_locked(protect_key=newest_key)
 
     def _book_key_for(self, document_cache_key: str) -> str | None:
         key = str(document_cache_key or "").strip()
@@ -636,6 +662,8 @@ class ArchiveExtractionPool:
             self._active[target_key] = self._active.get(target_key, 0) + count
 
     def _evict_locked(self, *, protect_key: str | None = None) -> None:
+        before = self._current_bytes
+        evicted = 0
         while self._current_bytes > self._max_bytes and self._index:
             oldest_key = next(
                 (
@@ -646,10 +674,19 @@ class ArchiveExtractionPool:
                 None,
             )
             if oldest_key is None:
-                # Active leases and the current writer are allowed to exceed
-                # the global soft budget. Releasing a lease retries eviction.
-                return
+                break
             self._forget_locked(oldest_key)
+            evicted += 1
+        if evicted or self._current_bytes > self._max_bytes:
+            reader_perf_event(
+                "archive.pool.evict",
+                strategy="zip_bundle",
+                before_bytes=before,
+                after_bytes=self._current_bytes,
+                budget_bytes=self._max_bytes,
+                evicted_bundles=evicted,
+                protected=protect_key is not None,
+            )
 
 
 class HiddenImageExtractionPool:
@@ -676,6 +713,7 @@ class HiddenImageExtractionPool:
         self._lock = RLock()
         self._reconciled = False
         self._active: dict[str, int] = {}
+        self._strict_eviction_pending = False
 
     @property
     def directory(self) -> Path | None:
@@ -691,6 +729,12 @@ class HiddenImageExtractionPool:
         self._ensure_reconciled()
         with self._lock:
             return self._current_bytes
+
+    @property
+    def active_lease_count(self) -> int:
+        self._ensure_reconciled()
+        with self._lock:
+            return sum(self._active.values())
 
     def get(self, document_cache_key: str, entry_name: str) -> bytes | None:
         self._ensure_reconciled()
@@ -838,7 +882,18 @@ class HiddenImageExtractionPool:
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
-            self._evict_locked()
+            if self._strict_eviction_pending:
+                self._evict_locked()
+                self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            reader_perf_event(
+                "archive.pool.release",
+                strategy="hidden_pages",
+                identity_kind=cache_identity_kind(document_cache_key),
+                active=self._active.get(book_key, 0),
+                current_bytes=self._current_bytes,
+                budget_bytes=self._max_bytes,
+                strict_pending=self._strict_eviction_pending,
+            )
 
     def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
         self.put_many(document_cache_key, {entry_name: data})
@@ -891,6 +946,7 @@ class HiddenImageExtractionPool:
         with self._lock:
             self._max_bytes = int(max_bytes)
             self._evict_locked()
+            self._strict_eviction_pending = self._current_bytes > self._max_bytes
 
     def clear(self) -> None:
         self._ensure_reconciled()
@@ -903,6 +959,7 @@ class HiddenImageExtractionPool:
             self._index.clear()
             self._active.clear()
             self._current_bytes = 0
+            self._strict_eviction_pending = False
         if self._directory is not None:
             try:
                 shutil.rmtree(self._directory, ignore_errors=True)
@@ -986,7 +1043,8 @@ class HiddenImageExtractionPool:
             for key, entry in scanned:
                 self._index[key] = entry
                 self._current_bytes += entry.size
-            self._evict_locked()
+            newest_key = scanned[-1][0] if scanned else None
+            self._evict_locked(protect_key=newest_key)
 
     def _entry_path(self, book_key: str, entry_key: str) -> Path:
         assert self._directory is not None
@@ -1039,6 +1097,8 @@ class HiddenImageExtractionPool:
 
     def _evict_locked(self, *, protect_key: tuple[str, str] | None = None) -> None:
         protect_book_key = protect_key[0] if protect_key is not None else None
+        before = self._current_bytes
+        evicted_books = 0
         while self._current_bytes > self._max_bytes and self._index:
             oldest_key = next(
                 (
@@ -1049,8 +1109,19 @@ class HiddenImageExtractionPool:
                 None,
             )
             if oldest_key is None:
-                return
+                break
             self._forget_book_locked(oldest_key[0])
+            evicted_books += 1
+        if evicted_books or self._current_bytes > self._max_bytes:
+            reader_perf_event(
+                "archive.pool.evict",
+                strategy="hidden_pages",
+                before_bytes=before,
+                after_bytes=self._current_bytes,
+                budget_bytes=self._max_bytes,
+                evicted_bundles=evicted_books,
+                protected=protect_book_key is not None,
+            )
 
 
 def _book_key_for_document_cache_key(document_cache_key: str) -> str | None:

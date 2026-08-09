@@ -5,9 +5,11 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
+from time import perf_counter
 from typing import Generic, Protocol, TypeVar
 
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
+from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 
 
 FrameT = TypeVar("FrameT")
@@ -104,6 +106,14 @@ class SessionReaderDocumentSource:
     def thumbnail_batch_size(self, page_index: int) -> int:
         provider = getattr(self._session, "thumbnail_batch_size", None)
         return max(1, min(8, int(provider(page_index)))) if callable(provider) else 1
+
+    def plan_read_batch(self, candidates: tuple[int, ...]) -> tuple[int, ...]:
+        provider = getattr(self._session, "plan_read_batch", None)
+        if callable(provider):
+            return tuple(int(index) for index in provider(candidates))
+        if not candidates:
+            return ()
+        return candidates[: self.thumbnail_batch_size(candidates[0])]
 
     @property
     def requires_sequential_warmup(self) -> bool:
@@ -254,10 +264,24 @@ class ReaderPagePipeline(Generic[FrameT]):
                 self._open_handle = None
             on_failed(error)
 
+        perf_enabled = reader_perf_enabled()
+
+        def open_source() -> ReaderDocumentSource:
+            started = perf_counter() if perf_enabled else 0.0
+            try:
+                return source_factory()
+            finally:
+                if perf_enabled:
+                    reader_perf_event(
+                        "reader.open.worker",
+                        generation=generation,
+                        elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+                    )
+
         try:
             handle = self._executor.submit(
                 "reader-open",
-                source_factory,
+                open_source,
                 on_success=complete,
                 on_failure=fail,
                 on_discard=lambda source: source.close(),
@@ -266,7 +290,7 @@ class ReaderPagePipeline(Generic[FrameT]):
         except TypeError:
             handle = self._executor.submit(
                 "reader-open",
-                source_factory,
+                open_source,
                 on_success=complete,
                 on_failure=fail,
             )
@@ -333,6 +357,8 @@ class ReaderPagePipeline(Generic[FrameT]):
             for request in missing:
                 if not self._is_current(source, generation, request_token):
                     return
+                perf_enabled = reader_perf_enabled()
+                started = perf_counter() if perf_enabled else 0.0
                 try:
                     direct = getattr(source, "prepare_page", None)
                     if callable(direct):
@@ -353,6 +379,15 @@ class ReaderPagePipeline(Generic[FrameT]):
                     emit(_PipelineItem(request.page_index, generation, request_token, prepared=page))
                 except Exception as exc:  # One bad page must not stall the rest.
                     emit(_PipelineItem(request.page_index, generation, request_token, error=exc))
+                finally:
+                    if perf_enabled:
+                        reader_perf_event(
+                            "reader.prepare.worker",
+                            page=request.page_index,
+                            generation=request.generation,
+                            target=(request.target_width, request.target_height),
+                            elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+                        )
 
         priority = TaskPriority.CRITICAL if visible else TaskPriority.LOW
         submit_stream = getattr(self._executor, "submit_stream", None)
@@ -413,7 +448,17 @@ class ReaderPagePipeline(Generic[FrameT]):
         request_token: int | None = None,
     ) -> None:
         if self._is_generation_current(page.generation, request_token):
+            perf_enabled = reader_perf_enabled()
+            started = perf_counter() if perf_enabled else 0.0
             self._on_ready(page)
+            if perf_enabled:
+                reader_perf_event(
+                    "reader.callback.gui",
+                    page=page.page_index,
+                    generation=page.generation,
+                    rendered=page.rendered_dimensions,
+                    elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+                )
 
     def _is_generation_current(
         self,
@@ -467,7 +512,7 @@ class ReaderPagePipeline(Generic[FrameT]):
             submit(
                 "reader-source-close",
                 source.close,
-                priority=TaskPriority.LOW,
+                priority=TaskPriority.HIGH,
             )
         except TypeError:
             submit("reader-source-close", source.close)
