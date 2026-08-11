@@ -11,6 +11,7 @@ from joyread.app.reader_page_pipeline import ReaderPageRequest
 from joyread.app.tasking import TaskPriority
 from joyread.core.archive import ArchiveImageService
 from joyread.core.reader import ReaderSessionService
+from joyread.core.reader.pdf import PdfReadError
 from joyread.infrastructure import pdf_image_service as pdf_module
 from joyread.infrastructure.pdf_image_service import PdfImageService, _normalize_rendered_pdf_png
 
@@ -166,6 +167,63 @@ def test_pdf_margin_normalization_avoids_tiny_content_overcrop() -> None:
 
     assert dimensions == (400, 600)
     assert normalized == payload
+
+
+def test_a_session_loads_its_container_once_and_reuses_it(
+    tmp_path: Path,
+    qtbot,  # noqa: ANN001, ARG001
+    monkeypatch,
+) -> None:
+    """Rendering must not re-open the PDF.
+
+    This is the memory guard for the PDF path, expressed as the invariant
+    rather than as an RSS threshold. Re-loading per page cost about 45 percent
+    of each page's time, and for PDFs whose cross-reference table makes pdfium
+    buffer the whole file it also retained a file-size per page turn -- 4.7 GB
+    on a 35 MB book in measurement.
+
+    An RSS assertion cannot cover this: only some real-world containers trigger
+    the retention, and no PDF that can be generated in a test does, so the
+    threshold form passes vacuously. Counting loads catches the regression
+    exactly and costs nothing.
+    """
+
+    pdf_path = tmp_path / "sample.pdf"
+    _write_pdf(pdf_path, pages=4)
+
+    loads: list[str] = []
+    real_load = pdf_module._load_document
+
+    def counting_load(path: Path):  # noqa: ANN202
+        loads.append(str(path))
+        return real_load(path)
+
+    monkeypatch.setattr(pdf_module, "_load_document", counting_load)
+
+    session = PdfImageService().open(pdf_path)
+    try:
+        for page in range(4):
+            session.prepare_page(ReaderPageRequest(page, 400, 600, 1.0, 0))
+    finally:
+        session.close()
+
+    assert loads == [str(pdf_path)]
+
+
+def test_a_closed_session_refuses_to_render(tmp_path: Path, qtbot) -> None:  # noqa: ANN001, ARG001
+    pdf_path = tmp_path / "sample.pdf"
+    _write_pdf(pdf_path)
+    session = PdfImageService().open(pdf_path)
+
+    session.close()
+    session.close()  # idempotent
+
+    try:
+        session.prepare_page(ReaderPageRequest(0, 400, 600, 1.0, 0))
+    except PdfReadError:
+        pass
+    else:  # pragma: no cover - guard against a use-after-close regression
+        raise AssertionError("A closed PDF session must not render.")
 
 
 def _png_bytes(image: Image.Image) -> bytes:

@@ -208,10 +208,17 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
             "cycles": cycles,
         }
         payload = json.dumps(result, ensure_ascii=True, indent=2)
-        if args.output is not None:
-            args.output.expanduser().resolve().write_text(payload + "\n", encoding="utf-8")
-        print(payload)
-        app.quit()
+        try:
+            if args.output is not None:
+                destination = args.output.expanduser().resolve()
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(payload + "\n", encoding="utf-8")
+            print(payload)
+        finally:
+            # Always quit. An exception escaping this slot would otherwise leave
+            # the event loop running with no driver, which looks like a hang in
+            # the run being measured rather than a reporting failure.
+            app.quit()
 
     def drive() -> None:
         nonlocal first_screen_ms, actions, action_name, page_prepare_ms

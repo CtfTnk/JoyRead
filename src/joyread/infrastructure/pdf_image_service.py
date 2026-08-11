@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
-from threading import BoundedSemaphore, RLock
+from threading import RLock
 from time import perf_counter
 
+import shiboken6
 from PIL import Image, ImageChops
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
 from PySide6.QtGui import QImage
@@ -25,6 +26,7 @@ from joyread.core.reader.pdf import (
     PdfReadError,
     PdfValidationResult,
 )
+from joyread.infrastructure.pdf_document_thread import pdf_thread
 
 
 PDF_RENDER_MAX_LONG_EDGE = 4096
@@ -37,19 +39,33 @@ _PDF_MAX_CROP_KEEP_RATIO = 0.985
 
 
 class PdfImageSession:
+    """Render pages from one ``QPdfDocument`` held open for the session.
+
+    The document is deliberately loaded once and kept. ``QPdfDocument.load()``
+    retains roughly one file's worth of memory that ``close()`` does not give
+    back, so re-loading per page leaked about a file-size per page turn and
+    also spent ~45 percent of each page's time re-parsing the container.
+
+    The document never leaves the PDF thread. Every load, render, and disposal
+    is marshalled there by :mod:`joyread.infrastructure.pdf_document_thread`,
+    which satisfies Qt's thread-affinity contract, serialises access in
+    submission order, and lets discarded documents actually be deleted.
+    """
+
     def __init__(
         self,
         path: Path,
         dimensions: tuple[tuple[int, int], ...],
         *,
+        document: QPdfDocument,
         normalize_margins: bool = False,
     ) -> None:
         self._path = path
         self._dimensions = dimensions
         self._normalize_margins = normalize_margins
-        self._render_slot = BoundedSemaphore(1)
         self._state_lock = RLock()
         self._closed = False
+        self._document: QPdfDocument | None = document
         self.current_index = 0
 
     @property
@@ -69,25 +85,30 @@ class PdfImageSession:
     def prepare_page(self, request: ReaderPageRequest, _decoder=None) -> PreparedReaderPage[QImage]:  # noqa: ANN001
         if not self.is_valid_index(request.page_index):
             raise PdfReadError(f"Invalid PDF page {request.page_index + 1}.")
-        with self._state_lock:
-            if self._closed:
-                raise PdfReadError("PDF session is closed.")
         perf_enabled = reader_perf_enabled()
         total_started = perf_counter() if perf_enabled else 0.0
-        with self._render_slot:
-            load_started = perf_counter() if perf_enabled else 0.0
-            document = _load_document(self._path)
-            load_ms = (perf_counter() - load_started) * 1000.0 if perf_enabled else 0.0
-            try:
-                target = _fit_render_size(
-                    self._dimensions[request.page_index],
-                    (request.target_width, request.target_height),
-                )
-                render_started = perf_counter() if perf_enabled else 0.0
-                image = document.render(request.page_index, QSize(*target))
-                render_ms = (perf_counter() - render_started) * 1000.0 if perf_enabled else 0.0
-            finally:
-                document.close()
+        target = _fit_render_size(
+            self._dimensions[request.page_index],
+            (request.target_width, request.target_height),
+        )
+        render_elapsed: list[float] = []
+
+        def render() -> QImage:
+            # Runs on the PDF thread. The liveness check belongs here, not in
+            # the caller: disposal is queued on this same thread, so checking
+            # here is what makes "closed" and "rendering" mutually ordered.
+            with self._state_lock:
+                document = self._document
+                if self._closed or document is None:
+                    raise PdfReadError("PDF session is closed.")
+            started = perf_counter() if perf_enabled else 0.0
+            frame = document.render(request.page_index, QSize(*target))
+            if perf_enabled:
+                render_elapsed.append((perf_counter() - started) * 1000.0)
+            return frame
+
+        image = pdf_thread().call(render)
+        render_ms = render_elapsed[0] if render_elapsed else 0.0
         if image.isNull():
             raise PdfReadError(f"Could not render PDF page {request.page_index + 1}.")
         image.setDevicePixelRatio(max(1.0, request.device_pixel_ratio))
@@ -102,7 +123,6 @@ class PdfImageSession:
                 target=(request.target_width, request.target_height),
                 rendered=(image.width(), image.height()),
                 frame_bytes=image.bytesPerLine() * image.height(),
-                load_ms=round(load_ms, 3),
                 render_ms=round(render_ms, 3),
                 copy_ms=round(copy_ms, 3),
                 total_ms=round((perf_counter() - total_started) * 1000.0, 3),
@@ -174,8 +194,27 @@ class PdfImageSession:
         return True
 
     def close(self) -> None:
+        """Release the document without blocking the caller.
+
+        ``close()`` reaches us from several places, including Qt callbacks on
+        the GUI thread, so it must never wait on rendering. Disposal is queued
+        behind any renders already submitted, which gives the same safety the
+        old blocking wait provided.
+        """
+
         with self._state_lock:
+            if self._closed:
+                return
             self._closed = True
+
+        def dispose() -> None:
+            with self._state_lock:
+                document, self._document = self._document, None
+            if document is None:
+                return
+            _dispose_document(document)
+
+        pdf_thread().post(dispose)
 
 
 class PdfImageService:
@@ -187,21 +226,45 @@ class PdfImageService:
         _validate_source(source)
         perf_enabled = reader_perf_enabled()
         started = perf_counter() if perf_enabled else 0.0
-        document = _load_document(source)
-        try:
-            page_count = document.pageCount()
-            if page_count <= 0:
-                raise PdfEmptyError(f"No pages found in PDF: {source}")
-            dimensions = tuple(_source_dimensions(document, index) for index in range(page_count))
-        finally:
-            document.close()
+
+        def load() -> tuple[QPdfDocument, tuple[tuple[int, int], ...]]:
+            # Runs on the PDF thread; the document is handed to the session
+            # rather than closed, so a Reader parses its container once.
+            document = _retain_document(_load_document(source))
+            try:
+                page_count = document.pageCount()
+                if page_count <= 0:
+                    raise PdfEmptyError(f"No pages found in PDF: {source}")
+                measured = tuple(
+                    _source_dimensions(document, index) for index in range(page_count)
+                )
+            except BaseException:
+                # Covers KeyboardInterrupt too. The exception is re-raised, so
+                # nothing is masked; this only stops a half-open document from
+                # outliving the failure.
+                _dispose_document(document)
+                raise
+            return document, measured
+
+        document, dimensions = pdf_thread().call(load)
         if perf_enabled:
             reader_perf_event(
                 "pdf.open",
                 page_count=len(dimensions),
                 elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
             )
-        return PdfImageSession(source, dimensions, normalize_margins=self._normalize_margins)
+        try:
+            return PdfImageSession(
+                source,
+                dimensions,
+                document=document,
+                normalize_margins=self._normalize_margins,
+            )
+        except BaseException:
+            # Nothing owns the document until the session exists, so a failure
+            # constructing it would otherwise strand a loaded container.
+            pdf_thread().post(lambda: _dispose_document(document))
+            raise
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:
         return self.probe_pdf(path)
@@ -210,11 +273,7 @@ class PdfImageService:
         source = Path(path)
         try:
             _validate_source(source)
-            document = _load_document(source)
-            try:
-                page_count = document.pageCount()
-            finally:
-                document.close()
+            page_count = _probe_page_count(source)
             if page_count <= 0:
                 raise PdfEmptyError(f"No pages found in PDF: {source}")
         except (PdfError, OSError) as exc:
@@ -231,12 +290,81 @@ def _validate_source(source: Path) -> None:
         raise PdfOpenError(f"Unsupported PDF format: {source.suffix or source.name}")
 
 
+def _dispose_document(document: QPdfDocument) -> None:
+    """Release a document. Must run on the PDF thread."""
+
+    _live_documents.pop(id(document), None)
+    if not shiboken6.isValid(document):
+        return
+    document.close()
+    document.deleteLater()
+
+
+# Touched only on the PDF thread, which serialises access, so these need no lock.
+_live_documents: dict[int, QPdfDocument] = {}
+_probe_document: QPdfDocument | None = None
+
+
+def _retain_document(document: QPdfDocument) -> QPdfDocument:
+    """Keep owner-thread custody until normal disposal or thread shutdown."""
+
+    key = id(document)
+    _live_documents[key] = document
+    document.destroyed.connect(lambda *_args, key=key: _live_documents.pop(key, None))
+    return document
+
+
+def _release_all_documents() -> None:
+    """Shutdown hook. Release every document before its owner thread exits."""
+
+    global _probe_document
+    documents = tuple(_live_documents.values())
+    _probe_document = None
+    for document in documents:
+        _dispose_document(document)
+
+
+def _probe_page_count(source: Path) -> int:
+    """Count pages using one reused container.
+
+    Import preflight validates whole folders at a time, and a fresh document
+    per probe retains roughly a file-size apiece that neither ``close()``,
+    ``deleteLater()`` nor an immediate C++ delete gives back -- measured at
+    +37 MB per probe against +0.10 MB when the container is reused. So the
+    document is kept, which bounds the cost at one file rather than letting it
+    grow with the batch, and released when the PDF thread stops.
+    """
+
+    global _probe_document
+    worker = pdf_thread()
+
+    def probe() -> int:
+        global _probe_document
+        if _probe_document is None:
+            _probe_document = _retain_document(QPdfDocument())
+        document = _probe_document
+        try:
+            error = document.load(str(source))
+            if error != QPdfDocument.Error.None_:
+                _raise_for_load_error(error, source)
+            return document.pageCount()
+        finally:
+            document.close()
+
+    return worker.call(probe)
+
+
 def _load_document(path: Path) -> QPdfDocument:
     document = QPdfDocument()
     error = document.load(str(path))
     if error == QPdfDocument.Error.None_:
         return document
     document.close()
+    _raise_for_load_error(error, path)
+    raise PdfOpenError(f"Could not open PDF: {path}")  # pragma: no cover - unreachable
+
+
+def _raise_for_load_error(error: QPdfDocument.Error, path: Path) -> None:
     if error == QPdfDocument.Error.FileNotFound:
         raise PdfOpenError(f"PDF does not exist: {path}")
     if error == QPdfDocument.Error.InvalidFileFormat:
@@ -244,6 +372,11 @@ def _load_document(path: Path) -> QPdfDocument:
     if error in {QPdfDocument.Error.IncorrectPassword, QPdfDocument.Error.UnsupportedSecurityScheme}:
         raise PdfPasswordUnsupportedError(f"Password-protected PDF files are not supported yet: {path}")
     raise PdfOpenError(f"Could not open PDF: {path} ({error.name})")
+
+
+# Registration does not start the thread. The hook persists across restartable
+# shutdowns and protects documents whose caller-side close arrives too late.
+pdf_thread().add_shutdown_hook(_release_all_documents)
 
 
 def _source_dimensions(document: QPdfDocument, page_index: int) -> tuple[int, int]:

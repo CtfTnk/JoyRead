@@ -41,8 +41,9 @@ from joyread.core.services.storage_validation_service import (
     StorageValidationService,
 )
 from joyread.core.services.tag_service import TagService
-from joyread.infrastructure.qt_task_service import TaskService
+from joyread.infrastructure.pdf_document_thread import shutdown_pdf_thread
 from joyread.infrastructure.pdf_image_service import PdfImageService
+from joyread.infrastructure.qt_task_service import TaskService
 from joyread.infrastructure.reader_image_decoder import qimage_frame_bytes
 from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.core.services.thumbnail_service import ThumbnailService
@@ -136,6 +137,10 @@ class AppContext:
         self.task_service.shutdown()
         if self.thumbnail_service is not None:
             self.thumbnail_service.close()
+        # Task shutdown stops accepting new work first. PDF shutdown then seals
+        # its own queue behind any render already accepted and joins when that
+        # queue drains, without destroying a still-running QThread on timeout.
+        shutdown_pdf_thread()
         self.database_interpreter.close()
         logger.info("AppContext shutdown complete")
 
