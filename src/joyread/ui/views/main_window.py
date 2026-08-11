@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, 
 
 from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.cover_editor import PreparedCoverSource
-from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
+from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t

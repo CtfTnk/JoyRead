@@ -92,15 +92,6 @@ class FileOpenRouter(QObject):
             return None
         return self._pending_paths.pop(0)
 
-    def take_pending_paths(self) -> tuple[Path, ...]:
-        paths = tuple(self._pending_paths)
-        self._pending_paths.clear()
-        return paths
-
-    def discard_pending(self, path: str | Path) -> None:
-        target = Path(path).expanduser()
-        self._pending_paths = [candidate for candidate in self._pending_paths if candidate != target]
-
     def set_open_handler(self, handler: OpenFileHandler) -> None:
         self._open_handler = handler
         pending, self._pending_paths = self._pending_paths, []

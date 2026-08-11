@@ -10,15 +10,56 @@ from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
 from joyread.app import bootstrap
 from joyread.app.app_context import AppContext
 from joyread.app.bootstrap import create_application
-from joyread.app.file_open_router import FileOpenRouter
-from joyread.app.launch_intent import LaunchIntent
-from joyread.app.startup_window_coordinator import StartupWindowCoordinator
+from joyread.app.launch.file_open_router import FileOpenRouter
+from joyread.app.launch.coordinator import LaunchCoordinator
+from joyread.app.launch.intent import LaunchIntent
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
 from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
+
+
+class _ManualLaunchGate:
+    """A launch gate the test releases explicitly, standing in for the platform."""
+
+    def __init__(self) -> None:
+        self._callback = None
+
+    def when_ready(self, callback) -> None:  # noqa: ANN001
+        self._callback = callback
+
+    def release(self) -> None:
+        callback, self._callback = self._callback, None
+        if callback is not None:
+            callback()
+
+
+class _RecordingWindowSink:
+    """Minimal LaunchWindowSink that records what the coordinator asked for."""
+
+    def __init__(self, qtbot) -> None:  # noqa: ANN001
+        self._qtbot = qtbot
+        self.main_windows: list[QMainWindow] = []
+        self.reader_windows: list[QMainWindow] = []
+        self.opened_paths: list[Path] = []
+
+    def show_library(self) -> QMainWindow:
+        window = QMainWindow()
+        self._qtbot.addWidget(window)
+        self.main_windows.append(window)
+        return window
+
+    def open_files(self, paths) -> tuple[QMainWindow, ...]:  # noqa: ANN001
+        windows: list[QMainWindow] = []
+        for path in paths:
+            self.opened_paths.append(path)
+            window = QMainWindow()
+            self._qtbot.addWidget(window)
+            self.reader_windows.append(window)
+            windows.append(window)
+        return tuple(windows)
 
 
 class _RecordingTaskService:
@@ -162,6 +203,13 @@ def test_file_open_event_is_queued_then_dispatched_without_router_ownership(qtbo
 
 
 def test_startup_file_open_event_creates_reader_without_main_window(qtbot, tmp_path: Path) -> None:
+    """A document delivered before the gate resolves must replace the Library.
+
+    This is the macOS cold-launch shape: argv is empty, and the document only
+    arrives once Qt is running. Holding the gate open reproduces that ordering
+    deterministically, with no timer to race.
+    """
+
     app = QApplication.instance() or QApplication(["test"])
     previous_router = getattr(app, "_joyread_file_open_router", None)
     if isinstance(previous_router, FileOpenRouter):
@@ -169,69 +217,46 @@ def test_startup_file_open_event_creates_reader_without_main_window(qtbot, tmp_p
 
     source = tmp_path / "finder-cold-start.cbz"
     source.write_bytes(b"")
-    main_windows: list[QMainWindow] = []
-    reader_windows: list[QMainWindow] = []
-    opened_paths: list[Path] = []
-
-    def create_main_window() -> QMainWindow:
-        window = QMainWindow()
-        qtbot.addWidget(window)
-        main_windows.append(window)
-        return window
-
-    def create_reader_window(path: Path) -> QMainWindow:
-        opened_paths.append(path)
-        window = QMainWindow()
-        qtbot.addWidget(window)
-        reader_windows.append(window)
-        return window
+    sink = _RecordingWindowSink(qtbot)
+    gate = _ManualLaunchGate()
 
     router = FileOpenRouter(app, SUPPORTED_READER_EXTENSIONS)
-    def open_files(paths) -> tuple[QMainWindow, ...]:  # noqa: ANN001
-        return tuple(create_reader_window(path) for path in paths)
-
-    coordinator = StartupWindowCoordinator(
-        show_library=create_main_window,
-        open_files=open_files,
-        file_open_grace_ms=25,
-    )
+    coordinator = LaunchCoordinator(windows=sink, gate=gate)
     coordinator.start()
     router.set_open_handler(coordinator.open_file)
 
     assert QApplication.sendEvent(app, QFileOpenEvent(str(source)))
-    qtbot.wait(40)
+    assert not coordinator.ready
+    assert sink.main_windows == []
+    assert sink.reader_windows == []
 
-    assert opened_paths == [source]
-    assert main_windows == []
-    assert coordinator.initial_window is reader_windows[0]
-    assert coordinator.startup_settled
+    gate.release()
 
-    reader_windows[0].close()
+    assert sink.opened_paths == [source]
+    assert sink.main_windows == []
+    assert coordinator.initial_window is sink.reader_windows[0]
+    assert coordinator.ready
+
+    sink.reader_windows[0].close()
     router.dispose()
     coordinator.deleteLater()
 
 
-def test_startup_coordinator_builds_main_after_file_open_grace(qtbot) -> None:
-    main_windows: list[QMainWindow] = []
+def test_startup_shows_library_when_gate_resolves_with_no_document(qtbot) -> None:
+    sink = _RecordingWindowSink(qtbot)
+    gate = _ManualLaunchGate()
+    coordinator = LaunchCoordinator(windows=sink, gate=gate)
 
-    def create_main_window() -> QMainWindow:
-        window = QMainWindow()
-        qtbot.addWidget(window)
-        main_windows.append(window)
-        return window
-
-    coordinator = StartupWindowCoordinator(
-        show_library=create_main_window,
-        open_files=lambda _paths: (),
-        file_open_grace_ms=10,
-    )
     coordinator.start()
-    qtbot.waitUntil(lambda: bool(main_windows), timeout=500)
+    assert sink.main_windows == []
 
-    assert coordinator.initial_window is main_windows[0]
-    assert coordinator.startup_settled
+    gate.release()
 
-    main_windows[0].close()
+    assert coordinator.initial_window is sink.main_windows[0]
+    assert sink.reader_windows == []
+    assert coordinator.ready
+
+    sink.main_windows[0].close()
     coordinator.deleteLater()
 
 
@@ -264,8 +289,8 @@ def test_secondary_run_forwards_before_app_context_is_created(monkeypatch, tmp_p
         def __init__(self, *_args, **_kwargs) -> None:  # noqa: ANN002, ANN003
             pass
 
-        def start(self, intent: LaunchIntent):  # noqa: ANN201
-            forwarded.append(intent)
+        def start(self, intent_factory):  # noqa: ANN001, ANN201
+            forwarded.append(intent_factory())
             return bootstrap.InstanceRole.SECONDARY
 
         def dispose(self) -> None:
@@ -282,6 +307,75 @@ def test_secondary_run_forwards_before_app_context_is_created(monkeypatch, tmp_p
     assert forwarded == [LaunchIntent.open_files((source,))]
     assert disposed == [True]
     assert not (tmp_path / "runtime" / "JoyRead-Library").exists()
+
+
+def test_secondary_forwards_a_document_that_arrives_after_arbitration(
+    qtbot, tmp_path: Path
+) -> None:
+    """A macOS secondary must wait for Finder rather than forwarding SHOW_LIBRARY.
+
+    Models the real cold-launch ordering: argv is empty, the document is
+    delivered once an event loop runs, and only then does the platform report
+    that the launch is complete. Resolving from argv alone silently downgrades
+    "open this manga" to "show the Library".
+    """
+
+    source = tmp_path / "late-finder-document.cbz"
+    source.write_bytes(b"")
+
+    class _StubApplication:
+        """Stands in for JoyReadApplication's startup document buffer."""
+
+        def __init__(self) -> None:
+            self._paths: tuple[Path, ...] = ()
+
+        def deliver(self, path: Path) -> None:
+            self._paths = (*self._paths, path)
+
+        def take_startup_file_open_paths(self) -> tuple[Path, ...]:
+            paths, self._paths = self._paths, ()
+            return paths
+
+    application = _StubApplication()
+
+    class _DeferredGate:
+        """Resolves only once an event loop runs, like the macOS gate."""
+
+        def when_ready(self, callback) -> None:  # noqa: ANN001
+            def deliver_then_signal() -> None:
+                application.deliver(source)  # QFileOpenEvent
+                callback()  # NSApplicationDidFinishLaunching
+            QTimer.singleShot(0, deliver_then_signal)
+
+    environment = bootstrap._StartupEnvironment(
+        argv=["joyread"],
+        app=application,  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        settings_store=None,  # type: ignore[arg-type]
+        gate=_DeferredGate(),
+        startup_intent=None,
+    )
+
+    intent = bootstrap._resolve_secondary_intent(environment)
+
+    assert intent == LaunchIntent.open_files((source,))
+
+
+def test_secondary_forwards_show_library_for_a_plain_launch(qtbot) -> None:
+    class _ImmediateGate:
+        def when_ready(self, callback) -> None:  # noqa: ANN001
+            callback()
+
+    environment = bootstrap._StartupEnvironment(
+        argv=["joyread"],
+        app=QApplication.instance(),  # type: ignore[arg-type]
+        config=None,  # type: ignore[arg-type]
+        settings_store=None,  # type: ignore[arg-type]
+        gate=_ImmediateGate(),
+        startup_intent=None,
+    )
+
+    assert bootstrap._resolve_secondary_intent(environment) == LaunchIntent.show_library()
 
 
 def test_storage_recovery_dialog_close_rejects_and_width_is_stable(qtbot) -> None:

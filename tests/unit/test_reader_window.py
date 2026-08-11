@@ -13,7 +13,7 @@ from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
-from joyread.app.application_window_manager import ApplicationWindowManager
+from joyread.app.windows.manager import ApplicationWindowManager
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
 from joyread.infrastructure.i18n import locale_service
@@ -805,7 +805,9 @@ def test_main_window_missing_book_dialog_cancel_keeps_book(qtbot, tmp_path: Path
     context.close()
 
 
-def test_main_window_close_keeps_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
+def test_main_window_close_takes_the_readers_it_opened(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """A Reader launched from the shelf belongs to that Library session."""
+
     context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
     manager = ApplicationWindowManager(context)
@@ -814,7 +816,29 @@ def test_main_window_close_keeps_independent_readers(qtbot, tmp_path: Path, monk
 
     window.open_reader_for_book(book.uuid)
     assert len(manager.reader_windows) == 1
-    reader = manager.reader_windows[0]
+
+    window.close()
+    qtbot.wait(0)
+
+    assert manager.main_window is None
+    assert manager.reader_windows == ()
+    context.close()
+
+
+def test_main_window_close_keeps_readers_opened_by_the_operating_system(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """An "Open With" Reader is a root window and must survive the Library."""
+
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    context.settings_store.update(individual_read_window=True)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
+    book = context.shelf_viewmodel.books[0]
+
+    readers = manager.open_files((book.file_path,))
+    assert len(readers) == 1
+    reader = readers[0]
 
     window.close()
     qtbot.wait(0)

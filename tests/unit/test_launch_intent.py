@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from joyread.app.launch_intent import (
+from joyread.app.launch.intent import (
     LAUNCH_PROTOCOL_VERSION,
     MAX_LAUNCH_MESSAGE_BYTES,
     LaunchAction,

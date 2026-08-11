@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from joyread.app.macos_reopen_bridge import MacOSReopenBridge
+from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
 
 
 class _EventManager:

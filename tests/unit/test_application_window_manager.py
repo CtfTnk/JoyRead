@@ -9,8 +9,8 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMainWindow
 
 from joyread.app.app_context import AppContext
-from joyread.app.application_window_manager import ApplicationWindowManager
-from joyread.app.window_requests import StandaloneReaderLauncher, StandaloneReaderRequest
+from joyread.app.windows.manager import ApplicationWindowManager
+from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 
 
 class _ShelfViewModel:
@@ -122,7 +122,9 @@ def test_open_files_reuses_same_path_and_keeps_distinct_readers(qtbot, tmp_path:
         _close_windows(manager, qtbot)
 
 
-def test_closing_main_keeps_standalone_reader_and_show_recreates_main(qtbot, tmp_path: Path) -> None:
+def test_closing_main_closes_the_readers_it_launched(qtbot, tmp_path: Path) -> None:
+    """Readers the Library opened are part of the Library session."""
+
     manager, mains, _readers, _shelf = _manager()
     try:
         main = cast(_FakeMainWindow, manager.show_library())
@@ -131,12 +133,75 @@ def test_closing_main_keeps_standalone_reader_and_show_recreates_main(qtbot, tmp
 
         main.close()
         qtbot.waitUntil(lambda: manager.main_window is None)
-        assert reader in manager.reader_windows
-        assert reader.isVisible()
+        assert manager.reader_windows == ()
 
         manager.show_library()
         assert len(mains) == 2
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_closing_main_keeps_readers_the_operating_system_requested(
+    qtbot, tmp_path: Path
+) -> None:
+    """"Open With" Readers are roots and must outlive the Library."""
+
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        manager.show_library()
+        reader = manager.open_files((tmp_path / "external.cbz",))[0]
+
+        cast(_FakeMainWindow, manager.main_window).close()
+        qtbot.waitUntil(lambda: manager.main_window is None)
+
         assert reader in manager.reader_windows
+        assert reader.isVisible()
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_operating_system_request_promotes_a_library_owned_reader(
+    qtbot, tmp_path: Path
+) -> None:
+    """Reopening an owned Reader through the OS detaches it from the Library."""
+
+    manager, _mains, readers, _shelf = _manager()
+    source = tmp_path / "book.cbz"
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        owned = main.launcher(StandaloneReaderRequest(source))
+
+        promoted = manager.open_files((source,))[0]
+        assert promoted is owned
+        assert len(readers) == 1
+
+        main.close()
+        qtbot.waitUntil(lambda: manager.main_window is None)
+
+        assert owned in manager.reader_windows
+        assert owned.isVisible()
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_reopen_focuses_most_recent_window_then_rebuilds_library(
+    qtbot, tmp_path: Path
+) -> None:
+    manager, mains, _readers, _shelf = _manager()
+    try:
+        manager.show_library()
+        reader = manager.open_files((tmp_path / "book.cbz",))[0]
+
+        assert manager.handle_reopen() is reader
+        assert len(mains) == 1
+
+        reader.close()
+        cast(_FakeMainWindow, manager.main_window).close()
+        qtbot.waitUntil(lambda: not manager.has_windows)
+
+        rebuilt = manager.handle_reopen()
+        assert rebuilt is manager.main_window
+        assert len(mains) == 2
     finally:
         _close_windows(manager, qtbot)
 

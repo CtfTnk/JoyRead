@@ -12,7 +12,7 @@ from time import monotonic
 from PySide6.QtCore import QLockFile, QObject, QThread
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
-from joyread.app.launch_intent import (
+from joyread.app.launch.intent import (
     MAX_LAUNCH_MESSAGE_BYTES,
     LaunchIntent,
     decode_launch_intent,
@@ -35,6 +35,11 @@ class SingleInstanceError(RuntimeError):
 
 
 IntentHandler = Callable[[LaunchIntent], None]
+
+#: Produces the intent to forward, called only if this process is secondary.
+#: Deferring the decision matters on macOS, where the document this process was
+#: launched to open has not been delivered yet when arbitration happens.
+SecondaryIntentFactory = Callable[[], LaunchIntent]
 
 
 class SingleInstanceBroker(QObject):
@@ -74,7 +79,15 @@ class SingleInstanceBroker(QObject):
     def lock_path(self) -> Path:
         return self._lock_path
 
-    def start(self, secondary_intent: LaunchIntent) -> InstanceRole:
+    def start(self, secondary_intent: SecondaryIntentFactory) -> InstanceRole:
+        """Claim the profile, or forward this launch to whoever already holds it.
+
+        ``secondary_intent`` is a factory rather than a value so that a process
+        which turns out to be primary never pays for resolving it, and one that
+        turns out to be secondary can take as long as the platform needs before
+        deciding what to say.
+        """
+
         if self._role is not None:
             raise RuntimeError("SingleInstanceBroker.start() may only be called once.")
         try:
@@ -96,7 +109,7 @@ class SingleInstanceBroker(QObject):
                 f"JoyRead cannot acquire its instance lock ({lock.error().name})."
             )
 
-        self._forward_to_primary(secondary_intent)
+        self._forward_to_primary(secondary_intent())
         self._role = InstanceRole.SECONDARY
         logger.info("Launch request forwarded to primary server=%s", self._server_name)
         return self._role

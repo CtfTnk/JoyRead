@@ -104,11 +104,16 @@ forwards all supported document paths to the existing process through a
 user-only local socket and exits before opening SQLite or caches. Include these
 cases in every packaged-app smoke test:
 
+- Cold launch through Open With A: only Reader A appears, never Main as well.
+- Cold launch with no document: Main appears.
 - Reader A, then Open With B: both Readers remain open.
-- Reader A, then reopen JoyRead: Main appears and A remains open.
+- Reader A, then reopen JoyRead: A is focused and Main is *not* created.
 - Main, then Open With A: Main remains and A opens once.
 - Main, then reopen JoyRead: the existing Main is focused.
-- Close Main while a Reader is open, then reopen JoyRead: Main is rebuilt.
+- Open a Reader from the shelf, then close Main: that Reader closes with it.
+- Open With A while Main is open, then close Main: A remains open.
+- Open a shelf Reader for A, then Open With A, then close Main: A remains open,
+  because the OS request promoted it to a root window.
 
 The app does not technically need to live in `/Applications`: launching it or
 registering it explicitly is enough for local builds. Public distributions
