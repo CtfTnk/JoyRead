@@ -89,9 +89,11 @@ Desktop.ini
 # Local sample books and large manual test data
 test_set/
 
-# Generated reports
-reports/
-artifacts/
+# Generated reports and build output, at the repository root only.
+# Unanchored patterns would also swallow docs/reports/, which is tracked
+# documentation rather than generated output.
+/reports/
+/artifacts/
 
 # Local agent files
 .agent.md
