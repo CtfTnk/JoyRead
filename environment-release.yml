@@ -1,3 +1,18 @@
+# The single JoyRead development and release environment.
+#
+# This file has no `name:` key on purpose: the environment is prefix-based and
+# lives inside the repository, so it must be created and activated by path.
+#
+#   conda env create --prefix .conda/joyread-py312 -f environment-release.yml
+#   conda activate ./.conda/joyread-py312
+#
+# `conda activate joyread-py312` (no path) will NOT work -- conda resolves bare
+# names only against its central envs directory, and this one is not there.
+#
+# Conda provides just the interpreter and pip; every runtime dependency comes
+# from pyproject.toml so there is one source of truth. That includes the macOS
+# PyObjC packages, which carry `sys_platform == 'darwin'` markers and are
+# required for the deterministic launch gate -- see docs/technical/runtime-flows.md.
 channels:
   - defaults
 dependencies:
