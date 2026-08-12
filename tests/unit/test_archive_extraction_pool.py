@@ -9,6 +9,7 @@ from zipfile import ZipFile
 
 import pytest
 
+from joyread.core.services import archive_extraction_pool as pool_module
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
@@ -574,3 +575,110 @@ def test_a_failed_write_keeps_mark_complete_from_publishing(tmp_path: Path) -> N
 
     assert pool.mark_complete(key, 2, "sig") is False
     assert not pool.is_complete(key, 2, "sig")
+
+
+def test_publish_complete_refuses_a_document_with_missing_entries(tmp_path: Path) -> None:
+    """Per-group checks cannot see the whole book; publication has to."""
+
+    pool = ArchiveExtractionPool(tmp_path, 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1", "b": b"2"})
+
+    assert pool.publish_complete("file:book", ("a", "b", "c"), 3, "sig") is False
+    assert pool.is_complete("file:book", 3, "sig") is False
+    assert pool.publish_complete("file:book", ("a", "b"), 2, "sig") is True
+    assert pool.is_complete("file:book", 2, "sig") is True
+
+
+def test_publish_complete_detects_a_bundle_reset_between_writes(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path, 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1", "b": b"2"})
+    # An append that finds the bundle unreadable recreates it from scratch.
+    next(tmp_path.glob("*.partial.zip")).write_bytes(b"not a zip")
+    pool.put_many("file:book", {"c": b"3"})
+
+    assert pool.publish_complete("file:book", ("a", "b", "c"), 3, "sig") is False
+    assert pool.is_complete("file:book", 3, "sig") is False
+
+
+def test_a_failed_publish_rename_still_reports_one_consistent_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The manifest, not the filename, is the authoritative completion state.
+
+    Renaming to the published name only helps the startup scan recognise a
+    finished bundle. When it fails the document is still complete and readable
+    through the indexed partial bundle, and reconciliation renames it on the
+    next launch, so reporting failure would force a re-conversion that hits the
+    same error forever.
+    """
+
+    pool = ArchiveExtractionPool(tmp_path, 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1"})
+    real_replace = pool_module.os.replace
+
+    def failing_replace(src, dst):  # noqa: ANN001, ANN202
+        if str(dst).endswith(".zip") and not str(dst).endswith(".partial.zip"):
+            raise OSError("rename refused")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(pool_module.os, "replace", failing_replace)
+
+    published = pool.publish_complete("file:book", ("a",), 1, "sig")
+
+    assert published is True
+    assert pool.is_complete("file:book", 1, "sig") is True
+    assert pool.get("file:book", "a") == b"1"
+
+
+def test_republishing_an_identical_manifest_does_not_rewrite_the_bundle(
+    tmp_path: Path,
+) -> None:
+    """A zip entry cannot be replaced in place, so a rewrite copies the book."""
+
+    pool = ArchiveExtractionPool(tmp_path, 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1"})
+    assert pool.publish_complete("file:book", ("a",), 1, "sig") is True
+    bundle = next(tmp_path.glob("m-*.zip"))
+    before = bundle.stat().st_mtime_ns
+
+    assert pool.publish_complete("file:book", ("a",), 1, "sig") is True
+
+    assert bundle.stat().st_mtime_ns == before
+    with ZipFile(bundle) as archive:
+        manifests = [name for name in archive.namelist() if "manifest" in name]
+    assert len(manifests) == 1
+
+
+def test_hidden_pool_accounts_for_files_a_failed_batch_already_wrote(
+    tmp_path: Path,
+) -> None:
+    """A partly-installed batch must not leave unindexed, unevictable files."""
+
+    pool = HiddenImageExtractionPool(tmp_path / "hidden", 8 * 1024 * 1024)
+    real_write = pool._write_entry  # noqa: SLF001
+    attempts: list[str] = []
+
+    def failing_write(book_key, entry_name, data):  # noqa: ANN001, ANN202
+        attempts.append(entry_name)
+        if len(attempts) > 2:
+            return None
+        return real_write(book_key, entry_name, data)
+
+    pool._write_entry = failing_write  # type: ignore[method-assign]  # noqa: SLF001
+
+    written = pool.put_many("file:book", {"a": b"1234", "b": b"5678", "c": b"9012"})
+
+    assert written is False
+    assert pool.current_bytes == 8, "installed files must be counted"
+    assert pool.contains_many("file:book", ("a", "b", "c")) == frozenset({"a", "b"})
+
+
+def test_hidden_pool_publish_requires_every_entry(tmp_path: Path) -> None:
+    pool = HiddenImageExtractionPool(tmp_path / "hidden", 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1", "b": b"2"})
+
+    assert pool.publish_complete("file:book", ("a", "b", "c"), 3, "sig") is False
+    assert pool.is_complete("file:book", 3, "sig") is False
+    assert pool.publish_complete("file:book", ("a", "b"), 2, "sig") is True
+    assert pool.is_complete("file:book", 2, "sig") is True

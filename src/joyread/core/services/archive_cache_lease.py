@@ -69,15 +69,31 @@ class ArchiveCacheLease:
                 return {}
             return self._cache.get_many(self._key, entry_names)
 
-    def put(self, entry_name: str, data: bytes) -> None:
-        with self._lock:
-            if not self._closed:
-                self._cache.put(self._key, entry_name, data)
+    def contains_many(self, entry_names: tuple[str, ...]) -> frozenset[str]:
+        """Which entries are present, checked from metadata only."""
 
-    def put_many(self, payloads: Mapping[str, bytes]) -> None:
         with self._lock:
-            if not self._closed:
-                self._cache.put_many(self._key, payloads)
+            if self._closed:
+                return frozenset()
+            return self._cache.contains_many(self._key, entry_names)
+
+    @property
+    def cache_max_bytes(self) -> int:
+        """The shared pool budget, for callers deciding whether a book fits."""
+
+        return self._cache.max_bytes
+
+    def put(self, entry_name: str, data: bytes) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            return bool(self._cache.put(self._key, entry_name, data))
+
+    def put_many(self, payloads: Mapping[str, bytes]) -> bool:
+        with self._lock:
+            if self._closed:
+                return False
+            return bool(self._cache.put_many(self._key, payloads))
 
     def is_complete(self, page_count: int, signature: str) -> bool:
         with self._lock:
@@ -87,10 +103,35 @@ class ArchiveCacheLease:
                 signature,
             )
 
-    def mark_complete(self, page_count: int, signature: str) -> None:
+    def mark_complete(self, page_count: int, signature: str) -> bool:
         with self._lock:
-            if not self._closed:
-                self._cache.mark_complete(self._key, page_count, signature)
+            if self._closed:
+                return False
+            return bool(self._cache.mark_complete(self._key, page_count, signature))
+
+    def publish_complete(
+        self,
+        required_entries: tuple[str, ...],
+        page_count: int,
+        signature: str,
+    ) -> bool:
+        """Publish only if every required entry is present in the cache.
+
+        The pool checks and writes the manifest under one lock, so nothing can
+        remove a page between the verification and the publish.
+        """
+
+        with self._lock:
+            if self._closed:
+                return False
+            return bool(
+                self._cache.publish_complete(
+                    self._key,
+                    required_entries,
+                    page_count,
+                    signature,
+                )
+            )
 
     def promote(self, persistent_key: str) -> bool:
         target = str(persistent_key).strip()

@@ -76,6 +76,14 @@ class ArchiveExtractionCache(Protocol):
 
     def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool: ...
 
+    def publish_complete(
+        self,
+        document_cache_key: str,
+        required_entries: tuple[str, ...],
+        page_count: int,
+        signature: str,
+    ) -> bool: ...
+
     def purge(self, document_cache_key: str) -> None: ...
 
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool: ...
@@ -257,30 +265,123 @@ class ArchiveExtractionPool:
     def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
         """Write the ready manifest and publish. Returns whether it published."""
 
-        if not self.put(
-            document_cache_key,
-            self._MANIFEST_ENTRY,
-            _manifest_bytes(page_count, signature, _identity_kind(document_cache_key)),
-        ):
+        return self.publish_complete(document_cache_key, (), page_count, signature)
+
+    def publish_complete(
+        self,
+        document_cache_key: str,
+        required_entries: tuple[str, ...],
+        page_count: int,
+        signature: str,
+    ) -> bool:
+        """Verify ``required_entries`` and write the ready manifest atomically.
+
+        Verification and the manifest write happen inside one lock hold. A
+        caller cannot get the same guarantee by checking with ``contains_many``
+        and then calling ``mark_complete``: an append that finds the bundle
+        corrupt recreates it from scratch, so a book confirmed group by group
+        can end up published with only its last group present.
+
+        The manifest inside the bundle -- not the published filename -- is the
+        authoritative completion state. If the rename to the published name
+        fails the document is still complete and readable through the indexed
+        partial bundle, and startup reconciliation renames it later, so this
+        reports success rather than forcing an endless re-conversion.
+        """
+
+        self._ensure_reconciled()
+        if self._directory is None:
             return False
         book_key = self._book_key_for(document_cache_key)
-        if book_key is None or self._directory is None:
+        if book_key is None:
             return False
+        required = {self._safe_entry_name(name) for name in required_entries if name}
+        manifest_payload = _manifest_bytes(
+            page_count,
+            signature,
+            _identity_kind(document_cache_key),
+        )
         with self._lock:
             entry = self._index.get(book_key)
+            if entry is not None and not entry.path.exists():
+                self._forget_locked(book_key)
+                entry = None
             if entry is None:
-                return False
-            if not entry.path.name.endswith(".partial.zip"):
-                # Already published by an earlier caller.
-                return True
-            final_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
+                if required:
+                    logger.warning(
+                        "Refusing to publish archive cache key=%s: no bundle on disk",
+                        book_key,
+                    )
+                    return False
+                bundle_path = self._directory / f"{book_key}.partial{self._ZIP_SUFFIX}"
+                manifest_is_current = False
+            else:
+                bundle_path = entry.path
+                try:
+                    with ZipFile(bundle_path, "r") as archive:
+                        present = set(archive.namelist())
+                        existing_manifest = (
+                            archive.read(self._MANIFEST_ENTRY)
+                            if self._MANIFEST_ENTRY in present
+                            else None
+                        )
+                except (BadZipFile, OSError) as exc:
+                    logger.warning(
+                        "Dropping corrupt archive bundle %s before publish: %s",
+                        bundle_path,
+                        exc,
+                    )
+                    self._forget_locked(book_key)
+                    return False
+                missing = required - present
+                if missing:
+                    logger.warning(
+                        "Refusing to publish archive cache key=%s: %d of %d entries missing",
+                        book_key,
+                        len(missing),
+                        len(required),
+                    )
+                    return False
+                # Rewriting an identical manifest would copy the whole bundle
+                # for nothing, because a zip entry cannot be replaced in place.
+                manifest_is_current = existing_manifest == manifest_payload
+            if not manifest_is_current:
+                try:
+                    bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                    self._append_bundle_locked(
+                        bundle_path,
+                        {self._MANIFEST_ENTRY: manifest_payload},
+                    )
+                except (BadZipFile, OSError) as exc:
+                    logger.warning(
+                        "Archive cache manifest write failed for key=%s: %s", book_key, exc
+                    )
+                    return False
+            published_path = bundle_path
+            if bundle_path.name.endswith(f".partial{self._ZIP_SUFFIX}"):
+                final_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
+                try:
+                    os.replace(bundle_path, final_path)
+                    published_path = final_path
+                except OSError as exc:
+                    logger.warning(
+                        "Archive cache publish rename failed for key=%s (bundle stays "
+                        "complete and readable): %s",
+                        book_key,
+                        exc,
+                    )
             try:
-                os.replace(entry.path, final_path)
-                stat = final_path.stat()
+                stat = published_path.stat()
             except OSError as exc:
-                logger.warning("Archive cache publish failed for key=%s: %s", book_key, exc)
+                logger.warning("Archive cache publish lost its bundle key=%s: %s", book_key, exc)
+                self._forget_locked(book_key)
                 return False
-            self._index[book_key] = _PoolEntry(final_path, stat.st_size, stat.st_mtime)
+            previous = self._index.pop(book_key, None)
+            if previous is not None:
+                self._current_bytes -= previous.size
+            self._index[book_key] = _PoolEntry(published_path, stat.st_size, stat.st_mtime)
+            self._current_bytes += stat.st_size
+            self._evict_locked(protect_key=book_key)
         return True
 
     def purge(self, document_cache_key: str) -> None:
@@ -839,16 +940,12 @@ class HiddenImageExtractionPool:
         book_key = _book_key_for_document_cache_key(document_cache_key)
         if book_key is None:
             return frozenset()
-        present: set[str] = set()
         with self._lock:
-            for entry_name in entry_names:
-                if not entry_name:
-                    continue
-                key = (book_key, self._entry_key_for(entry_name))
-                entry = self._index.get(key)
-                if entry is not None and entry.path.exists():
-                    present.add(entry_name)
-        return frozenset(present)
+            return frozenset(
+                entry_name
+                for entry_name in entry_names
+                if entry_name and self._entry_exists_locked(book_key, entry_name)
+            )
 
     def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
         payloads: dict[str, bytes] = {}
@@ -868,11 +965,56 @@ class HiddenImageExtractionPool:
         )
 
     def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
-        return self.put(
-            document_cache_key,
-            self._MANIFEST_ENTRY,
-            _manifest_bytes(page_count, signature, _identity_kind(document_cache_key)),
-        )
+        return self.publish_complete(document_cache_key, (), page_count, signature)
+
+    def publish_complete(
+        self,
+        document_cache_key: str,
+        required_entries: tuple[str, ...],
+        page_count: int,
+        signature: str,
+    ) -> bool:
+        """Verify ``required_entries`` and write the ready manifest atomically.
+
+        The presence check and the manifest write share one lock hold so no
+        concurrent eviction can remove a page between the two.
+        """
+
+        self._ensure_reconciled()
+        if self._directory is None:
+            return False
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return False
+        with self._lock:
+            missing = [
+                name
+                for name in required_entries
+                if name and not self._entry_exists_locked(book_key, name)
+            ]
+            if missing:
+                logger.warning(
+                    "Refusing to publish hidden archive cache key=%s: %d of %d entries missing",
+                    book_key,
+                    len(missing),
+                    len([name for name in required_entries if name]),
+                )
+                return False
+            entry = self._write_entry(
+                book_key,
+                self._MANIFEST_ENTRY,
+                _manifest_bytes(page_count, signature, _identity_kind(document_cache_key)),
+            )
+            if entry is None:
+                return False
+            key, pool_entry = entry
+            previous = self._index.pop(key, None)
+            if previous is not None:
+                self._current_bytes -= previous.size
+            self._index[key] = pool_entry
+            self._current_bytes += pool_entry.size
+            self._evict_locked(protect_key=key)
+        return True
 
     def purge(self, document_cache_key: str) -> None:
         """Remove all hidden-cache entries for one immutable document identity."""
@@ -986,41 +1128,58 @@ class HiddenImageExtractionPool:
         book_key = _book_key_for_document_cache_key(document_cache_key)
         if book_key is None:
             return False
-        written: list[tuple[tuple[str, str], _PoolEntry]] = []
-        for entry_name, data in payloads.items():
-            if not entry_name:
-                continue
-            entry_key = self._entry_key_for(entry_name)
-            final_path = self._entry_path(book_key, entry_key)
-            tmp_path = final_path.with_suffix(f".{uuid4().hex}.tmp")
-            try:
-                final_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp_path.write_bytes(data)
-                os.replace(tmp_path, final_path)
-                stat = final_path.stat()
-            except OSError as exc:
-                logger.warning(
-                    "Hidden image cache write failed for %s: %s", final_path, exc
-                )
-                try:
-                    tmp_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-                continue
-            written.append(((book_key, entry_key), _PoolEntry(final_path, stat.st_size, stat.st_mtime)))
-        # Partial success is failure: the caller may be about to drop its copy.
-        if not written or len(written) != len([n for n in payloads if n]):
+        requested = [(name, data) for name, data in payloads.items() if name]
+        if not requested:
             return False
-        protect_key = written[-1][0]
-        with self._lock:
-            for key, entry in written:
-                previous = self._index.pop(key, None)
-                if previous is not None:
-                    self._current_bytes -= previous.size
-                self._index[key] = entry
-                self._current_bytes += entry.size
-            self._evict_locked(protect_key=protect_key)
-        return True
+        written: list[tuple[tuple[str, str], _PoolEntry]] = []
+        for entry_name, data in requested:
+            result = self._write_entry(book_key, entry_name, data)
+            if result is None:
+                # Stop at the first failure: the disk is not going to start
+                # cooperating halfway through a batch.
+                break
+            written.append(result)
+        # Whatever landed is real cache content, so index it even when the
+        # batch as a whole failed. Leaving those files unindexed would keep
+        # them out of the byte total and out of every eviction path.
+        if written:
+            with self._lock:
+                for key, entry in written:
+                    previous = self._index.pop(key, None)
+                    if previous is not None:
+                        self._current_bytes -= previous.size
+                    self._index[key] = entry
+                    self._current_bytes += entry.size
+                self._evict_locked(protect_key=written[-1][0])
+        # Partial success is failure: the caller may be about to drop its copy.
+        return len(written) == len(requested)
+
+    def _write_entry(
+        self,
+        book_key: str,
+        entry_name: str,
+        data: bytes,
+    ) -> tuple[tuple[str, str], _PoolEntry] | None:
+        entry_key = self._entry_key_for(entry_name)
+        final_path = self._entry_path(book_key, entry_key)
+        tmp_path = final_path.with_suffix(f".{uuid4().hex}.tmp")
+        try:
+            final_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path.write_bytes(data)
+            os.replace(tmp_path, final_path)
+            stat = final_path.stat()
+        except OSError as exc:
+            logger.warning("Hidden image cache write failed for %s: %s", final_path, exc)
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return None
+        return (book_key, entry_key), _PoolEntry(final_path, stat.st_size, stat.st_mtime)
+
+    def _entry_exists_locked(self, book_key: str, entry_name: str) -> bool:
+        entry = self._index.get((book_key, self._entry_key_for(entry_name)))
+        return entry is not None and entry.path.exists()
 
     def resize(self, max_bytes: int) -> None:
         if max_bytes < 0:
