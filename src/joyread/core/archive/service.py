@@ -57,7 +57,11 @@ from joyread.core.archive.scanner import (
     ArchiveScanner,
     ArchiveSourceSkipped as _ArchiveSourceSkipped,
 )
-from joyread.core.archive.session import ArchiveImageSession, EXPENSIVE_ARCHIVE_EXTENSIONS
+from joyread.core.archive.session import (
+    ArchiveImageSession,
+    BulkExtract,
+    EXPENSIVE_ARCHIVE_EXTENSIONS,
+)
 from joyread.core.archive.tree import (
     disambiguate_nested_archive_labels as _disambiguate_nested_archive_labels,
     flatten_archive_tree as _flatten_archive_tree,
@@ -378,10 +382,27 @@ class ArchiveImageService:
                 budget=budget,
             ),
             contents,
+            bulk_extract=self._bulk_extract_for(source),
             cache_lease=effective_lease,
             cache_signature=cache_signature,
             limits=effective_limits,
         )
+
+    def _bulk_extract_for(self, source: _ArchiveSource) -> BulkExtract | None:
+        """The one-pass whole-document extractor for this container, if any.
+
+        Only the top-level source is offered. A session whose pages come from
+        several containers, or from a nested archive held in memory, refuses
+        bulk conversion on its own; the capability is bound here to the backend
+        that owns the file on disk.
+        """
+
+        backend = self._format_backends.get(source.suffix)
+        supports_bulk = getattr(backend, "supports_bulk_extraction", None)
+        extract_members = getattr(backend, "extract_members", None)
+        if not callable(supports_bulk) or not callable(extract_members):
+            return None
+        return extract_members if supports_bulk(source) else None
 
     @staticmethod
     def _assert_source_size(path: Path, limits: ArchiveOpenLimits) -> None:

@@ -8,6 +8,7 @@ from typing import Protocol
 
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession, ArchiveOpenLimits
 from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_ITEMS
+from joyread.core.archive.errors import ArchiveCancelled
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
@@ -208,37 +209,106 @@ class ReaderSessionService:
             cache_lease=cache_lease,
         )
         try:
-            pending = tuple(range(session.page_count))
-            chunk_size = max(1, int(chunk_size))
-            completed = 0
-            planner = getattr(session, "plan_read_batch", None)
-            while pending:
-                if is_cancelled is not None and is_cancelled():
-                    logger.debug("Disk cache warm cancelled after pages=%d", completed)
-                    return
-                if callable(planner):
-                    candidate_limit = min(chunk_size, MAX_SEQUENTIAL_BATCH_ITEMS)
-                    batch = tuple(
-                        planner(
-                            pending[:candidate_limit],
-                            max_items=candidate_limit,
-                        )
-                    )
-                else:
-                    batch = pending[:chunk_size]
-                if not batch or batch != pending[: len(batch)]:
-                    batch = pending[:1]
-                self.load_pages(session, batch)
-                pending = pending[len(batch) :]
-                completed += len(batch)
+            if self._convert_whole_document(session, path, is_cancelled=is_cancelled):
+                logger.debug("Disk cache warm complete for %s (bulk conversion)", path)
+                return
+            if not self._warm_in_chunks(
+                session,
+                chunk_size=chunk_size,
+                is_cancelled=is_cancelled,
+            ):
+                return
             mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
             if callable(mark_ready):
                 mark_ready()
+        except ArchiveCancelled:
+            # Cancellation is the coordinator dropping its last consumer, not a
+            # failure worth reporting up as one.
+            logger.debug("Disk cache warm cancelled for %s", path)
+            return
         finally:
             close = getattr(session, "close", None)
             if callable(close):
                 close()
         logger.debug("Disk cache warm complete for %s", path)
+
+    def _convert_whole_document(
+        self,
+        session: ReaderImageSession,
+        path: str | Path,
+        *,
+        is_cancelled,  # noqa: ANN001 - accepts TaskHandle-like status checks.
+    ) -> bool:
+        """Try one whole-document conversion. Returns whether warming is done.
+
+        Falling back to the chunked path is allowed only when the session
+        cannot be bulk converted at all, or when policy declined it. A
+        conversion that ran and failed must not be retried the slow way: the
+        chunked path would re-read the same input through dozens of on-demand
+        extractions and walk straight past whatever stopped the conversion.
+        Guardrail outcomes never arrive here as a result -- they are raised.
+        """
+
+        convert = getattr(session, "convert_to_cache", None)
+        if not callable(convert):
+            return False
+        result = convert(is_cancelled=is_cancelled)
+        if result.is_published:
+            logger.info(
+                "Bulk-converted %s to the extraction cache: pages=%d status=%s",
+                path,
+                result.pages,
+                result.status.value,
+            )
+            return True
+        if result.allows_chunked_fallback:
+            logger.debug(
+                "Bulk conversion unavailable for %s (%s/%s); warming in chunks",
+                path,
+                result.status.value,
+                result.reason,
+            )
+            return False
+        logger.warning(
+            "Bulk conversion failed for %s (%s); not falling back to chunked warmup",
+            path,
+            result.reason,
+        )
+        return True
+
+    def _warm_in_chunks(
+        self,
+        session: ReaderImageSession,
+        *,
+        chunk_size: int,
+        is_cancelled,  # noqa: ANN001 - accepts TaskHandle-like status checks.
+    ) -> bool:
+        """Read every page in forward order. Returns whether it ran to the end."""
+
+        pending = tuple(range(session.page_count))
+        chunk_size = max(1, int(chunk_size))
+        completed = 0
+        planner = getattr(session, "plan_read_batch", None)
+        while pending:
+            if is_cancelled is not None and is_cancelled():
+                logger.debug("Disk cache warm cancelled after pages=%d", completed)
+                return False
+            if callable(planner):
+                candidate_limit = min(chunk_size, MAX_SEQUENTIAL_BATCH_ITEMS)
+                batch = tuple(
+                    planner(
+                        pending[:candidate_limit],
+                        max_items=candidate_limit,
+                    )
+                )
+            else:
+                batch = pending[:chunk_size]
+            if not batch or batch != pending[: len(batch)]:
+                batch = pending[:1]
+            self.load_pages(session, batch)
+            pending = pending[len(batch) :]
+            completed += len(batch)
+        return True
 
     def password_request_label(self, request: ArchivePasswordRequest) -> str:
         return f"{request.archive_format} archive password"
