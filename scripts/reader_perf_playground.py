@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import threading
 from time import perf_counter
 
 
@@ -20,6 +21,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--pages", type=int, default=20)
     parser.add_argument("--runtime-dir", type=Path)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--no-bulk-conversion",
+        action="store_true",
+        help="Warm through the chunked py7zr-era loop, for an in-harness baseline.",
+    )
     return parser.parse_args(argv)
 
 
@@ -59,12 +65,27 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     from joyread.app.bootstrap import create_application
     from joyread.ui.views.reader_window import ReaderWindow
 
+    archive_io = _watch_archive_io()
+    if args.no_bulk_conversion:
+        _disable_bulk_conversion()
+
     app, context, initial_window = create_application(["joyread-reader-perf", str(source)])
     if not isinstance(initial_window, ReaderWindow):
         context.close()
         raise SystemExit("The supplied source did not create an image Reader window.")
     app.setQuitOnLastWindowClosed(False)
     context.archive_extraction_pool.resize(args.pool_gb * 1024**3)
+    archive_io.watch_pool(context.archive_extraction_pool)
+
+    def conversion_is_running() -> bool:
+        """Whether a whole-document warmup is in flight right now.
+
+        Page-turn latency means something different before and after the
+        conversion finishes, so the two must never be pooled into one p95.
+        """
+
+        coordinator = getattr(context, "archive_warmup_coordinator", None)
+        return coordinator is not None and coordinator._active_key is not None  # noqa: SLF001
 
     process = psutil.Process()
     # Concurrent extractors each hold their own decompression dictionary, so
@@ -99,8 +120,12 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
         return parent, children, parent + children
 
     rss_peak, child_peak, tree_peak = sample_tree()
+    overlap_tree_peak = 0
     cache_peak_bytes = page_cache.current_bytes
     cache_peak_entries = len(page_cache)
+    overlap_prepare_ms: list[float] = []
+    ready_prepare_ms: list[float] = []
+    action_during_conversion = False
     cycles: list[dict[str, object]] = []
     window: ReaderWindow | None = initial_window
     cycle_started = perf_counter()
@@ -118,11 +143,14 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     sample_timer.setInterval(16)
 
     def sample() -> None:
-        nonlocal rss_peak, child_peak, tree_peak, cache_peak_bytes, cache_peak_entries
+        nonlocal rss_peak, child_peak, tree_peak, overlap_tree_peak
+        nonlocal cache_peak_bytes, cache_peak_entries
         parent, children, tree = sample_tree()
         rss_peak = max(rss_peak, parent)
         child_peak = max(child_peak, children)
         tree_peak = max(tree_peak, tree)
+        if conversion_is_running():
+            overlap_tree_peak = max(overlap_tree_peak, tree)
         cache_peak_bytes = max(cache_peak_bytes, page_cache.current_bytes)
         cache_peak_entries = max(cache_peak_entries, len(page_cache))
 
@@ -134,12 +162,14 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
 
     def begin_action() -> None:
         nonlocal action_started, action_name, action_page, action_conversion_count
+        nonlocal action_during_conversion
         assert window is not None
         if not actions:
             finish_cycle()
             return
         action_name, action_page = actions.pop(0)
         action_started = perf_counter()
+        action_during_conversion = conversion_is_running()
         action_conversion_count = int(window.canvas.performance_snapshot()["pixmap_conversions"])
         if action_name == "page":
             assert action_page is not None
@@ -238,6 +268,25 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
                 (float(snapshot["paint_max_ms"]) for snapshot in canvas_snapshots),
                 default=0.0,
             ),
+            # Three phases, never one p95: time to first visible page, page
+            # turns competing with a running conversion, and page turns after
+            # it has published.
+            "cold_first_screen_ms": _percentile(
+                [float(cycle["first_screen_ms"] or 0.0) for cycle in cycles], 0.95
+            ),
+            "overlap_prepare_count": len(overlap_prepare_ms),
+            "overlap_prepare_p95_ms": _percentile(overlap_prepare_ms, 0.95),
+            "overlap_prepare_max_ms": max(overlap_prepare_ms, default=0.0),
+            "ready_prepare_count": len(ready_prepare_ms),
+            "ready_prepare_p95_ms": _percentile(ready_prepare_ms, 0.95),
+            "ready_prepare_max_ms": max(ready_prepare_ms, default=0.0),
+            "overlap_process_tree_rss_peak": overlap_tree_peak,
+            "bulk_extractions": archive_io.bulk_extractions,
+            "backend_read_calls": archive_io.backend_reads,
+            "pool_page_reads": archive_io.pool_page_reads,
+            "pool_manifest_reads": archive_io.pool_manifest_reads,
+            "archive_io_threads": archive_io.report(),
+            "decompression_on_gui_thread": archive_io.decompression_on_gui_thread,
             "rss_peak": rss_peak,
             "child_rss_peak": child_peak,
             "max_concurrent_children": max(nonlocal_counts, default=0),
@@ -297,7 +346,14 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
             return
         if action_name is not None and action_is_complete():
             if action_name == "page":
-                page_prepare_ms.append(round((perf_counter() - action_started) * 1000.0, 3))
+                elapsed = round((perf_counter() - action_started) * 1000.0, 3)
+                page_prepare_ms.append(elapsed)
+                # Attributed by the state at the *start* of the turn: a read
+                # that began while conversion was running competed with it.
+                bucket = (
+                    overlap_prepare_ms if action_during_conversion else ready_prepare_ms
+                )
+                bucket.append(elapsed)
             action_name = None
             QTimer.singleShot(30, begin_action)
 
@@ -305,6 +361,86 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     initial_window.show()
     driver.start()
     return int(app.exec())
+
+
+class _ArchiveIoWatch:
+    """Records which threads perform archive I/O, and how much of each kind.
+
+    Decompression must never run on the GUI thread: a page turn that unpacks in
+    the event loop freezes the window. Categories are kept apart because they
+    are not equally serious -- reading a page is real work, while the readiness
+    manifest is a few hundred bytes that the view legitimately asks for while
+    painting. Counting the calls also answers the other half of the acceptance
+    test: one bulk extraction per document instead of one per chunk.
+    """
+
+    _MANIFEST_ENTRY = "__joyread_ready_manifest__.json"
+
+    def __init__(self) -> None:
+        self.threads: dict[str, set[str]] = {}
+        self.bulk_extractions = 0
+        self.backend_reads = 0
+        self.pool_page_reads = 0
+        self.pool_manifest_reads = 0
+
+    @property
+    def decompression_on_gui_thread(self) -> bool:
+        """Whether any page-scale archive work ran in the event loop."""
+
+        return any(
+            "MainThread" in names
+            for category, names in self.threads.items()
+            if category != "pool_manifest"
+        )
+
+    def report(self) -> dict[str, list[str]]:
+        return {category: sorted(names) for category, names in sorted(self.threads.items())}
+
+    def note(self, category: str) -> None:
+        self.threads.setdefault(category, set()).add(threading.current_thread().name)
+
+    def watch_pool(self, pool: object) -> None:
+        original = pool.get
+
+        def wrapped(cache_key, entry_name, *rest, **call_kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+            if entry_name == self._MANIFEST_ENTRY:
+                self.note("pool_manifest")
+                self.pool_manifest_reads += 1
+            else:
+                self.note("pool_page")
+                self.pool_page_reads += 1
+            return original(cache_key, entry_name, *rest, **call_kwargs)
+
+        pool.get = wrapped  # type: ignore[method-assign]
+
+
+def _disable_bulk_conversion() -> None:
+    """Force the chunked warmup path so both halves share one harness."""
+
+    from joyread.core.archive.formats.seven_zip_backend import SevenZipArchiveBackend
+
+    SevenZipArchiveBackend.supports_bulk_extraction = lambda self, source: False  # type: ignore[assignment]
+
+
+def _watch_archive_io() -> _ArchiveIoWatch:
+    from joyread.core.archive.formats.seven_zip_backend import SevenZipArchiveBackend
+    from joyread.core.archive.service import ArchiveImageService
+
+    watch = _ArchiveIoWatch()
+
+    def wrap(owner: object, name: str, counter: str, category: str) -> None:
+        original = getattr(owner, name)
+
+        def wrapped(*call_args, **call_kwargs):  # noqa: ANN002, ANN003, ANN202
+            watch.note(category)
+            setattr(watch, counter, getattr(watch, counter) + 1)
+            return original(*call_args, **call_kwargs)
+
+        setattr(owner, name, wrapped)
+
+    wrap(SevenZipArchiveBackend, "extract_members", "bulk_extractions", "bulk_extract")
+    wrap(ArchiveImageService, "_read_entries_uncached", "backend_reads", "backend_read")
+    return watch
 
 
 def _percentile(values: list[float], percentile: float) -> float:
