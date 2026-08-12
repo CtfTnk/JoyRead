@@ -58,11 +58,11 @@ BulkExtract = Callable[..., None]
 
 
 # Bulk conversion writes to the pool in groups bounded by *both* item count
-# and bytes. `put_many` holds the pool lock for a whole append, so foreground
-# cache reads queue behind it: measured on 174 pages, one whole-book write
-# blocked a read for 19.3 ms against 2.76 ms at 16 items, while the write
-# throughput given up is noise beside the ~330 ms extraction. The byte bound
-# keeps that true when pages are unusually large.
+# and bytes. `put_many` holds the pool lock for a whole append, so a foreground
+# cache read queues behind exactly one hold: measured on 174 pages, a
+# whole-book write holds it for ~22 ms against ~2.4 ms at 16 items, and the
+# write throughput given up is noise beside the ~670 ms conversion. The byte
+# bound keeps that true when pages are unusually large.
 CONVERSION_GROUP_ITEMS = 16
 # A *target*, not a hard cap. One page is the smallest indivisible unit a
 # `put_many` can carry, so a page bigger than the target is written on its own
