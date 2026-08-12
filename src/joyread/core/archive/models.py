@@ -63,6 +63,56 @@ class ArchiveAccessMode(StrEnum):
     EXPENSIVE_READY = "expensive_ready"
 
 
+class ArchiveConversionStatus(StrEnum):
+    """Why a whole-document bulk conversion did or did not publish.
+
+    A single boolean cannot drive the caller correctly. "This container cannot
+    be bulk converted" means the chunked path should run instead, while "the
+    conversion hit a guardrail" means it must not: re-reading the same input
+    through dozens of on-demand extractions walks straight past the limit that
+    just fired.
+    """
+
+    PUBLISHED = "published"
+    ALREADY_PUBLISHED = "already_published"
+    #: No bulk-capable backend for this session's container or page layout.
+    UNSUPPORTED = "unsupported"
+    #: Bulk conversion is capable here but policy declined this document.
+    SKIPPED = "skipped"
+    #: The conversion ran and failed. Never retry it through a slower path.
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveConversionResult:
+    """Outcome of :meth:`ArchiveImageSession.convert_to_cache`."""
+
+    status: ArchiveConversionStatus
+    reason: str = ""
+    pages: int = 0
+
+    @property
+    def is_published(self) -> bool:
+        return self.status in {
+            ArchiveConversionStatus.PUBLISHED,
+            ArchiveConversionStatus.ALREADY_PUBLISHED,
+        }
+
+    @property
+    def allows_chunked_fallback(self) -> bool:
+        """Whether the caller may warm this document the slow way instead.
+
+        Only capability and policy outcomes qualify. ``FAILED`` does not, and
+        neither does a raised ``ArchiveResourceLimitError``, ``ArchiveCancelled``
+        or ``OSError`` -- those stop the warmup outright.
+        """
+
+        return self.status in {
+            ArchiveConversionStatus.UNSUPPORTED,
+            ArchiveConversionStatus.SKIPPED,
+        }
+
+
 @dataclass(frozen=True)
 class ArchiveProbeResult:
     """Result of a shallow, non-interactive archive container probe.

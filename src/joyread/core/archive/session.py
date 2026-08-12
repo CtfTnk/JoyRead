@@ -6,12 +6,20 @@ from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
 import hashlib
 from io import BytesIO
+import logging
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore, RLock
 from time import perf_counter
 
 from PIL import Image, UnidentifiedImageError
 
-from joyread.core.archive.errors import ArchiveReadError, ArchiveResourceLimitError
+from joyread.core.archive.errors import (
+    ArchiveCancelled,
+    ArchiveReadError,
+    ArchiveResourceLimitError,
+)
+from joyread.core.archive.formats.common import read_file_bounded
 from joyread.core.archive.batching import (
     MAX_SEQUENTIAL_BATCH_BYTES,
     MAX_SEQUENTIAL_BATCH_ITEMS,
@@ -19,7 +27,13 @@ from joyread.core.archive.batching import (
 )
 from joyread.core.diagnostics import cache_identity_kind, reader_perf_enabled, reader_perf_event
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
-from joyread.core.archive.models import ArchiveAccessMode, ArchiveContentsEntry, ArchivePage
+from joyread.core.archive.models import (
+    ArchiveAccessMode,
+    ArchiveContentsEntry,
+    ArchiveConversionResult,
+    ArchiveConversionStatus,
+    ArchivePage,
+)
 from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
@@ -34,9 +48,34 @@ EXPENSIVE_ARCHIVE_EXTENSIONS = frozenset({".7z", ".cb7", ".rar", ".cbr"})
 Image.MAX_IMAGE_PIXELS = None
 
 
+logger = logging.getLogger(__name__)
+
 ReadEntries = Callable[
     [ArchiveSource, Sequence[tuple[str, str | None]], ArchiveOperationBudget], dict[str, bytes]
 ]
+#: Extract the named members of one source into a directory in a single pass.
+BulkExtract = Callable[..., None]
+
+
+# Bulk conversion writes to the pool in groups bounded by *both* item count
+# and bytes. `put_many` holds the pool lock for a whole append, so foreground
+# cache reads queue behind it: measured on 174 pages, one whole-book write
+# blocked a read for 19.3 ms against 2.76 ms at 16 items, while the write
+# throughput given up is noise beside the ~330 ms extraction. The byte bound
+# keeps that true when pages are unusually large.
+CONVERSION_GROUP_ITEMS = 16
+# A *target*, not a hard cap. One page is the smallest indivisible unit a
+# `put_many` can carry, so a page bigger than the target is written on its own
+# and the group is that page. Splitting it would require streaming a single
+# member into the bundle, which `put_many` cannot express; the real ceiling on
+# one page stays `ArchiveOpenLimits.max_extracted_item_bytes`. Peak conversion
+# memory is therefore max(target, largest page), and the sample corpus does
+# contain single images near 50 MB.
+CONVERSION_GROUP_TARGET_BYTES = 16 * 1024 * 1024
+# Declared sizes come from archive metadata and are untrusted, so this is a
+# planning allowance, not the enforced limit; the runtime written-bytes bound
+# in the extractor is what actually stops a runaway.
+CONVERSION_DECLARED_TOLERANCE = 1.25
 
 
 class ArchiveImageSession:
@@ -48,6 +87,7 @@ class ArchiveImageSession:
         read_entries: ReadEntries,
         contents: Iterable[ArchiveContentsEntry] = (),
         *,
+        bulk_extract: BulkExtract | None = None,
         document_cache_key: str | None = None,
         extraction_cache: ArchiveExtractionCache | None = None,
         cache_lease: ArchiveCacheLease | None = None,
@@ -56,6 +96,7 @@ class ArchiveImageSession:
     ) -> None:
         self._pages = tuple(pages)
         self._read_entries = read_entries
+        self._bulk_extract = bulk_extract
         self._contents = tuple(contents)
         if cache_lease is not None and (document_cache_key is not None or extraction_cache is not None):
             raise ValueError("Pass cache_lease or legacy cache arguments, not both.")
@@ -178,6 +219,271 @@ class ArchiveImageSession:
             )
         return selected or (first,)
 
+    def convert_to_cache(
+        self,
+        *,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> ArchiveConversionResult:
+        """Extract every page once and publish the whole document to the cache.
+
+        Solid archives make per-batch reads quadratic: each one re-decompresses
+        its own prefix and pays the backend's decompression dictionary again.
+        One pass costs about what a single mid-archive page costs, so the whole
+        book is converted and served from the pool afterwards.
+
+        The result distinguishes "this session cannot be bulk converted" from
+        "the conversion ran and failed", because only the former may be retried
+        through the slower chunked path. Guardrail outcomes -- a resource limit,
+        a stall, a timeout, cancellation, or a disk error -- are raised, not
+        returned, so they cannot be mistaken for either.
+        """
+
+        blocker = self._bulk_conversion_blocker()
+        if blocker is not None:
+            status, reason = blocker
+            logger.debug("Bulk conversion not attempted: %s (%s)", reason, status.value)
+            reader_perf_event(
+                "archive.convert.skipped",
+                status=status.value,
+                reason=reason,
+                pages=self.page_count,
+            )
+            return ArchiveConversionResult(status, reason, self.page_count)
+        if self._cache_is_complete():
+            return ArchiveConversionResult(
+                ArchiveConversionStatus.ALREADY_PUBLISHED,
+                "cache_complete",
+                self.page_count,
+            )
+
+        assert self._cache_lease is not None and self._bulk_extract is not None
+        records = self._pages
+        source = records[0].source
+        password = records[0].password
+        budget = ArchiveOperationBudget(self._limits.max_operation_bytes)
+        # Aggregate cap for the whole conversion, distinct from the per-member
+        # limit that bounds any single page.
+        max_output_bytes = self._conversion_output_cap()
+
+        with self._state_lock:
+            if self._closing or self._closed:
+                return ArchiveConversionResult(
+                    ArchiveConversionStatus.SKIPPED, "session_closing", self.page_count
+                )
+            self._active_reads += 1
+        started = perf_counter()
+        result = ArchiveConversionResult(
+            ArchiveConversionStatus.FAILED, "incomplete", len(records)
+        )
+        try:
+            reader_perf_event(
+                "archive.convert.started",
+                pages=len(records),
+                declared_bytes=self._declared_page_bytes()[0],
+                cap_bytes=max_output_bytes,
+                group_items=CONVERSION_GROUP_ITEMS,
+                group_target_bytes=CONVERSION_GROUP_TARGET_BYTES,
+                identity_kind=self._cache_identity_kind(),
+            )
+            with TemporaryDirectory(prefix="joyread-convert-") as staging:
+                staging_root = Path(staging)
+                self._bulk_extract(
+                    source,
+                    tuple(record.name for record in records),
+                    staging_root,
+                    password,
+                    limits=self._limits,
+                    budget=budget,
+                    max_output_bytes=max_output_bytes,
+                    is_cancelled=is_cancelled,
+                )
+                result = self._publish_staged_pages(
+                    staging_root, budget, is_cancelled=is_cancelled
+                )
+        finally:
+            self._finish_registered_read()
+            reader_perf_event(
+                "archive.convert.completed"
+                if result.is_published
+                else "archive.convert.failed",
+                status=result.status.value,
+                reason=result.reason,
+                pages=len(records),
+                written_bytes=budget.used,
+                elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+            )
+        return result
+
+    def _publish_staged_pages(
+        self,
+        staging_root: Path,
+        budget: ArchiveOperationBudget,
+        *,
+        is_cancelled: Callable[[], bool] | None,
+    ) -> ArchiveConversionResult:
+        """Move staged pages into the cache, then publish once all are present."""
+
+        assert self._cache_lease is not None
+        resolved_root = staging_root.resolve()
+        page_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
+        # A container may legally list one member twice, which the scanner
+        # flattens into two pages. Both cache keys have to be written from the
+        # same staged file, and in the same group, because the file is deleted
+        # as soon as its group is confirmed.
+        keys_by_member: OrderedDict[str, list[str]] = OrderedDict()
+        for page_index, record in enumerate(self._pages):
+            keys_by_member.setdefault(record.name, []).append(page_keys[page_index])
+        group: dict[str, Path] = {}
+        group_bytes = 0
+
+        def flush() -> str | None:
+            """Write one group, or return why the conversion must stop."""
+
+            nonlocal group, group_bytes
+            if not group:
+                return None
+            payloads: dict[str, bytes] = {}
+            for cache_key, path in group.items():
+                payloads[cache_key] = read_file_bounded(
+                    path,
+                    path.name,
+                    max_item_bytes=self._limits.max_extracted_item_bytes,
+                    budget=budget,
+                )
+            if not self._cache_lease.put_many(payloads):
+                return "cache_write_failed"
+            # Verify from metadata before dropping our only other copy. This is
+            # what makes deleting the staged files safe; the whole-document
+            # check still happens atomically at publish time.
+            present = self._cache_lease.contains_many(tuple(payloads))
+            if present != frozenset(payloads):
+                return "cache_group_unverified"
+            for path in set(group.values()):
+                path.unlink(missing_ok=True)
+            group = {}
+            group_bytes = 0
+            return None
+
+        for member_index, (member, cache_keys) in enumerate(keys_by_member.items()):
+            if is_cancelled is not None and is_cancelled():
+                raise ArchiveCancelled("Archive conversion cancelled.")
+            staged = (staging_root / member).resolve()
+            if not staged.is_relative_to(resolved_root) or not staged.is_file():
+                logger.warning(
+                    "Bulk conversion is missing staged member %d of %d; not publishing",
+                    member_index + 1,
+                    len(keys_by_member),
+                )
+                return ArchiveConversionResult(
+                    ArchiveConversionStatus.FAILED, "staged_page_missing", self.page_count
+                )
+            size = staged.stat().st_size
+            if group and (
+                len(group) + len(cache_keys) > CONVERSION_GROUP_ITEMS
+                or group_bytes + size > CONVERSION_GROUP_TARGET_BYTES
+            ):
+                # A page over the target lands in a group of its own here,
+                # which is the intended behaviour: see the constant's comment.
+                failure = flush()
+                if failure is not None:
+                    logger.warning("Bulk conversion stopped: %s", failure)
+                    return ArchiveConversionResult(
+                        ArchiveConversionStatus.FAILED, failure, self.page_count
+                    )
+            for cache_key in cache_keys:
+                group[cache_key] = staged
+            group_bytes += size
+        failure = flush()
+        if failure is not None:
+            logger.warning("Bulk conversion stopped: %s", failure)
+            return ArchiveConversionResult(
+                ArchiveConversionStatus.FAILED, failure, self.page_count
+            )
+        # Last possible moment: publishing after a cancellation would leave a
+        # document marked ready that the caller asked us to abandon.
+        if is_cancelled is not None and is_cancelled():
+            raise ArchiveCancelled("Archive conversion cancelled.")
+        if not self._cache_lease.publish_complete(
+            page_keys,
+            self.page_count,
+            self._cache_signature,
+        ):
+            logger.warning("Bulk conversion did not verify as a whole document")
+            return ArchiveConversionResult(
+                ArchiveConversionStatus.FAILED, "document_unverified", self.page_count
+            )
+        return ArchiveConversionResult(
+            ArchiveConversionStatus.PUBLISHED, "", self.page_count
+        )
+
+    def _bulk_conversion_blocker(
+        self,
+    ) -> tuple[ArchiveConversionStatus, str] | None:
+        """Why this session must not be bulk converted, or ``None`` if it can."""
+
+        unsupported = ArchiveConversionStatus.UNSUPPORTED
+        skipped = ArchiveConversionStatus.SKIPPED
+        if self._bulk_extract is None:
+            return (unsupported, "no_bulk_backend")
+        if not self._can_use_document_cache():
+            return (unsupported, "no_document_cache")
+        if not self._pages:
+            return (skipped, "no_pages")
+        if any(not self._record_is_cacheable(record) for record in self._pages):
+            return (unsupported, "uncacheable_page")
+        # One pass covers one container. A session assembled from several
+        # sources, or from a nested archive held in memory, must not be marked
+        # complete after converting only part of it.
+        if len({id(record.source) for record in self._pages}) != 1:
+            return (unsupported, "multiple_sources")
+        source = self._pages[0].source
+        if source.path is None:
+            return (unsupported, "not_path_backed")
+        declared, has_unknown = self._declared_page_bytes()
+        if has_unknown:
+            # Without every declared size neither the pool-fit test nor the
+            # aggregate output cap can be computed honestly, and treating an
+            # unknown size as zero under-counts both. The chunked path bounds
+            # each read on its own and handles this correctly.
+            return (skipped, "unknown_page_sizes")
+        budget = self._cache_lease.cache_max_bytes if self._cache_lease else 0
+        if declared and budget and declared > budget:
+            # One book must not monopolise the shared pool: it would evict
+            # every other unpinned bundle and keep the pool over budget.
+            return (skipped, "larger_than_pool")
+        return None
+
+    def _declared_page_bytes(self) -> tuple[int, bool]:
+        """Total declared page bytes, and whether any page size is unknown.
+
+        An unknown size must never be folded in as zero: it would silently
+        shrink both the pool-fit test and the aggregate conversion cap, and a
+        cap derived from a partial total kills the extraction part-way through.
+        """
+
+        total = 0
+        has_unknown = False
+        for record in self._pages:
+            if record.size is None:
+                has_unknown = True
+                continue
+            total += max(0, int(record.size))
+        return total, has_unknown
+
+    def _conversion_output_cap(self) -> int | None:
+        """Aggregate ceiling for one conversion, never the per-member limit."""
+
+        declared, has_unknown = self._declared_page_bytes()
+        candidates = [self._limits.max_operation_bytes]
+        if declared and not has_unknown:
+            candidates.append(int(declared * CONVERSION_DECLARED_TOLERANCE))
+        if self._cache_lease is not None and self._cache_lease.cache_max_bytes > 0:
+            # Writing more than the whole pool can hold cannot end well even if
+            # the operation budget would allow it.
+            candidates.append(self._cache_lease.cache_max_bytes)
+        known = [value for value in candidates if value is not None]
+        return min(known) if known else None
+
     def mark_thumbnail_cache_ready(self) -> bool:
         if not self._uses_expensive_cache or not self._can_use_document_cache():
             return False
@@ -185,9 +491,13 @@ class ArchiveImageSession:
             return False
         expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
         assert self._cache_lease is not None
-        if len(self._cache_lease.get_many(expected_keys)) != self.page_count:
-            return False
-        self._cache_lease.mark_complete(self.page_count, self._cache_signature)
+        # Metadata-only: the old ``get_many`` check read every page back into
+        # memory just to count them.
+        self._cache_lease.publish_complete(
+            expected_keys,
+            self.page_count,
+            self._cache_signature,
+        )
         return self._cache_is_complete()
 
     def is_not_empty(self) -> bool:

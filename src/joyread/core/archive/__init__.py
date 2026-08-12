@@ -16,6 +16,8 @@ from joyread.core.archive.limits import ArchiveOpenLimits
 from joyread.core.archive.models import (
     ArchiveAccessMode,
     ArchiveContentsEntry,
+    ArchiveConversionResult,
+    ArchiveConversionStatus,
     ArchivePage,
     ArchivePasswordPolicy,
     ArchivePasswordRequest,
@@ -32,6 +34,8 @@ __all__ = [
     "ArchiveAccessMode",
     "ArchiveCorruptError",
     "ArchiveContentsEntry",
+    "ArchiveConversionResult",
+    "ArchiveConversionStatus",
     "ArchiveDependencyMissing",
     "ArchiveEmptyError",
     "ArchiveError",
