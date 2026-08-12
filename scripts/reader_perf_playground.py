@@ -67,8 +67,40 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     context.archive_extraction_pool.resize(args.pool_gb * 1024**3)
 
     process = psutil.Process()
+    # Concurrent extractors each hold their own decompression dictionary, so
+    # the count bounds how many of those can coexist.
+    nonlocal_counts: list[int] = []
+    page_cache = context.cache_service.reader_page_cache
     started = perf_counter()
-    rss_peak = process.memory_info().rss
+
+    def sample_tree() -> tuple[int, int, int]:
+        """Parent RSS, child RSS, and their sum at one instant.
+
+        Extraction now runs in a `7zz` subprocess, so parent-only RSS
+        understates what JoyRead costs the machine. Parent and children must be
+        read at the same tick: adding separately-observed peaks gives an upper
+        bound, not a real simultaneous peak.
+        """
+
+        try:
+            parent = process.memory_info().rss
+        except psutil.Error:
+            return 0, 0, 0
+        children = 0
+        live = 0
+        for child in process.children(recursive=True):
+            try:
+                children += child.memory_info().rss
+                live += 1
+            except psutil.Error:
+                # A short-lived extractor can exit mid-walk; skip it.
+                continue
+        nonlocal_counts.append(live)
+        return parent, children, parent + children
+
+    rss_peak, child_peak, tree_peak = sample_tree()
+    cache_peak_bytes = page_cache.current_bytes
+    cache_peak_entries = len(page_cache)
     cycles: list[dict[str, object]] = []
     window: ReaderWindow | None = initial_window
     cycle_started = perf_counter()
@@ -86,8 +118,13 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     sample_timer.setInterval(16)
 
     def sample() -> None:
-        nonlocal rss_peak
-        rss_peak = max(rss_peak, process.memory_info().rss)
+        nonlocal rss_peak, child_peak, tree_peak, cache_peak_bytes, cache_peak_entries
+        parent, children, tree = sample_tree()
+        rss_peak = max(rss_peak, parent)
+        child_peak = max(child_peak, children)
+        tree_peak = max(tree_peak, tree)
+        cache_peak_bytes = max(cache_peak_bytes, page_cache.current_bytes)
+        cache_peak_entries = max(cache_peak_entries, len(page_cache))
 
     sample_timer.timeout.connect(sample)
     sample_timer.start()
@@ -202,6 +239,17 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
                 default=0.0,
             ),
             "rss_peak": rss_peak,
+            "child_rss_peak": child_peak,
+            "max_concurrent_children": max(nonlocal_counts, default=0),
+            # The honest number: parent and children measured together.
+            "process_tree_rss_peak": tree_peak,
+            "page_cache_peak_bytes": cache_peak_bytes,
+            "page_cache_max_bytes": page_cache.max_bytes,
+            "page_cache_peak_entries": cache_peak_entries,
+            "page_cache_peak_fill": (
+                round(cache_peak_bytes / page_cache.max_bytes, 4)
+                if page_cache.max_bytes else 0.0
+            ),
             "rss_post_close": [cycle["rss_post_close"] for cycle in cycles],
             "session_drain_ms": [cycle["session_drain_ms"] for cycle in cycles],
             "pool_bytes": context.archive_extraction_pool.current_bytes,

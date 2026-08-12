@@ -179,8 +179,20 @@ def run_archive_file_command(
     output_directory: Path,
     max_output_bytes: int | None,
     budget: ArchiveOperationBudget,
+    stall_seconds: float | None = None,
 ) -> int:
-    """Run a managed extractor and bound bytes written under its temp root."""
+    """Run a managed extractor and bound bytes written under its temp root.
+
+    ``timeout_seconds`` is a ceiling on total runtime. ``stall_seconds``, when
+    given, additionally fails a run that stops making progress.
+
+    Liveness is *either* new bytes under ``output_directory`` *or* new output
+    from the backend. Written bytes alone are not enough: extracting a late
+    member of a large solid archive means decompressing every member before it,
+    which can legitimately run for a long time before the first byte is
+    written. Backends that report progress (7-Zip with ``-bsp2``) stay visibly
+    alive through that phase; those that do not still get the byte signal.
+    """
 
     stderr: list[bytes] = []
     output_limit, limit_name = _remaining_output_limit(max_output_bytes, budget)
@@ -196,13 +208,22 @@ def run_archive_file_command(
     except OSError as exc:
         raise ArchiveDependencyMissing(f"Could not start archive backend: {command[0]}") from exc
 
+    # Counts every chunk, including those past the retention cap, so backend
+    # chatter keeps proving liveness even once we stop keeping the text.
+    activity = [0]
+
     def read_stderr() -> None:
         assert process.stderr is not None
         remaining = 64 * 1024
+        # read1() returns as soon as anything is available. A plain read() waits
+        # for the full request, which would hide the trickle of progress output
+        # that proves a long decompression is still alive.
+        read_available = getattr(process.stderr, "read1", process.stderr.read)
         while True:
-            chunk = process.stderr.read(64 * 1024)
+            chunk = read_available(64 * 1024)
             if not chunk:
                 return
+            activity[0] += len(chunk)
             if remaining > 0:
                 stderr.append(chunk[:remaining])
                 remaining -= len(chunk)
@@ -210,18 +231,27 @@ def run_archive_file_command(
     stderr_thread = Thread(target=read_stderr, daemon=True)
     stderr_thread.start()
     started_at = time.monotonic()
+    last_progress_at = started_at
+    observed_bytes = 0
+    observed_activity = 0
+
+    def abandon(error: ArchiveResourceLimitError) -> None:
+        process.kill()
+        process.wait()
+        stderr_thread.join()
+        raise error
+
     while True:
         wait_timeout = 0.05
         if timeout_seconds is not None:
             remaining = timeout_seconds - (time.monotonic() - started_at)
             if remaining <= 0:
-                process.kill()
-                process.wait()
-                stderr_thread.join()
-                raise ArchiveResourceLimitError(
-                    "external_command_timeout_seconds",
-                    maximum=timeout_seconds,
-                    subject=entry_name,
+                abandon(
+                    ArchiveResourceLimitError(
+                        "external_command_timeout_seconds",
+                        maximum=timeout_seconds,
+                        subject=entry_name,
+                    )
                 )
             wait_timeout = min(wait_timeout, remaining)
         try:
@@ -230,14 +260,33 @@ def run_archive_file_command(
         except subprocess.TimeoutExpired:
             output_total = _directory_output_bytes(output_directory, stop_after=output_limit)
             if output_limit is not None and output_total > output_limit:
-                process.kill()
-                process.wait()
-                stderr_thread.join()
-                raise ArchiveResourceLimitError(
-                    limit_name,
-                    actual=output_total,
-                    maximum=output_limit,
-                    subject=entry_name,
+                abandon(
+                    ArchiveResourceLimitError(
+                        limit_name,
+                        actual=output_total,
+                        maximum=output_limit,
+                        subject=entry_name,
+                    )
+                )
+            now = time.monotonic()
+            current_activity = activity[0]
+            if output_total > observed_bytes or current_activity > observed_activity:
+                observed_bytes = max(observed_bytes, output_total)
+                observed_activity = current_activity
+                last_progress_at = now
+            elif stall_seconds is not None and now - last_progress_at >= stall_seconds:
+                logger.debug(
+                    "Archive backend %s stalled for %.1fs on entry=%s",
+                    command[0],
+                    now - last_progress_at,
+                    entry_name,
+                )
+                abandon(
+                    ArchiveResourceLimitError(
+                        "external_command_stall_seconds",
+                        maximum=int(stall_seconds),
+                        subject=entry_name,
+                    )
                 )
     stderr_thread.join()
     output_total = _directory_output_bytes(output_directory, stop_after=output_limit)
