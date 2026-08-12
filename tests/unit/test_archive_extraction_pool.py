@@ -510,3 +510,67 @@ def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> N
 
     assert pool.current_bytes == 0
     assert not directory.exists()
+
+
+def test_contains_many_verifies_without_reading_payloads(tmp_path: Path) -> None:
+    """Verification must not pull a whole book into memory."""
+
+    pool = ArchiveExtractionPool(tmp_path, 64 * 1024 * 1024)
+    key = "file:book"
+    assert pool.put_many(key, {"a.jpg": b"x" * 2048, "b.jpg": b"y" * 2048})
+
+    reads: list[str] = []
+    original_get = ArchiveExtractionPool.get
+
+    def tracking_get(self, document_cache_key, entry_name):  # noqa: ANN001, ANN202
+        reads.append(entry_name)
+        return original_get(self, document_cache_key, entry_name)
+
+    ArchiveExtractionPool.get = tracking_get  # type: ignore[method-assign]
+    try:
+        present = pool.contains_many(key, ("a.jpg", "b.jpg", "missing.jpg"))
+    finally:
+        ArchiveExtractionPool.get = original_get  # type: ignore[method-assign]
+
+    assert present == frozenset({"a.jpg", "b.jpg"})
+    assert reads == [], "contains_many must not read entry payloads"
+
+
+def test_put_many_reports_failure_so_callers_do_not_publish(tmp_path: Path) -> None:
+    """A silent write failure would publish a bundle that is missing pages."""
+
+    pool = ArchiveExtractionPool(tmp_path, 64 * 1024 * 1024)
+    key = "file:book"
+    assert pool.put_many(key, {"a.jpg": b"x" * 1024}) is True
+
+    # Replace the bundle with a directory so the append genuinely fails.
+    bundle = next(tmp_path.glob("*.partial.zip"))
+    bundle.unlink()
+    bundle.mkdir()
+
+    assert pool.put_many(key, {"b.jpg": b"y" * 1024}) is False
+
+
+def test_mark_complete_reports_whether_it_published(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path, 64 * 1024 * 1024)
+    key = "file:book"
+    pool.put_many(key, {"a.jpg": b"x" * 1024})
+
+    assert pool.mark_complete(key, 1, "sig") is True
+    assert pool.is_complete(key, 1, "sig")
+    # Publishing twice is not a failure; the bundle is already final.
+    assert pool.mark_complete(key, 1, "sig") is True
+
+
+def test_a_failed_write_keeps_mark_complete_from_publishing(tmp_path: Path) -> None:
+    """The whole point of checkable writes: never publish a short bundle."""
+
+    pool = ArchiveExtractionPool(tmp_path, 64 * 1024 * 1024)
+    key = "file:book"
+    pool.put_many(key, {"a.jpg": b"x" * 1024})
+    bundle = next(tmp_path.glob("*.partial.zip"))
+    bundle.unlink()
+    bundle.mkdir()
+
+    assert pool.mark_complete(key, 2, "sig") is False
+    assert not pool.is_complete(key, 2, "sig")

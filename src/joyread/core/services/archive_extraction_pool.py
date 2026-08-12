@@ -60,17 +60,21 @@ class ArchiveExtractionCache(Protocol):
 
     def get(self, document_cache_key: str, entry_name: str) -> bytes | None: ...
 
-    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None: ...
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> bool: ...
 
-    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None: ...
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> bool: ...
 
     def contains(self, document_cache_key: str, entry_name: str) -> bool: ...
+
+    def contains_many(
+        self, document_cache_key: str, entry_names: tuple[str, ...]
+    ) -> frozenset[str]: ...
 
     def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]: ...
 
     def is_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool: ...
 
-    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None: ...
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool: ...
 
     def purge(self, document_cache_key: str) -> None: ...
 
@@ -190,7 +194,48 @@ class ArchiveExtractionPool:
             return payload
 
     def contains(self, document_cache_key: str, entry_name: str) -> bool:
-        return self.get(document_cache_key, entry_name) is not None
+        return bool(self.contains_many(document_cache_key, (entry_name,)))
+
+    def contains_many(
+        self, document_cache_key: str, entry_names: tuple[str, ...]
+    ) -> frozenset[str]:
+        """Return which entries are present, reading the zip directory only.
+
+        Bulk conversion has to confirm every page landed before it deletes its
+        staging copies and publishes. ``get_many`` cannot answer that: it
+        returns payloads, so verifying a whole book would pull the book into
+        memory.
+        """
+
+        self._ensure_reconciled()
+        if self._directory is None or not entry_names:
+            return frozenset()
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return frozenset()
+        wanted = {self._safe_entry_name(name): name for name in entry_names if name}
+        if not wanted:
+            return frozenset()
+        with self._lock:
+            entry = self._index.get(book_key)
+            if entry is None or not entry.path.exists():
+                if entry is not None:
+                    self._forget_locked(book_key)
+                return frozenset()
+            try:
+                with ZipFile(entry.path, "r") as archive:
+                    present = set(archive.namelist())
+            except (BadZipFile, OSError) as exc:
+                logger.warning(
+                    "Dropping corrupt archive bundle %s during verification: %s",
+                    entry.path,
+                    exc,
+                )
+                self._forget_locked(book_key)
+                return frozenset()
+        return frozenset(
+            original for safe, original in wanted.items() if safe in present
+        )
 
     def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
         payloads: dict[str, bytes] = {}
@@ -209,27 +254,34 @@ class ArchiveExtractionPool:
             _identity_kind(document_cache_key),
         )
 
-    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None:
-        self.put(
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
+        """Write the ready manifest and publish. Returns whether it published."""
+
+        if not self.put(
             document_cache_key,
             self._MANIFEST_ENTRY,
             _manifest_bytes(page_count, signature, _identity_kind(document_cache_key)),
-        )
+        ):
+            return False
         book_key = self._book_key_for(document_cache_key)
         if book_key is None or self._directory is None:
-            return
+            return False
         with self._lock:
             entry = self._index.get(book_key)
-            if entry is None or not entry.path.name.endswith(".partial.zip"):
-                return
+            if entry is None:
+                return False
+            if not entry.path.name.endswith(".partial.zip"):
+                # Already published by an earlier caller.
+                return True
             final_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
             try:
                 os.replace(entry.path, final_path)
                 stat = final_path.stat()
             except OSError as exc:
                 logger.warning("Archive cache publish failed for key=%s: %s", book_key, exc)
-                return
+                return False
             self._index[book_key] = _PoolEntry(final_path, stat.st_size, stat.st_mtime)
+        return True
 
     def purge(self, document_cache_key: str) -> None:
         """Remove all extracted bytes for one immutable document identity."""
@@ -360,25 +412,31 @@ class ArchiveExtractionPool:
                 strict_pending=self._strict_eviction_pending,
             )
 
-    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
-        self.put_many(document_cache_key, {entry_name: data})
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> bool:
+        return self.put_many(document_cache_key, {entry_name: data})
 
-    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None:
-        """Append several entries to the unique resumable staging bundle."""
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> bool:
+        """Append several entries to the unique resumable staging bundle.
+
+        Returns whether the append succeeded. A caller that is about to delete
+        its own copy of the data, or publish the bundle as complete, must check
+        this: a disk or zip error here is otherwise invisible and would publish
+        a bundle that is missing pages.
+        """
 
         if self._directory is None or not payloads:
-            return
+            return False
         self._ensure_reconciled()
         book_key = self._book_key_for(document_cache_key)
         if book_key is None:
-            return
+            return False
         safe_payloads = {
             self._safe_entry_name(entry_name): data
             for entry_name, data in payloads.items()
             if entry_name
         }
         if not safe_payloads:
-            return
+            return False
         with self._lock:
             existing = self._index.get(book_key)
             bundle_path = (
@@ -397,7 +455,7 @@ class ArchiveExtractionPool:
                     len(safe_payloads),
                     exc,
                 )
-                return
+                return False
             entry = _PoolEntry(bundle_path, stat.st_size, stat.st_mtime)
             previous = self._index.pop(book_key, None)
             if previous is not None:
@@ -405,6 +463,7 @@ class ArchiveExtractionPool:
             self._index[book_key] = entry
             self._current_bytes += entry.size
             self._evict_locked(protect_key=book_key)
+        return True
 
     def resize(self, max_bytes: int) -> None:
         if max_bytes < 0:
@@ -767,7 +826,29 @@ class HiddenImageExtractionPool:
             return payload
 
     def contains(self, document_cache_key: str, entry_name: str) -> bool:
-        return self.get(document_cache_key, entry_name) is not None
+        return bool(self.contains_many(document_cache_key, (entry_name,)))
+
+    def contains_many(
+        self, document_cache_key: str, entry_names: tuple[str, ...]
+    ) -> frozenset[str]:
+        """Presence check by path stat only, never reading payloads."""
+
+        self._ensure_reconciled()
+        if self._directory is None or not entry_names:
+            return frozenset()
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return frozenset()
+        present: set[str] = set()
+        with self._lock:
+            for entry_name in entry_names:
+                if not entry_name:
+                    continue
+                key = (book_key, self._entry_key_for(entry_name))
+                entry = self._index.get(key)
+                if entry is not None and entry.path.exists():
+                    present.add(entry_name)
+        return frozenset(present)
 
     def get_many(self, document_cache_key: str, entry_names: tuple[str, ...]) -> dict[str, bytes]:
         payloads: dict[str, bytes] = {}
@@ -786,8 +867,8 @@ class HiddenImageExtractionPool:
             _identity_kind(document_cache_key),
         )
 
-    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> None:
-        self.put(
+    def mark_complete(self, document_cache_key: str, page_count: int, signature: str) -> bool:
+        return self.put(
             document_cache_key,
             self._MANIFEST_ENTRY,
             _manifest_bytes(page_count, signature, _identity_kind(document_cache_key)),
@@ -895,16 +976,16 @@ class HiddenImageExtractionPool:
                 strict_pending=self._strict_eviction_pending,
             )
 
-    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> None:
-        self.put_many(document_cache_key, {entry_name: data})
+    def put(self, document_cache_key: str, entry_name: str, data: bytes) -> bool:
+        return self.put_many(document_cache_key, {entry_name: data})
 
-    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> None:
+    def put_many(self, document_cache_key: str, payloads: Mapping[str, bytes]) -> bool:
         if self._directory is None or not payloads:
-            return
+            return False
         self._ensure_reconciled()
         book_key = _book_key_for_document_cache_key(document_cache_key)
         if book_key is None:
-            return
+            return False
         written: list[tuple[tuple[str, str], _PoolEntry]] = []
         for entry_name, data in payloads.items():
             if not entry_name:
@@ -927,8 +1008,9 @@ class HiddenImageExtractionPool:
                     pass
                 continue
             written.append(((book_key, entry_key), _PoolEntry(final_path, stat.st_size, stat.st_mtime)))
-        if not written:
-            return
+        # Partial success is failure: the caller may be about to drop its copy.
+        if not written or len(written) != len([n for n in payloads if n]):
+            return False
         protect_key = written[-1][0]
         with self._lock:
             for key, entry in written:
@@ -938,6 +1020,7 @@ class HiddenImageExtractionPool:
                 self._index[key] = entry
                 self._current_bytes += entry.size
             self._evict_locked(protect_key=protect_key)
+        return True
 
     def resize(self, max_bytes: int) -> None:
         if max_bytes < 0:
