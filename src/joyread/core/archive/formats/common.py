@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 import subprocess
 from threading import Thread
 import time
 
 from joyread.core.archive.errors import (
+    ArchiveCancelled,
     ArchiveDependencyMissing,
     ArchivePasswordRejected,
     ArchiveReadError,
@@ -180,11 +181,17 @@ def run_archive_file_command(
     max_output_bytes: int | None,
     budget: ArchiveOperationBudget,
     stall_seconds: float | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> int:
     """Run a managed extractor and bound bytes written under its temp root.
 
     ``timeout_seconds`` is a ceiling on total runtime. ``stall_seconds``, when
     given, additionally fails a run that stops making progress.
+
+    ``is_cancelled`` is polled on the same tick as the stall check. Cancelling
+    kills and reaps the child and raises ``ArchiveCancelled``, which is a
+    distinct outcome from a backend failure: it must never be retried through a
+    slower path.
 
     Liveness is *either* new bytes under ``output_directory`` *or* new output
     from the backend. Written bytes alone are not enough: extracting a late
@@ -241,7 +248,15 @@ def run_archive_file_command(
         stderr_thread.join()
         raise error
 
+    def abandon_cancelled() -> None:
+        process.kill()
+        process.wait()
+        stderr_thread.join()
+        raise ArchiveCancelled(f"Archive extraction cancelled: {entry_name}")
+
     while True:
+        if is_cancelled is not None and is_cancelled():
+            abandon_cancelled()
         wait_timeout = 0.05
         if timeout_seconds is not None:
             remaining = timeout_seconds - (time.monotonic() - started_at)
@@ -268,6 +283,8 @@ def run_archive_file_command(
                         subject=entry_name,
                     )
                 )
+            if is_cancelled is not None and is_cancelled():
+                abandon_cancelled()
             now = time.monotonic()
             current_activity = activity[0]
             if output_total > observed_bytes or current_activity > observed_activity:

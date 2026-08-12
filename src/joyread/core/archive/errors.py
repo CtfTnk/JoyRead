@@ -47,6 +47,14 @@ class ArchiveDependencyMissing(ArchiveError):
     """An optional archive backend dependency is unavailable."""
 
 
+class ArchiveCancelled(ArchiveError):
+    """A caller cancelled the operation before it finished.
+
+    Distinct from a failure: nothing is wrong with the archive or the backend,
+    so the work must not be retried through a different path.
+    """
+
+
 class ArchiveResourceLimitError(ArchiveError):
     """A configured archive resource budget was exceeded.
 

@@ -412,3 +412,132 @@ def test_an_oversized_member_is_rejected_before_it_is_read(
         )
 
     assert "page-001.jpg" not in reads, "the member was allocated before being rejected"
+
+
+def _real_backend():
+    from joyread.core.archive.backends import ExtractionBackendResolver
+    return SevenZipArchiveBackend(lambda: None, lambda **_k: "", ExtractionBackendResolver())
+
+
+def _make_archive(tmp_path: Path, names: list[str]) -> Path:
+    """Build a real 7z with the bundled executable."""
+    import subprocess
+    from joyread.core.archive.backends import ExtractionBackendResolver
+    backend = ExtractionBackendResolver().seven_zip()
+    assert backend is not None
+    src = tmp_path / "src"
+    src.mkdir()
+    for name in names:
+        (src / name).write_bytes(name.encode("utf-8") * 64)
+    archive = tmp_path / "book.7z"
+    subprocess.run(
+        [backend.executable, "a", "-bso0", "-bsp0", str(archive), "."],
+        cwd=src, check=True, capture_output=True,
+    )
+    return archive
+
+
+def test_extract_members_takes_only_the_requested_pages(tmp_path: Path) -> None:
+    """Non-page files must never reach staging or the cache."""
+
+    archive = _make_archive(tmp_path, ["p1.jpg", "p2.jpg", "thumbs.db", "nested.7z"])
+    out = tmp_path / "out"
+    _real_backend().extract_members(
+        ArchiveSource(label="book.7z", suffix=".7z", path=archive),
+        ["p1.jpg", "p2.jpg"],
+        out,
+        None,
+        limits=ArchiveOpenLimits(),
+        budget=ArchiveOperationBudget(maximum=None),
+        max_output_bytes=None,
+    )
+
+    assert sorted(p.name for p in out.rglob("*") if p.is_file()) == ["p1.jpg", "p2.jpg"]
+
+
+def test_extract_members_handles_cjk_and_switch_like_names(tmp_path: Path) -> None:
+    """Names travel in a listfile, so they cannot be read as switches."""
+
+    names = ["普通页面 001.jpg", "-oTRICKY.jpg", "plain.jpg"]
+    archive = _make_archive(tmp_path, names)
+    out = tmp_path / "out"
+    _real_backend().extract_members(
+        ArchiveSource(label="book.7z", suffix=".7z", path=archive),
+        names,
+        out,
+        None,
+        limits=ArchiveOpenLimits(),
+        budget=ArchiveOperationBudget(maximum=None),
+        max_output_bytes=None,
+    )
+
+    assert sorted(p.name for p in out.rglob("*") if p.is_file()) == sorted(names)
+
+
+def test_a_member_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
+    """A listfile is newline-delimited; such a name would extract the wrong files."""
+
+    with pytest.raises(backend_module.MemberNameNotRepresentable):
+        backend_module.build_listfile_text(["ok.jpg", "bad\nname.jpg"])
+    with pytest.raises(backend_module.MemberNameNotRepresentable):
+        backend_module.build_listfile_text(["bad\rname.jpg"])
+
+    assert backend_module.build_listfile_text(["a.jpg", "b.jpg"]) == "a.jpg\nb.jpg\n"
+
+
+def test_the_aggregate_cap_is_separate_from_the_per_member_cap(tmp_path: Path, monkeypatch) -> None:
+    """1 GiB per member is the wrong ceiling for a whole book."""
+
+    seen: dict[str, object] = {}
+
+    def capture(command, entry_name, **kwargs):  # noqa: ANN001, ANN002, ANN003
+        seen.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(backend_module, "run_archive_file_command", capture)
+    archive = tmp_path / "book.7z"
+    archive.write_bytes(b"7z\xbc\xaf\x27\x1c")
+
+    backend = SevenZipArchiveBackend(
+        lambda: None, lambda **_k: "", backend_resolver=_Resolver(_Executable())
+    )
+    backend.extract_members(
+        ArchiveSource(label="book.7z", suffix=".7z", path=archive),
+        ["a.jpg"],
+        tmp_path / "out",
+        None,
+        limits=ArchiveOpenLimits(max_extracted_item_bytes=1024),
+        budget=ArchiveOperationBudget(maximum=None),
+        max_output_bytes=99_000,
+    )
+
+    assert seen["max_output_bytes"] == 99_000
+    assert seen["timeout_seconds"] is None, "background conversion uses stall, not wall clock"
+
+
+def test_cancellation_stops_extraction_without_a_fallback_outcome(tmp_path: Path) -> None:
+    from joyread.core.archive.errors import ArchiveCancelled
+    from joyread.core.archive.formats.common import run_archive_file_command
+
+    staging = tmp_path / "out"
+    staging.mkdir()
+    cancelled = {"value": False}
+
+    def is_cancelled() -> bool:
+        return cancelled["value"]
+
+    import threading
+    threading.Timer(0.3, lambda: cancelled.__setitem__("value", True)).start()
+
+    with pytest.raises(ArchiveCancelled):
+        run_archive_file_command(
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            "page-001.jpg",
+            password=None,
+            timeout_seconds=None,
+            output_directory=staging,
+            max_output_bytes=None,
+            budget=ArchiveOperationBudget(maximum=None),
+            stall_seconds=None,
+            is_cancelled=is_cancelled,
+        )

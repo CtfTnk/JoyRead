@@ -12,6 +12,7 @@ from time import perf_counter
 from joyread.core.archive.backends import ExtractionBackendResolver
 from joyread.core.archive.formats.common import read_file_bounded, run_archive_file_command
 from joyread.core.archive.errors import (
+    ArchiveCancelled,
     ArchiveCorruptError,
     ArchiveDependencyMissing,
     ArchiveOpenError,
@@ -34,6 +35,27 @@ logger = logging.getLogger(__name__)
 # decompression that has written nothing yet still counts as alive because
 # "-bsp2" keeps reporting. Silence for this long means genuinely wedged.
 EXTRACT_STALL_SECONDS = 30.0
+
+class MemberNameNotRepresentable(ValueError):
+    """A member name cannot be expressed in a 7-Zip listfile."""
+
+
+def build_listfile_text(members: Sequence[str]) -> str:
+    """Render members as listfile lines, one per line.
+
+    A listfile is newline-delimited, so a member whose name contains CR or LF
+    would silently become two entries and extract the wrong files. Such a name
+    is refused rather than mangled; the caller treats it as "not bulk capable"
+    and stays on the on-demand path.
+    """
+
+    for name in members:
+        if not name:
+            raise MemberNameNotRepresentable("empty member name")
+        if "\n" in name or "\r" in name:
+            raise MemberNameNotRepresentable("member name contains a line break")
+    return "".join(f"{name}\n" for name in members)
+
 
 class SevenZipArchiveBackend:
     """7Z implementation with one password request per archive scan.
@@ -200,6 +222,69 @@ class SevenZipArchiveBackend:
                     buffered_bytes=factory.peak_buffered_bytes if factory is not None else 0,
                     elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
                 )
+
+    def supports_bulk_extraction(self, source: ArchiveSource) -> bool:
+        """Whether this source can be converted in one executable pass."""
+
+        if source.path is None or self._executable_unavailable:
+            return False
+        return self._backend_resolver.seven_zip() is not None
+
+    def extract_members(
+        self,
+        source: ArchiveSource,
+        members: Sequence[str],
+        destination: Path,
+        password: str | None,
+        *,
+        limits: ArchiveOpenLimits,
+        budget: ArchiveOperationBudget,
+        max_output_bytes: int | None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> None:
+        """Extract exactly ``members`` into ``destination`` in one pass.
+
+        Only the scanner's confirmed page members are requested: an archive can
+        carry cover art, metadata, nested archives and junk that must never
+        reach the cache.
+
+        ``max_output_bytes`` is the *aggregate* conversion cap and is separate
+        from ``limits.max_extracted_item_bytes``, which bounds a single member
+        and is the wrong ceiling for a whole book.
+
+        Member names travel in a 7-Zip listfile rather than argv, so they can
+        never be read as switches and no ``ARG_MAX`` limit applies.
+        """
+
+        if source.path is None:
+            raise ArchiveDependencyMissing("Bulk extraction requires a filesystem archive path.")
+        backend = self._backend_resolver.seven_zip()
+        if backend is None:
+            raise ArchiveDependencyMissing("7zz/7z is not installed.")
+        if not members:
+            return
+
+        listfile_text = build_listfile_text(members)
+        destination.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix="joyread-7z-list-") as list_root:
+            listfile = Path(list_root) / "members.txt"
+            listfile.write_text(listfile_text, encoding="utf-8")
+            command = [backend.executable, "x", "-y", "-bso0", "-bsp2", "-spd"]
+            if password is not None:
+                command.append(f"-p{password}")
+            # -scsUTF-8 is required: the corpus contains CJK member names.
+            command.extend(["-scsUTF-8", f"-i@{listfile}", f"-o{destination}", "--", str(source.path)])
+            run_archive_file_command(
+                command,
+                members[0],
+                password=password,
+                timeout_seconds=None,
+                output_directory=destination,
+                max_output_bytes=max_output_bytes,
+                budget=budget,
+                stall_seconds=EXTRACT_STALL_SECONDS,
+                is_cancelled=is_cancelled,
+            )
 
     def _read_with_executable(
         self,
