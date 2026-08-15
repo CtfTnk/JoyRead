@@ -86,6 +86,12 @@ class ArchiveExtractionCache(Protocol):
 
     def purge(self, document_cache_key: str) -> None: ...
 
+    def purge_unpublished(self, document_cache_key: str) -> bool: ...
+
+    def begin_build(self, document_cache_key: str) -> bool: ...
+
+    def end_build(self, document_cache_key: str) -> None: ...
+
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool: ...
 
     def acquire(self, document_cache_key: str) -> None: ...
@@ -129,6 +135,7 @@ class ArchiveExtractionPool:
         self._lock = RLock()
         self._reconciled = False
         self._active: dict[str, int] = {}
+        self._building: dict[str, int] = {}
         self._strict_eviction_pending = False
 
     @property
@@ -384,6 +391,77 @@ class ArchiveExtractionPool:
             self._evict_locked(protect_key=book_key)
         return True
 
+    def purge_unpublished(self, document_cache_key: str) -> bool:
+        """Drop this document's bundle unless it carries a ready manifest.
+
+        On-demand-only documents must not own a growing partial bundle. Earlier
+        builds warmed every document into the cache, so one can still be on
+        disk with no path to completion and no progress of its own to trigger
+        eviction.
+
+        "Published" is judged from the manifest's own validity, never against
+        the calling session's limits. A bundle built under a different limits
+        snapshot is still a complete, readable product for that snapshot, and
+        deleting it would destroy a live reader's warm cache. Inspection and
+        removal share one lock hold so the bundle cannot be published in
+        between and lost.
+        """
+
+        self._ensure_reconciled()
+        if self._directory is None:
+            return False
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return False
+        with self._lock:
+            if self._building.get(book_key, 0) > 0:
+                logger.debug(
+                    "Keeping unpublished archive cache bundle while its build is active"
+                )
+                return False
+            entry = self._index.get(book_key)
+            if entry is None:
+                return False
+            manifest: bytes | None = None
+            if entry.path.exists():
+                try:
+                    with ZipFile(entry.path, "r") as archive:
+                        if self._MANIFEST_ENTRY in archive.namelist():
+                            manifest = archive.read(self._MANIFEST_ENTRY)
+                except (BadZipFile, OSError):
+                    # Unreadable is not published: it cannot serve a page.
+                    manifest = None
+            if _ready_manifest_is_publishable(manifest, book_key):
+                return False
+            self._purge_locked(book_key)
+        logger.info("Discarded an unpublished archive cache bundle for an on-demand document")
+        return True
+
+    def begin_build(self, document_cache_key: str) -> bool:
+        """Protect one document's partial product until publication finishes."""
+
+        self._ensure_reconciled()
+        if self._directory is None:
+            return False
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return False
+        with self._lock:
+            self._building[book_key] = self._building.get(book_key, 0) + 1
+        return True
+
+    def end_build(self, document_cache_key: str) -> None:
+        self._ensure_reconciled()
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            count = self._building.get(book_key, 0)
+            if count <= 1:
+                self._building.pop(book_key, None)
+            else:
+                self._building[book_key] = count - 1
+
     def purge(self, document_cache_key: str) -> None:
         """Remove all extracted bytes for one immutable document identity."""
 
@@ -392,17 +470,20 @@ class ArchiveExtractionPool:
         if book_key is None:
             return
         with self._lock:
-            self._forget_locked(book_key)
-            if self._directory is None:
-                return
-            for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}"):
-                candidate = self._directory / f"{book_key}{suffix}"
-                if candidate.is_symlink() or not candidate.is_file():
-                    continue
-                try:
-                    candidate.unlink(missing_ok=True)
-                except OSError:
-                    pass
+            self._purge_locked(book_key)
+
+    def _purge_locked(self, book_key: str) -> None:
+        self._forget_locked(book_key)
+        if self._directory is None:
+            return
+        for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}"):
+            candidate = self._directory / f"{book_key}{suffix}"
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool:
         """Atomically adopt an ephemeral bundle under a persistent identity."""
@@ -418,6 +499,7 @@ class ArchiveExtractionPool:
             source = self._index.get(source_key)
             if source is None or not source.path.exists():
                 self._move_active_locked(source_key, target_key)
+                self._move_building_locked(source_key, target_key)
                 return True
             target = self._index.get(target_key)
             target_is_ready = bool(
@@ -474,6 +556,7 @@ class ArchiveExtractionPool:
             self._index[target_key] = _PoolEntry(target_path, stat.st_size, stat.st_mtime)
             self._current_bytes += stat.st_size
             self._move_active_locked(source_key, target_key)
+            self._move_building_locked(source_key, target_key)
             self._evict_locked(protect_key=target_key)
             return True
 
@@ -587,6 +670,7 @@ class ArchiveExtractionPool:
                     pass
             self._index.clear()
             self._active.clear()
+            self._building.clear()
             self._current_bytes = 0
             self._strict_eviction_pending = False
         if self._directory is not None:
@@ -821,6 +905,11 @@ class ArchiveExtractionPool:
         if count:
             self._active[target_key] = self._active.get(target_key, 0) + count
 
+    def _move_building_locked(self, source_key: str, target_key: str) -> None:
+        count = self._building.pop(source_key, 0)
+        if count:
+            self._building[target_key] = self._building.get(target_key, 0) + count
+
     def _evict_locked(self, *, protect_key: str | None = None) -> None:
         before = self._current_bytes
         evicted = 0
@@ -829,7 +918,11 @@ class ArchiveExtractionPool:
                 (
                     key
                     for key in self._index
-                    if key != protect_key and self._active.get(key, 0) == 0
+                    if (
+                        key != protect_key
+                        and self._active.get(key, 0) == 0
+                        and self._building.get(key, 0) == 0
+                    )
                 ),
                 None,
             )
@@ -873,6 +966,7 @@ class HiddenImageExtractionPool:
         self._lock = RLock()
         self._reconciled = False
         self._active: dict[str, int] = {}
+        self._building: dict[str, int] = {}
         self._strict_eviction_pending = False
 
     @property
@@ -1016,6 +1110,66 @@ class HiddenImageExtractionPool:
             self._evict_locked(protect_key=key)
         return True
 
+    def purge_unpublished(self, document_cache_key: str) -> bool:
+        """Drop this document's pages unless a valid ready manifest is present.
+
+        Validity is judged from the manifest itself, not against the calling
+        session's limits, so a document completed under a different limits
+        snapshot survives. Inspection and removal share one lock hold.
+        """
+
+        self._ensure_reconciled()
+        if self._directory is None:
+            return False
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return False
+        with self._lock:
+            if self._building.get(book_key, 0) > 0:
+                logger.debug(
+                    "Keeping unpublished hidden archive cache pages while their build is active"
+                )
+                return False
+            if not any(key[0] == book_key for key in self._index):
+                return False
+            manifest: bytes | None = None
+            entry = self._index.get((book_key, self._entry_key_for(self._MANIFEST_ENTRY)))
+            if entry is not None and entry.path.exists():
+                try:
+                    manifest = entry.path.read_bytes()
+                except OSError:
+                    manifest = None
+            if _ready_manifest_is_publishable(manifest, book_key):
+                return False
+            self._forget_book_locked(book_key)
+        logger.info("Discarded unpublished hidden archive cache pages for an on-demand document")
+        return True
+
+    def begin_build(self, document_cache_key: str) -> bool:
+        """Protect one document's partial product until publication finishes."""
+
+        self._ensure_reconciled()
+        if self._directory is None:
+            return False
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return False
+        with self._lock:
+            self._building[book_key] = self._building.get(book_key, 0) + 1
+        return True
+
+    def end_build(self, document_cache_key: str) -> None:
+        self._ensure_reconciled()
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            count = self._building.get(book_key, 0)
+            if count <= 1:
+                self._building.pop(book_key, None)
+            else:
+                self._building[book_key] = count - 1
+
     def purge(self, document_cache_key: str) -> None:
         """Remove all hidden-cache entries for one immutable document identity."""
 
@@ -1041,6 +1195,7 @@ class HiddenImageExtractionPool:
             target_dir = self._directory / target_key
             if not source_dir.is_dir() or source_dir.is_symlink():
                 self._move_active_locked(source_key, target_key)
+                self._move_building_locked(source_key, target_key)
                 return True
             if _is_symlink(target_dir):
                 logger.warning("Hidden archive cache promotion rejected a symlink target")
@@ -1082,6 +1237,7 @@ class HiddenImageExtractionPool:
                 self._index[key] = entry
                 self._current_bytes += entry.size
             self._move_active_locked(source_key, target_key)
+            self._move_building_locked(source_key, target_key)
             if refreshed:
                 self._evict_locked(protect_key=refreshed[-1][0])
             return True
@@ -1200,6 +1356,7 @@ class HiddenImageExtractionPool:
                     pass
             self._index.clear()
             self._active.clear()
+            self._building.clear()
             self._current_bytes = 0
             self._strict_eviction_pending = False
         if self._directory is not None:
@@ -1337,6 +1494,11 @@ class HiddenImageExtractionPool:
         if count:
             self._active[target_key] = self._active.get(target_key, 0) + count
 
+    def _move_building_locked(self, source_key: str, target_key: str) -> None:
+        count = self._building.pop(source_key, 0)
+        if count:
+            self._building[target_key] = self._building.get(target_key, 0) + count
+
     def _evict_locked(self, *, protect_key: tuple[str, str] | None = None) -> None:
         protect_book_key = protect_key[0] if protect_key is not None else None
         before = self._current_bytes
@@ -1346,7 +1508,11 @@ class HiddenImageExtractionPool:
                 (
                     key
                     for key in self._index
-                    if key[0] != protect_book_key and self._active.get(key[0], 0) == 0
+                    if (
+                        key[0] != protect_book_key
+                        and self._active.get(key[0], 0) == 0
+                        and self._building.get(key[0], 0) == 0
+                    )
                 ),
                 None,
             )

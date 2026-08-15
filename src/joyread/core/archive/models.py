@@ -63,23 +63,77 @@ class ArchiveAccessMode(StrEnum):
     EXPENSIVE_READY = "expensive_ready"
 
 
-class ArchiveConversionStatus(StrEnum):
-    """Why a whole-document bulk conversion did or did not publish.
+class ArchiveCachePolicy(StrEnum):
+    """How one document is allowed to use the shared extraction cache.
 
-    A single boolean cannot drive the caller correctly. "This container cannot
-    be bulk converted" means the chunked path should run instead, while "the
-    conversion hit a guardrail" means it must not: re-reading the same input
-    through dozens of on-demand extractions walks straight past the limit that
-    just fired.
+    This is the single decision that foreground reading and background warmup
+    both obey. Deciding it per caller is how a document ended up refused for
+    bulk conversion because it would fill the cache, and then filled the same
+    cache anyway through the slower chunked path.
     """
+
+    #: Cheap random access (zip family). The extraction cache is not involved.
+    DIRECT = "direct"
+    #: Expensive, and the whole document fits: convert it once in the
+    #: background and serve every later read from the cache.
+    BULK_CONVERT = "bulk_convert"
+    #: Expensive, but no backend can convert this container in one pass. Warm
+    #: it forward in bounded batches, which is slower but still bounded.
+    SEQUENTIAL_WARM = "sequential_warm"
+    #: Expensive, and a whole-document cache product must never be built --
+    #: it does not fit, or its size cannot be planned. Foreground reads still
+    #: work; they just are not persisted.
+    ON_DEMAND_ONLY = "on_demand_only"
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveCachePlan:
+    """The cache policy for one document, with the evidence behind it."""
+
+    policy: ArchiveCachePolicy
+    reason: str = ""
+    declared_page_bytes: int = 0
+    has_unknown_page_size: bool = False
+    cache_budget_bytes: int = 0
+
+    @property
+    def allows_background_warmup(self) -> bool:
+        """Whether any background whole-document work may run at all."""
+
+        return self.policy in {
+            ArchiveCachePolicy.BULK_CONVERT,
+            ArchiveCachePolicy.SEQUENTIAL_WARM,
+        }
+
+    @property
+    def allows_persistent_page_writes(self) -> bool:
+        """Whether foreground reads may persist pages into the shared cache.
+
+        ``ON_DEMAND_ONLY`` says no. Persisting there would grow an unbounded
+        partial bundle for a document that can never be completed, which is the
+        exact cost the policy exists to avoid. The bounded Reader RAM cache
+        still absorbs re-reads, and re-extracting after eviction is accepted.
+        """
+
+        return self.policy in {
+            ArchiveCachePolicy.BULK_CONVERT,
+            ArchiveCachePolicy.SEQUENTIAL_WARM,
+        }
+
+
+class ArchiveConversionStatus(StrEnum):
+    """Outcome of one whole-document bulk conversion attempt."""
 
     PUBLISHED = "published"
     ALREADY_PUBLISHED = "already_published"
-    #: No bulk-capable backend for this session's container or page layout.
+    #: No bulk-capable backend for this container or page layout. A bounded
+    #: sequential warmup is still allowed.
     UNSUPPORTED = "unsupported"
-    #: Bulk conversion is capable here but policy declined this document.
-    SKIPPED = "skipped"
-    #: The conversion ran and failed. Never retry it through a slower path.
+    #: Policy refuses a whole-document cache product for this document. No
+    #: background warming of any kind may run.
+    ON_DEMAND_ONLY = "on_demand_only"
+    #: The conversion ran and failed. Never retry it through a slower path:
+    #: re-reading the same input on demand walks past whatever just stopped it.
     FAILED = "failed"
 
 
@@ -96,20 +150,6 @@ class ArchiveConversionResult:
         return self.status in {
             ArchiveConversionStatus.PUBLISHED,
             ArchiveConversionStatus.ALREADY_PUBLISHED,
-        }
-
-    @property
-    def allows_chunked_fallback(self) -> bool:
-        """Whether the caller may warm this document the slow way instead.
-
-        Only capability and policy outcomes qualify. ``FAILED`` does not, and
-        neither does a raised ``ArchiveResourceLimitError``, ``ArchiveCancelled``
-        or ``OSError`` -- those stop the warmup outright.
-        """
-
-        return self.status in {
-            ArchiveConversionStatus.UNSUPPORTED,
-            ArchiveConversionStatus.SKIPPED,
         }
 
 

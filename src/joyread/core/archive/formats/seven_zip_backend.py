@@ -6,13 +6,16 @@ from collections.abc import Callable, Sequence
 from io import BytesIO
 import logging
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from time import perf_counter
 
 from joyread.core.archive.backends import ExtractionBackendResolver
-from joyread.core.archive.formats.common import read_file_bounded, run_archive_file_command
+from joyread.core.archive.formats.seven_zip_command import (
+    EXTRACT_STALL_SECONDS,
+    background_thread_limit,
+    extract_members_to_directory,
+    read_members_via_executable,
+)
 from joyread.core.archive.errors import (
-    ArchiveCancelled,
     ArchiveCorruptError,
     ArchiveDependencyMissing,
     ArchiveOpenError,
@@ -28,33 +31,6 @@ from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 
 
 logger = logging.getLogger(__name__)
-
-# A page turn must not sit behind a wedged subprocess, but a big archive that
-# is still working deserves to finish. Liveness is progress -- staged bytes or
-# backend progress output -- not elapsed time, so a long solid-archive
-# decompression that has written nothing yet still counts as alive because
-# "-bsp2" keeps reporting. Silence for this long means genuinely wedged.
-EXTRACT_STALL_SECONDS = 30.0
-
-class MemberNameNotRepresentable(ValueError):
-    """A member name cannot be expressed in a 7-Zip listfile."""
-
-
-def build_listfile_text(members: Sequence[str]) -> str:
-    """Render members as listfile lines, one per line.
-
-    A listfile is newline-delimited, so a member whose name contains CR or LF
-    would silently become two entries and extract the wrong files. Such a name
-    is refused rather than mangled; the caller treats it as "not bulk capable"
-    and stays on the on-demand path.
-    """
-
-    for name in members:
-        if not name:
-            raise MemberNameNotRepresentable("empty member name")
-        if "\n" in name or "\r" in name:
-            raise MemberNameNotRepresentable("member name contains a line break")
-    return "".join(f"{name}\n" for name in members)
 
 
 class SevenZipArchiveBackend:
@@ -264,27 +240,23 @@ class SevenZipArchiveBackend:
         if not members:
             return
 
-        listfile_text = build_listfile_text(members)
-        destination.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(prefix="joyread-7z-list-") as list_root:
-            listfile = Path(list_root) / "members.txt"
-            listfile.write_text(listfile_text, encoding="utf-8")
-            command = [backend.executable, "x", "-y", "-bso0", "-bsp2", "-spd"]
-            if password is not None:
-                command.append(f"-p{password}")
-            # -scsUTF-8 is required: the corpus contains CJK member names.
-            command.extend(["-scsUTF-8", f"-i@{listfile}", f"-o{destination}", "--", str(source.path)])
-            run_archive_file_command(
-                command,
-                members[0],
-                password=password,
-                timeout_seconds=None,
-                output_directory=destination,
-                max_output_bytes=max_output_bytes,
-                budget=budget,
-                stall_seconds=EXTRACT_STALL_SECONDS,
-                is_cancelled=is_cancelled,
-            )
+        extract_members_to_directory(
+            backend.executable,
+            source.path,
+            members,
+            destination,
+            password,
+            budget=budget,
+            max_output_bytes=max_output_bytes,
+            # Background conversion carries no wall-clock ceiling. A large
+            # solid archive can legitimately run for minutes; the stall
+            # watchdog, the written-bytes bound and cancellation are the
+            # controls that matter.
+            timeout_seconds=None,
+            thread_limit=background_thread_limit(),
+            stall_seconds=EXTRACT_STALL_SECONDS,
+            is_cancelled=is_cancelled,
+        )
 
     def _read_with_executable(
         self,
@@ -313,65 +285,23 @@ class SevenZipArchiveBackend:
             logger.info("No 7-Zip executable resolved; using py7zr for 7Z reads")
             return None
 
-        try:
-            with TemporaryDirectory(prefix="joyread-7z-") as staging:  # noqa: PLR1702
-                staging_root = Path(staging)
-                command = [backend.executable, "x", "-y", "-bso0", f"-o{staging_root}"]
-                if password is not None:
-                    command.append(f"-p{password}")
-                # Progress on stderr keeps the stall watchdog informed while a
-                # solid archive is decompressing members it was not asked for
-                # and has therefore written nothing yet.
-                command.append("-bsp2")
-                # Entry names come from archive metadata and are attacker
-                # controlled. "-spd" stops them being read as wildcards and
-                # "--" stops them being read as switches; without the latter a
-                # member called "-oESCAPED" becomes a second output directory.
-                command.append("-spd")
-                command.append("--")
-                command.append(str(source.path))
-                command.extend(targets)
-                try:
-                    run_archive_file_command(
-                        command,
-                        targets[0],
-                        password=password,
-                        timeout_seconds=limits.external_command_timeout_seconds,
-                        output_directory=staging_root,
-                        max_output_bytes=limits.max_extracted_item_bytes,
-                        budget=budget,
-                        stall_seconds=EXTRACT_STALL_SECONDS,
-                    )
-                except (ArchiveDependencyMissing, ArchiveReadError) as exc:
-                    # Degrade to py7zr, which is slower but independent: it may
-                    # parse a container the executable rejects.
-                    logger.warning(
-                        "7-Zip executable read failed (%s); falling back to py7zr",
-                        type(exc).__name__,
-                    )
-                    return None
-
-                staged = _resolve_staged_targets(staging_root, targets)
-                if staged is None:
-                    logger.warning(
-                        "7-Zip did not produce every requested entry; falling back to py7zr"
-                    )
-                    return None
-                # Reading charges the shared budget, so past this point a
-                # failure must surface rather than fall back to py7zr and
-                # charge the same bytes a second time.
-                payloads = _read_staged_payloads(staged, limits, budget)
-        except (ArchivePasswordRequired, ArchivePasswordRejected):
-            raise
-        except ArchiveResourceLimitError:
-            # A timeout, stall, or byte-limit breach is a deliberate refusal.
-            # py7zr has no equivalent guard, so falling back would run the same
-            # oversized or wedged work again with nothing to stop it.
-            raise
-        except OSError as exc:
-            logger.warning(
-                "7-Zip staging failed (%s); falling back to py7zr", type(exc).__name__
-            )
+        # No exception handling here on purpose. `read_members_via_executable`
+        # owns the fallback boundary: it returns None only while nothing has
+        # been charged to the shared budget, and raises once reading has begun.
+        # Catching those raises would let py7zr re-read and re-charge the same
+        # members. Password and resource-limit errors propagate for the same
+        # reason they always did: py7zr would reject the same password, and it
+        # has no equivalent guardrail to re-apply.
+        payloads = read_members_via_executable(
+            backend.executable,
+            source.path,
+            targets,
+            password,
+            limits=limits,
+            budget=budget,
+        )
+        if payloads is None:
+            logger.warning("7-Zip could not serve this read; falling back to py7zr")
             return None
         if perf_enabled:
             reader_perf_event(
@@ -382,57 +312,6 @@ class SevenZipArchiveBackend:
                 elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
             )
         return payloads
-
-
-def _resolve_staged_targets(
-    staging_root: Path,
-    targets: Sequence[str],
-) -> dict[str, Path] | None:
-    """Locate every requested entry, or ``None`` if any is absent.
-
-    7-Zip exits 0 even when a requested member does not exist, so success is
-    decided here rather than by the return code. Resolution happens before any
-    byte is read so that a shortfall is a clean fallback with nothing charged
-    to the shared budget yet.
-    """
-
-    resolved_root = staging_root.resolve()
-    staged: dict[str, Path] = {}
-    for name in targets:
-        try:
-            resolved = (staging_root / name).resolve()
-            # Entry names come from archive metadata, so refuse anything that
-            # escapes the staging root rather than trusting the container.
-            if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
-                return None
-        except OSError:
-            return None
-        staged[name] = resolved
-    return staged
-
-
-def _read_staged_payloads(
-    staged: dict[str, Path],
-    limits: ArchiveOpenLimits,
-    budget: ArchiveOperationBudget,
-) -> dict[str, bytes]:
-    """Read staged entries under the item limit and the shared budget.
-
-    The executable writes to disk instead of through py7zr's budgeted writer,
-    so the budget must be charged here. ``read_file_bounded`` checks the size
-    from ``stat`` before allocating and consumes as it reads, rather than
-    materialising a whole member and validating it afterwards.
-    """
-
-    return {
-        name: read_file_bounded(
-            path,
-            name,
-            max_item_bytes=limits.max_extracted_item_bytes,
-            budget=budget,
-        )
-        for name, path in staged.items()
-    }
 
 
 def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  # noqa: ANN001

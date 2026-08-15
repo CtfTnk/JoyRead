@@ -12,6 +12,7 @@ from joyread.core.archive.errors import (
     ArchiveReadError,
 )
 from joyread.core.archive.formats import seven_zip_backend as backend_module
+from joyread.core.archive.formats import seven_zip_command as command_module
 from joyread.core.archive.formats.seven_zip_backend import SevenZipArchiveBackend
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveSource
@@ -110,7 +111,7 @@ def test_an_executable_failure_falls_back_to_py7zr(tmp_path: Path, monkeypatch) 
         used.append("7zip")
         raise ArchiveReadError("7zz exited non-zero")
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", failing_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", failing_command)
 
     class _Py7zr:
         PasswordRequired = type("PasswordRequired", (Exception,), {})
@@ -143,7 +144,7 @@ def test_a_rejected_password_is_raised_rather_than_retried(tmp_path: Path, monke
         used.append("7zip")
         raise ArchivePasswordRejected("bad password", archive_path="book.7z")
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", rejecting_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", rejecting_command)
 
     class _Py7zr:
         PasswordRequired = type("PasswordRequired", (Exception,), {})
@@ -230,7 +231,7 @@ def test_a_resource_limit_is_not_retried_through_the_unguarded_fallback(
     def limited_command(*_args, **_kwargs):  # noqa: ANN002, ANN003
         raise ArchiveResourceLimitError("external_command_stall_seconds", subject="page-001.jpg")
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", limited_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", limited_command)
 
     class _Py7zr:
         PasswordRequired = type("PasswordRequired", (Exception,), {})
@@ -262,7 +263,7 @@ def test_executable_reads_charge_the_shared_operation_budget(
             (directory / name).write_bytes(payload)
         return sum(len(v) for v in staged.values())
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", staging_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", staging_command)
 
     budget = ArchiveOperationBudget(maximum=None)
     backend = SevenZipArchiveBackend(
@@ -291,7 +292,7 @@ def test_member_names_cannot_be_read_as_seven_zip_switches(
         (kwargs["output_directory"] / "-oESCAPED").write_bytes(b"payload")
         return 7
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", capturing_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", capturing_command)
 
     backend = SevenZipArchiveBackend(
         lambda: None, lambda **_kwargs: "", backend_resolver=_Resolver(_Executable())
@@ -352,7 +353,7 @@ def test_a_partial_extraction_charges_nothing_before_falling_back(
         (kwargs["output_directory"] / "page-001.jpg").write_bytes(b"x" * 4096)
         return 4096
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", partial_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", partial_command)
 
     class _Py7zr:
         PasswordRequired = type("PasswordRequired", (Exception,), {})
@@ -388,7 +389,7 @@ def test_an_oversized_member_is_rejected_before_it_is_read(
         (kwargs["output_directory"] / "page-001.jpg").write_bytes(b"x" * 8192)
         return 8192
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", staging_command)
+    monkeypatch.setattr(command_module, "run_archive_file_command", staging_command)
 
     reads: list[str] = []
     real_read_bytes = Path.read_bytes
@@ -477,12 +478,12 @@ def test_extract_members_handles_cjk_and_switch_like_names(tmp_path: Path) -> No
 def test_a_member_name_with_a_line_break_is_refused(tmp_path: Path) -> None:
     """A listfile is newline-delimited; such a name would extract the wrong files."""
 
-    with pytest.raises(backend_module.MemberNameNotRepresentable):
-        backend_module.build_listfile_text(["ok.jpg", "bad\nname.jpg"])
-    with pytest.raises(backend_module.MemberNameNotRepresentable):
-        backend_module.build_listfile_text(["bad\rname.jpg"])
+    with pytest.raises(command_module.MemberNameNotRepresentable):
+        command_module.build_listfile_text(["ok.jpg", "bad\nname.jpg"])
+    with pytest.raises(command_module.MemberNameNotRepresentable):
+        command_module.build_listfile_text(["bad\rname.jpg"])
 
-    assert backend_module.build_listfile_text(["a.jpg", "b.jpg"]) == "a.jpg\nb.jpg\n"
+    assert command_module.build_listfile_text(["a.jpg", "b.jpg"]) == "a.jpg\nb.jpg\n"
 
 
 def test_the_aggregate_cap_is_separate_from_the_per_member_cap(tmp_path: Path, monkeypatch) -> None:
@@ -494,7 +495,7 @@ def test_the_aggregate_cap_is_separate_from_the_per_member_cap(tmp_path: Path, m
         seen.update(kwargs)
         return 0
 
-    monkeypatch.setattr(backend_module, "run_archive_file_command", capture)
+    monkeypatch.setattr(command_module, "run_archive_file_command", capture)
     archive = tmp_path / "book.7z"
     archive.write_bytes(b"7z\xbc\xaf\x27\x1c")
 
@@ -513,6 +514,44 @@ def test_the_aggregate_cap_is_separate_from_the_per_member_cap(tmp_path: Path, m
 
     assert seen["max_output_bytes"] == 99_000
     assert seen["timeout_seconds"] is None, "background conversion uses stall, not wall clock"
+
+
+def test_a_multi_member_read_uses_the_operation_cap_for_staging(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Several legal members may legitimately exceed one member's ceiling."""
+
+    staged = {"a.jpg": b"a" * 700, "b.jpg": b"b" * 700}
+    seen: dict[str, object] = {}
+
+    def staging_command(_command, _entry_name, **kwargs):  # noqa: ANN001, ANN003
+        seen.update(kwargs)
+        directory = kwargs["output_directory"]
+        for name, payload in staged.items():
+            (directory / name).write_bytes(payload)
+        return sum(len(payload) for payload in staged.values())
+
+    monkeypatch.setattr(command_module, "run_archive_file_command", staging_command)
+    budget = ArchiveOperationBudget(maximum=4096)
+    backend = SevenZipArchiveBackend(
+        lambda: None,
+        lambda **_kwargs: "",
+        backend_resolver=_Resolver(_Executable()),
+    )
+
+    payloads = backend.read_entries(
+        _source(tmp_path),
+        [(name, None) for name in staged],
+        limits=ArchiveOpenLimits(
+            max_extracted_item_bytes=1024,
+            max_operation_bytes=4096,
+        ),
+        budget=budget,
+    )
+
+    assert payloads == staged
+    assert seen["max_output_bytes"] == 4096
+    assert budget.used == 1400
 
 
 def test_cancellation_stops_extraction_without_a_fallback_outcome(tmp_path: Path) -> None:
@@ -541,3 +580,114 @@ def test_cancellation_stops_extraction_without_a_fallback_outcome(tmp_path: Path
             stall_seconds=None,
             is_cancelled=is_cancelled,
         )
+
+
+def test_a_failure_after_reading_starts_is_terminal(tmp_path: Path, monkeypatch) -> None:
+    """Falling back once the budget is charged would bill the same bytes twice.
+
+    ``read_members_via_executable`` owns the boundary: it may return ``None``
+    only while nothing has been read. After that, a failure has to propagate,
+    or py7zr re-reads the same members and the shared operation budget
+    double-counts them into a limit the real workload never reached.
+    """
+
+    staged = {"page-001.jpg": b"x" * 2048, "page-002.jpg": b"y" * 2048}
+
+    def staging_command(*_args, **kwargs):  # noqa: ANN002, ANN003
+        directory = kwargs["output_directory"]
+        for name, payload in staged.items():
+            (directory / name).write_bytes(payload)
+        return sum(len(value) for value in staged.values())
+
+    monkeypatch.setattr(command_module, "run_archive_file_command", staging_command)
+
+    reads: list[str] = []
+    real_read_file_bounded = command_module.read_file_bounded
+
+    def flaky_read(path, subject, **kwargs):  # noqa: ANN001, ANN003
+        reads.append(subject)
+        if len(reads) > 1:
+            raise OSError("the staging directory went away mid-read")
+        return real_read_file_bounded(path, subject, **kwargs)
+
+    monkeypatch.setattr(command_module, "read_file_bounded", flaky_read)
+
+    class _Py7zr:
+        PasswordRequired = type("PasswordRequired", (Exception,), {})
+        DecompressionError = type("DecompressionError", (Exception,), {})
+        Bad7zFile = type("Bad7zFile", (Exception,), {})
+
+        @staticmethod
+        def SevenZipFile(*_args, **_kwargs):  # noqa: ANN002, ANN003, N802
+            raise AssertionError("a post-charge failure must not fall back to py7zr")
+
+    budget = ArchiveOperationBudget(maximum=None)
+    backend = SevenZipArchiveBackend(
+        lambda: _Py7zr(), lambda **_kwargs: "", backend_resolver=_Resolver(_Executable())
+    )
+
+    with pytest.raises(ArchiveReadError):
+        backend.read_entries(
+            _source(tmp_path),
+            [("page-001.jpg", None), ("page-002.jpg", None)],
+            limits=ArchiveOpenLimits(),
+            budget=budget,
+        )
+
+    assert budget.used == 2048, "only the members actually read may be charged"
+
+
+def test_a_failure_before_reading_starts_still_falls_back(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The other side of the boundary: nothing charged, so a retry is safe."""
+
+    def empty_command(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        return 0
+
+    monkeypatch.setattr(command_module, "run_archive_file_command", empty_command)
+
+    served: list[str] = []
+
+    class _Product:
+        def __init__(self, payload: bytes) -> None:
+            self._payload = payload
+
+        def take_bytes(self) -> bytes:
+            return self._payload
+
+    class _Archive:
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_args) -> bool:  # noqa: ANN002
+            return False
+
+        def extract(self, targets, factory):  # noqa: ANN001
+            for name in targets:
+                served.append(name)
+                factory.products[name] = _Product(b"from-py7zr")
+
+    class _Py7zr:
+        PasswordRequired = type("PasswordRequired", (Exception,), {})
+        DecompressionError = type("DecompressionError", (Exception,), {})
+        Bad7zFile = type("Bad7zFile", (Exception,), {})
+
+        @staticmethod
+        def SevenZipFile(*_args, **_kwargs):  # noqa: ANN002, ANN003, N802
+            return _Archive()
+
+    budget = ArchiveOperationBudget(maximum=None)
+    backend = SevenZipArchiveBackend(
+        lambda: _Py7zr(), lambda **_kwargs: "", backend_resolver=_Resolver(_Executable())
+    )
+    payloads = backend.read_entries(
+        _source(tmp_path),
+        [("page-001.jpg", None)],
+        limits=ArchiveOpenLimits(),
+        budget=budget,
+    )
+
+    assert served == ["page-001.jpg"]
+    assert payloads["page-001.jpg"] == b"from-py7zr"
+    assert budget.used == 0, "the abandoned executable read must charge nothing"

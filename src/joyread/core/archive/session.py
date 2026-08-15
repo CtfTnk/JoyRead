@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from collections.abc import Callable, Iterable, Sequence
+from contextlib import AbstractContextManager, nullcontext
 import hashlib
 from io import BytesIO
 import logging
@@ -15,7 +16,9 @@ from time import perf_counter
 from PIL import Image, UnidentifiedImageError
 
 from joyread.core.archive.errors import (
+    ArchiveBulkUnsupported,
     ArchiveCancelled,
+    ArchiveDependencyMissing,
     ArchiveReadError,
     ArchiveResourceLimitError,
 )
@@ -29,6 +32,8 @@ from joyread.core.diagnostics import cache_identity_kind, reader_perf_enabled, r
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget, ensure_item_size
 from joyread.core.archive.models import (
     ArchiveAccessMode,
+    ArchiveCachePlan,
+    ArchiveCachePolicy,
     ArchiveContentsEntry,
     ArchiveConversionResult,
     ArchiveConversionStatus,
@@ -132,7 +137,90 @@ class ArchiveImageSession:
             for record in self._pages
         )
         self._read_slots = BoundedSemaphore(2 if supports_two_reads else 1)
+        # Decided once, from the scan result and the configured limits, so the
+        # foreground session and the background warmup session for the same
+        # document always reach the same answer.
+        self._cache_plan = self._decide_cache_plan()
         self.current_index = 0
+
+    @property
+    def cache_plan(self) -> ArchiveCachePlan:
+        """How this document may use the shared extraction cache."""
+
+        return self._cache_plan
+
+    def cache_build_guard(self) -> AbstractContextManager[bool]:
+        """Protect grouped cache writes through their final publication."""
+
+        lease = self._cache_lease
+        if lease is None or lease.is_closed:
+            return nullcontext(False)
+        return lease.build_guard()
+
+    def _decide_cache_plan(self) -> ArchiveCachePlan:
+        """Choose one cache policy for this document.
+
+        Order matters. The budget and planning tests come before the
+        capability test so that a document too large for the shared cache is
+        refused whichever path would have built the product -- refusing bulk
+        conversion and then filling the same cache through sequential warmup
+        would spend more time to reach the same place.
+        """
+
+        declared, has_unknown = self._declared_page_bytes()
+        budget = self._cache_lease.cache_max_bytes if self._cache_lease is not None else 0
+
+        def plan(policy: ArchiveCachePolicy, reason: str) -> ArchiveCachePlan:
+            return ArchiveCachePlan(policy, reason, declared, has_unknown, budget)
+
+        if not self._uses_expensive_cache:
+            return plan(ArchiveCachePolicy.DIRECT, "cheap_random_access")
+        if self._cache_lease is None or self._cache_lease.is_closed:
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "no_document_cache")
+        if not self._pages:
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "no_pages")
+        cacheable = [record for record in self._pages if self._record_is_persistable(record)]
+        if not cacheable:
+            # Encrypted pages, or a source that refuses persistence. Warming
+            # would re-read the whole book and keep none of it.
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "no_cacheable_page")
+        if has_unknown:
+            # Without every declared size the total cannot be planned: an
+            # unknown counted as zero under-reports both the fit test and the
+            # aggregate output cap, and a cap from a partial total kills the
+            # extraction part-way through.
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "unknown_page_sizes")
+        if budget <= 0:
+            # A cache that holds nothing is the strongest reason to refuse a
+            # whole-document product, not a reason to skip the test. Reading
+            # `0` as "no budget configured" would send a whole-archive
+            # extraction to a cache that cannot store one byte of it.
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "no_cache_budget")
+        if declared > budget:
+            # One document must not monopolise the shared cache. It would evict
+            # every other unpinned book and hold the cache over budget.
+            return plan(ArchiveCachePolicy.ON_DEMAND_ONLY, "larger_than_cache")
+        operation_budget = self._limits.max_operation_bytes
+        if operation_budget is not None and declared > operation_budget:
+            # The conversion command is bounded by this same ceiling. Starting
+            # work that the known declared output cannot finish would waste
+            # almost the entire budget before failing near the end.
+            return plan(
+                ArchiveCachePolicy.ON_DEMAND_ONLY,
+                "larger_than_operation_budget",
+            )
+        if self._bulk_extract is None:
+            return plan(ArchiveCachePolicy.SEQUENTIAL_WARM, "no_bulk_backend")
+        if len(cacheable) != len(self._pages):
+            return plan(ArchiveCachePolicy.SEQUENTIAL_WARM, "mixed_cacheable_pages")
+        # One pass covers one container. A session assembled from several
+        # sources, or from a nested archive held in memory, must not be marked
+        # complete after converting only part of it.
+        if len({id(record.source) for record in self._pages}) != 1:
+            return plan(ArchiveCachePolicy.SEQUENTIAL_WARM, "multiple_sources")
+        if self._pages[0].source.path is None:
+            return plan(ArchiveCachePolicy.SEQUENTIAL_WARM, "not_path_backed")
+        return plan(ArchiveCachePolicy.BULK_CONVERT, "")
 
     @property
     def page_count(self) -> int:
@@ -170,7 +258,11 @@ class ArchiveImageSession:
 
     @property
     def requires_sequential_warmup(self) -> bool:
-        return self._requires_sequential_warmup and not self._cache_is_complete()
+        return (
+            self._cache_plan.allows_background_warmup
+            and self._requires_sequential_warmup
+            and not self._cache_is_complete()
+        )
 
     def thumbnail_batch_size(self, page_index: int) -> int:
         if self.access_mode_for(page_index) != ArchiveAccessMode.EXPENSIVE_COLD:
@@ -238,17 +330,49 @@ class ArchiveImageSession:
         returned, so they cannot be mistaken for either.
         """
 
-        blocker = self._bulk_conversion_blocker()
-        if blocker is not None:
-            status, reason = blocker
-            logger.debug("Bulk conversion not attempted: %s (%s)", reason, status.value)
+        plan = self._cache_plan
+        if plan.policy is not ArchiveCachePolicy.BULK_CONVERT:
+            status = (
+                ArchiveConversionStatus.ON_DEMAND_ONLY
+                if plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
+                else ArchiveConversionStatus.UNSUPPORTED
+            )
+            logger.debug(
+                "Bulk conversion not attempted: policy=%s reason=%s",
+                plan.policy.value,
+                plan.reason,
+            )
             reader_perf_event(
                 "archive.convert.skipped",
                 status=status.value,
-                reason=reason,
+                policy=plan.policy.value,
+                reason=plan.reason,
                 pages=self.page_count,
             )
-            return ArchiveConversionResult(status, reason, self.page_count)
+            return ArchiveConversionResult(status, plan.reason, self.page_count)
+        with self._state_lock:
+            if self._closing or self._closed:
+                return ArchiveConversionResult(
+                    ArchiveConversionStatus.FAILED,
+                    "session_closing",
+                    self.page_count,
+                )
+        with self.cache_build_guard() as build_registered:
+            if not build_registered:
+                return ArchiveConversionResult(
+                    ArchiveConversionStatus.FAILED,
+                    "cache_build_unavailable",
+                    self.page_count,
+                )
+            return self._convert_to_cache_while_guarded(is_cancelled=is_cancelled)
+
+    def _convert_to_cache_while_guarded(
+        self,
+        *,
+        is_cancelled: Callable[[], bool] | None,
+    ) -> ArchiveConversionResult:
+        """Run conversion while unpublished cleanup is deferred."""
+
         if self._cache_is_complete():
             return ArchiveConversionResult(
                 ArchiveConversionStatus.ALREADY_PUBLISHED,
@@ -267,8 +391,10 @@ class ArchiveImageSession:
 
         with self._state_lock:
             if self._closing or self._closed:
+                # Lifecycle, not capability. The document is being torn down,
+                # so nothing may start a slower whole-document pass instead.
                 return ArchiveConversionResult(
-                    ArchiveConversionStatus.SKIPPED, "session_closing", self.page_count
+                    ArchiveConversionStatus.FAILED, "session_closing", self.page_count
                 )
             self._active_reads += 1
         started = perf_counter()
@@ -300,6 +426,18 @@ class ArchiveImageSession:
                 result = self._publish_staged_pages(
                     staging_root, budget, is_cancelled=is_cancelled
                 )
+        except (ArchiveBulkUnsupported, ArchiveDependencyMissing) as exc:
+            # The backend cannot express this input -- an unrepresentable member
+            # name, or a missing executable discovered late. That is a
+            # capability gap, so a bounded sequential warmup may still run.
+            logger.info(
+                "Bulk conversion unavailable for this container (%s); staying on the "
+                "bounded path",
+                type(exc).__name__,
+            )
+            result = ArchiveConversionResult(
+                ArchiveConversionStatus.UNSUPPORTED, "backend_cannot_represent", len(records)
+            )
         finally:
             self._finish_registered_read()
             reader_perf_event(
@@ -416,43 +554,6 @@ class ArchiveImageSession:
             ArchiveConversionStatus.PUBLISHED, "", self.page_count
         )
 
-    def _bulk_conversion_blocker(
-        self,
-    ) -> tuple[ArchiveConversionStatus, str] | None:
-        """Why this session must not be bulk converted, or ``None`` if it can."""
-
-        unsupported = ArchiveConversionStatus.UNSUPPORTED
-        skipped = ArchiveConversionStatus.SKIPPED
-        if self._bulk_extract is None:
-            return (unsupported, "no_bulk_backend")
-        if not self._can_use_document_cache():
-            return (unsupported, "no_document_cache")
-        if not self._pages:
-            return (skipped, "no_pages")
-        if any(not self._record_is_cacheable(record) for record in self._pages):
-            return (unsupported, "uncacheable_page")
-        # One pass covers one container. A session assembled from several
-        # sources, or from a nested archive held in memory, must not be marked
-        # complete after converting only part of it.
-        if len({id(record.source) for record in self._pages}) != 1:
-            return (unsupported, "multiple_sources")
-        source = self._pages[0].source
-        if source.path is None:
-            return (unsupported, "not_path_backed")
-        declared, has_unknown = self._declared_page_bytes()
-        if has_unknown:
-            # Without every declared size neither the pool-fit test nor the
-            # aggregate output cap can be computed honestly, and treating an
-            # unknown size as zero under-counts both. The chunked path bounds
-            # each read on its own and handles this correctly.
-            return (skipped, "unknown_page_sizes")
-        budget = self._cache_lease.cache_max_bytes if self._cache_lease else 0
-        if declared and budget and declared > budget:
-            # One book must not monopolise the shared pool: it would evict
-            # every other unpinned bundle and keep the pool over budget.
-            return (skipped, "larger_than_pool")
-        return None
-
     def _declared_page_bytes(self) -> tuple[int, bool]:
         """Total declared page bytes, and whether any page size is unknown.
 
@@ -484,10 +585,28 @@ class ArchiveImageSession:
         known = [value for value in candidates if value is not None]
         return min(known) if known else None
 
+    def discard_unpublished_cache(self) -> bool:
+        """Drop a partial bundle this document is not allowed to complete.
+
+        Only meaningful under ``ON_DEMAND_ONLY``: an earlier build may have
+        left a partial bundle that can never be finished and whose own progress
+        will never trigger eviction. Any published bundle is kept, including
+        one completed under a different limits snapshot -- that is a live
+        product for whichever reader is using those limits.
+        """
+
+        lease = self._cache_lease
+        if lease is None or lease.is_closed:
+            return False
+        with self._state_lock:
+            if self._closing or self._closed:
+                return False
+        return lease.purge_unpublished()
+
     def mark_thumbnail_cache_ready(self) -> bool:
         if not self._uses_expensive_cache or not self._can_use_document_cache():
             return False
-        if any(not self._record_is_cacheable(record) for record in self._pages):
+        if any(not self._record_is_cache_writable(record) for record in self._pages):
             return False
         expected_keys = tuple(self._cache_page_key(index) for index in range(self.page_count))
         assert self._cache_lease is not None
@@ -586,7 +705,7 @@ class ArchiveImageSession:
                 if not self.is_valid_index(page_index):
                     continue
                 record = self._pages[page_index]
-                if self._record_is_cacheable(record):
+                if self._record_is_cache_readable(record):
                     assert self._cache_lease is not None
                     cached = self._cache_lease.get(self._cache_page_key(page_index))
                     if cached is not None:
@@ -618,7 +737,7 @@ class ArchiveImageSession:
                     if page is None:
                         continue
                     results[result_index] = page
-                    if self._record_is_cacheable(record):
+                    if self._record_is_cache_writable(record):
                         cache_payloads[self._cache_page_key(page_index)] = payload
 
             if cache_payloads:
@@ -682,11 +801,33 @@ class ArchiveImageSession:
             and not self._cache_lease.is_closed
         )
 
-    def _record_is_cacheable(self, record: PageRecord) -> bool:
+    def _record_is_persistable(self, record: PageRecord) -> bool:
+        """Whether this page is allowed in the cache at all, ignoring policy.
+
+        Encrypted pages and sources that refuse persistence are excluded
+        outright: decrypted bytes must never reach a durable cache product.
+        """
+
         return (
             self._can_use_document_cache()
             and record.password is None
             and record.source.allow_persistent_cache
+        )
+
+    def _record_is_cache_readable(self, record: PageRecord) -> bool:
+        """Whether a cached copy of this page may be served.
+
+        Reads stay allowed under every policy. A document that may not *build*
+        a cache product can still be served from one that already exists --
+        typically a bundle published before the cache budget was lowered.
+        """
+
+        return self._record_is_persistable(record)
+
+    def _record_is_cache_writable(self, record: PageRecord) -> bool:
+        return (
+            self._record_is_persistable(record)
+            and self._cache_plan.allows_persistent_page_writes
         )
 
     def _cache_is_complete(self) -> bool:

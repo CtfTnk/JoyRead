@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_BYTES, plan_read_batch
+from joyread.core.archive.models import ArchiveCachePlan, ArchiveCachePolicy
 from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.archive.session import ArchiveImageSession
 from joyread.core.reader.session_service import ReaderSessionService
@@ -58,12 +60,17 @@ def test_archive_session_only_batches_cold_sequential_pages_from_same_source() -
 def test_disk_warmup_uses_the_session_batch_planner(monkeypatch, tmp_path) -> None:  # noqa: ANN001
     class _WarmupSession:
         page_count = 10
+        cache_plan = ArchiveCachePlan(ArchiveCachePolicy.SEQUENTIAL_WARM, "test")
 
         def __init__(self) -> None:
             self.reads: list[tuple[int, ...]] = []
             self.plans: list[tuple[int, ...]] = []
             self.ready = False
             self.closed = False
+
+        @contextmanager
+        def cache_build_guard(self):  # noqa: ANN201
+            yield True
 
         def plan_read_batch(self, candidates, *, max_items=8):  # noqa: ANN001, ANN201
             self.plans.append(tuple(candidates))

@@ -501,6 +501,74 @@ def test_explicit_resize_finishes_when_active_oversized_lease_closes(tmp_path: P
     assert pool.current_bytes <= pool.max_bytes
 
 
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_unpublished_cleanup_defers_until_an_active_build_finishes(
+    tmp_path: Path,
+    pool_type,  # noqa: ANN001
+) -> None:
+    """A purge between grouped writes must not invalidate final publication."""
+
+    pool = pool_type(tmp_path / "cache", max_bytes=4096)
+    builder = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    observer = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+
+    with builder.build_guard() as registered:
+        assert registered is True
+        assert builder.put_many({"pages/sig/00000000": b"first"}) is True
+        assert observer.get("pages/sig/00000000") == b"first"
+        assert observer.purge_unpublished() is False
+        assert builder.put_many({"pages/sig/00000001": b"second"}) is True
+        assert builder.publish_complete(
+            ("pages/sig/00000000", "pages/sig/00000001"),
+            2,
+            "sig",
+        ) is True
+
+    assert observer.purge_unpublished() is False
+    assert builder.get("pages/sig/00000000") == b"first"
+    assert builder.get("pages/sig/00000001") == b"second"
+
+
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_abandoned_unpublished_build_is_reclaimable_after_guard_release(
+    tmp_path: Path,
+    pool_type,  # noqa: ANN001
+) -> None:
+    pool = pool_type(tmp_path / "cache", max_bytes=4096)
+    builder = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    observer = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+
+    with builder.build_guard() as registered:
+        assert registered is True
+        assert builder.put("pages/sig/00000000", b"partial") is True
+        assert observer.purge_unpublished() is False
+
+    assert observer.purge_unpublished() is True
+    assert builder.get("pages/sig/00000000") is None
+
+
+@pytest.mark.parametrize("pool_type", [ArchiveExtractionPool, HiddenImageExtractionPool])
+def test_build_guard_follows_identity_promotion_before_the_first_write(
+    tmp_path: Path,
+    pool_type,  # noqa: ANN001
+) -> None:
+    pool = pool_type(tmp_path / "cache", max_bytes=4096)
+    builder = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+
+    with builder.build_guard() as registered:
+        assert registered is True
+        assert builder.promote("external:sha256:book") is True
+        observer = ArchiveCacheLease(
+            pool,
+            "external:sha256:book",
+            ArchiveCacheScope.PERSISTENT,
+        )
+        assert builder.put("pages/sig/00000000", b"partial") is True
+        assert observer.purge_unpublished() is False
+
+    assert observer.purge_unpublished() is True
+
+
 def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> None:
     directory = tmp_path / ".archive_image_pages"
     pool = HiddenImageExtractionPool(directory, max_bytes=4096)

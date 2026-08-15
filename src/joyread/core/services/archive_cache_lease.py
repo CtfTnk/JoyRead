@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from enum import StrEnum
 from threading import RLock
 
@@ -132,6 +133,51 @@ class ArchiveCacheLease:
                     signature,
                 )
             )
+
+    def purge_unpublished(self) -> bool:
+        """Reclaim a partial bundle for a document that will never finish it.
+
+        Deliberately takes no page count or signature: whether a bundle is
+        published is a property of the bundle, not of the limits this session
+        happens to be using.
+        """
+
+        with self._lock:
+            if self._closed:
+                return False
+            purge_unpublished = getattr(self._cache, "purge_unpublished", None)
+            if not callable(purge_unpublished):
+                return False
+            return bool(purge_unpublished(self._key))
+
+    @contextmanager
+    def build_guard(self) -> Iterator[bool]:
+        """Keep this document's partial cache alive through publication.
+
+        The pool lock protects each write, while this longer-lived marker
+        protects the gaps between grouped writes. It does not hold either the
+        lease lock or the pool lock while the caller extracts or publishes, so
+        foreground cache reads remain concurrent.
+        """
+
+        with self._lock:
+            if self._closed:
+                registered = False
+            else:
+                begin_build = getattr(self._cache, "begin_build", None)
+                registered = bool(
+                    begin_build(self._key) if callable(begin_build) else False
+                )
+        try:
+            yield registered
+        finally:
+            if registered:
+                with self._lock:
+                    end_build = getattr(self._cache, "end_build", None)
+                    if callable(end_build):
+                        # Promotion moves the pool marker with the cache key, so
+                        # release whichever identity the lease currently owns.
+                        end_build(self._key)
 
     def promote(self, persistent_key: str) -> bool:
         target = str(persistent_key).strip()

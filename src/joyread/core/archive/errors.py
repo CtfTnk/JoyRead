@@ -47,6 +47,16 @@ class ArchiveDependencyMissing(ArchiveError):
     """An optional archive backend dependency is unavailable."""
 
 
+class ArchiveBulkUnsupported(ArchiveError):
+    """This container cannot be converted in one whole-document pass.
+
+    A capability statement, not a failure: the caller may still warm the
+    document in bounded batches. Backends raise it for inputs they cannot
+    express -- a member name a listfile cannot carry, for instance -- so the
+    decision stays with the backend that knows its own command surface.
+    """
+
+
 class ArchiveCancelled(ArchiveError):
     """A caller cancelled the operation before it finished.
 

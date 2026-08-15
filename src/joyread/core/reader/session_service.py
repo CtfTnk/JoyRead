@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import logging
 from pathlib import Path
 from typing import Protocol
@@ -9,9 +10,14 @@ from typing import Protocol
 from joyread.core.archive import ArchiveImageService, ArchiveImageSession, ArchiveOpenLimits
 from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_ITEMS
 from joyread.core.archive.errors import ArchiveCancelled
+from joyread.core.archive.models import (
+    ArchiveCachePolicy,
+    ArchiveConversionStatus,
+    ArchivePasswordRequest,
+    ArchivePasswordResponse,
+)
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
-from joyread.core.archive.models import ArchivePasswordRequest, ArchivePasswordResponse
 from joyread.core.reader.epub_session import EPUB_EXTENSIONS, EpubReaderSession, open_epub_session
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
@@ -209,18 +215,31 @@ class ReaderSessionService:
             cache_lease=cache_lease,
         )
         try:
-            if self._convert_whole_document(session, path, is_cancelled=is_cancelled):
-                logger.debug("Disk cache warm complete for %s (bulk conversion)", path)
-                return
-            if not self._warm_in_chunks(
-                session,
-                chunk_size=chunk_size,
-                is_cancelled=is_cancelled,
-            ):
-                return
-            mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
-            if callable(mark_ready):
-                mark_ready()
+            plan = getattr(session, "cache_plan", None)
+            policy = getattr(plan, "policy", None)
+            builds_cache = policy not in {
+                ArchiveCachePolicy.ON_DEMAND_ONLY,
+                ArchiveCachePolicy.DIRECT,
+            }
+            guard = (
+                session.cache_build_guard()
+                if builds_cache
+                else nullcontext(True)
+            )
+            with guard as build_registered:
+                if not build_registered:
+                    logger.warning("Disk cache warm could not register its build for %s", path)
+                    return
+                if not self._warm_under_policy(
+                    session,
+                    path,
+                    chunk_size=chunk_size,
+                    is_cancelled=is_cancelled,
+                ):
+                    return
+                mark_ready = getattr(session, "mark_thumbnail_cache_ready", None)
+                if callable(mark_ready):
+                    mark_ready()
         except ArchiveCancelled:
             # Cancellation is the coordinator dropping its last consumer, not a
             # failure worth reporting up as one.
@@ -232,26 +251,66 @@ class ReaderSessionService:
                 close()
         logger.debug("Disk cache warm complete for %s", path)
 
+    def _warm_under_policy(
+        self,
+        session: ReaderImageSession,
+        path: str | Path,
+        *,
+        chunk_size: int,
+        is_cancelled,  # noqa: ANN001 - accepts TaskHandle-like status checks.
+    ) -> bool:
+        """Do whatever this document's cache policy allows.
+
+        Returns whether the document finished warming and may now be marked
+        ready. The policy -- not the conversion result -- decides whether any
+        background work runs at all, so a document refused a whole-document
+        cache product cannot reach the same product through the slower path.
+        """
+
+        plan = getattr(session, "cache_plan", None)
+        policy = getattr(plan, "policy", None)
+        if policy is ArchiveCachePolicy.ON_DEMAND_ONLY:
+            logger.info(
+                "Skipping background warmup for %s: on-demand only (%s). Foreground "
+                "reads stay available and are not persisted.",
+                path,
+                getattr(plan, "reason", ""),
+            )
+            self._discard_unpublished_cache(session)
+            return False
+        if policy is ArchiveCachePolicy.DIRECT:
+            return False
+        if policy is ArchiveCachePolicy.BULK_CONVERT:
+            done = self._convert_whole_document(session, path, is_cancelled=is_cancelled)
+            if done is not None:
+                return done
+        return self._warm_in_chunks(
+            session,
+            chunk_size=chunk_size,
+            is_cancelled=is_cancelled,
+        )
+
     def _convert_whole_document(
         self,
         session: ReaderImageSession,
         path: str | Path,
         *,
         is_cancelled,  # noqa: ANN001 - accepts TaskHandle-like status checks.
-    ) -> bool:
-        """Try one whole-document conversion. Returns whether warming is done.
+    ) -> bool | None:
+        """Run one whole-document conversion.
 
-        Falling back to the chunked path is allowed only when the session
-        cannot be bulk converted at all, or when policy declined it. A
-        conversion that ran and failed must not be retried the slow way: the
-        chunked path would re-read the same input through dozens of on-demand
-        extractions and walk straight past whatever stopped the conversion.
-        Guardrail outcomes never arrive here as a result -- they are raised.
+        Returns ``True`` when the document is warmed, ``False`` when the warmup
+        must stop without it, and ``None`` when the backend turned out not to
+        support this container after all, which is the only case that may drop
+        to bounded sequential warming. A conversion that ran and failed must not
+        be retried the slow way: the sequential path would re-read the same
+        input and walk straight past whatever stopped the conversion. Guardrail
+        outcomes never arrive here as a result -- they are raised.
         """
 
         convert = getattr(session, "convert_to_cache", None)
         if not callable(convert):
-            return False
+            return None
         result = convert(is_cancelled=is_cancelled)
         if result.is_published:
             logger.info(
@@ -261,20 +320,37 @@ class ReaderSessionService:
                 result.status.value,
             )
             return True
-        if result.allows_chunked_fallback:
+        if result.status is ArchiveConversionStatus.UNSUPPORTED:
             logger.debug(
-                "Bulk conversion unavailable for %s (%s/%s); warming in chunks",
+                "Bulk conversion unavailable for %s (%s); warming in bounded batches",
                 path,
-                result.status.value,
                 result.reason,
             )
+            return None
+        if result.status is ArchiveConversionStatus.ON_DEMAND_ONLY:
+            self._discard_unpublished_cache(session)
             return False
         logger.warning(
-            "Bulk conversion failed for %s (%s); not falling back to chunked warmup",
+            "Bulk conversion failed for %s (%s); not falling back to sequential warmup",
             path,
             result.reason,
         )
-        return True
+        return False
+
+    @staticmethod
+    def _discard_unpublished_cache(session: ReaderImageSession) -> None:
+        """Reclaim a partial bundle this document may never complete.
+
+        Earlier builds warmed every document into the shared cache, so an
+        on-demand-only document can still own a partial bundle that will now
+        never be finished or evicted by its own progress. Any published bundle
+        is left alone -- including one built under different limits: it is a
+        complete, readable product for whichever reader is using them.
+        """
+
+        discard = getattr(session, "discard_unpublished_cache", None)
+        if callable(discard):
+            discard()
 
     def _warm_in_chunks(
         self,

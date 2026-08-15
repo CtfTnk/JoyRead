@@ -180,6 +180,7 @@ def run_archive_file_command(
     output_directory: Path,
     max_output_bytes: int | None,
     budget: ArchiveOperationBudget,
+    output_limit_name: str = "extracted_item_bytes",
     stall_seconds: float | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> int:
@@ -202,7 +203,11 @@ def run_archive_file_command(
     """
 
     stderr: list[bytes] = []
-    output_limit, limit_name = _remaining_output_limit(max_output_bytes, budget)
+    output_limit, limit_name = _remaining_output_limit(
+        max_output_bytes,
+        budget,
+        configured_limit_name=output_limit_name,
+    )
     if output_limit is not None and output_limit <= 0:
         raise ArchiveResourceLimitError(
             limit_name,
@@ -324,15 +329,17 @@ def run_archive_file_command(
 
 
 def _remaining_output_limit(
-    max_item_bytes: int | None,
+    max_output_bytes: int | None,
     budget: ArchiveOperationBudget,
+    *,
+    configured_limit_name: str = "extracted_item_bytes",
 ) -> tuple[int | None, str]:
     if budget.maximum is None:
-        return max_item_bytes, "extracted_item_bytes"
+        return max_output_bytes, configured_limit_name
     remaining = max(0, budget.maximum - budget.used)
-    if max_item_bytes is None or remaining < max_item_bytes:
+    if max_output_bytes is None or remaining < max_output_bytes:
         return remaining, "operation_bytes"
-    return max_item_bytes, "extracted_item_bytes"
+    return max_output_bytes, configured_limit_name
 
 
 def _directory_output_bytes(directory: Path, *, stop_after: int | None) -> int:

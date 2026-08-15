@@ -1194,6 +1194,14 @@ class ReaderViewModel:
         document = self._document
         if document is None:
             return
+        if self._layout_result is None:
+            # Nothing is on screen yet. Background conversion of a large solid
+            # archive runs its own extractor, and starting it now would put two
+            # of them on the machine while the reader is still waiting for its
+            # first page. External sources reach here from hash promotion,
+            # which can finish first; every layout pass calls this again, so
+            # returning is a deferral, not a cancellation.
+            return
         cache_key = document.warmup_cache_key
         if cache_key is None:
             return

@@ -88,6 +88,9 @@ class _FakePopen:
 
 class _TrackingLease:
     document_cache_key = "file:two-phase-close"
+    # The session asks its lease for the shared budget when it decides the
+    # document's cache policy.
+    cache_max_bytes = 1 << 30
 
     def __init__(self) -> None:
         self.is_closed = False

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from joyread.core.archive.errors import ArchiveCancelled
-from joyread.core.archive.models import ArchiveConversionStatus
+from joyread.core.archive.models import ArchiveCachePolicy, ArchiveConversionStatus
 from joyread.core.archive.records import ArchiveSource, PageRecord
 from joyread.core.archive.session import ArchiveImageSession
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
@@ -90,7 +90,6 @@ def test_a_missing_staged_page_is_never_published(tmp_path: Path) -> None:
 
     assert result.status is ArchiveConversionStatus.FAILED
     assert result.reason == "staged_page_missing"
-    assert not result.allows_chunked_fallback
     assert not lease.is_complete(5, "sig")
 
 
@@ -102,7 +101,6 @@ def test_a_failed_cache_write_is_never_published(tmp_path: Path) -> None:
 
     assert result.status is ArchiveConversionStatus.FAILED
     assert result.reason == "cache_write_failed"
-    assert not result.allows_chunked_fallback
     assert not lease.is_complete(5, "sig")
 
 
@@ -136,6 +134,33 @@ def test_a_bundle_reset_between_groups_is_caught_before_publishing(tmp_path: Pat
     assert result.status is ArchiveConversionStatus.FAILED
     assert result.reason == "document_unverified"
     assert not lease.is_complete(20, "sig")
+
+
+def test_direct_conversion_blocks_unpublished_cleanup_between_groups(tmp_path: Path) -> None:
+    """The session guard must work even without the warmup coordinator."""
+
+    session, lease, pool = _session(
+        tmp_path,
+        pages=20,
+        bulk_extract=_staging_extract(),
+    )
+    observer = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    real_put_many = pool.put_many
+    purge_results: list[bool] = []
+
+    def probing_put_many(key, payloads):  # noqa: ANN001, ANN202
+        written = real_put_many(key, payloads)
+        if not purge_results:
+            purge_results.append(observer.purge_unpublished())
+        return written
+
+    pool.put_many = probing_put_many  # type: ignore[method-assign]
+
+    result = session.convert_to_cache()
+
+    assert purge_results == [False]
+    assert result.status is ArchiveConversionStatus.PUBLISHED
+    assert lease.is_complete(20, "sig")
 
 
 def test_staged_files_survive_until_the_cache_confirms_them(tmp_path: Path) -> None:
@@ -223,22 +248,20 @@ def test_conversion_is_skipped_for_multiple_sources(tmp_path: Path) -> None:
 
     result = session.convert_to_cache()
 
+    assert session.cache_plan.policy is ArchiveCachePolicy.SEQUENTIAL_WARM
     assert result.status is ArchiveConversionStatus.UNSUPPORTED
     assert result.reason == "multiple_sources"
-    assert result.allows_chunked_fallback
     assert not lease.is_complete(5, "sig")
 
 
 def test_conversion_is_unsupported_without_a_bulk_backend(tmp_path: Path) -> None:
     session, _lease, _pool = _session(tmp_path, bulk_extract=None)
 
-    result = session.convert_to_cache()
-
-    assert result.status is ArchiveConversionStatus.UNSUPPORTED
-    assert result.allows_chunked_fallback
+    assert session.cache_plan.policy is ArchiveCachePolicy.SEQUENTIAL_WARM
+    assert session.convert_to_cache().status is ArchiveConversionStatus.UNSUPPORTED
 
 
-def test_conversion_is_skipped_when_the_book_exceeds_the_pool(tmp_path: Path) -> None:
+def test_a_book_larger_than_the_cache_is_on_demand_only(tmp_path: Path) -> None:
     """One book must not evict every other bundle and hold the pool over budget."""
 
     session, _lease, _pool = _session(
@@ -248,10 +271,11 @@ def test_conversion_is_skipped_when_the_book_exceeds_the_pool(tmp_path: Path) ->
         bulk_extract=_staging_extract(),
     )
 
+    assert session.cache_plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
+    assert session.cache_plan.reason == "larger_than_cache"
     result = session.convert_to_cache()
 
-    assert result.status is ArchiveConversionStatus.SKIPPED
-    assert result.reason == "larger_than_pool"
+    assert result.status is ArchiveConversionStatus.ON_DEMAND_ONLY
 
 
 def test_an_unknown_page_size_is_never_treated_as_zero(tmp_path: Path) -> None:
@@ -264,10 +288,9 @@ def test_an_unknown_page_size_is_never_treated_as_zero(tmp_path: Path) -> None:
         bulk_extract=_staging_extract(),
     )
 
-    result = session.convert_to_cache()
-
-    assert result.status is ArchiveConversionStatus.SKIPPED
-    assert result.reason == "unknown_page_sizes"
+    assert session.cache_plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
+    assert session.cache_plan.reason == "unknown_page_sizes"
+    assert session.convert_to_cache().status is ArchiveConversionStatus.ON_DEMAND_ONLY
 
 
 def test_the_output_cap_never_derives_from_a_partial_declared_total(tmp_path: Path) -> None:

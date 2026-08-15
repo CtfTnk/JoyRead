@@ -76,6 +76,7 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
     app.setQuitOnLastWindowClosed(False)
     context.archive_extraction_pool.resize(args.pool_gb * 1024**3)
     archive_io.watch_pool(context.archive_extraction_pool)
+    _watch_cache_policy(context)
 
     def conversion_is_running() -> bool:
         """Whether a whole-document warmup is in flight right now.
@@ -281,6 +282,8 @@ def _run_qt_playground(args: argparse.Namespace, source: Path) -> int:
             "ready_prepare_p95_ms": _percentile(ready_prepare_ms, 0.95),
             "ready_prepare_max_ms": max(ready_prepare_ms, default=0.0),
             "overlap_process_tree_rss_peak": overlap_tree_peak,
+            "background_thread_limit": _background_thread_limit(),
+            "cache_policy": _observed_cache_policy(context),
             "bulk_extractions": archive_io.bulk_extractions,
             "backend_read_calls": archive_io.backend_reads,
             "pool_page_reads": archive_io.pool_page_reads,
@@ -412,6 +415,36 @@ class _ArchiveIoWatch:
             return original(cache_key, entry_name, *rest, **call_kwargs)
 
         pool.get = wrapped  # type: ignore[method-assign]
+
+
+def _background_thread_limit() -> int | None:
+    from joyread.core.archive.formats.seven_zip_command import background_thread_limit
+
+    return background_thread_limit()
+
+
+def _observed_cache_policy(context: object) -> str:
+    """The policy the last opened archive session decided on, if any."""
+
+    return getattr(context, "_joyread_perf_last_cache_policy", "unknown")
+
+
+def _watch_cache_policy(context: object) -> None:
+    """Record the cache policy of every archive session the run opens."""
+
+    service = getattr(context, "archive_image_service", None)
+    if service is None:
+        return
+    original = service.open
+
+    def wrapped(*call_args, **call_kwargs):  # noqa: ANN002, ANN003, ANN202
+        session = original(*call_args, **call_kwargs)
+        plan = getattr(session, "cache_plan", None)
+        policy = getattr(getattr(plan, "policy", None), "value", "unknown")
+        setattr(context, "_joyread_perf_last_cache_policy", policy)
+        return session
+
+    service.open = wrapped  # type: ignore[method-assign]
 
 
 def _disable_bulk_conversion() -> None:
