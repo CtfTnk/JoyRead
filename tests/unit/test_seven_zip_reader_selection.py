@@ -691,3 +691,45 @@ def test_a_failure_before_reading_starts_still_falls_back(
     assert served == ["page-001.jpg"]
     assert payloads["page-001.jpg"] == b"from-py7zr"
     assert budget.used == 0, "the abandoned executable read must charge nothing"
+
+
+def test_a_member_stored_without_a_read_bit_is_still_readable(tmp_path: Path) -> None:
+    """7-Zip applies the container's stored mode to the file it stages.
+
+    A member written with no owner-read bit -- which ``py7zr.writestr``
+    produces, and which nothing stops a real archive from carrying -- therefore
+    lands in our own temporary directory as a file we cannot open. Before the
+    fix this failed the page outright, because narrowing the fallback made a
+    post-extraction ``OSError`` terminal by design. The mode belongs to the
+    original file, not to our throwaway copy, so it is corrected instead.
+    """
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    unreadable = staging / "page-001.jpg"
+    unreadable.write_bytes(b"payload")
+    unreadable.chmod(0o000)
+
+    staged = command_module.resolve_staged_targets(staging, ("page-001.jpg",))
+
+    assert staged is not None, "an unreadable staged file must not look like a missing one"
+    budget = ArchiveOperationBudget(maximum=None)
+    payloads = command_module.read_staged_payloads(staged, ArchiveOpenLimits(), budget)
+    assert payloads == {"page-001.jpg": b"payload"}
+    assert budget.used == len(b"payload")
+
+
+def test_a_staged_file_that_cannot_be_made_readable_falls_back_cleanly(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Repair happens before any byte is charged, so failing it is a capability
+    failure the caller may retry through another backend -- not a terminal one."""
+
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "page-001.jpg").write_bytes(b"payload")
+
+    monkeypatch.setattr(command_module.os, "access", lambda *_args, **_kwargs: False)
+
+    assert command_module.resolve_staged_targets(staging, ("page-001.jpg",)) is None

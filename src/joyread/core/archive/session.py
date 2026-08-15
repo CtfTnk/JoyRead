@@ -23,6 +23,7 @@ from joyread.core.archive.errors import (
     ArchiveResourceLimitError,
 )
 from joyread.core.archive.formats.common import read_file_bounded
+from joyread.core.archive.formats.seven_zip_command import ensure_staged_file_readable
 from joyread.core.archive.batching import (
     MAX_SEQUENTIAL_BATCH_BYTES,
     MAX_SEQUENTIAL_BATCH_ITEMS,
@@ -506,7 +507,11 @@ class ArchiveImageSession:
             if is_cancelled is not None and is_cancelled():
                 raise ArchiveCancelled("Archive conversion cancelled.")
             staged = (staging_root / member).resolve()
-            if not staged.is_relative_to(resolved_root) or not staged.is_file():
+            if (
+                not staged.is_relative_to(resolved_root)
+                or not staged.is_file()
+                or not ensure_staged_file_readable(staged)
+            ):
                 logger.warning(
                     "Bulk conversion is missing staged member %d of %d; not publishing",
                     member_index + 1,

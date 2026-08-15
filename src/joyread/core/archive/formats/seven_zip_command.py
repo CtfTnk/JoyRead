@@ -248,6 +248,30 @@ def read_members_via_executable(
             ) from exc
 
 
+def ensure_staged_file_readable(path: Path) -> bool:
+    """Make a staged file readable by us, returning whether it now is.
+
+    7-Zip applies the mode stored in the container, but that mode describes the
+    file the archive was built from, not the throwaway copy we just extracted
+    into our own temporary directory. A member stored with no owner-read bit --
+    which some writers, including ``py7zr.writestr``, produce -- therefore
+    stages as a file the reader cannot open, and the page fails even though the
+    decompression succeeded. We own the staging tree, so the mode is ours to
+    correct rather than something to fall back over.
+
+    Called before any byte is read, so a failure here is still a clean
+    capability failure with nothing charged to the operation budget.
+    """
+
+    if os.access(path, os.R_OK):
+        return True
+    try:
+        path.chmod(path.stat().st_mode | 0o400)
+    except OSError:
+        return False
+    return os.access(path, os.R_OK)
+
+
 def resolve_staged_targets(
     staging_root: Path,
     targets: Sequence[str],
@@ -268,6 +292,8 @@ def resolve_staged_targets(
             # Entry names come from archive metadata, so refuse anything that
             # escapes the staging root rather than trusting the container.
             if not resolved.is_relative_to(resolved_root) or not resolved.is_file():
+                return None
+            if not ensure_staged_file_readable(resolved):
                 return None
         except OSError:
             return None
