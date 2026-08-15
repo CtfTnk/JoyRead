@@ -101,7 +101,16 @@ class StorageMigrationService:
             _safe_rmtree(staging)
             raise StorageMigrationError(f"Could not move the library: {exc}") from exc
 
-        self._settings_store.update(storage_location=str(target_root))
+        # Record the destination as known-good in the same write that adopts
+        # it. The old root is deleted a few lines below, so a fallback still
+        # pointing there would send startup recovery to a directory that no
+        # longer exists -- and it is only corrected on the next clean launch,
+        # which is exactly the launch that might need it. `validate_full`
+        # above is what makes "known-good" a fact rather than an assumption.
+        self._settings_store.update(
+            storage_location=str(target_root),
+            last_good_storage_location=str(target_root),
+        )
 
         if old_root != target_root and old_root.exists():
             logger.info("Removing previous library root %s", old_root)

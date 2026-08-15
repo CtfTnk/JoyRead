@@ -1120,9 +1120,11 @@ class MainWindow(QMainWindow):
         )
 
     def _execute_reset_storage(self) -> None:
-        # Reset already carries its own two-step confirmation, so this goes
-        # straight to the quiesce rather than asking a third time.
-        self._begin_storage_transition(self._context.begin_storage_reset)
+        # Reset closes Readers and discards a cover edit exactly as Move does,
+        # and its own two dialogs only ever mention erasing data. Sharing the
+        # consequence gate says so; it shows nothing when nothing is open, so
+        # the common case is still two dialogs rather than three.
+        self._confirm_storage_transition(self._context.begin_storage_reset)
 
     def _complete_storage_transition(self, transition: StorageTransition) -> None:
         """Finish a worker-held storage mutation on the Qt/UI thread."""

@@ -1111,6 +1111,42 @@ def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path
     assert not old.exists()  # old root removed after a successful move
 
 
+def test_move_to_parent_points_the_recovery_fallback_at_the_new_root(tmp_path: Path) -> None:
+    """The old root is deleted by this very call.
+
+    Leaving `last_good_storage_location` on it would send startup recovery to
+    a directory that no longer exists, and it is only corrected on the next
+    clean launch -- exactly the launch that would need it if the destination
+    became unavailable in the meantime.
+    """
+
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old), last_good_storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+
+    result = _migration_service(store).move_to_parent(old, parent)
+
+    settings = store.load()
+    assert settings.last_good_storage_location == str(result.target_root)
+    assert settings.storage_location == settings.last_good_storage_location
+
+
+def test_a_failed_move_leaves_the_recovery_fallback_alone(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old), last_good_storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+    (parent / LIBRARY_DIRECTORY_NAME).mkdir(parents=True)
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().last_good_storage_location == str(old)
+
+
 def test_move_to_parent_fails_when_target_exists_and_keeps_settings(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _seed_library(old)

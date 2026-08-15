@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from joyread.app.storage_transition import (
     QUIESCE_STEPS,
     QuiesceOutcome,
@@ -58,6 +60,35 @@ def test_consequences_describe_what_confirming_will_close() -> None:
     loud = describe_consequences(2, cover_editor_open=True)
     assert (loud.reader_windows, loud.discards_cover_edit) == (2, True)
     assert loud.closes_anything is True
+
+
+def test_reset_goes_through_the_same_consequence_gate_as_move() -> None:
+    """Reset closes Readers and discards a cover edit exactly as Move does.
+
+    Its own two dialogs only ever mention erasing data, so bypassing the gate
+    left the user told about the deletion and not about the Reader closing
+    under them. Called unbound, so this needs no live window.
+    """
+
+    from joyread.ui.views.main_window import MainWindow
+
+    confirmed: list[object] = []
+    reset = object()
+    window = SimpleNamespace(
+        _context=SimpleNamespace(begin_storage_reset=reset),
+        _confirm_storage_transition=confirmed.append,
+        _begin_storage_transition=lambda _operation: confirmed.append("bypassed"),
+    )
+
+    MainWindow._execute_reset_storage(window)  # noqa: SLF001
+
+    assert confirmed == [reset], "Reset must not bypass the consequence gate"
+
+
+def test_the_consequence_gate_stays_silent_when_nothing_would_close() -> None:
+    """Which is why sharing it with Reset does not mean a third dialog."""
+
+    assert describe_consequences(0, cover_editor_open=False).closes_anything is False
 
 
 class _Context:
