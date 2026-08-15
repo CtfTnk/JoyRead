@@ -17,6 +17,7 @@ from joyread.app.windows.activation import (
     WindowActivationRegistry,
     decide_reopen,
 )
+from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.windows.ownership import WindowOwnership, ordered_close_sequence
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
@@ -57,6 +58,19 @@ class ApplicationWindowManager(QObject):
         self._live_windows: dict[int, QMainWindow] = {}
         self._ownership = WindowOwnership()
         self._activation = WindowActivationRegistry()
+        self._storage_transition: StorageTransitionController | None = None
+
+    @property
+    def storage_transition_controller(self) -> StorageTransitionController:
+        """The transition driver, which needs this manager to reach Readers.
+
+        Built lazily so a manager constructed with a stub context in a focused
+        test does not pay for one it never uses.
+        """
+
+        if self._storage_transition is None:
+            self._storage_transition = StorageTransitionController(self._context, self, parent=self)
+        return self._storage_transition
 
     @property
     def main_window(self) -> QMainWindow | None:
@@ -69,6 +83,24 @@ class ApplicationWindowManager(QObject):
     @property
     def has_windows(self) -> bool:
         return bool(self._live_windows)
+
+    def close_all_readers(self) -> int:
+        """Close every Reader window, leaving the Library open.
+
+        A storage transition replaces the services a Reader session is bound
+        to, and there is no way to re-point a live session at a rebuilt stack,
+        so the sessions go rather than being left dangling. The Library stays:
+        it is where the transition was requested from and where its result is
+        reported.
+
+        Iterates over a snapshot because closing a window unregisters it.
+        """
+
+        readers = self.reader_windows
+        for window in readers:
+            window.close()
+        logger.info("Closed %d reader window(s) for a storage transition", len(readers))
+        return len(readers)
 
     def show_library(self) -> QMainWindow:
         window = self._main_window
@@ -231,7 +263,11 @@ class ApplicationWindowManager(QObject):
         return None
 
     def _create_main_window(self, launcher: StandaloneReaderLauncher) -> QMainWindow:
-        return MainWindow(self._context, standalone_reader_launcher=launcher)
+        return MainWindow(
+            self._context,
+            standalone_reader_launcher=launcher,
+            storage_transition_controller=self.storage_transition_controller,
+        )
 
     def _create_reader_window(self, request: StandaloneReaderRequest) -> QMainWindow:
         if EPUB_ACCESS_ENABLED and request.path.suffix.lower() in EPUB_EXTENSIONS:

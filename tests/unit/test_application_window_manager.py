@@ -215,3 +215,32 @@ def test_reader_progress_is_forwarded_without_main_window(qtbot, tmp_path: Path)
         assert shelf.progress == [("book-uuid", 9, 42.5)]
     finally:
         _close_windows(manager, qtbot)
+
+
+def test_close_all_readers_leaves_the_library_open(qtbot, tmp_path: Path) -> None:
+    """A storage transition replaces the services a Reader session is bound to,
+    and a live session cannot be re-pointed at a rebuilt stack. The Library
+    stays: it is where the transition was requested and reported."""
+
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        main = manager.show_library()
+        manager.open_files((tmp_path / "a.cbz", tmp_path / "b.cbz"))
+        assert len(manager.reader_windows) == 2
+
+        closed = manager.close_all_readers()
+
+        assert closed == 2
+        assert manager.reader_windows == ()
+        assert manager.main_window is main
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_close_all_readers_is_a_no_op_without_readers(qtbot) -> None:
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        manager.show_library()
+        assert manager.close_all_readers() == 0
+    finally:
+        _close_windows(manager, qtbot)

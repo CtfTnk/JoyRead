@@ -1402,3 +1402,53 @@ def test_external_cache_is_not_promoted_when_source_changes_during_hash(tmp_path
 
     assert not list((tmp_path / "pool").glob("e-*"))
     assert not list((tmp_path / "pool").glob("x-*"))
+
+
+def test_flush_pending_writes_drains_the_serialized_settings_chain(tmp_path: Path) -> None:
+    """A storage transition has no "next save" to catch up: the database this
+    Reader writes to is about to be replaced.
+
+    The chain still runs one write at a time -- two concurrent writes for the
+    same book could persist the older one last -- so the flush reports work
+    outstanding until the queue is genuinely empty.
+    """
+
+    library = _FakeLibraryService()
+    task_service = _DeferredSettingsTaskService()
+    viewmodel = _viewmodel(tmp_path, library_service=library, task_service=task_service)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    # A second change while the first is in flight leaves a pending save that
+    # only a later completion submits.
+    viewmodel.set_vertical_custom_enabled(True)
+    assert len(task_service.settings_tasks) == 1
+
+    assert viewmodel.flush_pending_writes(), "the first write is still outstanding"
+    task_service.complete_next_settings_task()
+
+    assert len(task_service.settings_tasks) == 1, "the queued save follows its predecessor"
+    assert viewmodel.flush_pending_writes(), "the second write is now outstanding"
+    task_service.complete_next_settings_task()
+
+    assert viewmodel.flush_pending_writes() == (), "the chain has drained"
+    assert len(library.settings_calls) == 2
+
+
+def test_flush_pending_writes_does_not_cancel_the_progress_save(tmp_path: Path) -> None:
+    """`cancel()` cancels the progress handle, which is exactly what the flush
+    path must not do -- that is the write a storage move would otherwise lose."""
+
+    library = _FakeLibraryService()
+    viewmodel = _viewmodel(tmp_path, library_service=library)
+
+    viewmodel.flush_pending_writes()
+
+    handle = viewmodel._save_handle  # noqa: SLF001
+    if handle is not None:
+        assert handle.status != TaskStatus.CANCELLED
+
+
+def test_flush_pending_writes_returns_nothing_when_nothing_is_dirty(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    assert viewmodel.flush_pending_writes() == ()

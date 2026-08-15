@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal
@@ -12,6 +12,8 @@ from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, 
 
 from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.cover_editor import PreparedCoverSource
+from joyread.app.storage_transition import TransitionConsequences, describe_consequences
+from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.core.models.book import Book
@@ -61,10 +63,20 @@ class MainWindow(QMainWindow):
         context: AppContext,
         *,
         standalone_reader_launcher: StandaloneReaderLauncher | None = None,
+        storage_transition_controller: StorageTransitionController | None = None,
     ) -> None:
         super().__init__()
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
+        # Supplied by the window manager, which owns the Reader windows a
+        # transition has to flush and close. Without one there are no Readers
+        # to account for, which is exactly the situation in focused tests.
+        self._storage_transition = storage_transition_controller or StorageTransitionController(
+            context, None
+        )
+        self._storage_transition.finished.connect(self._complete_storage_transition)
+        self._storage_transition.failed.connect(self._handle_storage_location_failed)
+        self._storage_transition.abandoned.connect(self._handle_storage_transition_abandoned)
         self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
         self._cover_editor_book_uuid: str | None = None
         self._library_maintenance_task_active = False
@@ -1010,14 +1022,8 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         target_parent = Path(directory)
-        # The copy can be large, so the filesystem work runs on a worker. Its
-        # maintenance lease remains held until the UI thread has rebuilt the
-        # services around the destination library.
-        self._context.task_service.submit(
-            "move-storage-location",
-            lambda: self._context.begin_storage_move(target_parent),
-            on_success=self._complete_storage_transition,
-            on_failure=lambda error: self._handle_storage_location_failed(error),
+        self._confirm_storage_transition(
+            lambda: self._context.begin_storage_move(target_parent)
         )
 
     def _request_select_storage(self) -> None:
@@ -1032,11 +1038,65 @@ class MainWindow(QMainWindow):
         # Validation and adoption are one exclusive transition. Splitting them
         # would let an import slip in after validation but before the selected
         # storage root is adopted.
-        self._context.task_service.submit(
-            "select-storage-location",
-            lambda: self._context.begin_storage_select(existing_root),
-            on_success=self._complete_storage_transition,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.storage_title"), str(error)),
+        self._confirm_storage_transition(
+            lambda: self._context.begin_storage_select(existing_root)
+        )
+
+    def _confirm_storage_transition(self, operation: Callable[[], StorageTransition]) -> None:
+        """Get explicit consent, then quiesce the application and migrate.
+
+        Replacing the storage root replaces the services every Reader session
+        is bound to, and a live session cannot be re-pointed at a rebuilt
+        stack. So the consequences are stated up front rather than discovered:
+        open Readers close, and an in-progress cover edit is discarded.
+        """
+
+        consequences = describe_consequences(
+            len(self._open_reader_windows()),
+            self.cover_editor_overlay.isVisible(),
+        )
+        if not consequences.closes_anything:
+            self._begin_storage_transition(operation)
+            return
+        self.dialog_overlay.show_confirm(
+            t("dialog.storage_title"),
+            self._storage_transition_warning(consequences),
+            on_confirm=lambda: self._begin_storage_transition(operation),
+            confirm_text=t("dialog.btn_continue"),
+            cancel_text=t("dialog.btn_cancel"),
+        )
+
+    @staticmethod
+    def _storage_transition_warning(consequences: TransitionConsequences) -> str:
+        count = str(consequences.reader_windows)
+        if consequences.reader_windows and consequences.discards_cover_edit:
+            return t("dialog.storage_quiesce_readers_and_cover", count=count)
+        if consequences.reader_windows:
+            return t("dialog.storage_quiesce_readers", count=count)
+        return t("dialog.storage_quiesce_cover")
+
+    def _open_reader_windows(self) -> tuple[object, ...]:
+        manager = self._storage_transition.window_manager
+        return tuple(getattr(manager, "reader_windows", ()))
+
+    def _begin_storage_transition(self, operation: Callable[[], StorageTransition]) -> None:
+        # Confirmed, so the cover edit goes now: the user was told it would.
+        if self.cover_editor_overlay.isVisible():
+            self.cover_editor_overlay.hide()
+            self._clear_cover_editor_book_uuid()
+        if not self._storage_transition.start(operation):
+            self.dialog_overlay.show_info(
+                t("dialog.storage_title"), t("dialog.storage_transition_busy")
+            )
+
+    def _handle_storage_transition_abandoned(self, pending_tasks: int) -> None:
+        """Quiescence was not reached, so storage was never touched."""
+
+        logger.warning(
+            "Storage transition abandoned with %d task(s) still running", pending_tasks
+        )
+        self.dialog_overlay.show_info(
+            t("dialog.storage_title"), t("dialog.storage_quiesce_timeout")
         )
 
     def _request_reset_storage(self) -> None:
@@ -1060,12 +1120,9 @@ class MainWindow(QMainWindow):
         )
 
     def _execute_reset_storage(self) -> None:
-        self._context.task_service.submit(
-            "reset-storage",
-            self._context.begin_storage_reset,
-            on_success=self._complete_storage_transition,
-            on_failure=lambda error: self._handle_storage_location_failed(error),
-        )
+        # Reset already carries its own two-step confirmation, so this goes
+        # straight to the quiesce rather than asking a third time.
+        self._begin_storage_transition(self._context.begin_storage_reset)
 
     def _complete_storage_transition(self, transition: StorageTransition) -> None:
         """Finish a worker-held storage mutation on the Qt/UI thread."""
@@ -1076,6 +1133,11 @@ class MainWindow(QMainWindow):
             logger.warning("Storage transition reload failed: %s", error, exc_info=True)
             self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
             return
+        finally:
+            # Background work stays sealed until the services around it have
+            # been rebuilt, including when the rebuild itself failed -- a
+            # half-rebuilt stack is the one state nothing else may run against.
+            self._context.resume_after_storage_transition()
         if transition.error is not None:
             self.dialog_overlay.show_info(t("dialog.storage_title"), str(transition.error))
             return
@@ -1098,7 +1160,12 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.show_info(t("dialog.storage_title"), t("dialog.storage_updated_msg"))
 
     def _handle_storage_location_failed(self, error: Exception) -> None:
-        self._context.reload_storage_from_settings()
+        # The disk phase raised past the commit point, so the services closed
+        # for it have to be rebuilt before anything is allowed to run again.
+        try:
+            self._context.reload_storage_from_settings()
+        finally:
+            self._context.resume_after_storage_transition()
         self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
 
     def _handle_navigation(self, key: str) -> None:

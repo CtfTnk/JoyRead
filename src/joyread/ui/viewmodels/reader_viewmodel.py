@@ -1435,6 +1435,38 @@ class ReaderViewModel:
             on_success=lambda _result: self.progress_changed.emit(book_uuid, page_index, percent),
         )
 
+    def flush_pending_writes(self) -> tuple[TaskHandle[None], ...]:
+        """Submit any outstanding durable write and return what to await.
+
+        Closing a Reader normally goes through :meth:`cancel`, which cancels
+        the progress handle -- fine when the application keeps running, because
+        the next save will catch up. A storage transition has no next save: the
+        database this Reader writes to is about to be replaced. So the writes
+        are pushed out first and the caller awaits them *before* anything is
+        cancelled.
+
+        Reuses the ordinary save paths rather than writing directly, so the
+        deduplication in ``_save_progress`` still holds and a Reader with
+        nothing dirty returns no handles at all.
+
+        Settings saves stay serialized: a queued one is submitted only once its
+        predecessor is done, exactly as during normal operation. Submitting
+        both at once would race two writes for the same book and could persist
+        the older one last. The caller therefore re-asks until this returns
+        nothing, rather than treating one answer as the whole flush.
+        """
+
+        self._save_progress()
+        if self._pending_settings_save is not None and not self._settings_save_in_flight():
+            self._submit_pending_settings_save()
+        handles = (self._save_handle, self._settings_save_handle)
+        return tuple(
+            handle
+            for handle in handles
+            if handle is not None
+            and handle.status in {TaskStatus.PENDING, TaskStatus.RUNNING}
+        )
+
     def _persist_settings(self) -> None:
         if self._library_service is None or self._book_uuid is None:
             return
