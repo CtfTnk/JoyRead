@@ -420,3 +420,84 @@ def test_native_file_dialogs_are_kept_for_in_app_picker_paths() -> None:
     assert "QFileDialog.getExistingDirectory" in main_window_source
     assert "DontUseNativeDialog" not in main_window_source
     assert "AA_DontUseNativeDialogs" not in bootstrap_source
+
+
+class _QuiesceRecordingTaskService:
+    def __init__(self, calls: list[str], pending: int = 0) -> None:
+        self._calls = calls
+        self._pending = pending
+
+    def quiesce(self) -> int:
+        self._calls.append("task-quiesce")
+        return self._pending
+
+    def pending_task_count(self) -> int:
+        return self._pending
+
+    def resume(self) -> None:
+        self._calls.append("task-resume")
+
+    def shutdown(self) -> None:  # pragma: no cover - not exercised here.
+        self._calls.append("task")
+
+
+class _RecordingWarmupCoordinator:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def close(self) -> None:
+        self._calls.append("warmup")
+
+
+class _RecordingThumbnailService:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def close(self) -> None:
+        self._calls.append("thumbnails")
+
+
+def _quiesce_context(calls: list[str], pending: int = 0) -> AppContext:
+    fields = {name: None for name in AppContext.__dataclass_fields__}
+    fields.update(
+        task_service=_QuiesceRecordingTaskService(calls, pending),
+        archive_warmup_coordinator=_RecordingWarmupCoordinator(calls),
+        thumbnail_service=_RecordingThumbnailService(calls),
+    )
+    return AppContext(**fields)  # type: ignore[arg-type]
+
+
+def test_quiesce_stops_warmup_before_cancelling_tasks() -> None:
+    """Warmup owns the extractor subprocess, so its cancellation has to reach
+    the child before anything else is torn down around it."""
+
+    calls: list[str] = []
+
+    _quiesce_context(calls).quiesce_for_storage_transition()
+
+    assert calls == ["warmup", "task-quiesce"]
+
+
+def test_quiesce_leaves_the_thumbnail_service_usable_until_commit() -> None:
+    """`ThumbnailService.close()` is terminal, so a drain that times out must
+    not have run it -- otherwise abandoning would leave a dead service."""
+
+    calls: list[str] = []
+    context = _quiesce_context(calls)
+
+    context.quiesce_for_storage_transition()
+    assert "thumbnails" not in calls
+
+    context.commit_storage_transition()
+    assert "thumbnails" in calls
+
+
+def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
+    calls: list[str] = []
+    context = _quiesce_context(calls, pending=2)
+
+    context.quiesce_for_storage_transition()
+    context.abandon_storage_transition()
+
+    assert calls == ["warmup", "task-quiesce", "task-resume"]
+    assert "thumbnails" not in calls, "an abandoned transition must be fully reversible"

@@ -182,3 +182,53 @@ def test_cancelled_task_discards_resource_result_on_worker(qtbot) -> None:
     assert callback_threads[0] != gui_thread
     qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
     service.shutdown(timeout_ms=10)
+
+
+def test_quiesce_stops_new_work_and_resume_restores_it(qtbot) -> None:  # noqa: ANN001, ARG001
+    """A storage transition needs the pool sealed, then usable again."""
+
+    service = TaskService(max_workers=1)
+
+    service.quiesce()
+    refused = service.submit("after-quiesce", lambda: "work")
+    assert refused.status == TaskStatus.CANCELLED, "quiesced work must not run"
+
+    service.resume()
+    results: list[str] = []
+    handle = service.submit("after-resume", lambda: "work", on_success=results.append)
+    qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
+    assert results == ["work"]
+    service.shutdown()
+
+
+def test_quiesce_cancels_running_work_without_joining(qtbot) -> None:  # noqa: ANN001, ARG001
+    """Joining here would deadlock: handles are cleared on the GUI thread."""
+
+    service = TaskService(max_workers=1)
+    release = Event()
+    started = Event()
+
+    def blocked() -> str:
+        started.set()
+        release.wait(5)
+        return "done"
+
+    handle = service.submit("blocked", blocked)
+    assert started.wait(2)
+
+    pending = service.quiesce()
+
+    assert handle.status == TaskStatus.CANCELLED
+    assert pending >= 1, "the still-unwinding task must be reported, not hidden"
+    release.set()
+    qtbot.waitUntil(lambda: service.pending_task_count() == 0, timeout=2000)
+    service.shutdown()
+
+
+def test_shutdown_stays_terminal(qtbot) -> None:  # noqa: ANN001, ARG001
+    """Quiesce is the reversible one; shutdown must not become reversible too."""
+
+    service = TaskService(max_workers=1)
+    service.shutdown()
+
+    assert service.submit("after-shutdown", lambda: "work").status == TaskStatus.CANCELLED

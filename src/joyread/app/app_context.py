@@ -144,6 +144,64 @@ class AppContext:
         self.database_interpreter.close()
         logger.info("AppContext shutdown complete")
 
+    def quiesce_for_storage_transition(self) -> int:
+        """Stop storage-dependent producers, reversibly.
+
+        Same order as :meth:`close` and for the same reason: the warmup
+        coordinator first, so its cancellation reaches an in-flight extractor
+        before anything else changes underneath it, then the task service.
+
+        Only reversible work happens here. ``ThumbnailService.close()`` is
+        terminal -- a closed one is never usable again -- so it belongs to
+        :meth:`commit_storage_transition`, past the point of no return. That
+        split is what lets a drain that times out put the application back
+        exactly as it was. The PDF thread is left alone for the same reason;
+        it is stopped at commit and restarts itself on the next call.
+
+        Returns the number of tasks still unwinding. This does not join -- see
+        :meth:`TaskService.quiesce` -- so the caller must poll
+        :meth:`storage_transition_pending_tasks` from the event loop and only
+        migrate once it reaches zero.
+        """
+
+        logger.info("Quiescing for storage transition")
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.close()
+        return self.task_service.quiesce()
+
+    def storage_transition_pending_tasks(self) -> int:
+        return self.task_service.pending_task_count()
+
+    def commit_storage_transition(self) -> None:
+        """Release the services that must not outlive the retired storage.
+
+        Called only once the drain is proven, immediately before the disk
+        phase. Everything closed here is reconstructed by
+        :meth:`reload_storage_from_settings`, which every path out of a
+        committed transition runs -- including a failed migration, which
+        rebuilds around the storage that stayed in use.
+        """
+
+        if self.thumbnail_service is not None:
+            self.thumbnail_service.close()
+        shutdown_pdf_thread()
+
+    def abandon_storage_transition(self) -> None:
+        """Undo a quiesce that never committed.
+
+        Reached when the drain times out. Nothing terminal has run and storage
+        was never touched, so accepting work again is the whole of the repair.
+        """
+
+        self.task_service.resume()
+        logger.warning("Storage transition abandoned before migrating")
+
+    def resume_after_storage_transition(self) -> None:
+        """Accept background work again, against the rebuilt storage stack."""
+
+        self.task_service.resume()
+        logger.info("Resumed after storage transition")
+
     def move_storage_to_parent(self, target_parent: Path) -> None:
         """Move the library into ``<target_parent>/JoyRead-Library`` and adopt it.
 

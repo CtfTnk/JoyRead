@@ -194,11 +194,43 @@ class TaskService:
         self._pool.start(_Runnable(handle, callback, signals, on_discard), int(priority))
         return handle
 
-    def shutdown(self, timeout_ms: int = 1500) -> None:
+    def quiesce(self) -> int:
+        """Stop accepting work and cancel what is running, reversibly.
+
+        Returns the number of tasks still to unwind. This does **not** join:
+        a handle leaves ``_active_handles`` from its ``finished`` slot, which
+        runs on the GUI thread, so a caller that blocked here waiting for the
+        count to reach zero would deadlock against the very event loop that
+        clears it. Callers poll :meth:`pending_task_count` from the event loop
+        instead.
+
+        Unlike :meth:`shutdown` this is undone by :meth:`resume`, so it suits a
+        storage transition, after which the application keeps running.
+        """
+
         self._shutting_down = True
         for handle in list(self._active_handles.values()):
             handle.cancel()
         self._pool.clear()
+        pending = len(self._active_handles)
+        logger.info("TaskService quiesced with %d task(s) unwinding", pending)
+        return pending
+
+    def pending_task_count(self) -> int:
+        """How many submitted tasks have not yet reported completion."""
+
+        return len(self._active_handles)
+
+    def resume(self) -> None:
+        """Accept work again after a quiesce."""
+
+        self._shutting_down = False
+        logger.info("TaskService resumed")
+
+    def shutdown(self, timeout_ms: int = 1500) -> None:
+        # Terminal: quiesce provides the cancellation, and the join below is
+        # safe here only because nothing needs the event loop afterwards.
+        self.quiesce()
         self._pool.waitForDone(max(0, int(timeout_ms)))
         for handle in list(self._active_handles.values()):
             handle.cancel()
