@@ -113,13 +113,7 @@ class StorageTransitionController(QObject):
         return True
 
     def _collect_flush_handles(self) -> tuple[TaskHandle[object], ...]:
-        try:
-            return reader_flush_handles(getattr(self._window_manager, "reader_windows", ()))
-        except Exception:
-            # A Reader that cannot flush must not strand the transition the
-            # user already confirmed.
-            logger.exception("Reader flush failed during a storage transition")
-            return ()
+        return reader_flush_handles(getattr(self._window_manager, "reader_windows", ()))
 
     def _enter(self, phase: _Phase) -> None:
         self._phase = phase
@@ -156,10 +150,17 @@ class StorageTransitionController(QObject):
                 len(outstanding),
                 self._flush_timeout_ms,
             )
+        # Quiesce first, then close. Closing a Reader does not release its
+        # document synchronously -- it submits the close as a task -- so
+        # closing first put that task straight into the set the quiesce then
+        # cancelled, and the archive session was never closed at all. Sealed
+        # first, the submission is refused and the pipeline closes the document
+        # inline instead, which is what guarantees no handle is still open on
+        # the storage root when the disk phase starts.
+        self._context.quiesce_for_storage_transition()
         close_readers = getattr(self._window_manager, "close_all_readers", None)
         if callable(close_readers):
             close_readers()
-        self._context.quiesce_for_storage_transition()
         self._enter(_Phase.DRAINING)
         self._poll_drain()
 
@@ -238,6 +239,14 @@ def reader_flush_handles(
     for window in windows:
         viewmodel = getattr(window, "viewmodel", None)
         flush = getattr(viewmodel, "flush_pending_writes", None)
-        if callable(flush):
+        if not callable(flush):
+            continue
+        try:
             handles.extend(flush())
+        except Exception:
+            # Isolated per window on purpose. One Reader that cannot flush must
+            # not cost the others theirs: a loop-level guard would discard
+            # every handle collected so far, and the transition would stop
+            # waiting for writes it told the user it would save.
+            logger.exception("Reader flush failed during a storage transition")
     return tuple(handles)

@@ -15,20 +15,26 @@ from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.tasking import TaskHandle, TaskStatus
 
 
-def test_reader_writes_are_flushed_before_anything_is_cancelled() -> None:
-    """The order is the whole point.
+def test_every_position_in_the_quiesce_order_is_load_bearing() -> None:
+    """Each of these was, or would be, a defect if reordered.
 
-    Cancelling first would discard the progress write; closing Readers first
-    would too, because `ReaderViewModel.cancel()` cancels the progress handle.
-    Draining before producers are stopped would never reach zero.
+    Flushing after cancelling drops the progress write. Closing Readers before
+    background work is stopped puts their session-close task into the set the
+    quiesce then cancels, so the document is never closed and its handles stay
+    open on the storage root being replaced. Draining before producers stop
+    never reaches zero. Migrating before the drain is the whole hazard.
     """
 
     order = list(QUIESCE_STEPS)
-    assert order.index(QuiesceStep.FLUSH_READER_WRITES) < order.index(QuiesceStep.CLOSE_READERS)
-    assert order.index(QuiesceStep.CLOSE_READERS) < order.index(QuiesceStep.STOP_BACKGROUND_WORK)
-    assert order.index(QuiesceStep.STOP_BACKGROUND_WORK) < order.index(QuiesceStep.DRAIN)
-    assert order.index(QuiesceStep.DRAIN) < order.index(QuiesceStep.MIGRATE)
     assert order.index(QuiesceStep.CONFIRM) == 0
+    assert order.index(QuiesceStep.FLUSH_READER_WRITES) < order.index(
+        QuiesceStep.STOP_BACKGROUND_WORK
+    )
+    assert order.index(QuiesceStep.STOP_BACKGROUND_WORK) < order.index(
+        QuiesceStep.CLOSE_READERS
+    ), "a Reader closed before the seal has its session-close cancelled"
+    assert order.index(QuiesceStep.CLOSE_READERS) < order.index(QuiesceStep.DRAIN)
+    assert order.index(QuiesceStep.DRAIN) < order.index(QuiesceStep.MIGRATE)
 
 
 def test_a_drain_with_no_work_left_is_ready() -> None:

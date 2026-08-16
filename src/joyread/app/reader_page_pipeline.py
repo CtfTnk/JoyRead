@@ -8,7 +8,7 @@ from threading import RLock
 from time import perf_counter
 from typing import Generic, Protocol, TypeVar
 
-from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
+from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 
 
@@ -509,13 +509,21 @@ class ReaderPagePipeline(Generic[FrameT]):
             source.close()
             return
         try:
-            submit(
+            handle = submit(
                 "reader-source-close",
                 source.close,
                 priority=TaskPriority.HIGH,
             )
         except TypeError:
-            submit("reader-source-close", source.close)
+            handle = submit("reader-source-close", source.close)
+        # A refused submission comes back already cancelled, which means the
+        # callback will never run. That happens during a storage transition,
+        # where the executor is sealed -- and where leaving the document open
+        # is exactly what must not happen, because its handles sit on the
+        # storage root about to be replaced. Close it here instead. Reads have
+        # already been cancelled by that point, so this does not wait on one.
+        if handle is not None and getattr(handle, "status", None) == TaskStatus.CANCELLED:
+            source.close()
 
 
 def _ordered_interest(

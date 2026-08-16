@@ -49,6 +49,13 @@ _PLATFORM_METADATA_NAMES: frozenset[str] = frozenset(
 #: native extended-attribute support.
 _PLATFORM_METADATA_PREFIXES: tuple[str, ...] = ("._",)
 
+#: Folded once here rather than per call: the audit asks about every file in
+#: the Books tree, so a comprehension inside the predicate would allocate a set
+#: per file for a value that never changes.
+_PLATFORM_METADATA_LOWERED: frozenset[str] = frozenset(
+    name.lower() for name in _PLATFORM_METADATA_NAMES
+)
+
 
 def is_platform_metadata(filename: str) -> bool:
     """Whether a filename is file-manager metadata rather than library content.
@@ -57,10 +64,9 @@ def is_platform_metadata(filename: str) -> bool:
     file on the platforms that create it.
     """
 
-    lowered = filename.lower()
-    if lowered in {name.lower() for name in _PLATFORM_METADATA_NAMES}:
+    if filename.lower() in _PLATFORM_METADATA_LOWERED:
         return True
-    return any(filename.startswith(prefix) for prefix in _PLATFORM_METADATA_PREFIXES)
+    return filename.startswith(_PLATFORM_METADATA_PREFIXES)
 
 
 class LibraryAuditAction(StrEnum):

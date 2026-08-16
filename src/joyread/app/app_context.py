@@ -204,10 +204,16 @@ class AppContext:
     def abandon_storage_transition(self) -> None:
         """Undo a quiesce that never committed.
 
-        Reached when the drain times out. Nothing terminal has run and storage
-        was never touched, so accepting work again is the whole of the repair.
+        Reached when the drain times out. Storage was never touched and nothing
+        terminal has run, so the application goes back to what it was -- but
+        "what it was" includes the warmup coordinator, which the quiesce left
+        holding a cancelled task that will never report. Resetting it here for
+        the same reason :meth:`commit_storage_transition` does: without it,
+        ``_active_key`` stays set and no later warmup can ever start.
         """
 
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.reset()
         self.task_service.resume()
         logger.warning("Storage transition abandoned before migrating")
 

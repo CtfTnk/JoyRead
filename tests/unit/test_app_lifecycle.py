@@ -520,8 +520,27 @@ def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
     context.quiesce_for_storage_transition()
     context.abandon_storage_transition()
 
-    assert calls == ["warmup", "task-quiesce", "task-resume"]
+    assert calls == ["warmup", "task-quiesce", "warmup-reset", "task-resume"]
     assert "thumbnails" not in calls, "an abandoned transition must be fully reversible"
+
+
+def test_abandoning_a_transition_leaves_warmup_able_to_run_again() -> None:
+    """The abandon path reaches the same stuck coordinator as the commit path.
+
+    `close()` withdraws consumers and the quiesce then cancels the running
+    task, suppressing the callback that clears `_active_key`. Without a reset
+    here, a drain that timed out would silently kill archive warmup for the
+    rest of the session -- while leaving everything else working, so nothing
+    would point at the cause.
+    """
+
+    calls: list[str] = []
+    context = _quiesce_context(calls, pending=2)
+
+    context.quiesce_for_storage_transition()
+    context.abandon_storage_transition()
+
+    assert "warmup-reset" in calls
 
 
 class _RecordingLease:

@@ -191,3 +191,66 @@ def test_a_conversion_that_will_not_stop_leaves_storage_untouched(
     assert migrated == [], "storage must not be touched"
     assert context.committed is False, "no terminal teardown on the abandon path"
     assert abandoned and abandoned[0] >= 1
+
+
+class _Session:
+    """A reader document whose close must actually happen."""
+
+    page_count = 1
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_a_readers_document_is_closed_even_though_the_executor_is_sealed(
+    qtbot,  # noqa: ANN001
+) -> None:
+    """Closing a Reader does not release its document synchronously -- it
+    submits the close as a task. Closing before the quiesce therefore put that
+    task straight into the set the quiesce cancelled, and the archive session
+    was never closed at all: its handles stayed open on the storage root the
+    migration was about to delete. On Windows that makes the rmtree fail.
+    """
+
+    from joyread.app.reader_page_pipeline import (
+        EncodedPageFrameDecoder,
+        ReaderPagePipeline,
+        SessionReaderDocumentSource,
+    )
+
+    task_service = TaskService(max_workers=1)
+    session = _Session()
+
+    class _Cache:
+        def get_suitable(self, *_args):  # noqa: ANN002, ANN201
+            return None
+
+        def put(self, *_args) -> None:  # noqa: ANN002
+            return None
+
+        def clear(self) -> int:
+            return 0
+
+    pipeline = ReaderPagePipeline(
+        task_service,
+        EncodedPageFrameDecoder(),
+        _Cache(),
+        on_ready=lambda _page: None,
+        on_failed=lambda *_args: None,
+    )
+    pipeline.set_source(SessionReaderDocumentSource(session), generation=1)
+
+    # Exactly the transition order: seal first, then close the Reader.
+    task_service.quiesce()
+    pipeline.cancel(clear_cache=True)
+
+    try:
+        assert session.closed is True, (
+            "a sealed executor refuses the close task, so the document must be "
+            "closed inline rather than left open on the retired storage root"
+        )
+    finally:
+        task_service.shutdown()

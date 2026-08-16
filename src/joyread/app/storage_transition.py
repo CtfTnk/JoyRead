@@ -21,17 +21,22 @@ from enum import StrEnum
 class QuiesceStep(StrEnum):
     """The ordered phases of a transition.
 
-    The order is not arbitrary. Reader writes are flushed while the task
-    service still runs, because cancelling first would drop them. Producers are
-    stopped before the drain so the drain has a chance to reach zero. The disk
-    phase runs only once the drain has been proven.
+    Every position here is load-bearing. Reader writes are flushed while the
+    task service still runs, because cancelling first would drop them. Readers
+    are closed *after* background work is stopped, because closing one does not
+    release its document synchronously -- it submits the close as a task, and
+    closing first put that task into the set the quiesce then cancelled, so the
+    document was never closed and its handles stayed open on the storage root
+    about to be replaced. With the executor already sealed the submission is
+    refused and the close happens inline. The drain then has to reach zero
+    before the disk phase may start.
     """
 
     CONFIRM = "confirm"
     CLOSE_EDITORS = "close_editors"
     FLUSH_READER_WRITES = "flush_reader_writes"
-    CLOSE_READERS = "close_readers"
     STOP_BACKGROUND_WORK = "stop_background_work"
+    CLOSE_READERS = "close_readers"
     DRAIN = "drain"
     MIGRATE = "migrate"
     REBUILD = "rebuild"
