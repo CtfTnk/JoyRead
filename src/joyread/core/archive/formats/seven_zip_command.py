@@ -136,6 +136,13 @@ def extract_members_to_directory(
     destination.mkdir(parents=True, exist_ok=True)
     command = [executable, "x", "-y", "-bso0", "-bsp2", "-spd", "-scsUTF-8"]
     if password is not None:
+        # Known and accepted exposure: this puts the plaintext password in the
+        # child's command line, where `ps` and /proc/<pid>/cmdline expose it to
+        # any process running as the same user for the length of the
+        # extraction. 7-Zip has no stdin or environment alternative, so the
+        # only way to avoid it is to stop using the executable for encrypted
+        # archives. See "Known exposure" under Password Handling in
+        # docs/ARCHIVE_CORE_HANDBOOK.md before changing this.
         command.append(f"-p{password}")
     if thread_limit is not None:
         command.append(f"-mmt={max(1, int(thread_limit))}")

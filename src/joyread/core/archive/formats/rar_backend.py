@@ -464,6 +464,11 @@ class RarArchiveBackend:
         # becomes a second output directory. "-scsUTF-8" keeps CJK names intact.
         command = [backend.executable, "x", "-so", "-y", "-spd", "-scsUTF-8"]
         if password is not None:
+            # Known and accepted exposure: the plaintext password lands in the
+            # child's command line, readable through `ps` or
+            # /proc/<pid>/cmdline by any process running as the same user. See
+            # "Known exposure" under Password Handling in
+            # docs/ARCHIVE_CORE_HANDBOOK.md.
             command.append(f"-p{password}")
         command.extend(["--", str(source.path), name])
         try:
