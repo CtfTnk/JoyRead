@@ -75,8 +75,7 @@ class ReaderShellWidget(QWidget):
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
         self.dialog_overlay.hide()
 
-        app_settings = context.settings_store.load()
-        context.settings = app_settings
+        app_settings = context.reload_settings()
         logger.info(
             "ReaderShellWidget init: path=%s book=%s embedded=%s",
             self._source_path,
@@ -521,7 +520,7 @@ class ReaderShellWidget(QWidget):
         if self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
 
-    def _is_settings_safe_click(self, widget: QWidget | None) -> bool:
+    def _is_settings_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
         # See ``NovelReaderShellWidget._is_custom_safe_click`` for why
         # ``windowType()`` is used instead of a bitwise AND against the
         # Popup flag.
@@ -530,7 +529,7 @@ class ReaderShellWidget(QWidget):
         # propagates up to the shell. The filter fires again with watched=shell,
         # so the ancestor-chain walk misses the panel. Check cursor position
         # first to catch that propagated re-delivery.
-        if QRect(self.settings_panel.mapToGlobal(QPoint(0, 0)), self.settings_panel.size()).contains(QCursor.pos()):
+        if QRect(self.settings_panel.mapToGlobal(QPoint(0, 0)), self.settings_panel.size()).contains(global_position):
             return True
         while widget is not None:
             if widget in {self.settings_panel, self.footer.settings_button}:
@@ -540,8 +539,8 @@ class ReaderShellWidget(QWidget):
             widget = widget.parentWidget()
         return False
 
-    def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
-        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(QCursor.pos()):
+    def _is_topic_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
+        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(global_position):
             return True
         while widget is not None:
             if widget in {

@@ -11,8 +11,8 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QObject, QTimer
-from PySide6.QtGui import QCursor, QMouseEvent
+from PySide6.QtCore import QEvent, QObject, QPoint, QTimer
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 
@@ -120,7 +120,12 @@ class AutoHideController(QObject):
 
 @dataclass
 class _PanelEntry:
-    safe_click_predicate: Callable[[QWidget | None], bool]
+    #: Receives the widget under the click and the click's own global
+    #: position. The position is passed rather than read from ``QCursor``
+    #: because a predicate that samples the cursor answers "where is the
+    #: pointer now", which is not the same question once the event has been
+    #: queued behind anything.
+    safe_click_predicate: Callable[[QWidget | None, QPoint], bool]
     on_outside_click: Callable[[], None]
     active: bool = False
 
@@ -143,7 +148,7 @@ class PanelOutsideClickFilter(QObject):
         self,
         panel: QWidget,
         *,
-        safe_click_predicate: Callable[[QWidget | None], bool],
+        safe_click_predicate: Callable[[QWidget | None, QPoint], bool],
         on_outside_click: Callable[[], None],
     ) -> None:
         self._registrations[panel] = _PanelEntry(
@@ -179,13 +184,22 @@ class PanelOutsideClickFilter(QObject):
             return False
         if not isinstance(event, QMouseEvent):
             return False
-        widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
+        # Classify by where the click happened, not by who received it and not
+        # by where the pointer is now. `watched` can be an ancestor or a
+        # grabbing widget rather than the thing actually clicked, and
+        # `QCursor.pos()` has already moved on if the event waited. Selecting a
+        # thumbnail inside a panel could therefore be read as a click outside
+        # it, dismissing the panel the user was navigating with.
+        global_position = event.globalPosition().toPoint()
+        widget = QApplication.widgetAt(global_position)
+        if widget is None and isinstance(watched, QWidget):
+            widget = watched
         # Snapshot before iteration: an on_outside_click callback hides its
         # panel, which calls deactivate() and mutates the dict.
         for panel, entry in tuple(self._registrations.items()):
             if not entry.active or panel.isHidden():
                 continue
-            if not entry.safe_click_predicate(widget):
+            if not entry.safe_click_predicate(widget, global_position):
                 entry.on_outside_click()
         return False
 

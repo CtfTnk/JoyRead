@@ -208,3 +208,25 @@ def test_duplicate_import_still_links_tags_to_existing_book(tmp_path: Path) -> N
         assert len(linked) == 1
     finally:
         database.close()
+
+
+def test_import_reclaims_staging_left_by_a_previous_run(tmp_path: Path) -> None:
+    """Every in-process failure unlinks its own staging file, so anything found
+    here outlived the process that made it -- a crash or a kill part-way
+    through a copy. Each one is a full copy of a book, so they accumulate."""
+
+    service, database, paths, _tag_service = _make_services(tmp_path)
+    try:
+        staging_dir = paths.paths.books / ".staging"
+        staging_dir.mkdir(parents=True, exist_ok=True)
+        abandoned = staging_dir / "deadbeef.cbz"
+        abandoned.write_bytes(b"a half-copied book")
+
+        source = tmp_path / "Fresh.cbz"
+        _write_cbz(source)
+        service.import_files([source])
+
+        assert not abandoned.exists(), "an abandoned staging copy must be reclaimed"
+        assert list(staging_dir.iterdir()) == [], "and nothing new left behind"
+    finally:
+        database.close()

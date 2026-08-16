@@ -996,3 +996,124 @@ def test_hidden_books_can_be_added_to_hidable_collections() -> None:
 
     refreshed = next(book for book in vm.books if book.uuid == "mock-book-04")
     assert "collection-a" in refreshed.collection_ids
+
+
+class _FailingDeleteLibraryService(LibraryService):
+    """Deletes nothing and reports the failure, as a locked file would."""
+
+    def delete_books(self, book_uuids: tuple[str, ...]) -> None:
+        raise RuntimeError("the file is in use")
+
+
+def test_a_failed_delete_keeps_the_selection_and_the_detail_page() -> None:
+    """A failed delete is not a delete.
+
+    Clearing the selection and closing Detail treated it as one, so the user
+    lost their place and had to reselect before they could retry.
+    """
+
+    vm = ShelfViewModel(_FailingDeleteLibraryService(InMemoryBookRepository()))
+    vm.load_books()
+    first, second = vm.visible_books[:2]
+    failures: list[str] = []
+    vm.delete_failed.connect(failures.append)
+
+    vm.select_book(first.uuid)
+    vm.select_book(second.uuid, additive=True)
+    vm.show_detail(first.uuid)
+
+    vm.delete_books((first.uuid, second.uuid))
+
+    assert failures, "the user must still be told it failed"
+    assert vm.selected_book_ids == {first.uuid, second.uuid}, "selection must survive"
+    assert vm.detail_book_uuid == first.uuid, "a still-valid Detail page must stay open"
+    remaining = {book.uuid for book in vm.books}
+    assert {first.uuid, second.uuid} <= remaining, "nothing was deleted"
+
+
+def test_a_failed_delete_still_drops_books_a_partial_delete_removed() -> None:
+    """The reload decides what survives, so a partial failure converges."""
+
+    repository = InMemoryBookRepository()
+    vm = ShelfViewModel(LibraryService(repository))
+    vm.load_books()
+    first, second = vm.visible_books[:2]
+    vm.select_book(first.uuid)
+    vm.select_book(second.uuid, additive=True)
+    vm.show_detail(first.uuid)
+
+    # One book goes, then the operation fails: exactly a partial delete.
+    repository.delete_book(first.uuid)
+    vm._handle_delete_failure(RuntimeError("stopped half way"), (first.uuid, second.uuid))  # noqa: SLF001
+
+    assert vm.selected_book_ids == {second.uuid}, "the deleted book drops out"
+    assert vm.detail_book_uuid is None, "Detail followed the book that is gone"
+
+
+class _RecordingExecutor:
+    """Runs submitted work immediately, recording that it was submitted."""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None, **_kwargs):  # noqa: ANN001, ANN003
+        self.submitted.append(name)
+        try:
+            result = callback()
+        except Exception as exc:  # noqa: BLE001
+            if on_failure is not None:
+                on_failure(exc)
+            return None
+        if on_success is not None:
+            on_success(result)
+        return None
+
+
+def test_refresh_tags_async_goes_through_the_executor() -> None:
+    """The tag dialogs read this cache instead of querying as they open, so
+    the query has to happen somewhere that is not the UI thread."""
+
+    executor = _RecordingExecutor()
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        task_service=executor,
+        tag_service=_FakeShelfTagService({}),
+    )
+    vm.load_books()
+    executor.submitted.clear()
+
+    vm.refresh_tags_async()
+
+    assert executor.submitted == ["shelf-tags"], "the repository read must not run inline"
+
+
+def test_refresh_tags_async_publishes_newly_created_tags() -> None:
+    links: dict[str, tuple[str, ...]] = {}
+    tag_service = _FakeShelfTagService(links)
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        task_service=_RecordingExecutor(),
+        tag_service=tag_service,
+    )
+    vm.load_books()
+    assert vm.available_tags == []
+
+    first = vm.books[0]
+    tag_service.set_book_tag_ids(first.uuid, ("tag-new",))
+    vm.refresh_tags_async()
+
+    assert [tag.tag_id for tag in vm.available_tags] == ["tag-new"]
+
+
+def test_refresh_tags_async_without_an_executor_still_refreshes() -> None:
+    """Focused tests construct the ViewModel without one; it must not silently
+    stop refreshing there."""
+
+    tag_service = _FakeShelfTagService({})
+    vm = ShelfViewModel(LibraryService(InMemoryBookRepository()), tag_service=tag_service)
+    vm.load_books()
+    tag_service.set_book_tag_ids(vm.books[0].uuid, ("tag-sync",))
+
+    vm.refresh_tags_async()
+
+    assert [tag.tag_id for tag in vm.available_tags] == ["tag-sync"]

@@ -396,13 +396,13 @@ class NovelReaderShellWidget(QWidget):
         self.topic_panel.setFixedSize(width, height)
         self.topic_panel.move((self.width() - width) // 2, (self.height() - height) // 2)
 
-    def _is_custom_safe_click(self, widget: QWidget | None) -> bool:
+    def _is_custom_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
         # ``windowType()`` returns the WindowType after masking; bitwise
         # AND against the Popup flag is buggy because every Window has
         # overlapping bits, so the AND read True for every click.
         #
         # Geometric guard: see ReaderShellWidget._is_settings_safe_click.
-        if QRect(self.custom_panel.mapToGlobal(QPoint(0, 0)), self.custom_panel.size()).contains(QCursor.pos()):
+        if QRect(self.custom_panel.mapToGlobal(QPoint(0, 0)), self.custom_panel.size()).contains(global_position):
             return True
         targets = {self.custom_panel, self.header.custom_button}
         while widget is not None:
@@ -413,8 +413,8 @@ class NovelReaderShellWidget(QWidget):
             widget = widget.parentWidget()
         return False
 
-    def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
-        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(QCursor.pos()):
+    def _is_topic_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
+        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(global_position):
             return True
         targets = {
             self.topic_panel,

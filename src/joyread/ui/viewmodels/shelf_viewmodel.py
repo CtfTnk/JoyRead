@@ -1001,8 +1001,10 @@ class ShelfViewModel:
             try:
                 self._library_service.delete_books(target_ids)
             except Exception as exc:  # pragma: no cover - repository-specific failure path.
-                logger.warning("delete_books failed books=%s: %s", target_ids, exc, exc_info=True)
-                self.delete_failed.emit(str(exc))
+                # Same treatment as the worker path: refresh, keep what still
+                # exists, report. Emitting straight through would leave the
+                # shelf showing books a partial delete already removed.
+                self._handle_delete_failure(exc, target_ids)
                 return
             self._handle_delete_success(target_ids)
             return
@@ -1245,6 +1247,46 @@ class ShelfViewModel:
             logger.warning("Shelf book tag lookup failed: %s", exc, exc_info=True)
             self._book_tag_ids_by_book = {book_id: () for book_id in book_ids}
 
+    def refresh_tags_async(self) -> None:
+        """Reload the tag list off the UI thread and publish it when it lands.
+
+        The tag dialogs read :attr:`available_tags` rather than querying the
+        repository as they open, because that query blocks on the database
+        actor's queue -- fast when it is idle, an outright freeze when an
+        import or an audit is ahead of it. Keeping the list current is
+        therefore this ViewModel's job, and it does the work on a worker.
+
+        Falls back to the synchronous refresh when no executor was injected,
+        which is the situation in focused tests rather than in the app.
+        """
+
+        if self._tag_service is None:
+            self.available_tags = []
+            return
+        if self._task_service is None:
+            self._refresh_book_tag_index()
+            self._emit_state()
+            return
+        service = self._tag_service
+        book_ids = tuple(book.uuid for book in self.books)
+
+        def load() -> tuple[list[Tag], dict[str, tuple[str, ...]]]:
+            return (
+                service.list_tags(),
+                service.list_tag_ids_for_books(book_ids) if book_ids else {},
+            )
+
+        def publish(loaded: tuple[list[Tag], dict[str, tuple[str, ...]]]) -> None:
+            self.available_tags, self._book_tag_ids_by_book = loaded
+            self._emit_state()
+
+        def failed(error: Exception) -> None:
+            # Degraded exactly as the synchronous path degrades: the shelf
+            # still renders, just without tag data.
+            logger.warning("Async shelf tag refresh failed: %s", error, exc_info=True)
+
+        self._task_service.submit("shelf-tags", load, on_success=publish, on_failure=failed)
+
     def _handle_book_tags_success(self, book_uuid: str) -> None:
         logger.info("Book tags assigned book=%s", book_uuid)
         self._refresh_book_tag_index()
@@ -1339,12 +1381,24 @@ class ShelfViewModel:
         self.books_deleted.emit(target_ids)
 
     def _handle_delete_failure(self, error: Exception, target_ids: tuple[str, ...]) -> None:
+        """Refresh state and report the error without discarding valid state.
+
+        A failed delete is not a delete: dropping the selection and closing the
+        Detail page treated it as one, so the user lost their place and had to
+        reselect before they could retry.
+
+        The reload decides what survives rather than the request. That also
+        covers a partial failure -- if some books were deleted before the error,
+        they disappear from ``books`` and fall out of the selection here, while
+        everything still present stays selected.
+        """
+
         logger.warning("delete_books task failed books=%s: %s", target_ids, error)
-        target_set = set(target_ids)
-        self.selected_book_ids -= target_set
-        if self.detail_book_uuid in target_set:
-            self._set_detail_book_uuid(None)
         self.load_books()
+        surviving = {book.uuid for book in self.books}
+        self.selected_book_ids &= surviving
+        if self.detail_book_uuid is not None and self.detail_book_uuid not in surviving:
+            self._set_detail_book_uuid(None)
         self.selection_changed.emit(set(self.selected_book_ids))
         self.delete_failed.emit(str(error))
 

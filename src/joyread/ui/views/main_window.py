@@ -590,12 +590,10 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.show_info(t("dialog.remove_failed_title"), message)
 
     def _settings_for_reader_launch(self):
-        self._context.settings = self._context.settings_store.load()
-        return self._context.settings
+        return self._context.reload_settings()
 
     def _settings_for_import(self):
-        self._context.settings = self._context.settings_store.load()
-        return self._context.settings
+        return self._context.reload_settings()
 
     def _reload_after_background_import(self) -> None:
         logger.debug("Reloading shelf after background import")
@@ -1000,7 +998,11 @@ class MainWindow(QMainWindow):
     def _handle_tag_operation_result(self, success: bool, title: str, message: str) -> None:
         # Both success and failure flow through ``show_info`` so the user
         # always sees an explicit outcome for tag CRUD.
-        _ = success  # success/failure styling is identical for now.
+        if success:
+            # The tag dialogs read the ViewModel's cached list, so a tag just
+            # created or renamed here has to reach that cache or it would not
+            # appear until the next full shelf reload.
+            self._context.shelf_viewmodel.refresh_tags_async()
         self.dialog_overlay.show_info(title, message)
 
     def _confirm_delete_tags(self, title: str, message: str) -> None:
@@ -1263,12 +1265,11 @@ class MainWindow(QMainWindow):
         )
 
     def _show_tag_filter_dialog(self) -> None:
-        try:
-            tags = self._context.tag_service.list_tags()
-        except Exception as exc:  # pragma: no cover - repository-specific failure path.
-            logger.exception("Opening tag filter failed: %s", exc)
-            self.dialog_overlay.show_info(t("dialog.tag_filter_title"), t("dialog.tag_filter_failed"))
-            return
+        # Read the ViewModel's cached tags rather than querying here. The
+        # repository call blocks on the database actor's queue, so opening this
+        # dialog while an import or audit is running froze the window until
+        # that work drained. The ViewModel keeps the list current off-thread.
+        tags = list(self._context.shelf_viewmodel.available_tags)
 
         def apply_filter(tag_ids: tuple[str, ...]) -> None:
             try:
@@ -1299,12 +1300,8 @@ class MainWindow(QMainWindow):
         if book is None:
             self.dialog_overlay.show_info(t("dialog.book_tags_title"), t("dialog.book_no_longer_available"))
             return
-        try:
-            tags = self._context.tag_service.list_tags()
-        except Exception as exc:  # pragma: no cover - repository-specific failure path.
-            logger.exception("Opening book tag allocation failed: %s", exc)
-            self.dialog_overlay.show_info(t("dialog.book_tags_title"), t("dialog.tag_filter_failed"))
-            return
+        # Cached for the same reason as the tag filter above.
+        tags = list(self._context.shelf_viewmodel.available_tags)
 
         def assign_tags(tag_ids: tuple[str, ...]) -> None:
             self._context.shelf_viewmodel.set_book_tag_ids(book_uuid, tag_ids)

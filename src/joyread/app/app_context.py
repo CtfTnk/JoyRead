@@ -357,6 +357,24 @@ class AppContext:
             self.storage_rebuild_required = False
             transition.lease.release()
 
+    def reload_settings(self) -> AppSettings:
+        """Refresh the shared settings snapshot and return it.
+
+        Views used to do ``context.settings = context.settings_store.load()``
+        inline whenever they needed current values. That put the assignment in
+        three places with no single point to hook, so any future refresh a
+        dependent service needs would have to be remembered at each one.
+
+        This only refreshes the snapshot. Applying a *changed* setting to live
+        services stays with :meth:`apply_cache_settings` and
+        :meth:`apply_archive_open_limits`, which the settings page reaches
+        through its own signals -- keeping the two concerns apart is what stops
+        a routine read from tearing down and rebuilding caches.
+        """
+
+        self.settings = self.settings_store.load()
+        return self.settings
+
     def apply_archive_depth_settings(self) -> None:
         """Compatibility entrypoint for older callers of depth-only settings."""
 

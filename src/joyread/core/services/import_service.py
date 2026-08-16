@@ -249,6 +249,7 @@ class ImportService:
         """Serialize a complete import batch against audit and storage moves."""
 
         with self._maintenance_coordinator.hold("import"):
+            self._reclaim_abandoned_staging()
             limits = self._archive_limits_for(
                 nested_archive_max_depth,
                 archive_global_file_max_depth,
@@ -613,8 +614,37 @@ class ImportService:
 
     def _staging_path(self, source_path: Path) -> Path:
         suffix = source_path.suffix.lower()
-        staging_dir = self._paths.paths.books / ".staging"
-        return staging_dir / f"{uuid4().hex}{suffix}"
+        return self._staging_dir() / f"{uuid4().hex}{suffix}"
+
+    def _staging_dir(self) -> Path:
+        return self._paths.paths.books / ".staging"
+
+    def _reclaim_abandoned_staging(self) -> None:
+        """Delete staged copies left behind by a previous run.
+
+        Every in-process failure already unlinks its own staging file, so
+        anything found here outlived the process that made it -- a crash, a
+        kill, or a power loss part-way through a copy. Each one is a full copy
+        of a book, so leaving them accumulates real disk.
+
+        Safe to do unconditionally at batch start because the maintenance lease
+        serializes imports: no other import can hold a staging file at this
+        moment, so nothing here is still in use.
+        """
+
+        staging_dir = self._staging_dir()
+        if not staging_dir.is_dir():
+            return
+        for path in staging_dir.iterdir():
+            if not path.is_file():
+                continue
+            try:
+                size = path.stat().st_size
+                path.unlink()
+            except OSError as exc:  # pragma: no cover - best-effort reclamation.
+                logger.warning("Could not reclaim abandoned staging file %s: %s", path.name, exc)
+                continue
+            logger.info("Reclaimed abandoned import staging file (%d bytes)", size)
 
     def _publish_staging(self, staging_path: Path, content_hash: str) -> tuple[Path, bool]:
         suffix = staging_path.suffix.lower()

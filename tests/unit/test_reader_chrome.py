@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
@@ -103,7 +103,7 @@ def test_panel_outside_click_filter_fires_only_when_active(qtbot) -> None:
     filt = PanelOutsideClickFilter()
     filt.register(
         panel,
-        safe_click_predicate=lambda w: w is panel,
+        safe_click_predicate=lambda w, _pos: w is panel,
         on_outside_click=lambda: outside_clicks.append(1),
     )
 
@@ -133,7 +133,7 @@ def test_panel_outside_click_filter_removes_app_filter_when_unused(qtbot) -> Non
     filt = PanelOutsideClickFilter()
     filt.register(
         panel,
-        safe_click_predicate=lambda _w: True,
+        safe_click_predicate=lambda _w, _pos: True,
         on_outside_click=lambda: None,
     )
 
@@ -158,3 +158,50 @@ def _mouse_press_at(pos: QPoint) -> QMouseEvent:
         Qt.MouseButton.LeftButton,
         Qt.KeyboardModifier.NoModifier,
     )
+
+
+def test_outside_click_is_classified_by_the_click_position(qtbot) -> None:
+    """Selecting a thumbnail inside the topic panel must not dismiss it.
+
+    The filter used to classify with `QCursor.pos()` — where the pointer is
+    *now*, not where the click landed — so a selection inside the panel could
+    be read as a click outside it once the pointer had moved on, closing the
+    panel the user was navigating with.
+    """
+
+    panel = QWidget()
+    qtbot.addWidget(panel)
+    panel.resize(200, 200)
+    panel.move(300, 300)
+    panel.show()
+    thumbnail = QWidget(panel)
+    thumbnail.resize(40, 40)
+    thumbnail.move(20, 20)
+    thumbnail.show()
+
+    elsewhere = QWidget()
+    qtbot.addWidget(elsewhere)
+    elsewhere.resize(50, 50)
+    elsewhere.move(900, 900)
+    elsewhere.show()
+
+    outside_clicks: list[int] = []
+    filt = PanelOutsideClickFilter()
+    filt.register(
+        panel,
+        # The geometric half of what the real shells do.
+        safe_click_predicate=lambda _w, pos: QRect(
+            panel.mapToGlobal(QPoint(0, 0)), panel.size()
+        ).contains(pos),
+        on_outside_click=lambda: outside_clicks.append(1),
+    )
+    filt.activate(panel)
+
+    inside = thumbnail.mapToGlobal(QPoint(5, 5))
+    QApplication.sendEvent(elsewhere, _mouse_press_at(inside))
+
+    assert outside_clicks == [], "a click inside the panel must not dismiss it"
+
+    QApplication.sendEvent(elsewhere, _mouse_press_at(QPoint(920, 920)))
+
+    assert outside_clicks == [1], "a click genuinely outside must still dismiss it"
