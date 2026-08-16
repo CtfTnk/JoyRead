@@ -8,7 +8,7 @@ from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
 
 from joyread.app import bootstrap
-from joyread.app.app_context import AppContext
+from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.bootstrap import create_application
 from joyread.app.launch.file_open_router import FileOpenRouter
 from joyread.app.launch.coordinator import LaunchCoordinator
@@ -448,6 +448,9 @@ class _RecordingWarmupCoordinator:
     def close(self) -> None:
         self._calls.append("warmup")
 
+    def reset(self) -> None:
+        self._calls.append("warmup-reset")
+
 
 class _RecordingThumbnailService:
     def __init__(self, calls: list[str]) -> None:
@@ -490,6 +493,24 @@ def test_quiesce_leaves_the_thumbnail_service_usable_until_commit() -> None:
 
     context.commit_storage_transition()
     assert "thumbnails" in calls
+    assert context.storage_rebuild_required is True, (
+        "every outcome past the commit point has to rebuild, even one that "
+        "never touched storage"
+    )
+
+
+def test_committing_resets_the_warmup_coordinator_rather_than_muting_it() -> None:
+    """The drain cancelled the warmup task, which suppresses the callback that
+    would clear `_active_key`. Left set, it blocks every later warmup."""
+
+    calls: list[str] = []
+    context = _quiesce_context(calls)
+
+    context.quiesce_for_storage_transition()
+    assert calls == ["warmup", "task-quiesce"]
+
+    context.commit_storage_transition()
+    assert "warmup-reset" in calls
 
 
 def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
@@ -501,3 +522,59 @@ def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
 
     assert calls == ["warmup", "task-quiesce", "task-resume"]
     assert "thumbnails" not in calls, "an abandoned transition must be fully reversible"
+
+
+class _RecordingLease:
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def release(self) -> None:
+        self._calls.append("lease-released")
+
+
+def test_a_rejected_select_still_rebuilds_what_the_commit_closed() -> None:
+    """`reload_required` answers "did storage change", which is not the same
+    question as "does this need rebuilding".
+
+    A Select rejected by validation changes nothing on disk and reports
+    False -- but the commit phase already closed the thumbnail service for
+    good, so resuming without a rebuild leaves the app holding a dead one.
+    """
+
+    calls: list[str] = []
+    context = _quiesce_context(calls)
+    rebuilt: list[str] = []
+    context.reload_storage_from_settings = lambda: rebuilt.append("rebuilt")  # type: ignore[method-assign]
+
+    context.quiesce_for_storage_transition()
+    context.commit_storage_transition()
+    rejected = StorageTransition(
+        "storage-select",
+        _RecordingLease(calls),  # type: ignore[arg-type]
+        result=None,
+        reload_required=False,
+    )
+    context.finish_storage_transition(rejected)
+
+    assert rebuilt == ["rebuilt"], "a post-commit outcome must rebuild"
+    assert context.storage_rebuild_required is False, "the flag must not leak into the next run"
+    assert "lease-released" in calls
+
+
+def test_an_uncommitted_transition_does_not_force_a_rebuild() -> None:
+    """Nothing was closed, so nothing needs reconstructing."""
+
+    calls: list[str] = []
+    context = _quiesce_context(calls)
+    rebuilt: list[str] = []
+    context.reload_storage_from_settings = lambda: rebuilt.append("rebuilt")  # type: ignore[method-assign]
+
+    context.finish_storage_transition(
+        StorageTransition(
+            "storage-select",
+            _RecordingLease(calls),  # type: ignore[arg-type]
+            reload_required=False,
+        )
+    )
+
+    assert rebuilt == []

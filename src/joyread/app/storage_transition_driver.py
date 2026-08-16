@@ -184,6 +184,18 @@ class StorageTransitionController(QObject):
         self._timer.stop()
         self._phase = _Phase.IDLE
 
+    def acknowledge(self) -> None:
+        """Report that the GUI side has finished rebuilding.
+
+        Until this is called the controller stays busy, so a second transition
+        cannot start while the first still holds its maintenance lease and its
+        services are half-rebuilt. The worker thread must not clear the phase
+        itself: the terminal signal is queued, so the GUI-side handler has not
+        run yet at the moment the worker would clear it.
+        """
+
+        self._phase = _Phase.IDLE
+
     def _migrate(self) -> None:
         operation = self._operation
         self._operation = None
@@ -195,14 +207,15 @@ class StorageTransitionController(QObject):
         def run() -> None:
             # Deliberately not on the task service: it is quiesced, which is
             # the guarantee that nothing else can touch storage while this
-            # runs. Qt queues these emissions back to the GUI thread.
+            # runs. Qt queues these emissions back to the GUI thread, and the
+            # phase stays MIGRATING until `acknowledge` says the rebuild is
+            # done -- clearing it here would open a window where the first
+            # transition owns the lease but a second one is accepted.
             try:
                 transition = operation()
             except Exception as error:  # noqa: BLE001 - reported to the user.
-                self._phase = _Phase.IDLE
                 self.failed.emit(error)
                 return
-            self._phase = _Phase.IDLE
             self.finished.emit(transition)
 
         threading.Thread(

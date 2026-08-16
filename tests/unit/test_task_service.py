@@ -232,3 +232,41 @@ def test_shutdown_stays_terminal(qtbot) -> None:  # noqa: ANN001, ARG001
     service.shutdown()
 
     assert service.submit("after-shutdown", lambda: "work").status == TaskStatus.CANCELLED
+
+
+def test_quiesce_does_not_strand_queued_tasks(qtbot) -> None:  # noqa: ANN001, ARG001
+    """`QThreadPool.clear()` drops queued runnables before they can emit
+    `finished`, so their handles stay registered forever and the drain never
+    reaches zero -- every storage transition would then time out."""
+
+    service = TaskService(max_workers=1)
+    release = Event()
+    started = Event()
+
+    def blocked() -> str:
+        started.set()
+        release.wait(5)
+        return "running"
+
+    service.submit("running", blocked)
+    assert started.wait(2)
+    # Cannot start while the single worker is occupied, so this one is queued.
+    service.submit("queued", lambda: "queued")
+
+    service.quiesce()
+    release.set()
+
+    qtbot.waitUntil(lambda: service.pending_task_count() == 0, timeout=3000)
+    service.shutdown()
+
+
+def test_resume_cannot_reopen_a_shutdown_pool(qtbot) -> None:  # noqa: ANN001, ARG001
+    """Shutdown runs after the services tasks depend on are gone, so letting
+    resume reopen the pool would run work against torn-down state."""
+
+    service = TaskService(max_workers=1)
+    service.shutdown()
+
+    service.resume()
+
+    assert service.submit("after-resume", lambda: "work").status == TaskStatus.CANCELLED

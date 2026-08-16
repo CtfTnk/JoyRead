@@ -148,3 +148,44 @@ def test_archive_warmup_invalidation_waits_for_active_worker_before_replacement(
     assert sessions.calls[-1] == (second, 2, 100, 8, False, second_cache_key, False)
     assert second_cache_key.startswith("session:")
     assert ready == ["new"]
+
+
+def test_reset_releases_a_warmup_whose_task_never_reported_back(tmp_path: Path) -> None:
+    """A storage transition cancels the running warmup at the task-service
+    level, which suppresses both its success and failure callbacks. `_finish`
+    therefore never runs and `_active_key` stays set -- after which
+    `_start_next` returns immediately forever and no later warmup can start.
+    """
+
+    archive = tmp_path / "book.cb7"
+    archive.write_bytes(b"book")
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(sessions, tasks)  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-1", on_ready=lambda: None)
+    assert len(tasks.tasks) == 1
+
+    # What a quiesce does: consumers withdrawn, then the task cancelled so its
+    # callbacks never fire.
+    coordinator.close()
+    tasks.tasks[0].handle.status = TaskStatus.CANCELLED
+
+    coordinator.reset()
+
+    coordinator.acquire(archive, "reader-2", on_ready=lambda: None)
+    assert len(tasks.tasks) == 2, "a warmup after the transition must actually start"
+
+
+def test_replacing_the_session_service_drops_warmups_for_retired_storage(tmp_path: Path) -> None:
+    archive = tmp_path / "book.cb7"
+    archive.write_bytes(b"book")
+    tasks = _ManualTaskService()
+    coordinator = ArchiveWarmupCoordinator(_FakeSessionService(), tasks)  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-1", on_ready=lambda: None)
+    tasks.tasks[0].handle.status = TaskStatus.CANCELLED
+    coordinator.replace_session_service(_FakeSessionService())  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-2", on_ready=lambda: None)
+    assert len(tasks.tasks) == 2

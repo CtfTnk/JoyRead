@@ -1140,6 +1140,7 @@ class MainWindow(QMainWindow):
             # been rebuilt, including when the rebuild itself failed -- a
             # half-rebuilt stack is the one state nothing else may run against.
             self._context.resume_after_storage_transition()
+            self._storage_transition.acknowledge()
         if transition.error is not None:
             self.dialog_overlay.show_info(t("dialog.storage_title"), str(transition.error))
             return
@@ -1167,7 +1168,9 @@ class MainWindow(QMainWindow):
         try:
             self._context.reload_storage_from_settings()
         finally:
+            self._context.storage_rebuild_required = False
             self._context.resume_after_storage_transition()
+            self._storage_transition.acknowledge()
         self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
 
     def _handle_navigation(self, key: str) -> None:

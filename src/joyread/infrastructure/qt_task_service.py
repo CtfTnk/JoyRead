@@ -95,7 +95,10 @@ class TaskService:
         self._pool.setMaxThreadCount(max_workers)
         self._active_signals: set[_TaskSignals] = set()
         self._active_handles: dict[str, TaskHandle[object]] = {}
+        # Terminal teardown and a reversible storage-transition quiesce both
+        # stop submission, but only the second one can be undone.
         self._shutting_down = False
+        self._quiesced = False
 
     def submit(
         self,
@@ -155,7 +158,7 @@ class TaskService:
     ) -> TaskHandle[T]:
         callback_label = describe_callback(callback)
         handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}", callback_label=callback_label)
-        if self._shutting_down:
+        if self._shutting_down or self._quiesced:
             handle.status = TaskStatus.CANCELLED
             return handle
         logger.debug("Task %s submitted callback=%s", handle.task_id, callback_label)
@@ -204,14 +207,21 @@ class TaskService:
         clears it. Callers poll :meth:`pending_task_count` from the event loop
         instead.
 
+        The queued runnables are deliberately **not** cleared out of the pool.
+        ``QThreadPool.clear()`` drops them before they can run, so they never
+        reach ``_Runnable.run()``, never emit ``finished``, and their handles
+        stay registered forever -- leaving a drain that can never reach zero.
+        Letting a cancelled runnable start instead costs nothing: it sees the
+        cancelled status, emits ``finished``, and returns without calling its
+        callback.
+
         Unlike :meth:`shutdown` this is undone by :meth:`resume`, so it suits a
         storage transition, after which the application keeps running.
         """
 
-        self._shutting_down = True
+        self._quiesced = True
         for handle in list(self._active_handles.values()):
             handle.cancel()
-        self._pool.clear()
         pending = len(self._active_handles)
         logger.info("TaskService quiesced with %d task(s) unwinding", pending)
         return pending
@@ -222,15 +232,25 @@ class TaskService:
         return len(self._active_handles)
 
     def resume(self) -> None:
-        """Accept work again after a quiesce."""
+        """Accept work again after a quiesce.
 
-        self._shutting_down = False
+        A shutdown is terminal and stays that way: reopening a pool whose
+        services have already been torn down would let work run against them.
+        """
+
+        if self._shutting_down:
+            logger.warning("Ignoring resume after shutdown")
+            return
+        self._quiesced = False
         logger.info("TaskService resumed")
 
     def shutdown(self, timeout_ms: int = 1500) -> None:
-        # Terminal: quiesce provides the cancellation, and the join below is
-        # safe here only because nothing needs the event loop afterwards.
+        # Terminal, and separately tracked so `resume` cannot undo it. Clearing
+        # the pool is safe here precisely because nothing afterwards needs the
+        # drain to reach zero -- the handles are force-cleared below.
+        self._shutting_down = True
         self.quiesce()
+        self._pool.clear()
         self._pool.waitForDone(max(0, int(timeout_ms)))
         for handle in list(self._active_handles.values()):
             handle.cancel()

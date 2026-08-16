@@ -129,6 +129,10 @@ class AppContext:
     # the main window shows it once on launch.
     storage_startup_notice: str | None = None
     library_maintenance_recovery_conflicts: bool = False
+    #: Set once a storage transition passes its commit point, where terminal
+    #: services are released. Every outcome after that has to rebuild, even one
+    #: that never touched storage.
+    storage_rebuild_required: bool = False
 
     def close(self) -> None:
         logger.info("AppContext shutting down: cancelling tasks then closing database")
@@ -176,12 +180,20 @@ class AppContext:
         """Release the services that must not outlive the retired storage.
 
         Called only once the drain is proven, immediately before the disk
-        phase. Everything closed here is reconstructed by
+        phase. Everything released here is reconstructed by
         :meth:`reload_storage_from_settings`, which every path out of a
-        committed transition runs -- including a failed migration, which
-        rebuilds around the storage that stayed in use.
+        committed transition runs -- see :attr:`storage_rebuild_required`.
+
+        The warmup coordinator is reset rather than merely closed. Its running
+        task was cancelled during the drain, which suppresses the callback that
+        would normally clear ``_active_key``; leaving it set would block every
+        later warmup. Resetting is only safe now, because the drain proves the
+        task is gone rather than still running.
         """
 
+        self.storage_rebuild_required = True
+        if self.archive_warmup_coordinator is not None:
+            self.archive_warmup_coordinator.reset()
         if self.thumbnail_service is not None:
             self.thumbnail_service.close()
         shutdown_pdf_thread()
@@ -319,12 +331,21 @@ class AppContext:
         return StorageTransition("storage-reset", lease, reload_required=True)
 
     def finish_storage_transition(self, transition: StorageTransition) -> None:
-        """Rebuild UI-facing services and release a worker-held storage lease."""
+        """Rebuild UI-facing services and release a worker-held storage lease.
+
+        ``reload_required`` describes whether *storage* changed, which is not
+        the same question as whether a rebuild is needed. A Select that is
+        rejected by validation changes nothing on disk and reports
+        ``reload_required=False``, but the commit phase has already closed the
+        thumbnail service for good -- so the rebuild is driven by having
+        committed, not by the outcome.
+        """
 
         try:
-            if transition.reload_required:
+            if transition.reload_required or self.storage_rebuild_required:
                 self.reload_storage_from_settings()
         finally:
+            self.storage_rebuild_required = False
             transition.lease.release()
 
     def apply_archive_depth_settings(self) -> None:

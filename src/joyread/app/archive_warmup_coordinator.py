@@ -90,8 +90,27 @@ class ArchiveWarmupCoordinator:
         for state in self._states.values():
             state.callbacks.clear()
 
+    def reset(self) -> None:
+        """Forget every warmup, including one whose task never reported back.
+
+        ``close()`` only withdraws consumers, which asks a running warmup to
+        stop. If that task is then cancelled at the task-service level, its
+        success and failure callbacks are both suppressed, so ``_finish`` never
+        runs and ``_active_key`` stays set -- and ``_start_next`` returns
+        immediately forever after, so no later warmup can ever start.
+
+        Call this once the worker has actually drained, when the absence of a
+        callback means the task is gone rather than still running.
+        """
+
+        self._states.clear()
+        self._queue.clear()
+        self._active_key = None
+
     def replace_session_service(self, session_service: ReaderSessionService) -> None:
-        self.close()
+        # A rebuilt session service means the old warmups are pointed at
+        # retired storage, so they are dropped rather than merely muted.
+        self.reset()
         self._session_service = session_service
 
     def _start_next(self) -> None:

@@ -222,16 +222,29 @@ def test_a_failing_disk_phase_reports_instead_of_finishing(qtbot) -> None:  # no
     assert context.calls == ["quiesce", "commit"]
 
 
-def test_a_second_transition_is_refused_while_one_is_running(qtbot) -> None:  # noqa: ANN001, ARG001
+def test_a_second_transition_is_refused_until_the_rebuild_is_acknowledged(qtbot) -> None:  # noqa: ANN001, ARG001
+    """The worker cannot clear the phase itself: the terminal signal is queued,
+    so the GUI-side handler has not rebuilt anything yet at that moment."""
+
     handle = _running_handle()
     manager = _WindowManager((_ReaderWindow((handle,)),))
     controller = StorageTransitionController(_Context([0]), manager, poll_interval_ms=5)
+    done: list[str] = []
+    controller.finished.connect(done.append)
 
     assert controller.start(lambda: "first") is True
     assert controller.start(lambda: "second") is False, "two migrations must not overlap"
 
     handle.status = TaskStatus.COMPLETED
-    qtbot.waitUntil(lambda: not controller.busy, timeout=2000)
+    qtbot.waitUntil(lambda: bool(done), timeout=2000)
+
+    # Still busy: the first transition holds its lease until the GUI side has
+    # rebuilt around it.
+    assert controller.busy is True
+    assert controller.start(lambda: "second") is False
+
+    controller.acknowledge()
+    assert controller.busy is False
 
 
 def test_the_flush_waits_out_a_chained_write_it_could_not_see_at_the_start(qtbot) -> None:  # noqa: ANN001, ARG001
