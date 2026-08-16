@@ -8,6 +8,7 @@ library*, first-run reuse, and the lightweight daily-startup check.
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 import logging
@@ -18,7 +19,7 @@ from uuid import uuid4
 
 from joyread.infrastructure.database import LATEST_SCHEMA_VERSION, apply_migrations
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
-from joyread.infrastructure.filesystem.path_service import WritableLocation
+from joyread.infrastructure.filesystem.path_service import StoragePathResolver, WritableLocation
 
 # Imported at module level so a rename or removal produces an ImportError at
 # startup rather than a misleading SMOKE_TEST_FAILED at validation time.
@@ -94,10 +95,16 @@ class StorageValidationService:
     def validate_full(self, storage_root: Path) -> StorageValidationResult:
         """Complete check used by Move (staging), Select, and first-run reuse.
 
-        Confirms the root is readable/writable, ensures the managed
-        subdirectories, opens the database, runs an integrity check, upgrades an
-        older schema via ``apply_migrations``, verifies the key tables/columns,
-        and runs a repository smoke query.
+        Confirms the root is readable/writable, opens the database, runs an
+        integrity check, upgrades an older schema via ``apply_migrations``,
+        verifies the key tables/columns, and runs a repository smoke query.
+        Only once all of that passes are the managed subdirectories created.
+
+        Rejecting a folder leaves it exactly as it was found. Creating the
+        managed layout up front meant that pointing Select at any empty folder
+        littered it with ``Books``/``Database``/``Thumbnails``/... on the way to
+        telling the user it was not a library. Writability is still checked, but
+        with a probe file that is always removed.
         """
 
         root = Path(storage_root)
@@ -107,7 +114,7 @@ class StorageValidationService:
         if readable is not None:
             return readable
 
-        writable = self._ensure_writable_layout(root)
+        writable = self._check_writable(root)
         if writable is not None:
             return writable
 
@@ -126,9 +133,14 @@ class StorageValidationService:
                 f"Could not open the JoyRead database: {exc}",
             )
         try:
-            return self._validate_open_database(connection)
+            result = self._validate_open_database(connection, root)
         finally:
             connection.close()
+        if not result.ok:
+            return result
+        # Accepted, so the library may now be completed in place. A valid
+        # library from an older layout can legitimately be missing a directory.
+        return self.ensure_managed_layout(root) or result
 
     def validate_lightweight(self, storage_root: Path) -> StorageValidationResult:
         """Cheap daily-startup check: root readable, database opens read-only,
@@ -185,13 +197,34 @@ class StorageValidationService:
             )
         return None
 
-    def _ensure_writable_layout(self, root: Path) -> StorageValidationResult | None:
+    def _check_writable(self, root: Path) -> StorageValidationResult | None:
+        """Prove the root is writable without leaving anything behind."""
+
+        probe = root / f".joyread-write-test-{uuid4().hex}"
+        try:
+            probe.write_bytes(b"")
+        except OSError as exc:
+            return StorageValidationResult.failure(
+                StorageValidationCode.NOT_WRITABLE,
+                f"Storage location is not writable: {exc}",
+            )
+        finally:
+            # Unconditional: a probe that was created must not survive a later
+            # rejection, and one that was never created makes this a no-op.
+            with suppress(OSError):
+                probe.unlink()
+        return None
+
+    def ensure_managed_layout(self, root: Path) -> StorageValidationResult | None:
+        """Create the managed subdirectories of an accepted library.
+
+        Separate from validation on purpose: this writes, so it runs only once
+        the root has been confirmed to be a JoyRead library.
+        """
+
         try:
             for name in REQUIRED_SUBDIRECTORIES:
                 (root / name).mkdir(parents=True, exist_ok=True)
-            probe = root / f".joyread-write-test-{uuid4().hex}"
-            probe.write_bytes(b"")
-            probe.unlink()
         except OSError as exc:
             return StorageValidationResult.failure(
                 StorageValidationCode.NOT_WRITABLE,
@@ -199,7 +232,11 @@ class StorageValidationService:
             )
         return None
 
-    def _validate_open_database(self, connection: sqlite3.Connection) -> StorageValidationResult:
+    def _validate_open_database(
+        self,
+        connection: sqlite3.Connection,
+        root: Path,
+    ) -> StorageValidationResult:
         try:
             integrity = connection.execute("PRAGMA quick_check").fetchone()
         except sqlite3.Error as exc:
@@ -236,7 +273,7 @@ class StorageValidationService:
                 missing,
             )
 
-        smoke = self._smoke_test(connection)
+        smoke = self._smoke_test(connection, root)
         if smoke is not None:
             return smoke
 
@@ -277,11 +314,22 @@ class StorageValidationService:
                     return f"Database table '{table}' is missing the column '{column}'."
         return None
 
-    def _smoke_test(self, connection: sqlite3.Connection) -> StorageValidationResult | None:
+    def _smoke_test(
+        self,
+        connection: sqlite3.Connection,
+        root: Path,
+    ) -> StorageValidationResult | None:
         # Mirror the real shelf load so a structurally-valid but query-incompatible
         # database is caught here rather than at first render.
+        #
+        # The resolver is passed explicitly. Managed paths are stored relative
+        # to the storage root, so without one the repository falls back to
+        # returning them raw -- warning on every row that it is handing back a
+        # path the caller would resolve against the process working directory.
+        # We know the root here, so mirroring the shelf means resolving the way
+        # the shelf does rather than tripping that fallback.
         try:
-            _repo_list_books(connection)
+            _repo_list_books(connection, resolver=StoragePathResolver(root))
         except Exception as exc:  # noqa: BLE001 - any failure means the library is unusable.
             return StorageValidationResult.failure(
                 StorageValidationCode.SMOKE_TEST_FAILED,

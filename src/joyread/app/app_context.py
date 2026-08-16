@@ -19,6 +19,7 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
 )
+from joyread.app.archive_pool_usage_bridge import ArchivePoolUsageBridge
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.cache_service import CacheService
 from joyread.core.services.export_service import ExportService
@@ -125,6 +126,8 @@ class AppContext:
     tag_management_viewmodel: TagManagementViewModel
     thumbnail_renderer: QtThumbnailRenderer | None = None
     archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None
+    #: Carries live pool usage from caching workers to the settings page.
+    archive_pool_usage_bridge: ArchivePoolUsageBridge | None = None
     # Populated when startup recovery had to fall back to another library;
     # the main window shows it once on launch.
     storage_startup_notice: str | None = None
@@ -521,8 +524,21 @@ class AppContext:
     def _refresh_settings_pool_usage(self) -> None:
         self.settings_viewmodel.refresh_archive_pool_usage()
 
+    def attach_archive_pool_usage_bridge(self) -> None:
+        """Point the usage bridge at whichever pool is currently live.
+
+        Called wherever the pool is replaced, so the settings page follows the
+        new one and stops hearing from the retired one.
+        """
+
+        bridge = self.archive_pool_usage_bridge
+        if bridge is None:
+            return
+        bridge.attach(self.archive_extraction_pool)
+
     def _rebuild_archive_reading_services(self) -> None:
         logger.debug("Rebuilding archive reader services for cache=%s", type(self.archive_extraction_pool).__name__)
+        self.attach_archive_pool_usage_bridge()
         self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
         self.reader_session_service = ReaderSessionService(
             self.archive_image_service,
@@ -675,6 +691,15 @@ def create_app_context(
     # pool; provide it a thin lambda so the viewmodel can poll the current
     # strategy object even after a runtime cache-strategy switch.
     settings_viewmodel.set_archive_pool_bytes_provider(lambda: context.archive_extraction_pool.current_bytes)
+    # ...and let the pool say when that value changed, so the label follows
+    # caching live instead of only being correct just after a rebuild, a
+    # settings edit, a manual clear, or a finished audit. The pool reports from
+    # a worker thread; the bridge is what makes the hop to the GUI thread safe.
+    context.archive_pool_usage_bridge = ArchivePoolUsageBridge()
+    context.archive_pool_usage_bridge.usage_changed.connect(
+        lambda _usage: settings_viewmodel.refresh_archive_pool_usage()
+    )
+    context.attach_archive_pool_usage_bridge()
     # Hook user-driven cache actions back into the live services. Owning the
     # connection in AppContext keeps the viewmodel UI-only and makes the side
     # effects (resize/clear) easy to find from one place.

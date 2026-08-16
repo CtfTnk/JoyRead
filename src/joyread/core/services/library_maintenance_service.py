@@ -37,6 +37,31 @@ from joyread.infrastructure.filesystem.path_service import PathService
 
 logger = logging.getLogger(__name__)
 
+#: Files the operating system's file manager writes into any folder a user
+#: browses. They are not library content and never will be, so an audit that
+#: reported them would offer the user a cleanup that Finder undoes the next
+#: time they open the folder.
+_PLATFORM_METADATA_NAMES: frozenset[str] = frozenset(
+    {".DS_Store", "Thumbs.db", "desktop.ini"}
+)
+
+#: macOS AppleDouble sidecars, written when copying to a filesystem without
+#: native extended-attribute support.
+_PLATFORM_METADATA_PREFIXES: tuple[str, ...] = ("._",)
+
+
+def is_platform_metadata(filename: str) -> bool:
+    """Whether a filename is file-manager metadata rather than library content.
+
+    Matched case-insensitively: ``Thumbs.db`` and ``thumbs.db`` are the same
+    file on the platforms that create it.
+    """
+
+    lowered = filename.lower()
+    if lowered in {name.lower() for name in _PLATFORM_METADATA_NAMES}:
+        return True
+    return any(filename.startswith(prefix) for prefix in _PLATFORM_METADATA_PREFIXES)
+
 
 class LibraryAuditAction(StrEnum):
     """The auditable state observed for one ``book_files`` row."""
@@ -741,10 +766,17 @@ class LibraryMaintenanceService:
         for path in candidates:
             if path in referenced or not self._is_regular_file(path, root):
                 continue
+            if is_platform_metadata(path.name):
+                # The file manager recreates these the moment the user opens
+                # the folder, so reporting them produces an orphan that comes
+                # back after every cleanup and never converges.
+                logger.debug("Ignoring platform metadata in audit: %s", path.name)
+                continue
             try:
                 byte_size = path.stat().st_size
             except OSError:
                 continue
+            logger.debug("Audit orphan (%s): %s bytes=%d", kind, path.name, byte_size)
             orphans.append(LibraryAuditOrphan(path, byte_size, kind))
         return sorted(orphans, key=lambda orphan: str(orphan.path))
 

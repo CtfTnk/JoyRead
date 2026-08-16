@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 import pytest
 
 from joyread.core.services.storage_validation_service import (
+    REQUIRED_SUBDIRECTORIES,
     StorageValidationCode,
     StorageValidationService,
 )
@@ -155,3 +157,83 @@ def test_validate_lightweight_fails_when_database_missing(tmp_path: Path) -> Non
 
     assert not result.ok
     assert result.code == StorageValidationCode.DATABASE_MISSING
+
+
+def test_a_rejected_root_is_left_exactly_as_it_was_found(tmp_path: Path) -> None:
+    """Pointing Select at an ordinary folder used to litter it with the managed
+    layout on the way to reporting that it is not a JoyRead library."""
+
+    folder = tmp_path / "not-a-library"
+    folder.mkdir()
+
+    result = StorageValidationService().validate_full(folder)
+
+    assert result.ok is False
+    assert result.code is StorageValidationCode.DATABASE_MISSING
+    assert list(folder.iterdir()) == [], "a rejected folder must not be modified"
+
+
+def test_an_accepted_library_gains_any_missing_managed_directory(tmp_path: Path) -> None:
+    """A valid library from an older layout is still completed in place."""
+
+    _make_library(tmp_path)
+    assert not (tmp_path / "Thumbnails").exists()
+
+    result = StorageValidationService().validate_full(tmp_path)
+
+    assert result.ok is True
+    for name in REQUIRED_SUBDIRECTORIES:
+        assert (tmp_path / name).is_dir(), f"{name} must exist after acceptance"
+
+
+def test_the_write_probe_never_survives_validation(tmp_path: Path) -> None:
+    folder = tmp_path / "not-a-library"
+    folder.mkdir()
+
+    StorageValidationService().validate_full(folder)
+
+    assert not any(p.name.startswith(".joyread-write-test") for p in folder.iterdir())
+
+
+def _seed_book_row(database: Path) -> None:
+    """One healthy book whose managed path is stored relative, as imports write it."""
+
+    connection = open_sqlite_connection(database)
+    connection.execute(
+        """
+        INSERT INTO book_files
+          (file_id, original_path, original_file_name, storage_path, file_format,
+           hash_algorithm, content_hash, state, created_at, updated_at)
+        VALUES ('f1','/orig/x.cbz','x.cbz','Books/ab/x.cbz','cbz','sha256','h','healthy',
+                '2026-01-01','2026-01-01')
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO books (book_id, file_id, title, author, book_type, created_at, updated_at)
+        VALUES ('b1','f1','T','A','manga','2026-01-01','2026-01-01')
+        """
+    )
+    connection.commit()
+    connection.close()
+
+
+def test_the_smoke_query_resolves_paths_instead_of_warning_about_them(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Managed paths are stored relative to the storage root. Running the smoke
+    query without a resolver made the repository hand them back raw and warn,
+    once per row, that the caller would resolve them against the process CWD --
+    an unsafe fallback that validation has no reason to reach, since it knows
+    the root.
+    """
+
+    database = _make_library(tmp_path)
+    _seed_book_row(database)
+
+    with caplog.at_level(logging.WARNING):
+        result = StorageValidationService().validate_full(tmp_path)
+
+    assert result.ok is True
+    assert not [record for record in caplog.records if "storage resolver" in record.getMessage()]

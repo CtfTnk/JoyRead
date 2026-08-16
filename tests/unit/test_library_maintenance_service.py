@@ -18,6 +18,7 @@ from joyread.core.services.library_maintenance_service import (
     LibraryAuditAction,
     LibraryMaintenanceCoordinator,
     LibraryMaintenanceService,
+    is_platform_metadata,
 )
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService
@@ -404,3 +405,43 @@ def test_recover_pending_rename_journal_keeps_conflict_when_target_bytes_changed
     assert recovery.conflicts == (journal_id,)
     assert refreshed is not None and Path(refreshed.file_path) == old_path
     assert remaining == 1
+
+
+def test_audit_ignores_file_manager_metadata(maintenance_stack, tmp_path: Path) -> None:
+    """Finder recreates .DS_Store the moment the user opens the folder, so
+    reporting it produced an orphan that came back after every cleanup."""
+
+    paths, _database, _cache, importer, maintenance, repository, _invalidated = maintenance_stack
+    source = tmp_path / "source" / "Managed.cbz"
+    _write_cbz(source, "#224466")
+    _import_book(importer, repository, source)
+
+    noise = {
+        paths.paths.books / ".DS_Store",
+        paths.paths.books / "._Managed.cbz",
+        paths.paths.books / "Thumbs.db",
+        paths.paths.books / "desktop.ini",
+    }
+    for path in noise:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"metadata")
+    real_orphan = paths.paths.books / "orphan.cbz"
+    _write_cbz(real_orphan, "#cc4422")
+
+    plan = maintenance.scan()
+
+    reported = {orphan.path for orphan in plan.orphan_files}
+    assert reported & noise == set(), "platform metadata must not be reported"
+    assert real_orphan in reported, "a genuine orphan must still be found"
+
+    maintenance.apply(plan)
+    assert all(path.exists() for path in noise), "metadata must not be deleted either"
+
+
+def test_platform_metadata_is_matched_case_insensitively() -> None:
+    assert is_platform_metadata(".DS_Store") is True
+    assert is_platform_metadata("thumbs.db") is True
+    assert is_platform_metadata("._Managed.cbz") is True
+    assert is_platform_metadata("desktop.ini") is True
+    assert is_platform_metadata("Managed.cbz") is False
+    assert is_platform_metadata("my.DS_Store.cbz") is False

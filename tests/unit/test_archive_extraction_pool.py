@@ -750,3 +750,58 @@ def test_hidden_pool_publish_requires_every_entry(tmp_path: Path) -> None:
     assert pool.is_complete("file:book", 3, "sig") is False
     assert pool.publish_complete("file:book", ("a", "b"), 2, "sig") is True
     assert pool.is_complete("file:book", 2, "sig") is True
+
+
+def test_usage_listener_reports_writes_and_eviction(tmp_path: Path) -> None:
+    """The settings label was stale while caching because nothing told it the
+    pool had grown. Every path that moves bytes now reports."""
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 4096)
+    seen: list[int] = []
+    pool.set_usage_listener(seen.append)
+
+    pool.put("file:a", "page-001.jpg", b"x" * 512)
+    assert seen, "a write must report"
+    assert seen[-1] == pool.current_bytes
+
+    pool.purge("file:a")
+    assert seen[-1] == pool.current_bytes
+    assert seen[-1] < max(seen), "the purge must be reported as a decrease"
+
+
+def test_usage_listener_stays_silent_when_nothing_changed(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "pool", 4096)
+    pool.put("file:a", "page-001.jpg", b"x" * 128)
+    seen: list[int] = []
+    pool.set_usage_listener(seen.append)
+
+    pool.get("file:a", "page-001.jpg")
+
+    assert seen == [], "a read that moves no bytes must not report"
+
+
+def test_a_failing_usage_listener_cannot_break_the_pool(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "pool", 4096)
+
+    def boom(_usage: int) -> None:
+        raise RuntimeError("listener exploded")
+
+    pool.set_usage_listener(boom)
+
+    assert pool.put("file:a", "page-001.jpg", b"x" * 128) is True
+    assert pool.get("file:a", "page-001.jpg") == b"x" * 128
+
+
+def test_clearing_the_listener_detaches_a_retired_pool(tmp_path: Path) -> None:
+    """A storage transition replaces the pool; the old one must go quiet."""
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 4096)
+    seen: list[int] = []
+    pool.set_usage_listener(seen.append)
+    pool.put("file:a", "page-001.jpg", b"x" * 128)
+    assert seen
+
+    pool.set_usage_listener(None)
+    pool.put("file:b", "page-001.jpg", b"y" * 128)
+
+    assert len(seen) == 1

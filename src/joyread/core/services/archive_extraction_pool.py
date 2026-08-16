@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import hashlib
 import json
@@ -110,7 +110,56 @@ class _PoolEntry:
     mtime: float
 
 
-class ArchiveExtractionPool:
+class _UsageNotifier:
+    """Report every change in pool byte usage to one listener.
+
+    Usage moves from many places -- writes, publication, promotion, eviction,
+    purge, reconciliation -- and a settings page that only refreshed when the
+    storage stack was rebuilt showed a figure that went stale the moment
+    caching started. Rather than annotate every arithmetic site (and miss one
+    the next time a site is added), ``_current_bytes`` is a property whose
+    setter does the reporting, so a new mutation is covered by construction.
+
+    The listener is called on whichever thread changed the usage, with the pool
+    lock held. It must therefore not block or call back into the pool: the
+    intended implementation posts a queued Qt signal and returns.
+    """
+
+    _usage_listener: Callable[[int], None] | None = None
+    _usage_value: int = 0
+    _notified_usage: int = 0
+
+    def set_usage_listener(self, listener: Callable[[int], None] | None) -> None:
+        """Report usage changes from this moment on.
+
+        The baseline is seeded with the current value so attaching to a pool
+        that already holds bytes does not report a change the next time some
+        bookkeeping path rewrites the same number.
+        """
+
+        self._notified_usage = self._usage_value
+        self._usage_listener = listener
+
+    @property
+    def _current_bytes(self) -> int:
+        return self._usage_value
+
+    @_current_bytes.setter
+    def _current_bytes(self, value: int) -> None:
+        self._usage_value = value
+        listener = self._usage_listener
+        # Compared against the last *reported* value, not the last one written,
+        # so a sequence that nets out to no change stays silent.
+        if listener is None or value == self._notified_usage:
+            return
+        self._notified_usage = value
+        try:
+            listener(value)
+        except Exception:  # A telemetry listener must never break the pool.
+            logger.exception("Archive pool usage listener failed")
+
+
+class ArchiveExtractionPool(_UsageNotifier):
     """Byte-budgeted disk LRU shared across all archive sources.
 
     Each source archive maps to a single ``<book_key>.zip`` file. Eviction
@@ -942,7 +991,7 @@ class ArchiveExtractionPool:
             )
 
 
-class HiddenImageExtractionPool:
+class HiddenImageExtractionPool(_UsageNotifier):
     """Disk LRU that stores extracted page bytes as hidden app cache files.
 
     The payload files deliberately use opaque hashed names and a non-image
