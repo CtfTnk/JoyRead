@@ -7,6 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 import logging
 from pathlib import Path
+from threading import Event
 from uuid import uuid4
 
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
@@ -25,6 +26,11 @@ class _WarmupState:
     allow_persistent_cache: bool
     callbacks: dict[str, Callable[[], None]] = field(default_factory=dict)
     handle: TaskHandle[None] | None = None
+    #: Set on the worker thread when the job begins and when it leaves. A
+    #: cancelled task suppresses its callbacks, so these are the only reliable
+    #: evidence of whether a worker exists and whether it has gone.
+    started: Event = field(default_factory=Event)
+    exited: Event = field(default_factory=Event)
 
 
 class ArchiveWarmupCoordinator:
@@ -36,6 +42,10 @@ class ArchiveWarmupCoordinator:
         self._states: dict[str, _WarmupState] = {}
         self._queue: deque[str] = deque()
         self._active_key: str | None = None
+        #: A worker that was forgotten while still running. It keeps the single
+        #: warmup slot until it actually exits, so a reset cannot overlap two
+        #: whole-document extractions.
+        self._retired: _WarmupState | None = None
 
     def acquire(
         self,
@@ -101,11 +111,21 @@ class ArchiveWarmupCoordinator:
 
         Call this once the worker has actually drained, when the absence of a
         callback means the task is gone rather than still running.
+
+        A worker that has *not* drained is not forgotten outright: it keeps the
+        single warmup slot until it exits. Dropping it would let the next
+        ``acquire`` of the same document start a second whole-document
+        extraction while the first was still unwinding.
         """
 
+        active = self._states.get(self._active_key) if self._active_key is not None else None
         self._states.clear()
         self._queue.clear()
         self._active_key = None
+        if active is not None and active.started.is_set() and not active.exited.is_set():
+            self._retired = active
+        else:
+            self._retired = None
 
     def replace_session_service(self, session_service: ReaderSessionService) -> None:
         # A rebuilt session service means the old warmups are pointed at
@@ -114,6 +134,14 @@ class ArchiveWarmupCoordinator:
         self._session_service = session_service
 
     def _start_next(self) -> None:
+        if self._retired is not None:
+            if not self._retired.exited.is_set():
+                # A forgotten worker is still unwinding. Hold the single slot
+                # rather than overlapping two whole-document extractions; the
+                # request stays queued and the Reader calls acquire() again on
+                # its next layout pass, which retries this.
+                return
+            self._retired = None
         if self._active_key is not None:
             return
         while self._queue:
@@ -127,34 +155,14 @@ class ArchiveWarmupCoordinator:
             self._active_key = key
 
             def work(key: str = key, state: _WarmupState = state) -> None:
+                # Marked here rather than at submit: a task cancelled before
+                # its runnable starts never reaches this line, and that is
+                # exactly the case where there is no worker to wait for.
+                state.started.set()
                 try:
-                    self._session_service.warm_disk_cache(
-                        state.path,
-                        limits=state.limits,
-                        document_cache_key=state.document_cache_key,
-                        allow_persistent_cache=state.allow_persistent_cache,
-                        chunk_size=8,
-                        is_cancelled=lambda key=key: not self._has_consumers(key),
-                    )
-                except TypeError as exc:
-                    unsupported = str(exc)
-                    if (
-                        "limits" not in unsupported
-                        and "document_cache_key" not in unsupported
-                        and "allow_persistent_cache" not in unsupported
-                    ):
-                        raise
-                    self._session_service.warm_disk_cache(
-                        state.path,
-                        nested_archive_max_depth=_legacy_depth_limit(
-                            state.limits.nested_archive_max_depth
-                        ),
-                        archive_global_file_max_depth=_legacy_depth_limit(
-                            state.limits.global_file_max_depth
-                        ),
-                        chunk_size=8,
-                        is_cancelled=lambda key=key: not self._has_consumers(key),
-                    )
+                    self._run_warmup(key, state)
+                finally:
+                    state.exited.set()
 
             kwargs = {
                 "on_success": lambda _result, key=key: self._finish(key, notify=True),
@@ -187,9 +195,51 @@ class ArchiveWarmupCoordinator:
         logger.warning("Archive cache warmup failed for %s: %s", key, error)
         self._finish(key, notify=False)
 
-    def _has_consumers(self, key: str) -> bool:
-        state = self._states.get(key)
-        return state is not None and bool(state.callbacks)
+    def _run_warmup(self, key: str, state: _WarmupState) -> None:
+        """Call the session service, tolerating an older keyword signature."""
+
+        cancelled = lambda: not self._is_wanted(key, state)  # noqa: E731
+        try:
+            self._session_service.warm_disk_cache(
+                state.path,
+                limits=state.limits,
+                document_cache_key=state.document_cache_key,
+                allow_persistent_cache=state.allow_persistent_cache,
+                chunk_size=8,
+                is_cancelled=cancelled,
+            )
+        except TypeError as exc:
+            unsupported = str(exc)
+            if (
+                "limits" not in unsupported
+                and "document_cache_key" not in unsupported
+                and "allow_persistent_cache" not in unsupported
+            ):
+                raise
+            self._session_service.warm_disk_cache(
+                state.path,
+                nested_archive_max_depth=_legacy_depth_limit(
+                    state.limits.nested_archive_max_depth
+                ),
+                archive_global_file_max_depth=_legacy_depth_limit(
+                    state.limits.global_file_max_depth
+                ),
+                chunk_size=8,
+                is_cancelled=cancelled,
+            )
+
+    def _is_wanted(self, key: str, state: _WarmupState) -> bool:
+        """Whether *this* job is still wanted -- not merely whether its key is.
+
+        Identity matters because the key is derived from the document and the
+        limits snapshot, so reopening the same book produces the same key. A
+        purely key-based test would let a *new* state answer on behalf of an
+        old worker: after a reset, the old job would see consumers again and
+        resume, running a second whole-document extraction alongside the one
+        that just started, into a pool that may since have been replaced.
+        """
+
+        return self._states.get(key) is state and bool(state.callbacks)
 
     @staticmethod
     def _source_key(document_cache_key: str, limits: ArchiveOpenLimits) -> str:

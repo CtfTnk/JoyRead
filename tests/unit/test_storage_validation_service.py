@@ -237,3 +237,34 @@ def test_the_smoke_query_resolves_paths_instead_of_warning_about_them(
 
     assert result.ok is True
     assert not [record for record in caplog.records if "storage resolver" in record.getMessage()]
+
+
+def test_a_rejected_layout_conflict_leaves_the_database_untouched(tmp_path: Path) -> None:
+    """Opening the database applies migrations, so a check that runs after it
+    has already rewritten the library the user was only asking about.
+
+    Reproduced with an empty-but-migratable database and a regular file named
+    `Thumbnails`: validation rejected the root, but the 0-byte database had
+    been upgraded through every migration first.
+    """
+
+    database = tmp_path / "Database" / "joyread.sqlite3"
+    database.parent.mkdir(parents=True)
+    database.touch()
+    (tmp_path / "Thumbnails").write_text("a regular file, not a directory")
+
+    result = StorageValidationService().validate_full(tmp_path)
+
+    assert result.ok is False
+    assert result.code is StorageValidationCode.NOT_WRITABLE
+    assert database.stat().st_size == 0, "a rejected candidate must not be migrated"
+
+
+def test_a_layout_conflict_is_reported_rather_than_crashing(tmp_path: Path) -> None:
+    _make_library(tmp_path)
+    (tmp_path / "Books").write_text("occupied by a file")
+
+    result = StorageValidationService().validate_full(tmp_path)
+
+    assert result.ok is False
+    assert "Books" in result.message

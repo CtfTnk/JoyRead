@@ -189,3 +189,85 @@ def test_replacing_the_session_service_drops_warmups_for_retired_storage(tmp_pat
 
     coordinator.acquire(archive, "reader-2", on_ready=lambda: None)
     assert len(tasks.tasks) == 2
+
+
+class _CancelProbeSessionService:
+    """Captures each worker's cancellation predicate for later inspection."""
+
+    def __init__(self) -> None:
+        self.probes: list[object] = []
+
+    def warm_disk_cache(self, path, **kwargs):  # noqa: ANN001, ANN003, ANN201
+        self.probes.append(kwargs.get("is_cancelled"))
+
+
+def test_a_reset_worker_stays_cancelled_when_the_same_book_is_reopened(tmp_path: Path) -> None:
+    """The key is derived from the document and the limits snapshot, so
+    reopening the same book produces the same key. A purely key-based
+    cancellation test let the *new* state answer for the old worker: it saw
+    consumers again and resumed, running a second whole-document extraction
+    alongside the one that had just started.
+    """
+
+    archive = tmp_path / "book.cb7"
+    archive.write_bytes(b"book")
+    tasks = _ManualTaskService()
+    sessions = _CancelProbeSessionService()
+    coordinator = ArchiveWarmupCoordinator(sessions, tasks)  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-1", document_cache_key="file:same", on_ready=lambda: None)
+    tasks.tasks[0].work()  # type: ignore[operator]
+    probe = sessions.probes[0]
+    assert probe() is False, "a wanted job must not report itself cancelled"
+
+    # A storage transition: consumers withdrawn, task cancelled, then reset.
+    coordinator.close()
+    tasks.tasks[0].handle.status = TaskStatus.CANCELLED
+    coordinator.reset()
+    assert probe() is True
+
+    coordinator.acquire(archive, "reader-2", document_cache_key="file:same", on_ready=lambda: None)
+
+    assert probe() is True, "the retired worker must not be revived by a new request"
+
+
+def test_a_retired_worker_keeps_the_slot_until_it_exits(tmp_path: Path) -> None:
+    """Otherwise the reset overlaps two whole-document extractions."""
+
+    archive = tmp_path / "book.cb7"
+    archive.write_bytes(b"book")
+    tasks = _ManualTaskService()
+    coordinator = ArchiveWarmupCoordinator(_FakeSessionService(), tasks)  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-1", document_cache_key="file:same", on_ready=lambda: None)
+    state = coordinator._states[coordinator._active_key]  # noqa: SLF001
+    state.started.set()  # the worker is running and has not returned
+
+    coordinator.close()
+    tasks.tasks[0].handle.status = TaskStatus.CANCELLED
+    coordinator.reset()
+
+    coordinator.acquire(archive, "reader-2", document_cache_key="file:same", on_ready=lambda: None)
+    assert len(tasks.tasks) == 1, "a second extraction must not start while the first runs"
+
+    state.exited.set()
+    coordinator.acquire(archive, "reader-3", document_cache_key="file:same", on_ready=lambda: None)
+
+    assert len(tasks.tasks) == 2, "the queued warmup runs once the slot is free"
+
+
+def test_a_worker_that_never_started_does_not_hold_the_slot(tmp_path: Path) -> None:
+    """A task cancelled before its runnable ran has no worker to wait for."""
+
+    archive = tmp_path / "book.cb7"
+    archive.write_bytes(b"book")
+    tasks = _ManualTaskService()
+    coordinator = ArchiveWarmupCoordinator(_FakeSessionService(), tasks)  # type: ignore[arg-type]
+
+    coordinator.acquire(archive, "reader-1", document_cache_key="file:same", on_ready=lambda: None)
+    tasks.tasks[0].handle.status = TaskStatus.CANCELLED  # never entered work()
+    coordinator.reset()
+
+    coordinator.acquire(archive, "reader-2", document_cache_key="file:same", on_ready=lambda: None)
+
+    assert len(tasks.tasks) == 2

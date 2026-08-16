@@ -144,6 +144,8 @@ class ShelfViewModel:
         self._search_documents_by_book_id: dict[str, BookSearchDocument] = {}
         self.available_tags: list[Tag] = []
         self._book_tag_ids_by_book: dict[str, tuple[str, ...]] = {}
+        # Guards against an older async tag read publishing after a newer one.
+        self._tag_refresh_token = 0
         self._tag_filter_ids: tuple[str, ...] = ()
         self.search_query = ""
         self.sort_field = _coerce_sort_field(settings.shelf_sort_field if settings is not None else None)
@@ -1269,6 +1271,8 @@ class ShelfViewModel:
             return
         service = self._tag_service
         book_ids = tuple(book.uuid for book in self.books)
+        self._tag_refresh_token += 1
+        token = self._tag_refresh_token
 
         def load() -> tuple[list[Tag], dict[str, tuple[str, ...]]]:
             return (
@@ -1277,6 +1281,14 @@ class ShelfViewModel:
             )
 
         def publish(loaded: tuple[list[Tag], dict[str, tuple[str, ...]]]) -> None:
+            # Refreshes can finish out of order -- creating two tags in quick
+            # succession submits two reads, and the older one completing last
+            # would republish a snapshot without the newer tag. The dialogs
+            # read this cache exclusively, so that tag would simply be missing
+            # until something else triggered a refresh.
+            if token != self._tag_refresh_token or service is not self._tag_service:
+                logger.debug("Dropping superseded tag refresh (token=%d)", token)
+                return
             self.available_tags, self._book_tag_ids_by_book = loaded
             self._emit_state()
 

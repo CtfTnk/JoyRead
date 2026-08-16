@@ -1117,3 +1117,55 @@ def test_refresh_tags_async_without_an_executor_still_refreshes() -> None:
     vm.refresh_tags_async()
 
     assert [tag.tag_id for tag in vm.available_tags] == ["tag-sync"]
+
+
+class _DeferredExecutor:
+    """Holds submitted work so completions can be replayed out of order."""
+
+    def __init__(self) -> None:
+        self.pending: list[tuple] = []
+
+    def submit(self, name, callback, *, on_success=None, on_failure=None, **_kwargs):  # noqa: ANN001, ANN003
+        self.pending.append((callback(), on_success))
+        return None
+
+    def complete(self, index: int) -> None:
+        result, on_success = self.pending[index]
+        if on_success is not None:
+            on_success(result)
+
+
+def test_a_superseded_tag_refresh_does_not_republish_its_snapshot() -> None:
+    """Two refreshes can finish out of order.
+
+    The dialogs read this cache exclusively, so an older snapshot completing
+    last would drop a just-created tag out of sight until something else
+    triggered another refresh.
+    """
+
+    links: dict[str, tuple[str, ...]] = {}
+    tag_service = _FakeShelfTagService(links)
+    executor = _DeferredExecutor()
+    vm = ShelfViewModel(
+        LibraryService(InMemoryBookRepository()),
+        task_service=executor,
+        tag_service=tag_service,
+    )
+    vm.load_books()
+    book = vm.books[0]
+
+    # First refresh reads an empty tag list.
+    vm.refresh_tags_async()
+    # A tag is created, and a second refresh reads it.
+    tag_service.set_book_tag_ids(book.uuid, ("tag-new",))
+    vm.refresh_tags_async()
+
+    # The newer read lands first, then the stale one arrives late.
+    executor.complete(1)
+    assert [tag.tag_id for tag in vm.available_tags] == ["tag-new"]
+
+    executor.complete(0)
+
+    assert [tag.tag_id for tag in vm.available_tags] == ["tag-new"], (
+        "a superseded refresh must not overwrite newer tags"
+    )

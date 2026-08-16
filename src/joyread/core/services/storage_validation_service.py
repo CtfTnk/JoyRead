@@ -118,6 +118,16 @@ class StorageValidationService:
         if writable is not None:
             return writable
 
+        # Before the database is opened, because opening it applies migrations
+        # and that rewrites the candidate. A root holding a *file* named
+        # `Thumbnails` is rejected either way, but discovering it afterwards
+        # meant a rejected Select had already upgraded a 0-byte database
+        # through every migration -- a change to a library the user was only
+        # asking about.
+        conflict = self._check_layout_conflicts(root)
+        if conflict is not None:
+            return conflict
+
         database = self.database_path(root)
         if not database.is_file():
             return StorageValidationResult.failure(
@@ -213,6 +223,29 @@ class StorageValidationService:
             # rejection, and one that was never created makes this a no-op.
             with suppress(OSError):
                 probe.unlink()
+        return None
+
+    def _check_layout_conflicts(self, root: Path) -> StorageValidationResult | None:
+        """Reject a root where a managed directory name is taken by a file.
+
+        Pure inspection -- it creates nothing -- so it is safe to run before
+        the database is opened, which is the point: the answer is known before
+        anything about the candidate has been changed.
+        """
+
+        for name in REQUIRED_SUBDIRECTORIES:
+            path = root / name
+            try:
+                if path.exists() and not path.is_dir():
+                    return StorageValidationResult.failure(
+                        StorageValidationCode.NOT_WRITABLE,
+                        f"Storage location cannot be used: {name} is not a directory.",
+                    )
+            except OSError as exc:
+                return StorageValidationResult.failure(
+                    StorageValidationCode.NOT_WRITABLE,
+                    f"Storage location is not usable: {exc}",
+                )
         return None
 
     def ensure_managed_layout(self, root: Path) -> StorageValidationResult | None:
