@@ -515,3 +515,30 @@ def _novel_book(source: Path) -> Book:
         is_favourite=False,
         original_file_name=source.name,
     )
+
+
+def test_novel_reader_topic_selection_closes_the_panel(qtbot, tmp_path: Path) -> None:
+    """A selection means "take me there", so the panel should stop covering
+    the chapter the user just chose."""
+
+    source = write_tiny_epub(
+        tmp_path / "novel.epub",
+        chapter_titles=("Prologue", "Chapter 1", "Chapter 2", "Epilogue"),
+    )
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    _wait_for_chapter(qtbot, window)
+    window.shell._show_topic_panel(ReaderTopicMode.CONTENTS)  # noqa: SLF001
+    assert window.topic_panel.isVisible()
+
+    window.topic_panel.contents_selected.emit(2)
+    qtbot.waitUntil(lambda: window.shell.viewmodel.current_index == 2, timeout=2000)
+
+    assert window.topic_panel.isHidden(), "selecting a target must dismiss the panel"
+
+    window.close()
+    context.close()

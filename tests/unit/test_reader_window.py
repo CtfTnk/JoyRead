@@ -1059,3 +1059,33 @@ def test_main_window_skips_lock_overlay_when_show_collections_is_off(
 
     window.close()
     context.close()
+
+
+def test_reader_topic_thumbnail_selection_closes_the_panel(qtbot, tmp_path: Path) -> None:
+    """Picking a page from the thumbnail grid is a "take me there", so the
+    panel should stop covering the page the user just chose."""
+
+    source = tmp_path / "reader-select.cbz"
+    image = tmp_path / "page.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        for index in range(4):
+            archive.write(image, f"{index:03d}.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+    qtbot.waitUntil(lambda: window.shell.viewmodel.page_count == 4, timeout=3000)
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)  # noqa: SLF001
+    assert window.topic_panel.isVisible()
+
+    window.topic_panel.thumbnail_selected.emit(2)
+
+    assert window.shell.viewmodel.current_index == 2, "the seek must still happen"
+    assert window.topic_panel.isHidden(), "selecting a page must dismiss the panel"
+    assert window.header.topic_button_group.active_mode is None
+
+    window.close()
+    context.close()

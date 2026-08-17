@@ -158,9 +158,9 @@ class ReaderShellWidget(QWidget):
         self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
         self.topic_panel.thumbnail_interest_changed.connect(self.viewmodel.set_topic_thumbnail_interest)
         self.topic_panel.thumbnail_interest_released.connect(self.viewmodel.release_topic_thumbnail_interest)
-        self.topic_panel.thumbnail_selected.connect(self.viewmodel.seek)
-        self.topic_panel.contents_selected.connect(self.viewmodel.seek)
-        self.topic_panel.bookmark_selected.connect(self.viewmodel.seek)
+        self.topic_panel.thumbnail_selected.connect(self._seek_from_topic_panel)
+        self.topic_panel.contents_selected.connect(self._seek_from_topic_panel)
+        self.topic_panel.bookmark_selected.connect(self._seek_from_topic_panel)
         self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)
         self.topic_panel.bookmark_rename_requested.connect(self._show_rename_bookmark_dialog)
         self.topic_panel.bookmark_delete_requested.connect(self.viewmodel.delete_bookmark)
@@ -503,6 +503,18 @@ class ReaderShellWidget(QWidget):
         self.settings_panel.hide()
         self.panel_filter.deactivate(self.settings_panel)
         self._start_hide_timer_if_allowed()
+
+    def _seek_from_topic_panel(self, page_index: int) -> None:
+        """Navigate, then dismiss the panel that asked for it.
+
+        Every mode of this panel is a way of saying "take me there", so the
+        panel has done its job once it has; leaving it up covers the page the
+        user just chose. Hiding happens after the seek so the panel's own
+        selection handling finishes first.
+        """
+
+        self.viewmodel.seek(page_index)
+        self._hide_topic_panel()
 
     def _hide_topic_panel(self) -> None:
         if self.topic_panel.isHidden():
