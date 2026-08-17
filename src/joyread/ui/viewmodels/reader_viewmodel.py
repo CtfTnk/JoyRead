@@ -368,7 +368,18 @@ class ReaderViewModel:
         self._hash_handle = None
         self._save_handle = None
         self._bookmark_handle = None
+        # Both of these hand back *shared* budget, not just local state, and
+        # neither says so at the call site.
+        #
+        # Cancelling the topic stream releases its thumbnail-cache client.
+        # Pinned thumbnails are unevictable, so a client that is never released
+        # leaves a closed reader holding part of the shared thumbnail cache for
+        # the rest of the process.
         self._topic_thumbnail_stream.cancel()
+        # `clear_cache=True` clears the pipeline's frame cache, which *is* this
+        # session's `NamespacedPageCache` -- that is what frees this reader's
+        # slice of the shared page budget. The namespace itself stays valid; a
+        # subsequent `open_path` refills it.
         self._page_pipeline.cancel(clear_cache=True)
         self._document = None
         self.is_loading = False
@@ -387,9 +398,6 @@ class ReaderViewModel:
             self._pending_password_archive = None
         self._wide_pan_anchor = None
         self._wide_pan_user_panned = False
-        # Free this session's slice of the shared reader page budget so other
-        # open readers can claim it. The namespace itself stays valid; a
-        # subsequent `open_path` will refill it.
         self.bookmarks_changed.emit(self._bookmarks)
 
     def cancel_password_request(self) -> None:

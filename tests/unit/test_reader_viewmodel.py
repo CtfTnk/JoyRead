@@ -25,7 +25,7 @@ from joyread.core.reader import (
     ReaderSettings,
 )
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
-from joyread.core.services.cache_service import CacheService
+from joyread.core.services.cache_service import CacheService, ThumbnailCacheKey
 from joyread.core.services.hash_service import HashService
 from joyread.app.reader_document_runtime import ReaderDocumentRuntime
 from joyread.app.reader_page_pipeline import PreparedReaderPage
@@ -1452,6 +1452,53 @@ def test_flush_pending_writes_returns_nothing_when_nothing_is_dirty(tmp_path: Pa
     viewmodel = _viewmodel(tmp_path)
 
     assert viewmodel.flush_pending_writes() == ()
+
+
+def test_closing_a_reader_releases_its_share_of_both_shared_caches(tmp_path: Path) -> None:
+    """Both releases are implicit consequences of other calls -- the page
+    budget goes back via the pipeline's `clear_cache`, and the thumbnail
+    client via the topic stream's cancel. Neither is obvious at the call site,
+    and dropping either would leak shared budget on every reader close: page
+    frames until LRU pressure reclaims them, and pinned thumbnails forever,
+    because pins are unevictable.
+    """
+
+    cache_service = CacheService(
+        archive_extraction_pool=ArchiveExtractionPool(None, 0),
+        reader_page_cache_max_bytes=8 * 1024 * 1024,
+        thumbnail_cache_max_bytes=4 * 1024 * 1024,
+        reader_frame_sizer=len,
+    )
+    namespace = cache_service.issue_reader_namespace()
+    thumbnail_client = cache_service.issue_thumbnail_client()
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    viewmodel = ReaderViewModel(
+        ReaderDocumentRuntime(_FakeSessionService()),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        namespace,
+        None,  # type: ignore[arg-type]
+        title="Book",
+        thumbnail_cache_client=thumbnail_client,
+        thumbnail_renderer=PillowThumbnailRenderer(),
+    )
+
+    for page in range(6):
+        namespace.put(page, b"x" * 200_000, 1600, 900)
+    thumbnail_client.set_pins(
+        frozenset({ThumbnailCacheKey("book", index, 200, 300) for index in range(4)})
+    )
+    assert cache_service.reader_page_cache.current_bytes > 0
+    assert cache_service.thumbnail_cache._pins_by_client  # noqa: SLF001
+
+    viewmodel.cancel()
+
+    assert cache_service.reader_page_cache.current_bytes == 0, (
+        "a closed reader must hand its page budget back"
+    )
+    assert not cache_service.thumbnail_cache._pins_by_client, (  # noqa: SLF001
+        "a closed reader must drop its thumbnail pins, which are unevictable"
+    )
 
 
 def test_a_spread_survives_a_resize_across_the_pairing_threshold(tmp_path: Path) -> None:
