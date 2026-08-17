@@ -24,7 +24,12 @@ class ArchivePoolUsageBridge(QObject):
     """Turn pool usage callbacks into a GUI-thread signal."""
 
     #: Emitted on the GUI thread with the pool's new byte usage.
-    usage_changed = QtSignal(int)
+    #:
+    #: ``qint64``, not ``int``: Qt maps a Python ``int`` parameter to a C++
+    #: 32-bit ``int``, which overflows at 2.147 GB. The pool budget defaults to
+    #: 5 GB and reaches 50 GB, so a default install crosses that on its way to
+    #: being full and every write then raises out of the listener.
+    usage_changed = QtSignal("qint64")
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
