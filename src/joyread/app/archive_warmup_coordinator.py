@@ -24,6 +24,11 @@ class _WarmupState:
     limits: ArchiveOpenLimits
     document_cache_key: str
     allow_persistent_cache: bool
+    #: The archive password, for an encrypted document only. Warmup opens its
+    #: own session, so without this it cannot read a single page and the format
+    #: that most needs pre-conversion is the one that never gets it. Held for
+    #: the length of the conversion and dropped with the state.
+    password: str | None = None
     callbacks: dict[str, Callable[[], None]] = field(default_factory=dict)
     handle: TaskHandle[None] | None = None
     #: Set on the worker thread when the job begins and when it leaves. A
@@ -58,6 +63,7 @@ class ArchiveWarmupCoordinator:
         limits: ArchiveOpenLimits | None = None,
         document_cache_key: str | None = None,
         allow_persistent_cache: bool = False,
+        password: str | None = None,
     ) -> None:
         effective_limits = limits or ArchiveOpenLimits(
             nested_archive_max_depth=(
@@ -76,6 +82,7 @@ class ArchiveWarmupCoordinator:
                 effective_limits,
                 cache_key,
                 allow_persistent_cache,
+                password,
             )
             self._states[key] = state
             self._queue.append(key)
@@ -202,6 +209,7 @@ class ArchiveWarmupCoordinator:
         try:
             self._session_service.warm_disk_cache(
                 state.path,
+                password=state.password,
                 limits=state.limits,
                 document_cache_key=state.document_cache_key,
                 allow_persistent_cache=state.allow_persistent_cache,

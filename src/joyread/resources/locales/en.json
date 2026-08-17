@@ -21,6 +21,8 @@
     "banner_cache": "Cache",
     "banner_library": "Library",
     "banner_hidden_space": "Hidden Space",
+    "banner_encrypted_cache": "Encrypted Archives",
+    "purge_encrypted_cache": "Delete cached pages when closing",
     "banner_storage": "Storage",
     "language": "Language",
     "import_when_opening": "Import book when opening",

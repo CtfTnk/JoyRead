@@ -143,6 +143,7 @@ class ArchiveImageService:
             lambda: pyzipper,
             lambda: _ZIP_BAD_FILE_ERRORS,
             self._request_password,
+            self._backend_resolver,
         )
         self._seven_zip_backend = SevenZipArchiveBackend(
             lambda: py7zr,

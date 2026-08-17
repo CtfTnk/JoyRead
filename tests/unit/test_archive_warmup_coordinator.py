@@ -37,6 +37,7 @@ class _ManualTaskService:
 class _FakeSessionService:
     def __init__(self) -> None:
         self.calls: list[tuple[Path, int, int, int, bool, str, bool]] = []
+        self.passwords: list[str | None] = []
 
     def warm_disk_cache(
         self,
@@ -47,7 +48,9 @@ class _FakeSessionService:
         allow_persistent_cache: bool,
         chunk_size: int,
         is_cancelled,
+        password: str | None = None,
     ) -> None:  # noqa: ANN001
+        self.passwords.append(password)
         self.calls.append(
             (
                 path,
@@ -271,3 +274,52 @@ def test_a_worker_that_never_started_does_not_hold_the_slot(tmp_path: Path) -> N
     coordinator.acquire(archive, "reader-2", document_cache_key="file:same", on_ready=lambda: None)
 
     assert len(tasks.tasks) == 2
+
+
+def test_warmup_carries_the_password_for_an_encrypted_document(tmp_path: Path) -> None:
+    """Warmup opens its own session, so an encrypted archive that is not handed
+    the password warms nothing -- leaving the format that gains most from
+    pre-conversion as the only one never pre-converted."""
+
+    source = tmp_path / "secret.zip"
+    source.write_bytes(b"secret")
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(
+        sessions,  # type: ignore[arg-type]
+        tasks,  # type: ignore[arg-type]
+    )
+
+    coordinator.acquire(
+        source,
+        "reader",
+        document_cache_key="file:secret",
+        allow_persistent_cache=True,
+        password="hunter2",
+        on_ready=lambda: None,
+    )
+    tasks.run(0)
+
+    assert sessions.passwords == ["hunter2"]
+
+
+def test_warmup_sends_no_password_for_an_unencrypted_document(tmp_path: Path) -> None:
+    source = tmp_path / "plain.cb7"
+    source.write_bytes(b"plain")
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(
+        sessions,  # type: ignore[arg-type]
+        tasks,  # type: ignore[arg-type]
+    )
+
+    coordinator.acquire(
+        source,
+        "reader",
+        document_cache_key="file:plain",
+        allow_persistent_cache=True,
+        on_ready=lambda: None,
+    )
+    tasks.run(0)
+
+    assert sessions.passwords == [None]

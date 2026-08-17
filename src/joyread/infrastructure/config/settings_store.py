@@ -69,6 +69,12 @@ class AppSettings:
     hidden_space_password_salt: str | None = None
     hidden_space_password_hint: str | None = None
     show_hidden_collection: bool = False
+    #: Delete an encrypted archive's extracted pages from the pool once the
+    #: last reader of it closes. Those pages are plaintext on disk, so this
+    #: trades a re-conversion per session for leaving nothing behind. Defaults
+    #: on: the pool is not encrypted yet, and one `7zz` pass is cheap enough
+    #: that privacy is the better default.
+    purge_encrypted_cache_on_close: bool = True
 
 class SettingsStore:
     """Loads the bootstrap settings needed before PathService exists.
@@ -199,6 +205,9 @@ class SettingsStore:
             hidden_space_password_salt=_coerce_optional_str(raw.get("hidden_space_password_salt")),
             hidden_space_password_hint=_coerce_optional_str(raw.get("hidden_space_password_hint")),
             show_hidden_collection=bool(raw.get("show_hidden_collection", False)),
+            purge_encrypted_cache_on_close=bool(
+                raw.get("purge_encrypted_cache_on_close", True)
+            ),
         )
         logger.debug(
             "Settings loaded storage=%s reader_cache_mb=%d archive_pool_gb=%d",

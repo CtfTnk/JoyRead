@@ -45,7 +45,30 @@ from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 
 
+#: Containers whose *format* makes a random page read expensive: solid
+#: compression means the decompressor walks everything ahead of the entry it
+#: was asked for.
 EXPENSIVE_ARCHIVE_EXTENSIONS = frozenset({".7z", ".cb7", ".rar", ".cbr"})
+
+
+def access_is_expensive(record: PageRecord) -> bool:
+    """Whether reading this page costs enough to be worth caching extracted.
+
+    The container format is one reason and not the only one. Encryption is the
+    other: CPython decrypts legacy ZipCrypto in a pure-Python byte loop at
+    roughly 2.5 MB/s, which measured 1876 ms for the first page of a 463 MB
+    encrypted zip and 1684 ms per page after it -- an order of magnitude worse
+    than the solid 7z this cache was built for.
+
+    Deciding on the format alone is what made "zip supports cheap random
+    access" a rule the encrypted case quietly disproved: the pool refused the
+    one zip that needed it most.
+    """
+
+    if record.source.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS:
+        return True
+    return record.password is not None
+
 
 # Pillow's process-global threshold would impose an undocumented ~179 MP hard
 # failure even when JoyRead's configurable guardrail is 400 MP or unlimited.
@@ -121,14 +144,24 @@ class ArchiveImageSession:
         self._active_reads = 0
         self._lease_finalized = False
         self._close_started = 0.0
-        self._uses_expensive_cache = any(
-            record.source.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS
-            for record in self._pages
-        )
+        self._uses_expensive_cache = any(access_is_expensive(record) for record in self._pages)
+        # An encrypted document warms like a solid one -- but only when there
+        # is a bulk extractor to warm it *with*.
+        #
+        # Decryption is GIL-bound (`zipfile._ZipDecrypter` is a per-byte Python
+        # loop), so it gains nothing from being moved to a worker thread: four
+        # decrypting threads take four times as long as one and stall the UI
+        # thread while they do it. Warming through that path would duplicate
+        # the work the foreground reader is already doing and make the visible
+        # page turn *slower*. Bulk extraction runs `7zz` in another process,
+        # where it neither competes for the GIL nor repeats itself, so it is
+        # the only form of warmup an encrypted document may ask for.
+        encrypted_warmup = self._bulk_extract is not None
         self._requires_sequential_warmup = any(
             record.source.requires_sequential_warmup
+            or (encrypted_warmup and record.password is not None)
             for record in self._pages
-            if record.source.suffix in EXPENSIVE_ARCHIVE_EXTENSIONS
+            if access_is_expensive(record)
         )
         # Every read opens an independent backend handle. Plain ZIP can sustain
         # two concurrent random reads; encrypted ZIP and expensive formats are
@@ -249,7 +282,7 @@ class ArchiveImageSession:
         if not self.is_valid_index(page_index):
             return ArchiveAccessMode.DIRECT
         record = self._pages[page_index]
-        if record.source.suffix not in EXPENSIVE_ARCHIVE_EXTENSIONS:
+        if not access_is_expensive(record):
             return ArchiveAccessMode.DIRECT
         return (
             ArchiveAccessMode.EXPENSIVE_READY
@@ -809,15 +842,17 @@ class ArchiveImageSession:
     def _record_is_persistable(self, record: PageRecord) -> bool:
         """Whether this page is allowed in the cache at all, ignoring policy.
 
-        Encrypted pages and sources that refuse persistence are excluded
-        outright: decrypted bytes must never reach a durable cache product.
+        Encrypted pages are cached like any other. Their extracted bytes are
+        plaintext on disk, which is a deliberate, documented trade: an
+        encrypted archive is the slowest thing JoyRead reads, and the pool is
+        the only mechanism that makes it usable. See "Encrypted archives and
+        the pool" in ``ARCHIVE_CORE_HANDBOOK.md``; encrypting the pool itself
+        is the planned answer ("Encrypt the extraction pool at rest" in
+        ``docs/technical/TODO.md``) and nothing here should be read as that
+        problem having been solved.
         """
 
-        return (
-            self._can_use_document_cache()
-            and record.password is None
-            and record.source.allow_persistent_cache
-        )
+        return self._can_use_document_cache() and record.source.allow_persistent_cache
 
     def _record_is_cache_readable(self, record: PageRecord) -> bool:
         """Whether a cached copy of this page may be served.

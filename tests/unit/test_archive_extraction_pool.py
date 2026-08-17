@@ -805,3 +805,99 @@ def test_clearing_the_listener_detaches_a_retired_pool(tmp_path: Path) -> None:
     pool.put("file:b", "page-001.jpg", b"y" * 128)
 
     assert len(seen) == 1
+
+
+def test_session_scoped_document_is_dropped_on_its_last_release(tmp_path: Path) -> None:
+    """Both pool strategies must honour the mark, or the Privacy switch does
+    nothing on whichever one the user happens to have selected."""
+
+    for pool in (
+        ArchiveExtractionPool(tmp_path / "bundles", 1 << 20),
+        HiddenImageExtractionPool(tmp_path / "pages", 1 << 20),
+    ):
+        source = _write_source(tmp_path)
+        pool.acquire(source)
+        pool.acquire(source)
+        pool.put(source, "pages/00000000", b"secret page")
+        pool.mark_session_scoped(source)
+        assert pool.current_bytes > 0, type(pool).__name__
+
+        pool.release(source)
+        assert pool.current_bytes > 0, f"{type(pool).__name__}: a live lease still needs it"
+
+        pool.release(source)
+
+        assert pool.current_bytes == 0, type(pool).__name__
+        assert pool.get(source, "pages/00000000") is None, type(pool).__name__
+
+
+def test_an_unmarked_document_survives_its_last_release(tmp_path: Path) -> None:
+    for pool in (
+        ArchiveExtractionPool(tmp_path / "bundles2", 1 << 20),
+        HiddenImageExtractionPool(tmp_path / "pages2", 1 << 20),
+    ):
+        source = _write_source(tmp_path)
+        pool.acquire(source)
+        pool.put(source, "pages/00000000", b"ordinary page")
+        pool.release(source)
+
+        assert pool.current_bytes > 0, type(pool).__name__
+
+
+def test_the_privacy_mark_survives_a_hash_promotion(tmp_path: Path) -> None:
+    """The standalone-encrypted-file flow, end to end at pool level.
+
+    An external encrypted document opens under an ephemeral session key,
+    is marked session-scoped at open (the privacy switch), and is then
+    hash-promoted to its persistent content key -- which also flips the
+    lease to PERSISTENT, so `close()` no longer purges on its own. If the
+    promotion drops the mark, nothing purges at all and the plaintext
+    outlives the app with the switch on.
+    """
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=1 << 20)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("pages/00000000", b"decrypted plaintext page")
+    pool.mark_session_scoped("session:reader")
+
+    assert lease.promote("external:sha256:digest")
+    assert pool.current_bytes > 0, "promotion itself must not purge a live document"
+
+    lease.close()
+
+    assert pool.current_bytes == 0, (
+        "the mark must follow the document through promotion"
+    )
+    assert pool.get("external:sha256:digest", "pages/00000000") is None
+
+
+def test_promotion_without_the_mark_still_keeps_the_bundle(tmp_path: Path) -> None:
+    """The switch-off counterpart: cross-session reuse is the entire point of
+    promotion, so an unmarked document's bundle must survive its close."""
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=1 << 20)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("pages/00000000", b"ordinary page")
+
+    assert lease.promote("external:sha256:digest")
+    lease.close()
+
+    assert pool.get("external:sha256:digest", "pages/00000000") == b"ordinary page"
+
+
+def test_the_privacy_mark_survives_promotion_in_the_hidden_pool(tmp_path: Path) -> None:
+    """Same guarantee on the other storage strategy, which was missed once
+    before in this feature's history."""
+
+    pool = HiddenImageExtractionPool(tmp_path / "hidden", max_bytes=1 << 20)
+    source = _write_source(tmp_path)
+    pool.acquire(source)
+    pool.put(source, "pages/00000000", b"decrypted plaintext page")
+    pool.mark_session_scoped(source)
+
+    assert pool.promote(source, "external:sha256:digest")
+    assert pool.current_bytes > 0
+
+    pool.release("external:sha256:digest")
+
+    assert pool.current_bytes == 0

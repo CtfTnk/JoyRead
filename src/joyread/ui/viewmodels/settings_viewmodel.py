@@ -186,6 +186,9 @@ class SettingsViewModel:
         self.hidden_space_initialized = settings.hidden_space_password_hash is not None
         self.show_hidden_collection = bool(settings.show_hidden_collection)
         self.hidden_space_hint = settings.hidden_space_password_hint
+        self.purge_encrypted_cache_on_close = bool(
+            getattr(settings, "purge_encrypted_cache_on_close", True)
+        )
 
     @property
     def archive_cache_strategy_label(self) -> str:
@@ -536,6 +539,21 @@ class SettingsViewModel:
             logger.warning("HiddenSpaceService not wired to SettingsViewModel; ignoring request")
             return None
         return self._hidden_space_service
+
+    def set_purge_encrypted_cache_on_close(self, enabled: bool) -> None:
+        """Whether an encrypted archive's extracted pages survive its reader.
+
+        Takes effect on the next open: the pool is told at open time, so a
+        document already on screen keeps whatever it was opened under rather
+        than changing its mind about its own bytes half way through.
+        """
+
+        value = bool(enabled)
+        if value == self.purge_encrypted_cache_on_close:
+            return
+        self.purge_encrypted_cache_on_close = value
+        self._persist(purge_encrypted_cache_on_close=value)
+        self.state_changed.emit()
 
     def _persist(self, **changes: object) -> None:
         if self._settings_store is not None:

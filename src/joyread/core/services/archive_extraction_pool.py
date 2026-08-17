@@ -1,9 +1,14 @@
 """Disk-backed LRU pool for extracted bytes of slow archive formats.
 
-This pool persists across application launches. Zip-family archives support
-cheap random access from their containers and do not benefit from caching
-extracted bytes, so the pool is used exclusively for 7z and RAR families,
-where every read otherwise re-runs the decompressor.
+This pool persists across application launches. It holds documents whose pages
+are expensive to *read*, which is not the same as a list of formats: 7z and RAR
+qualify because solid compression makes every random read re-run the
+decompressor, and an encrypted zip qualifies because its pages must be
+decrypted. A plain zip has cheap random access and never enters the pool.
+
+A document can also ask that its bytes not outlive it -- see
+``mark_session_scoped`` -- which is how the privacy switch keeps decrypted
+pages from persisting.
 
 Layout: each source archive is built in a resumable
 ``<book_key>.partial.zip`` bundle, then atomically published as
@@ -85,6 +90,8 @@ class ArchiveExtractionCache(Protocol):
     ) -> bool: ...
 
     def purge(self, document_cache_key: str) -> None: ...
+
+    def mark_session_scoped(self, document_cache_key: str) -> None: ...
 
     def purge_unpublished(self, document_cache_key: str) -> bool: ...
 
@@ -185,6 +192,9 @@ class ArchiveExtractionPool(_UsageNotifier):
         self._reconciled = False
         self._active: dict[str, int] = {}
         self._building: dict[str, int] = {}
+        #: Documents whose bytes must not outlive their last live lease --
+        #: today, encrypted archives when the privacy setting asks for it.
+        self._session_scoped: set[str] = set()
         self._strict_eviction_pending = False
 
     @property
@@ -521,6 +531,24 @@ class ArchiveExtractionPool(_UsageNotifier):
         with self._lock:
             self._purge_locked(book_key)
 
+    def mark_session_scoped(self, document_cache_key: str) -> None:
+        """Delete this document's bundle once its last live lease releases.
+
+        Marked on the *document*, not on a lease, because a document is
+        routinely held by more than one: the Reader opens it, and a background
+        warmup opens it again through a lease of its own. Deciding this
+        per-lease would leave the outcome to whichever happened to close last,
+        so a Reader that asked to leave nothing behind could still be outlived
+        by a warmup lease that never agreed to.
+        """
+
+        self._ensure_reconciled()
+        book_key = self._book_key_for(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            self._session_scoped.add(book_key)
+
     def _purge_locked(self, book_key: str) -> None:
         self._forget_locked(book_key)
         if self._directory is None:
@@ -549,6 +577,7 @@ class ArchiveExtractionPool(_UsageNotifier):
             if source is None or not source.path.exists():
                 self._move_active_locked(source_key, target_key)
                 self._move_building_locked(source_key, target_key)
+                self._move_session_scope_locked(source_key, target_key)
                 return True
             target = self._index.get(target_key)
             target_is_ready = bool(
@@ -606,6 +635,7 @@ class ArchiveExtractionPool(_UsageNotifier):
             self._current_bytes += stat.st_size
             self._move_active_locked(source_key, target_key)
             self._move_building_locked(source_key, target_key)
+            self._move_session_scope_locked(source_key, target_key)
             self._evict_locked(protect_key=target_key)
             return True
 
@@ -632,6 +662,13 @@ class ArchiveExtractionPool(_UsageNotifier):
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
+            # Checked here rather than in the lease so that *every* way of
+            # letting go runs it, whichever lease happens to be the last.
+            purged = False
+            if book_key in self._session_scoped and book_key not in self._active:
+                self._purge_locked(book_key)
+                self._session_scoped.discard(book_key)
+                purged = True
             if self._strict_eviction_pending:
                 self._evict_locked()
                 self._strict_eviction_pending = self._current_bytes > self._max_bytes
@@ -643,6 +680,7 @@ class ArchiveExtractionPool(_UsageNotifier):
                 current_bytes=self._current_bytes,
                 budget_bytes=self._max_bytes,
                 strict_pending=self._strict_eviction_pending,
+                purged=purged,
             )
 
     def put(self, document_cache_key: str, entry_name: str, data: bytes) -> bool:
@@ -954,6 +992,15 @@ class ArchiveExtractionPool(_UsageNotifier):
         if count:
             self._active[target_key] = self._active.get(target_key, 0) + count
 
+    def _move_session_scope_locked(self, source_key: str, target_key: str) -> None:
+        # A promotion renames the document, not the promise made about it. The
+        # privacy mark is keyed by book_key, so leaving it behind on the old
+        # key would let a hash-promoted encrypted document close as PERSISTENT
+        # with no purge -- plaintext surviving the app with the switch on.
+        if source_key in self._session_scoped:
+            self._session_scoped.discard(source_key)
+            self._session_scoped.add(target_key)
+
     def _move_building_locked(self, source_key: str, target_key: str) -> None:
         count = self._building.pop(source_key, 0)
         if count:
@@ -1016,6 +1063,9 @@ class HiddenImageExtractionPool(_UsageNotifier):
         self._reconciled = False
         self._active: dict[str, int] = {}
         self._building: dict[str, int] = {}
+        #: Documents whose bytes must not outlive their last live lease --
+        #: today, encrypted archives when the privacy setting asks for it.
+        self._session_scoped: set[str] = set()
         self._strict_eviction_pending = False
 
     @property
@@ -1229,6 +1279,19 @@ class HiddenImageExtractionPool(_UsageNotifier):
         with self._lock:
             self._forget_book_locked(book_key)
 
+    def mark_session_scoped(self, document_cache_key: str) -> None:
+        """Delete this document's entries once its last live lease releases.
+
+        See ``ArchiveExtractionPool.mark_session_scoped``.
+        """
+
+        self._ensure_reconciled()
+        book_key = _book_key_for_document_cache_key(document_cache_key)
+        if book_key is None:
+            return
+        with self._lock:
+            self._session_scoped.add(book_key)
+
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool:
         self._ensure_reconciled()
         source_key = _book_key_for_document_cache_key(source_cache_key)
@@ -1245,6 +1308,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
             if not source_dir.is_dir() or source_dir.is_symlink():
                 self._move_active_locked(source_key, target_key)
                 self._move_building_locked(source_key, target_key)
+                self._move_session_scope_locked(source_key, target_key)
                 return True
             if _is_symlink(target_dir):
                 logger.warning("Hidden archive cache promotion rejected a symlink target")
@@ -1287,6 +1351,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 self._current_bytes += entry.size
             self._move_active_locked(source_key, target_key)
             self._move_building_locked(source_key, target_key)
+            self._move_session_scope_locked(source_key, target_key)
             if refreshed:
                 self._evict_locked(protect_key=refreshed[-1][0])
             return True
@@ -1310,12 +1375,20 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
+            # Mirrors the zip-bundle pool: the mark is on the document, so
+            # whichever lease releases last is the one that clears it.
+            purged = False
+            if book_key in self._session_scoped and book_key not in self._active:
+                self._forget_book_locked(book_key)
+                self._session_scoped.discard(book_key)
+                purged = True
             if self._strict_eviction_pending:
                 self._evict_locked()
                 self._strict_eviction_pending = self._current_bytes > self._max_bytes
             reader_perf_event(
                 "archive.pool.release",
                 strategy="hidden_pages",
+                purged=purged,
                 identity_kind=cache_identity_kind(document_cache_key),
                 active=self._active.get(book_key, 0),
                 current_bytes=self._current_bytes,
@@ -1542,6 +1615,15 @@ class HiddenImageExtractionPool(_UsageNotifier):
         count = self._active.pop(source_key, 0)
         if count:
             self._active[target_key] = self._active.get(target_key, 0) + count
+
+    def _move_session_scope_locked(self, source_key: str, target_key: str) -> None:
+        # A promotion renames the document, not the promise made about it. The
+        # privacy mark is keyed by book_key, so leaving it behind on the old
+        # key would let a hash-promoted encrypted document close as PERSISTENT
+        # with no purge -- plaintext surviving the app with the switch on.
+        if source_key in self._session_scoped:
+            self._session_scoped.discard(source_key)
+            self._session_scoped.add(target_key)
 
     def _move_building_locked(self, source_key: str, target_key: str) -> None:
         count = self._building.pop(source_key, 0)

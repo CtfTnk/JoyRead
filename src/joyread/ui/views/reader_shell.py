@@ -90,6 +90,9 @@ class ReaderShellWidget(QWidget):
                 ),
                 archive_extraction_cache=context.archive_extraction_pool,
                 hash_service=context.hash_service,
+                purge_encrypted_cache_on_close=bool(
+                    getattr(app_settings, "purge_encrypted_cache_on_close", True)
+                ),
             ),
             context.task_service,
             context.cache_service.issue_reader_namespace(),

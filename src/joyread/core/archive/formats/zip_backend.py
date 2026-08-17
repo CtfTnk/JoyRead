@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
+from joyread.core.archive.backends import ExtractionBackendResolver
 from joyread.core.archive.errors import (
     ArchiveCorruptError,
     ArchiveDependencyMissing,
@@ -12,6 +14,11 @@ from joyread.core.archive.errors import (
     ArchiveReadError,
 )
 from joyread.core.archive.formats.common import looks_like_password_error, read_stream_bounded
+from joyread.core.archive.formats.seven_zip_command import (
+    EXTRACT_STALL_SECONDS,
+    background_thread_limit,
+    extract_members_to_directory,
+)
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
@@ -25,10 +32,12 @@ class ZipArchiveBackend:
         zipper_getter: Callable[[], object | None],
         bad_file_errors_getter: Callable[[], tuple[type[BaseException], ...]],
         request_password: Callable[..., str],
+        backend_resolver: ExtractionBackendResolver | None = None,
     ) -> None:
         self._zipper_getter = zipper_getter
         self._bad_file_errors_getter = bad_file_errors_getter
         self._request_password = request_password
+        self._backend_resolver = backend_resolver or ExtractionBackendResolver()
 
     def probe_entries(self, source: ArchiveSource) -> ArchiveContainerProbe:
         """List ZIP metadata without reading members or prompting for a key."""
@@ -126,6 +135,69 @@ class ZipArchiveBackend:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
         except (*bad_file_errors, KeyError) as exc:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
+
+    def supports_bulk_extraction(self, source: ArchiveSource) -> bool:
+        """Whether this source *can* be converted in one executable pass.
+
+        Capability only, mirroring the 7Z backend. Whether conversion is
+        *worth doing* is the session's cache-plan decision: a plain zip is
+        DIRECT (cheap random access) and never converts; an encrypted one is
+        expensive and does. Answering the policy question here required
+        re-opening the archive and re-parsing the central directory the scan
+        had just finished parsing, on every open.
+
+        The reason encrypted zips convert at all is CPython, not the
+        container: `zipfile._ZipDecrypter` is a pure-Python per-byte loop that
+        measures 2.5 MB/s and holds the GIL, so it does not parallelise --
+        four decrypting threads take four times as long as one, while starving
+        the UI thread. `7zz` does the same work in another process, measured
+        at 1.05 s against ~40 s for the same 100 MB archive.
+        """
+
+        if source.path is None:
+            return False
+        return self._backend_resolver.seven_zip() is not None
+
+    def extract_members(
+        self,
+        source: ArchiveSource,
+        members: Sequence[str],
+        destination: Path,
+        password: str | None,
+        *,
+        limits: ArchiveOpenLimits,
+        budget: ArchiveOperationBudget,
+        max_output_bytes: int | None,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> None:
+        """Extract exactly ``members`` into ``destination`` in one pass.
+
+        Mirrors the 7Z backend: only the scanner's confirmed page members are
+        requested, and the names travel in a listfile rather than argv so they
+        can never be read as switches.
+        """
+
+        if source.path is None:
+            raise ArchiveDependencyMissing("Bulk extraction requires a filesystem archive path.")
+        backend = self._backend_resolver.seven_zip()
+        if backend is None:
+            raise ArchiveDependencyMissing("7zz/7z is not installed.")
+        if not members:
+            return
+
+        extract_members_to_directory(
+            backend.executable,
+            source.path,
+            members,
+            destination,
+            password,
+            budget=budget,
+            max_output_bytes=max_output_bytes,
+            timeout_seconds=None,
+            thread_limit=background_thread_limit(),
+            stall_seconds=EXTRACT_STALL_SECONDS,
+            is_cancelled=is_cancelled,
+        )
 
     def _verify_password(
         self,

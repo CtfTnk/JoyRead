@@ -33,14 +33,18 @@ class ReaderDocumentHandle(ReaderDocumentSource):
         cache_key: str,
         *,
         managed: bool,
-        sensitive_archive: bool,
+        needs_extraction_pool: bool,
         hash_service: HashService | None,
     ) -> None:
         self._source = source
         self._source_path = Path(source_path)
         self._cache_key = cache_key
         self._managed = bool(managed)
-        self._sensitive_archive = bool(sensitive_archive)
+        # Whether this document is expensive enough to want the pool at all --
+        # by container format or by encryption. Replaces a suffix test that
+        # could not see the second reason, and a `sensitive_archive` flag that
+        # used to keep encrypted documents *out* of the pool entirely.
+        self._needs_extraction_pool = bool(needs_extraction_pool)
         self._hash_service = hash_service
         self._closed = False
         self._lock = RLock()
@@ -72,8 +76,19 @@ class ReaderDocumentHandle(ReaderDocumentSource):
 
     @property
     def warmup_cache_key(self) -> str | None:
+        """The identity a background warmup may build a cache product under.
+
+        Encrypted archives are included. They used to be excluded, which meant
+        the format that benefits most from being pre-converted was the one
+        format never pre-converted -- the whole first pass through the book
+        paid full decryption cost per page turn. Warming them requires handing
+        the password to the warmup, which ``ReaderViewModel`` does when it
+        calls ``ArchiveWarmupCoordinator.acquire``, and puts plaintext in the
+        pool; both are accepted deliberately.
+        """
+
         with self._lock:
-            if self._closed or self._sensitive_archive:
+            if self._closed:
                 return None
             if self._managed or self._cache_key.startswith("external:sha256:"):
                 return self._cache_key
@@ -85,9 +100,8 @@ class ReaderDocumentHandle(ReaderDocumentSource):
             return (
                 not self._closed
                 and not self._managed
-                and not self._sensitive_archive
                 and self._hash_service is not None
-                and self._source_path.suffix.lower() in EXPENSIVE_ARCHIVE_EXTENSIONS
+                and self._needs_extraction_pool
                 and not self._cache_key.startswith("external:sha256:")
             )
 
@@ -152,10 +166,12 @@ class ReaderDocumentRuntime:
         document_cache_key: str | None = None,
         archive_extraction_cache: ArchiveExtractionCache | None = None,
         hash_service: HashService | None = None,
+        purge_encrypted_cache_on_close: bool = True,
     ) -> None:
         self._session_service = session_service
         self._archive_extraction_cache = archive_extraction_cache
         self._hash_service = hash_service
+        self._purge_encrypted_cache_on_close = bool(purge_encrypted_cache_on_close)
         self._initial_cache_key = document_cache_key or f"session:{uuid4().hex}"
         self._managed = self._initial_cache_key.startswith("file:")
 
@@ -168,7 +184,14 @@ class ReaderDocumentRuntime:
         limits: ArchiveOpenLimits,
     ) -> ReaderDocumentHandle:
         path = Path(source_path)
-        lease = self._new_cache_lease(path)
+        # Only the top-level container's own password makes the *document*
+        # encrypted. The dict also carries nested-archive passwords, and a
+        # plain zip with one protected extra inside must not have its whole
+        # (mostly ordinary) cache treated as sensitive -- nested encrypted
+        # pages never reach the pool anyway (the scanner strips their
+        # `allow_persistent_cache`), so there is nothing there to protect.
+        encrypted = str(path) in passwords
+        lease = self._new_cache_lease(path, encrypted=encrypted)
         try:
             session = self._open_session(
                 path,
@@ -186,7 +209,7 @@ class ReaderDocumentRuntime:
             path,
             self._initial_cache_key,
             managed=self._managed,
-            sensitive_archive=bool(passwords or skipped_archives),
+            needs_extraction_pool=lease is not None,
             hash_service=self._hash_service,
         )
 
@@ -239,18 +262,51 @@ class ReaderDocumentRuntime:
                     archive_global_file_max_depth=_legacy_depth_limit(limits.global_file_max_depth),
                 )
 
-    def _new_cache_lease(self, source_path: Path) -> ArchiveCacheLease | None:
-        if (
-            self._archive_extraction_cache is None
-            or source_path.suffix.lower() not in EXPENSIVE_ARCHIVE_EXTENSIONS
-        ):
+    def _new_cache_lease(self, source_path: Path, *, encrypted: bool) -> ArchiveCacheLease | None:
+        """A pool lease for documents whose pages are expensive to read.
+
+        Expense comes from the container format or from encryption, and only
+        the first is visible in the file name. The password the caller supplied
+        is the earliest evidence of the second -- the scan that would prove it
+        per page has not run yet, and a document with no lease can never
+        acquire one later.
+
+        Erring toward creating the lease is safe and refusing it is not: an
+        unwanted lease costs a pool pin the session never writes through, while
+        a missing one silently downgrades the document to on-demand reads for
+        its whole life.
+        """
+
+        if self._archive_extraction_cache is None:
             return None
+        by_format = source_path.suffix.lower() in EXPENSIVE_ARCHIVE_EXTENSIONS
+        if not by_format and not encrypted:
+            return None
+        # Scope follows where the document lives, not whether it is encrypted:
+        # a managed encrypted book caches persistently like any other. What
+        # that means for the extracted bytes is set out under "Encrypted
+        # archives and the pool" in ARCHIVE_CORE_HANDBOOK.md.
         scope = ArchiveCacheScope.PERSISTENT if self._managed else ArchiveCacheScope.EPHEMERAL
-        return ArchiveCacheLease(
+        lease = ArchiveCacheLease(
             self._archive_extraction_cache,
             self._initial_cache_key,
             scope,
         )
+        if encrypted and self._purge_encrypted_cache_on_close:
+            # Marked on the pool rather than expressed as an ephemeral scope,
+            # because the warmup opens this same document under a lease of its
+            # own that knows nothing about this preference. The pool outlives
+            # both, so it is the only place the decision holds for all of them.
+            #
+            # After the lease exists, so the mark is never left behind waiting
+            # for a release that no lease will ever make.
+            #
+            # Called directly, not through a getattr guard: the protocol
+            # declares this method, and a cache that lacks it should fail
+            # loudly here rather than silently keep plaintext it promised
+            # to delete.
+            self._archive_extraction_cache.mark_session_scoped(self._initial_cache_key)
+        return lease
 
 
 def _file_change_token(path: Path) -> tuple[int, int, int] | None:

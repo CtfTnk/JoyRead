@@ -247,7 +247,10 @@ def test_bulk_capability_is_bound_only_to_containers_that_support_it(
     nested = ArchiveSource(label="nested.7z", suffix=".7z", data=b"nested")
 
     assert service._bulk_extract_for(seven_zip) is not None  # noqa: SLF001
-    assert service._bulk_extract_for(zip_source) is None  # noqa: SLF001
+    # Zip containers report the *capability* too -- whether conversion is
+    # worth doing is the session plan's call, and a plain zip's DIRECT policy
+    # never reaches it (test_a_plain_zip_never_converts_even_with_a_bulk_extractor).
+    assert service._bulk_extract_for(zip_source) is not None  # noqa: SLF001
     assert service._bulk_extract_for(nested) is None  # noqa: SLF001
 
 

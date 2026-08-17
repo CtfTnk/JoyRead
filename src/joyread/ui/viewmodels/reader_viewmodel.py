@@ -1247,6 +1247,11 @@ class ReaderViewModel:
             limits=self._archive_limits,
             document_cache_key=cache_key,
             allow_persistent_cache=True,
+            # Warmup opens its own session and cannot inherit ours, so an
+            # encrypted document has to be handed the password or it warms
+            # nothing at all. Only the top-level archive's, which is the one
+            # the conversion needs; nested-archive passwords stay here.
+            password=self._archive_passwords.get(str(self._source_path)),
             on_ready=self._topic_thumbnail_stream.refresh,
         )
 

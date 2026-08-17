@@ -21,6 +21,8 @@
     "banner_cache": "キャッシュ",
     "banner_library": "ライブラリ",
     "banner_hidden_space": "非表示スペース",
+    "banner_encrypted_cache": "暗号化アーカイブ",
+    "purge_encrypted_cache": "閉じるときにキャッシュしたページを削除",
     "banner_storage": "ストレージ",
     "language": "言語",
     "import_when_opening": "開く際に書籍をインポート",

@@ -205,7 +205,16 @@ class ArchiveCacheLease:
             if self._closed:
                 return
             if self._scope == ArchiveCacheScope.EPHEMERAL:
-                self._cache.purge(self._key)
+                # An ephemeral identity is one whose bytes must not outlive it,
+                # which is the same thing the privacy switch asks for on an
+                # encrypted document -- so it is said the same way. The pool
+                # deletes on the *last* release, so a second live lease on this
+                # document keeps the bundle it is still reading.
+                mark = getattr(self._cache, "mark_session_scoped", None)
+                if callable(mark):
+                    mark(self._key)
+                else:
+                    self._cache.purge(self._key)
             release = getattr(self._cache, "release", None)
             if callable(release):
                 release(self._key)

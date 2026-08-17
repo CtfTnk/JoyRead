@@ -238,12 +238,23 @@ class SettingsPageWidget(QFrame):
         reset_library = SettingsButtonItem(t("settings.reset_library"), t("settings.btn_proceed"), destructive=True)
         reset_library.clicked.connect(self.storage_reset_requested.emit)
 
+        # Encrypted-archive cache. Extracted pages of a password-protected
+        # archive are plaintext in the pool, which is not itself encrypted yet.
+        encrypted_banner = SectionBanner(t("settings.banner_encrypted_cache"), self._resources)
+        purge_encrypted = SettingsSwitchItem(
+            t("settings.purge_encrypted_cache"),
+            self._viewmodel.purge_encrypted_cache_on_close,
+        )
+        purge_encrypted.toggled.connect(self._viewmodel.set_purge_encrypted_cache_on_close)
+
         return [
             hidden_banner,
             show_switch,
             change_password,
             revert,
             reset,
+            encrypted_banner,
+            purge_encrypted,
             storage_banner,
             move_library,
             select_library,

@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 
 import py7zr
+from zipfile import ZipFile
 import pytest
 from PIL import Image
 
@@ -162,17 +163,6 @@ def test_an_oversized_document_is_refused_before_the_capability_test(
     )
 
     assert session.cache_plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
-    assert not session.requires_sequential_warmup
-
-
-def test_encrypted_pages_are_on_demand_only(tmp_path: Path) -> None:
-    """Decrypted bytes must never become a durable cache product, and warming
-    a document that can cache nothing would re-read it for no benefit."""
-
-    session, _pool = _plan(tmp_path, password="secret")
-
-    assert session.cache_plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
-    assert session.cache_plan.reason == "no_cacheable_page"
     assert not session.requires_sequential_warmup
 
 
@@ -425,3 +415,247 @@ def test_a_zero_budget_pool_with_a_directory_is_also_on_demand_only(
 
     assert session.cache_plan.policy is ArchiveCachePolicy.ON_DEMAND_ONLY
     assert session.cache_plan.reason == "no_cache_budget"
+
+
+def _write_encrypted_cbz(path: Path, password: str = "pw", pages: int = 4) -> None:
+    import pyzipper
+
+    with pyzipper.AESZipFile(
+        path, "w", compression=8, encryption=pyzipper.WZ_AES
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        for index in range(pages):
+            archive.writestr(f"{index:03d}.png", _png_bytes((40 + index, 30)))
+
+
+def _open_encrypted(tmp_path: Path, pool: ArchiveExtractionPool, key: str = "file:secret"):  # noqa: ANN202
+    archive = tmp_path / "secret.cbz"
+    if not archive.exists():
+        _write_encrypted_cbz(archive)
+    lease = ArchiveCacheLease(pool, key, ArchiveCacheScope.PERSISTENT)
+    session = ArchiveImageService().open(
+        archive,
+        password_provider=lambda *_a, **_k: "pw",
+        cache_lease=lease,
+    )
+    return session, lease
+
+
+def test_an_encrypted_document_is_cached_like_any_other_expensive_one(tmp_path: Path) -> None:
+    """Supersedes "encrypted pages are on-demand only".
+
+    Refusing the cache kept plaintext off disk, and cost encrypted archives --
+    the slowest documents JoyRead reads -- the one mechanism that makes them
+    usable. The trade is now taken the other way and stated plainly: extracted
+    pages are written to the pool in the clear. Encrypting the pool itself is
+    tracked separately; this test is not evidence that it has been done.
+    """
+
+    session, _pool = _plan(tmp_path, password="secret")
+
+    assert session.cache_plan.policy is ArchiveCachePolicy.BULK_CONVERT
+    assert session.cache_plan.allows_persistent_page_writes
+    assert session._cache_lease.scope is ArchiveCacheScope.PERSISTENT  # noqa: SLF001
+
+
+def test_an_encrypted_document_asks_to_be_warmed_ahead_of_the_reader(tmp_path: Path) -> None:
+    """Eligibility alone leaves the first pass through the book as slow as it
+    ever was -- every page still decrypts on the turn that needs it. What fixes
+    that is being warmed, and warmup only runs for documents that ask."""
+
+    encrypted, _pool = _plan(tmp_path, suffix=".cbz", password="secret")
+    plain, _pool2 = _plan(tmp_path, suffix=".cbz")
+
+    assert encrypted.requires_sequential_warmup
+    assert not plain.requires_sequential_warmup, "a plain zip still reads directly"
+
+
+def _write_encrypted_cbz(path: Path, password: str = "pw", pages: int = 4) -> None:
+    import pyzipper
+
+    with pyzipper.AESZipFile(
+        path, "w", compression=8, encryption=pyzipper.WZ_AES
+    ) as archive:
+        archive.setpassword(password.encode("utf-8"))
+        for index in range(pages):
+            archive.writestr(f"{index:03d}.png", _png_bytes((40 + index, 30)))
+
+
+def _open_encrypted(
+    tmp_path: Path,
+    pool: ArchiveExtractionPool,
+    *,
+    key: str = "file:secret",
+    scope: ArchiveCacheScope = ArchiveCacheScope.PERSISTENT,
+):  # noqa: ANN202
+    archive = tmp_path / "secret.cbz"
+    if not archive.exists():
+        _write_encrypted_cbz(archive)
+    lease = ArchiveCacheLease(pool, key, scope)
+    session = ArchiveImageService().open(
+        archive,
+        password_provider=lambda *_a, **_k: "pw",
+        cache_lease=lease,
+    )
+    return session, lease
+
+
+def test_an_encrypted_zip_reaches_the_pool_at_all(tmp_path: Path) -> None:
+    """The measured defect: an encrypted zip reads at ~1.7 s per page because
+    CPython decrypts ZipCrypto in a pure-Python byte loop, yet the pool refused
+    it for having a zip suffix."""
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 64 * 1024 * 1024)
+    session, lease = _open_encrypted(tmp_path, pool)
+    try:
+        assert session.cache_plan.allows_persistent_page_writes
+        for index in range(session.page_count):
+            session.get_image(index)
+        assert pool.current_bytes > 0, "reads must populate the pool"
+    finally:
+        session.close()
+        lease.close()
+
+
+def test_an_encrypted_bundle_outlives_the_session_that_built_it(tmp_path: Path) -> None:
+    """The accepted trade, pinned so it cannot be reversed by accident in
+    either direction: a reopened encrypted book reads from the pool rather
+    than decrypting again, and the plaintext is on disk until evicted."""
+
+    pool_dir = tmp_path / "pool"
+    pool = ArchiveExtractionPool(pool_dir, 64 * 1024 * 1024)
+    session, lease = _open_encrypted(tmp_path, pool)
+    session.get_image(0)
+    session.close()
+    lease.close()
+
+    assert pool.current_bytes > 0
+    assert [path for path in pool_dir.iterdir() if path.suffix == ".zip"]
+
+
+def test_one_reader_closing_does_not_pull_an_ephemeral_bundle_from_another(
+    tmp_path: Path,
+) -> None:
+    """An unmanaged reader holds an ephemeral lease, whose close deletes the
+    bundle. Two live sessions per document is normal -- the Reader and the
+    thumbnail stream open the same book independently -- so the delete has to
+    wait for the last of them."""
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 64 * 1024 * 1024)
+    scope = ArchiveCacheScope.EPHEMERAL
+    first, first_lease = _open_encrypted(tmp_path, pool, key="session:abc", scope=scope)
+    second, second_lease = _open_encrypted(tmp_path, pool, key="session:abc", scope=scope)
+    first.get_image(0)
+    populated = pool.current_bytes
+    assert populated > 0
+
+    first.close()
+    first_lease.close()
+
+    assert pool.current_bytes == populated, "the surviving session still needs it"
+
+    second.close()
+    second_lease.close()
+
+    assert pool.current_bytes == 0
+
+
+def test_an_encrypted_zip_converts_in_one_pass_rather_than_page_by_page(tmp_path: Path) -> None:
+    """The GIL is the reason this matters.
+
+    `zipfile._ZipDecrypter` is a per-byte Python loop measuring ~2.5 MB/s that
+    holds the GIL, so it does not parallelise: four decrypting threads take
+    four times as long as one and stall the UI thread meanwhile. Warming such a
+    document on a worker duplicates the foreground reader's work and makes the
+    visible page turn slower. `7zz` does it in another process -- measured at
+    1.05 s against ~40 s for the same 100 MB archive.
+    """
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 64 * 1024 * 1024)
+    session, lease = _open_encrypted(tmp_path, pool)
+    try:
+        assert session.cache_plan.policy is ArchiveCachePolicy.BULK_CONVERT
+        assert session.requires_sequential_warmup
+    finally:
+        session.close()
+        lease.close()
+
+
+def test_an_encrypted_document_will_not_be_warmed_without_a_bulk_extractor(
+    tmp_path: Path,
+) -> None:
+    """No `7zz` means the only available warmup is the GIL-bound Python loop,
+    which costs the foreground reader more than it ever returns. Better to
+    leave the pages on demand than to warm them that way."""
+
+    session, _pool = _plan(tmp_path, suffix=".cbz", password="secret", bulk_extract=None)
+
+    assert not session.requires_sequential_warmup
+    # Still pool-eligible: foreground reads are cached, they are just not
+    # raced against a background copy of themselves.
+    assert session.cache_plan.allows_persistent_page_writes
+
+
+def test_a_plain_zip_never_converts_even_with_a_bulk_extractor(tmp_path: Path) -> None:
+    """A plain zip already has cheap random access, so converting it would be
+    pure cost -- the whole point of judging on access cost rather than family.
+
+    Enforced by the cache plan (DIRECT before bulk capability is consulted),
+    not by the backend: `supports_bulk_extraction` is capability-only, since
+    answering the policy question there meant re-parsing the central directory
+    the scan had just parsed, on every open.
+    """
+
+    archive = tmp_path / "plain.cbz"
+    with ZipFile(archive, "w") as handle:
+        handle.writestr("000.png", _png_bytes((40, 30)))
+    session = ArchiveImageService().open(archive)
+    try:
+        assert session.cache_plan.policy is ArchiveCachePolicy.DIRECT
+        assert not session.cache_plan.allows_background_warmup
+        assert not session.cache_plan.allows_persistent_page_writes
+    finally:
+        session.close()
+
+
+def test_marking_a_document_session_scoped_takes_its_bytes_on_last_release(
+    tmp_path: Path,
+) -> None:
+    """The Privacy switch, at the level that enforces it.
+
+    Extracted pages of an encrypted archive are plaintext, so a user who asks
+    for them not to be left behind must get that even though the document is
+    routinely held by more than one lease -- the Reader's and a background
+    warmup's. The mark lives on the pool for exactly that reason.
+    """
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 64 * 1024 * 1024)
+    reader, reader_lease = _open_encrypted(tmp_path, pool)
+    warmup, warmup_lease = _open_encrypted(tmp_path, pool)
+    pool.mark_session_scoped("file:secret")
+    reader.get_image(0)
+    assert pool.current_bytes > 0
+
+    # The Reader closes first; the warmup lease is still live.
+    reader.close()
+    reader_lease.close()
+    assert pool.current_bytes > 0, "a live warmup still needs the bundle"
+
+    warmup.close()
+    warmup_lease.close()
+
+    assert pool.current_bytes == 0
+    assert not [path for path in (tmp_path / "pool").iterdir() if path.suffix == ".zip"]
+
+
+def test_an_unmarked_encrypted_document_keeps_its_cache(tmp_path: Path) -> None:
+    """With the switch off, the bundle survives so the next session reads it
+    straight from the pool instead of converting again."""
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 64 * 1024 * 1024)
+    session, lease = _open_encrypted(tmp_path, pool)
+    session.get_image(0)
+    session.close()
+    lease.close()
+
+    assert pool.current_bytes > 0

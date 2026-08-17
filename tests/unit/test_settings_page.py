@@ -781,8 +781,13 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
         assert by_name[hidden_label].button.isEnabled() is False
     for storage_label in ("Select Existing Library", "Reset Library"):
         assert by_name[storage_label].button.isEnabled() is True
-    # The Show Collections switch is the only switch on this tab.
-    assert len(switch_items) == 1
+    # Two switches: Show Collections, and the encrypted-archive cache toggle.
+    # Identified by label rather than by count so adding a third row does not
+    # silently change which switch the tests below reach for.
+    assert [_row_name(item) for item in switch_items] == [
+        "Show Collections",
+        "Delete cached pages when closing",
+    ]
 
 
 def test_privacy_show_collections_toggle_emits_setup_request_when_uninitialised(qtbot) -> None:
@@ -930,3 +935,21 @@ def test_privacy_buttons_enable_once_hidden_space_initialised(qtbot, tmp_path) -
     button_items = page.findChildren(SettingsButtonItem)
     for item in button_items:
         assert item.button.isEnabled() is True
+
+
+def test_encrypted_cache_switch_persists_and_defaults_on(qtbot, tmp_path) -> None:
+    """Extracted pages of an encrypted archive are plaintext on disk, so the
+    switch that bounds how long they live has to survive a restart. Defaults
+    on: the pool is not encrypted yet, and one bulk-conversion pass per
+    session is cheap enough that privacy is the better default."""
+
+    apply_theme()
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    viewmodel = SettingsViewModel(store.load(), store)
+
+    assert viewmodel.purge_encrypted_cache_on_close is True
+
+    viewmodel.set_purge_encrypted_cache_on_close(False)
+
+    assert store.load().purge_encrypted_cache_on_close is False
+    assert SettingsViewModel(store.load(), store).purge_encrypted_cache_on_close is False

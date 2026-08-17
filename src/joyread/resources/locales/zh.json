@@ -21,6 +21,8 @@
     "banner_cache": "缓存",
     "banner_library": "书库",
     "banner_hidden_space": "隐藏空间",
+    "banner_encrypted_cache": "加密压缩包",
+    "purge_encrypted_cache": "关闭时删除缓存页面",
     "banner_storage": "存储",
     "language": "语言",
     "import_when_opening": "打开时导入书籍",
