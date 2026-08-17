@@ -1452,3 +1452,41 @@ def test_flush_pending_writes_returns_nothing_when_nothing_is_dirty(tmp_path: Pa
     viewmodel = _viewmodel(tmp_path)
 
     assert viewmodel.flush_pending_writes() == ()
+
+
+def test_a_spread_survives_a_resize_across_the_pairing_threshold(tmp_path: Path) -> None:
+    """The engine's hysteresis only works if the ViewModel tells it what is
+    already on screen. Without that wiring every resize re-decides from
+    scratch, and dragging a window edge near the boundary flips the layout
+    back and forth."""
+
+    viewmodel = _viewmodel(tmp_path, dimensions=(620, 1000))
+    viewmodel.open_path(tmp_path / "book.cbz")
+
+    viewmodel.set_viewport_size(1240, 1000)
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+    # Past the floor but inside the release band: a pair already on screen
+    # stays, where a fresh decision at this size would not pair.
+    viewmodel.set_viewport_size(1000, 1000)
+
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+
+def test_stickiness_does_not_follow_the_reader_into_the_next_spread(tmp_path: Path) -> None:
+    """Hysteresis is scoped to the pages it was measured on. Carrying it
+    forward would make a spread's layout depend on what was read before it,
+    which is the order-dependence the engine is built to avoid."""
+
+    viewmodel = _viewmodel(tmp_path, dimensions=(620, 1000))
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1240, 1000)
+    viewmodel.set_viewport_size(1000, 1000)
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+    viewmodel.seek(2)
+
+    # These pages were never paired on screen, so they get the strict floor.
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.SINGLE

@@ -526,13 +526,16 @@ class ReaderViewModel:
                 # provisional single page while the companion independently
                 # finishes, then the next item callback upgrades to DOUBLE.
 
+        page2_index = indices[1] if len(indices) > 1 and page2 is not None else None
+        laid_out = (indices[0],) if page2_index is None else (indices[0], page2_index)
         result = self._layout_engine.calculate(
             self._viewport_size,
             SizeF(float(page1.dimensions[0]), float(page1.dimensions[1])),
             SizeF(float(page2.dimensions[0]), float(page2.dimensions[1])) if page2 is not None else None,
             self.settings.layout_settings(),
             page1_index=indices[0],
-            page2_index=indices[1] if len(indices) > 1 and page2 is not None else None,
+            page2_index=page2_index,
+            sticky_mode=self._sticky_layout_mode(laid_out),
         )
         self._finish_layout_loading()
         self._layout_result = result
@@ -548,6 +551,26 @@ class ReaderViewModel:
         # used for progress percent can differ. De-duplication in
         # `_save_progress` keeps this idempotent.
         self._save_progress()
+
+    def _sticky_layout_mode(self, laid_out: tuple[int, ...]) -> ReaderDisplayMode | None:
+        """The on-screen mode, but only when it belongs to these exact pages.
+
+        The engine uses this to damp its pairing decision across a resize, so
+        it has to describe the spread being recalculated and no other. Handing
+        it a mode carried over from a different spread would make that spread's
+        layout depend on what was read before it.
+
+        Draw order follows reading direction rather than page order, so the
+        comparison sorts both sides.
+        """
+
+        result = self._layout_result
+        if result is None or not result.page_draws:
+            return None
+        drawn = tuple(sorted(draw.page_index for draw in result.page_draws))
+        if drawn != tuple(sorted(laid_out)):
+            return None
+        return result.mode
 
     def _recalculate_vertical_layout(self) -> None:
         indices = self.current_display_indices

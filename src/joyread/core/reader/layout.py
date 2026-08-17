@@ -29,6 +29,30 @@ class SmartLayoutEngine:
     WIDE_ASPECT_THRESHOLD = 1.6
     LETTERBOX_HEIGHT_RATIO_THRESHOLD = 0.20
 
+    #: Auto-mode pairing budget, expressed as the fraction of its solo size a
+    #: page is still allowed to keep once a companion joins it.
+    #:
+    #: The old rule paired whenever the two pages together covered more screen
+    #: than the primary alone. That is an aggregate test, and it produced two
+    #: defects. It was *asymmetric* -- it compared only against the primary, so
+    #: the same pair paired or not depending on which page arrived first -- and
+    #: it happily shrank a page that would have filled the screen alone, as
+    #: long as the total went up. A landscape page beside a portrait page is
+    #: the case users notice.
+    #:
+    #: Because both pages are scaled to a common height, they shrink by the
+    #: same factor, so "how much does pairing cost each page" is a single
+    #: number. Comparing it to a floor is symmetric by construction (the
+    #: combined aspect is the sum of the two, and addition commutes) rather
+    #: than symmetric by taking a max.
+    PAIR_SHRINK_FLOOR = 0.85
+
+    #: Release threshold for the same measure. Resizing across a single
+    #: boundary would flip the layout back and forth, so a pair already on
+    #: screen is kept until it is meaningfully worse than the floor. Applies
+    #: only while the same two pages stay on screen -- see ``sticky_mode``.
+    PAIR_SHRINK_RELEASE = 0.78
+
     def __init__(self) -> None:
         # Layout runs on every viewport resize and page step; logging each pass
         # would flood the log. Track the last-emitted mode and only log on
@@ -44,7 +68,18 @@ class SmartLayoutEngine:
         *,
         page1_index: int = 0,
         page2_index: int | None = None,
+        sticky_mode: ReaderDisplayMode | None = None,
     ) -> ReaderLayoutResult:
+        """Choose a layout for one or two pages.
+
+        ``sticky_mode`` is the mode currently on screen **for these same
+        pages**, or ``None``. It exists only to damp the pairing decision
+        across a resize, and the caller must not pass a mode carried over from
+        a different spread: doing so would make the choice depend on what was
+        read before it, which is the order-dependence this engine is
+        deliberately free of.
+        """
+
         settings = settings or ReaderLayoutSettings()
         if not viewport_size.is_valid or not page1_size.is_valid:
             return ReaderLayoutResult(ReaderDisplayMode.SINGLE, 1.0, (), 0.0)
@@ -80,6 +115,36 @@ class SmartLayoutEngine:
             self._log_mode_transition(single.mode)
             return single
 
+        if _effective_fit_mode(settings) != ReaderFitMode.FIT_PAGE:
+            # FIT_WIDTH / FIT_HEIGHT keep the original aggregate-area rule,
+            # wide-page veto included. The shrink measure below is derived from
+            # fit-inside scaling and does not describe what those modes do, so
+            # both new rules are scoped out of them rather than one of them
+            # leaking in.
+            double = self._double_result(
+                viewport_size,
+                page1_size,
+                page2_size,
+                settings,
+                page1_index=page1_index,
+                page2_index=page2_index,
+            )
+            chosen = double if double.used_area > single.used_area else single
+            self._log_mode_transition(chosen.mode)
+            return chosen
+
+        # Both auto-mode rules read only the three aspect ratios, so they run
+        # before the spread geometry is built and skip it entirely on reject --
+        # this path runs on every resize tick.
+        if not self._pairing_allowed(page1_size, page2_size):
+            self._log_mode_transition(single.mode)
+            return single
+        if not self._pair_is_worth_it(
+            viewport_size, page1_size, page2_size, sticky_mode=sticky_mode
+        ):
+            self._log_mode_transition(single.mode)
+            return single
+
         double = self._double_result(
             viewport_size,
             page1_size,
@@ -88,9 +153,8 @@ class SmartLayoutEngine:
             page1_index=page1_index,
             page2_index=page2_index,
         )
-        chosen = double if double.used_area > single.used_area else single
-        self._log_mode_transition(chosen.mode)
-        return chosen
+        self._log_mode_transition(double.mode)
+        return double
 
     def calculate_vertical(
         self,
@@ -227,11 +291,79 @@ class SmartLayoutEngine:
             used_area=(page1_width * height) + (page2_width * height),
         )
 
+    def _pairing_allowed(self, page1: SizeF, page2: SizeF) -> bool:
+        """Reject a spread containing a page wide enough to stand alone.
+
+        Checked on aspect alone, not on how the page happens to fit the current
+        window, and applied to both sides. A page this wide is usually a
+        double-page scan already; pairing it would both shrink it and deny it
+        the wide-pan treatment it gets when it is the primary, so the same
+        image would render completely differently depending on which side of a
+        page turn it landed on.
+
+        Deliberately explicit rather than left to the shrink budget below. The
+        budget would reject most of these anyway, but not all: in a very wide
+        window a 1.7-aspect page pairs at almost no cost, and the rule would
+        then depend on the window rather than on the page.
+
+        The comparison mirrors `_wide_pan_result_if_needed`'s exactly, so the
+        threshold itself is pairable. A page *at* the threshold never wide-pans,
+        and vetoing it here would leave it with neither treatment -- shrunk into
+        a spread it was excluded from for a benefit it does not receive.
+        """
+
+        return (
+            _aspect(page1) <= self.WIDE_ASPECT_THRESHOLD
+            and _aspect(page2) <= self.WIDE_ASPECT_THRESHOLD
+        )
+
+    def _pair_is_worth_it(
+        self,
+        viewport: SizeF,
+        page1: SizeF,
+        page2: SizeF,
+        *,
+        sticky_mode: ReaderDisplayMode | None,
+    ) -> bool:
+        """Whether pairing costs each page less than the allowed shrink."""
+
+        floor = (
+            self.PAIR_SHRINK_RELEASE
+            if sticky_mode == ReaderDisplayMode.DOUBLE
+            else self.PAIR_SHRINK_FLOOR
+        )
+        return _pair_shrink(viewport, page1, page2) >= floor
+
     def _log_mode_transition(self, mode: ReaderDisplayMode) -> None:
         if mode == self._last_logged_mode:
             return
         logger.debug("Layout mode -> %s", mode.value)
         self._last_logged_mode = mode
+
+
+def _aspect(size: SizeF) -> float:
+    return size.width / size.height
+
+
+def _pair_shrink(viewport: SizeF, page1: SizeF, page2: SizeF) -> float:
+    """Fraction of its solo drawn size each page keeps when the two are paired.
+
+    Under fit-inside scaling the drawn height of content with aspect ``a`` is
+    ``H * min(1, V / a)`` where ``V`` is the viewport aspect. Two pages laid
+    side by side share a height, so their combined aspect is exactly the sum of
+    theirs -- and both shrink by the same factor, which is what makes this one
+    number rather than two.
+
+    The worst-affected page is the one that had the most to lose, hence the
+    ``max`` over the solo factors.
+    """
+
+    viewport_aspect = _aspect(viewport)
+    a1 = _aspect(page1)
+    a2 = _aspect(page2)
+    paired = min(1.0, viewport_aspect / (a1 + a2))
+    solo = max(min(1.0, viewport_aspect / a1), min(1.0, viewport_aspect / a2))
+    return paired / solo
 
 
 def _effective_fit_mode(settings: ReaderLayoutSettings) -> ReaderFitMode:
