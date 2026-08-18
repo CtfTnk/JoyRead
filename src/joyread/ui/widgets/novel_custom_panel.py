@@ -17,11 +17,11 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_settings_panel import (
-    _right_rounded_path,
-    _SectionBanner,
-    _SettingRow,
-    _SmallSwitch,
-    _SpinButton,
+    right_rounded_path,
+    SectionBanner,
+    SettingRow,
+    SmallSwitch,
+    SpinButton,
 )
 
 
@@ -48,20 +48,20 @@ class NovelCustomPanel(QFrame):
         )
         layout.setSpacing(Theme.reader_settings_gap)
 
-        layout.addWidget(_SectionBanner(t("reader.section_light_novel"), resources))
+        layout.addWidget(SectionBanner(t("reader.section_light_novel"), resources))
 
-        self.enable_switch = _SmallSwitch()
+        self.enable_switch = SmallSwitch()
         self.enable_switch.toggled.connect(self.enable_custom_changed.emit)
         # Also gate the dependent rows immediately on toggle so the
         # visual disabled state doesn't lag behind a slow shell handler.
         self.enable_switch.toggled.connect(self._sync_child_enabled)
-        self.enable_row = _SettingRow(t("reader.enable_custom"), self.enable_switch)
+        self.enable_row = SettingRow(t("reader.enable_custom"), self.enable_switch)
         layout.addWidget(self.enable_row)
 
         # Font size spin uses the same wrapper as the manga panel's
         # spacing row so the visual rhythm stays consistent across the
         # two readers without duplicating the spinner widget.
-        self.font_size_control = _SpinButton(
+        self.font_size_control = SpinButton(
             resources,
             suffix="px",
             value=Theme.novel_placeholder_font_size,
@@ -69,7 +69,7 @@ class NovelCustomPanel(QFrame):
             maximum=72,
         )
         self.font_size_control.value_changed.connect(self.font_size_changed.emit)
-        self.font_size_row = _SettingRow(t("reader.font_size"), self.font_size_control, option_margin=0)
+        self.font_size_row = SettingRow(t("reader.font_size"), self.font_size_control, option_margin=0)
         layout.addWidget(self.font_size_row)
 
         # Disable-CSS escape hatch — independent of Enable Custom because
@@ -78,9 +78,9 @@ class NovelCustomPanel(QFrame):
         # render with their intended typography; the user toggles on
         # when an EPUB's CSS produces layout issues like horizontal
         # overflow at small viewports.
-        self.disable_css_switch = _SmallSwitch()
+        self.disable_css_switch = SmallSwitch()
         self.disable_css_switch.toggled.connect(self.disable_css_changed.emit)
-        self.disable_css_row = _SettingRow(t("reader.disable_css"), self.disable_css_switch)
+        self.disable_css_row = SettingRow(t("reader.disable_css"), self.disable_css_switch)
         layout.addWidget(self.disable_css_row)
 
         layout.addStretch(1)
@@ -102,7 +102,7 @@ class NovelCustomPanel(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(*Theme.color_reader_settings_background_rgba))
-        painter.drawPath(_right_rounded_path(QRectF(self.rect())))
+        painter.drawPath(right_rounded_path(QRectF(self.rect())))
         painter.end()
 
     def _sync_child_enabled(self, enabled: bool) -> None:

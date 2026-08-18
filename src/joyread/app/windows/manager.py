@@ -19,10 +19,9 @@ from joyread.app.windows.activation import (
 )
 from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.windows.ownership import WindowOwnership, ordered_close_sequence
+from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
-from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
 from joyread.ui.views.main_window import MainWindow
-from joyread.ui.views.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_window import ReaderWindow
 
 
@@ -46,10 +45,12 @@ class ApplicationWindowManager(QObject):
         *,
         main_window_factory: MainWindowFactory | None = None,
         reader_window_factory: ReaderWindowFactory | None = None,
+        novel_reader_provider: NovelReaderProvider | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._context = context
+        self._novel_reader_provider = novel_reader_provider
         self._main_window_factory = main_window_factory or self._create_main_window
         self._reader_window_factory = reader_window_factory or self._create_reader_window
         self._main_window: QMainWindow | None = None
@@ -267,17 +268,13 @@ class ApplicationWindowManager(QObject):
             self._context,
             standalone_reader_launcher=launcher,
             storage_transition_controller=self.storage_transition_controller,
+            novel_reader_provider=self._novel_reader_provider,
         )
 
     def _create_reader_window(self, request: StandaloneReaderRequest) -> QMainWindow:
-        if EPUB_ACCESS_ENABLED and request.path.suffix.lower() in EPUB_EXTENSIONS:
-            return NovelReaderWindow(
-                self._context,
-                request.path,
-                book=request.book,
-                title=request.title,
-                start_page_index=request.start_page_index,
-            )
+        provider = self._novel_reader_provider
+        if provider is not None and request.path.suffix.lower() in provider.extensions:
+            return provider.create_window(self._context, request)
         return ReaderWindow(
             self._context,
             request.path,

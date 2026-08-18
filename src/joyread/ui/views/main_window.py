@@ -14,8 +14,9 @@ from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.cover_editor import PreparedCoverSource
 from joyread.app.storage_transition import TransitionConsequences, describe_consequences
 from joyread.app.storage_transition_driver import StorageTransitionController
+from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
-from joyread.core.file_types import EPUB_ACCESS_ENABLED, EPUB_EXTENSIONS
+from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.core.models.tag import Tag
@@ -26,7 +27,6 @@ from joyread.app.tasking import TaskPriority
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
-from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
@@ -42,19 +42,6 @@ from joyread.ui.widgets.window_chrome import TitleBarWidget
 logger = logging.getLogger(__name__)
 
 
-# Formats handled by the novel reader skeleton. Engine work will expand
-# this (and remove the read-only restriction in ``open_reader_for_file``).
-NOVEL_FORMATS: frozenset[str] = EPUB_EXTENSIONS if EPUB_ACCESS_ENABLED else frozenset()
-
-
-def _is_novel_source(path: Path) -> bool:
-    return path.suffix.lower() in NOVEL_FORMATS
-
-
-def _is_shelved_epub(path: Path) -> bool:
-    return not EPUB_ACCESS_ENABLED and path.suffix.lower() in EPUB_EXTENSIONS
-
-
 class MainWindow(QMainWindow):
     closed = QtSignal()
 
@@ -64,10 +51,14 @@ class MainWindow(QMainWindow):
         *,
         standalone_reader_launcher: StandaloneReaderLauncher | None = None,
         storage_transition_controller: StorageTransitionController | None = None,
+        novel_reader_provider: NovelReaderProvider | None = None,
     ) -> None:
         super().__init__()
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
+        # Absent unless the composition root wired the novel reader in, which
+        # is what makes an .epub unopenable rather than a special case here.
+        self._novel_reader_provider = novel_reader_provider
         # Supplied by the window manager, which owns the Reader windows a
         # transition has to flush and close. Without one there are no Readers
         # to account for, which is exactly the situation in focused tests.
@@ -77,7 +68,10 @@ class MainWindow(QMainWindow):
         self._storage_transition.finished.connect(self._complete_storage_transition)
         self._storage_transition.failed.connect(self._handle_storage_location_failed)
         self._storage_transition.abandoned.connect(self._handle_storage_transition_abandoned)
-        self._embedded_reader: ReaderShellWidget | NovelReaderShellWidget | None = None
+        # Either reader shell. Both expose back_requested/progress_changed and
+        # the QWidget surface used below, so this stays duck-typed rather than
+        # naming a novel class the app is not allowed to import.
+        self._embedded_reader: QWidget | None = None
         self._cover_editor_book_uuid: str | None = None
         self._library_maintenance_task_active = False
         self._library_maintenance_plan_pending = False
@@ -288,11 +282,11 @@ class MainWindow(QMainWindow):
             self._show_unavailable_book_dialog(book_uuid)
             return
         source_path = Path(book.file_path)
-        if _is_shelved_epub(source_path):
+        if self._is_shelved_epub(source_path):
             self._show_epub_unavailable()
             return
         individual = self._settings_for_reader_launch().individual_read_window
-        is_novel = _is_novel_source(source_path)
+        is_novel = self._is_novel_source(source_path)
         logger.info(
             "open_reader_for_book uuid=%s page=%s mode=%s reader=%s",
             book_uuid,
@@ -300,12 +294,9 @@ class MainWindow(QMainWindow):
             "window" if individual else "embedded",
             "novel" if is_novel else "manga",
         )
-        if is_novel:
-            if individual:
-                self._show_novel_reader_window(source_path, book=book, start_page_index=page_index)
-            else:
-                self._show_embedded_novel_reader(source_path, book=book, start_page_index=page_index)
-            return
+        # Both reader kinds route the same way from here: the window manager
+        # picks the window class from the provider, and the embedded path
+        # picks the shell the same way, so there is no novel branch to take.
         if individual:
             self._show_reader_window(source_path, book=book, start_page_index=page_index)
         else:
@@ -325,13 +316,13 @@ class MainWindow(QMainWindow):
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         source_path = Path(path)
         logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
-        if _is_shelved_epub(source_path):
+        if self._is_shelved_epub(source_path):
             self._show_epub_unavailable()
             return
-        if _is_novel_source(source_path):
-            # When EPUB access is enabled again it remains read-only here;
-            # importing it needs its own validation path first.
-            self._show_novel_reader_window(source_path, title=source_path.stem)
+        if self._is_novel_source(source_path):
+            # Read-only even when the novel reader is wired in; importing one
+            # needs its own validation path first.
+            self._show_reader_window(source_path, title=source_path.stem)
             return
         if not import_mode:
             self._show_reader_window(source_path, title=source_path.stem)
@@ -342,6 +333,22 @@ class MainWindow(QMainWindow):
         # managed copy and a failure must never close this reader window.
         settings = self._settings_for_reader_launch()
         self._start_open_and_import(source_path, settings)
+
+    def _is_novel_source(self, path: Path) -> bool:
+        """Whether a wired-in novel reader claims this path."""
+
+        provider = self._novel_reader_provider
+        return provider is not None and path.suffix.lower() in provider.extensions
+
+    def _is_shelved_epub(self, path: Path) -> bool:
+        """An EPUB on the shelf that nothing present can open.
+
+        Only reachable from a library built while the novel reader was
+        available -- imports reject ``.epub`` while it is not -- so this exists
+        to explain the file rather than to fail silently on it.
+        """
+
+        return path.suffix.lower() in EPUB_EXTENSIONS and not self._is_novel_source(path)
 
     def _show_epub_unavailable(self) -> None:
         self.dialog_overlay.show_info(
@@ -454,61 +461,25 @@ class MainWindow(QMainWindow):
             return
         self._hide_settings_page()
         self._close_embedded_reader()
-        self._embedded_reader = ReaderShellWidget(
-            self._context,
-            path,
-            book=book,
-            show_back_button=True,
-            start_page_index=start_page_index,
-            parent=root,
-        )
-        self._embedded_reader.back_requested.connect(self._close_embedded_reader)
-        self._embedded_reader.progress_changed.connect(self._handle_reader_progress_changed)
-        self._embedded_reader.setGeometry(root.rect())
-        self._embedded_reader.show()
-        self._embedded_reader.raise_()
-        self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
-        self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
-        if hasattr(self, "_resize_grip"):
-            self._resize_grip.hide()
-
-    def _show_novel_reader_window(
-        self,
-        path: Path,
-        *,
-        book=None,
-        title: str | None = None,
-        start_page_index: int | None = None,
-    ) -> None:  # noqa: ANN001
-        self._launch_standalone_reader(
-            StandaloneReaderRequest(
-                path=path,
+        provider = self._novel_reader_provider
+        if provider is not None and self._is_novel_source(path):
+            self._embedded_reader = provider.create_embedded_shell(
+                self._context,
+                path,
                 book=book,
-                title=title,
+                show_back_button=True,
                 start_page_index=start_page_index,
+                parent=root,
             )
-        )
-
-    def _show_embedded_novel_reader(
-        self,
-        path: Path,
-        *,
-        book,
-        start_page_index: int | None = None,
-    ) -> None:  # noqa: ANN001
-        root = self.centralWidget()
-        if root is None:
-            return
-        self._hide_settings_page()
-        self._close_embedded_reader()
-        self._embedded_reader = NovelReaderShellWidget(
-            self._context,
-            path,
-            book=book,
-            show_back_button=True,
-            start_page_index=start_page_index,
-            parent=root,
-        )
+        else:
+            self._embedded_reader = ReaderShellWidget(
+                self._context,
+                path,
+                book=book,
+                show_back_button=True,
+                start_page_index=start_page_index,
+                parent=root,
+            )
         self._embedded_reader.back_requested.connect(self._close_embedded_reader)
         self._embedded_reader.progress_changed.connect(self._handle_reader_progress_changed)
         self._embedded_reader.setGeometry(root.rect())

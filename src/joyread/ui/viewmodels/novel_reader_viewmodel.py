@@ -17,7 +17,7 @@ from joyread.core.reader.epub import EpubAssetReader, EpubBook, flatten_toc
 from joyread.core.reader.epub_session import EpubChapter, EpubReaderSession
 from joyread.app.tasking import TaskExecutor, TaskHandle
 from joyread.infrastructure.i18n.locale_service import t
-from joyread.ui.viewmodels.reader_viewmodel import (
+from joyread.ui.viewmodels.reader_items import (
     ReaderBookmarkItem,
     ReaderContentsItem,
     ReaderPasswordPrompt,

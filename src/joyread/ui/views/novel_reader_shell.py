@@ -33,7 +33,7 @@ from joyread.core.reader import ReaderDirection, ReaderProgress
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
-from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderContentsItem
+from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.novel_content_area import NovelContentArea

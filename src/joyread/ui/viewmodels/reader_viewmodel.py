@@ -46,6 +46,13 @@ from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStat
 from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 from joyread.core.services.thumbnail_service import ThumbnailRenderer
 from joyread.infrastructure.i18n.locale_service import t
+# Re-exported: these moved to a neutral module so the novel reader and the
+# shared topic panel stop importing this viewmodel just to name their items.
+from joyread.ui.viewmodels.reader_items import (
+    ReaderBookmarkItem,
+    ReaderContentsItem,
+    ReaderPasswordPrompt,
+)
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
@@ -59,34 +66,6 @@ def _archive_error_message(error: ArchiveError) -> str:
     if isinstance(error, ArchiveResourceLimitError):
         return t("reader.archive_resource_limit_exceeded")
     return str(error)
-
-
-@dataclass(frozen=True)
-class ReaderPasswordPrompt:
-    archive_path: str
-    display_name: str
-    message: str
-    is_retry: bool = False
-
-
-@dataclass(frozen=True)
-class ReaderBookmarkItem:
-    uuid: str
-    name: str
-    page_index: int
-
-
-@dataclass(frozen=True)
-class ReaderContentsItem:
-    """One TOC entry surfaced to the topic panel's CONTENTS mode.
-
-    ``page_index`` is an opaque seek target: an archive page index in the
-    manga reader and a spine index in the EPUB reader.
-    """
-
-    label: str
-    page_index: int
-    depth: int = 0
 
 
 class ReaderViewModel:

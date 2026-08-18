@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
 
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderContentsItem
+from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_detail import DetailThumbnailGrid
 from joyread.ui.widgets.elided_label import ElidedLabel

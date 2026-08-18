@@ -44,6 +44,8 @@ from joyread.app.windows.manager import (
     ApplicationWindowManager,
     center_window_on_launch,
 )
+from joyread.app.windows.novel_provider import NovelReaderProvider
+from joyread.core.file_types import EPUB_ACCESS_ENABLED
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import (
     StorageRecoveryCancelled,
@@ -179,6 +181,22 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
     )
 
 
+def _create_novel_reader_provider() -> NovelReaderProvider | None:
+    """Wire the novel reader in, or leave the app without one.
+
+    This is the single place the novel feature enters the application, and
+    the import is deliberately inside the gate: with ``EPUB_ACCESS_ENABLED``
+    off, ``joyread.novel`` is never imported, so neither it nor ``lxml`` needs
+    to be installed at all. Flipping the flag is the whole release switch.
+    """
+
+    if not EPUB_ACCESS_ENABLED:
+        return None
+    from joyread.ui.views.novel_reader_provider import create_novel_reader_provider
+
+    return create_novel_reader_provider()
+
+
 def _configure_window_management(
     runtime: _ApplicationRuntime,
     *,
@@ -186,7 +204,11 @@ def _configure_window_management(
     broker: SingleInstanceBroker | None = None,
     enable_macos_reopen: bool,
 ) -> tuple[ApplicationWindowManager, LaunchCoordinator]:
-    manager = ApplicationWindowManager(runtime.context, parent=runtime.app)
+    manager = ApplicationWindowManager(
+        runtime.context,
+        novel_reader_provider=_create_novel_reader_provider(),
+        parent=runtime.app,
+    )
     coordinator = LaunchCoordinator(windows=manager, gate=gate, parent=runtime.app)
     setattr(runtime.app, "_joyread_window_manager", manager)
     setattr(runtime.app, "_joyread_launch_coordinator", coordinator)

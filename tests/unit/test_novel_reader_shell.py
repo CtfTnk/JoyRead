@@ -12,9 +12,12 @@ from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.views.main_window import NOVEL_FORMATS, MainWindow, _is_novel_source
+from joyread.app.windows.manager import ApplicationWindowManager
+from joyread.app.windows.requests import StandaloneReaderRequest
+from joyread.ui.views.novel_reader_provider import create_novel_reader_provider
 from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.novel_reader_window import NovelReaderWindow
+from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
 
@@ -27,11 +30,33 @@ def _wait_for_chapter(qtbot, window) -> None:  # noqa: ANN001
     qtbot.waitUntil(lambda: window.shell.viewmodel.chapter_count > 0, timeout=2000)
 
 
-def test_novel_format_routing_keeps_epub_shelved() -> None:
-    assert ".epub" not in NOVEL_FORMATS
-    assert not _is_novel_source(Path("/tmp/book.epub"))
-    assert not _is_novel_source(Path("/tmp/book.EPUB"))
-    assert not _is_novel_source(Path("/tmp/book.cbz"))
+def test_a_wired_provider_routes_epub_to_the_novel_window(qtbot, tmp_path: Path) -> None:  # noqa: ARG001
+    """The other half of ``test_epub_gate.py``: with the provider supplied,
+    the manager builds a novel window for ``.epub`` and leaves every other
+    format on the manga/PDF path."""
+
+    context = create_app_context()
+    manager = ApplicationWindowManager(
+        context,
+        novel_reader_provider=create_novel_reader_provider(),
+    )
+
+    novel = write_tiny_epub(tmp_path / "routed.epub")
+    novel_window = manager._create_reader_window(  # noqa: SLF001
+        StandaloneReaderRequest(path=novel, book=None, title=None, start_page_index=None)
+    )
+    assert isinstance(novel_window, NovelReaderWindow)
+
+    comic = tmp_path / "routed.cbz"
+    comic.write_bytes(b"not really a cbz")
+    comic_window = manager._create_reader_window(  # noqa: SLF001
+        StandaloneReaderRequest(path=comic, book=None, title=None, start_page_index=None)
+    )
+    assert isinstance(comic_window, ReaderWindow)
+
+    novel_window.close()
+    comic_window.close()
+    context.close()
 
 
 def test_novel_reader_window_chrome_matches_skeleton_layout(qtbot, tmp_path: Path) -> None:
@@ -449,48 +474,6 @@ def test_novel_reader_add_and_delete_bookmark_roundtrip(qtbot, tmp_path: Path, m
         lambda: len(window.shell.viewmodel._bookmarks) == 0,  # noqa: SLF001
         timeout=2000,
     )
-
-    window.close()
-    context.close()
-
-
-def test_main_window_blocks_existing_epub_book(qtbot, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    context = create_app_context()
-    novel_path = write_tiny_epub(tmp_path / "story.epub")
-    book = _novel_book(novel_path)
-
-    launch_requests: list[object] = []
-    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
-    qtbot.addWidget(window)
-    # Replace the shelf after MainWindow.__init__ has run load_books();
-    # the routing decision in open_reader_for_book reads ``books`` live.
-    context.shelf_viewmodel.books = [book]
-    context.settings_store.update(individual_read_window=True)
-
-    window.open_reader_for_book(book.uuid)
-    assert launch_requests == []
-    assert not window.dialog_overlay.isHidden()
-    assert window.dialog_overlay.panel.title_text == "Read"
-
-    window.close()
-    context.close()
-
-
-def test_main_window_blocks_epub_file_open(qtbot, tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    context = create_app_context()
-    novel_path = write_tiny_epub(tmp_path / "anything.epub")
-
-    launch_requests: list[object] = []
-    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
-    qtbot.addWidget(window)
-
-    window.open_reader_for_file(novel_path, import_mode=True)
-
-    assert launch_requests == []
-    assert not window.dialog_overlay.isHidden()
-    assert window.dialog_overlay.panel.title_text == "Read"
 
     window.close()
     context.close()
