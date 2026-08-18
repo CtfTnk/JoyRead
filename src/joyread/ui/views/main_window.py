@@ -14,7 +14,7 @@ from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.cover_editor import PreparedCoverSource
 from joyread.app.storage_transition import TransitionConsequences, describe_consequences
 from joyread.app.storage_transition_driver import StorageTransitionController
-from joyread.app.windows.novel_provider import NovelReaderProvider
+from joyread.app.windows.novel_provider import EmbeddedReaderShell, NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.models.book import Book
@@ -68,10 +68,9 @@ class MainWindow(QMainWindow):
         self._storage_transition.finished.connect(self._complete_storage_transition)
         self._storage_transition.failed.connect(self._handle_storage_location_failed)
         self._storage_transition.abandoned.connect(self._handle_storage_transition_abandoned)
-        # Either reader shell. Both expose back_requested/progress_changed and
-        # the QWidget surface used below, so this stays duck-typed rather than
-        # naming a novel class the app is not allowed to import.
-        self._embedded_reader: QWidget | None = None
+        # Either reader shell, named by what Main actually requires of one
+        # rather than by a class -- the novel shell is not importable here.
+        self._embedded_reader: EmbeddedReaderShell | None = None
         self._cover_editor_book_uuid: str | None = None
         self._library_maintenance_task_active = False
         self._library_maintenance_plan_pending = False

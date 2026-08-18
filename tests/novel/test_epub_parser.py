@@ -6,15 +6,22 @@ from pathlib import Path
 
 import pytest
 
-from joyread.novel.core.epub import (
+# Before any joyread.novel import: the parser imports lxml at module level, so
+# without the joyread[epub] extra the import below raises rather than skips.
+# This belongs in the module rather than the directory conftest -- a conftest
+# that raises Skipped makes pytest exit 1 when this directory is collected on
+# its own, instead of skipping cleanly.
+pytest.importorskip("lxml", reason="joyread[epub] extra not installed")
+
+from joyread.novel.core.epub import (  # noqa: E402
     InvalidEpubError,
     ZipFileAssetReader,
     flatten_toc,
     open_epub,
 )
-from joyread.novel.core.epub_session import open_epub_session
+from joyread.novel.core.epub_session import open_epub_session  # noqa: E402
 
-from tests.support.epub_fixtures import write_tiny_epub
+from tests.support.epub_fixtures import write_tiny_epub  # noqa: E402
 
 
 # Real-world fixtures live under ``test_set/`` and are not shipped with

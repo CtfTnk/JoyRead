@@ -6,22 +6,28 @@ from datetime import datetime
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QPoint, Qt
 
-from joyread.app.app_context import create_app_context
-from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection
-from joyread.ui.resources.styles.theme import Theme
-from joyread.app.windows.manager import ApplicationWindowManager
-from joyread.app.windows.requests import StandaloneReaderRequest
-from joyread.novel.app.provider import create_novel_reader_provider
-from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
-from joyread.novel.ui.novel_reader_window import NovelReaderWindow
-from joyread.ui.views.reader_window import ReaderWindow
-from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
-from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
+# Before any joyread.novel import: every novel UI module reaches the EPUB
+# parser, which imports lxml at module level. See the note in
+# test_epub_parser.py for why this is not in the directory conftest.
+pytest.importorskip("lxml", reason="joyread[epub] extra not installed")
 
-from tests.support.epub_fixtures import write_tiny_epub
+from PySide6.QtCore import QPoint, Qt  # noqa: E402
+
+from joyread.app.app_context import create_app_context  # noqa: E402
+from joyread.core.models.book import Book  # noqa: E402
+from joyread.core.reader import ReaderDirection  # noqa: E402
+from joyread.ui.resources.styles.theme import Theme  # noqa: E402
+from joyread.app.windows.manager import ApplicationWindowManager  # noqa: E402
+from joyread.app.windows.requests import StandaloneReaderRequest  # noqa: E402
+from joyread.novel.app.provider import create_novel_reader_provider  # noqa: E402
+from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget  # noqa: E402
+from joyread.novel.ui.novel_reader_window import NovelReaderWindow  # noqa: E402
+from joyread.ui.views.reader_window import ReaderWindow  # noqa: E402
+from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode  # noqa: E402
+from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup  # noqa: E402
+
+from tests.support.epub_fixtures import write_tiny_epub  # noqa: E402
 
 
 def _wait_for_chapter(qtbot, window) -> None:  # noqa: ANN001

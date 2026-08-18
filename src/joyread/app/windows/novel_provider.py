@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+from PySide6.QtCore import QRect, Qt, SignalInstance
 from PySide6.QtWidgets import QMainWindow, QWidget
 
 from joyread.app.windows.requests import StandaloneReaderRequest
@@ -34,6 +35,35 @@ class NovelWindowFactory(Protocol):
     def __call__(self, context: AppContext, request: StandaloneReaderRequest) -> QMainWindow: ...
 
 
+class EmbeddedReaderShell(Protocol):
+    """What Main requires of any shell it hosts.
+
+    Declared rather than left to duck typing because ``QWidget`` alone does
+    not say it: Main connects both signals and calls ``cancel()`` on teardown,
+    so a shell missing any of the three fails at runtime, in the middle of
+    opening a book, rather than at the seam.
+    """
+
+    back_requested: SignalInstance
+    progress_changed: SignalInstance
+
+    def cancel(self) -> None: ...
+
+    # The QWidget surface Main drives directly. Spelled out so this Protocol
+    # is a complete statement of the requirement.
+    def setGeometry(self, rect: QRect) -> None: ...
+
+    def show(self) -> None: ...
+
+    def hide(self) -> None: ...
+
+    def raise_(self) -> None: ...
+
+    def setFocus(self, reason: Qt.FocusReason) -> None: ...
+
+    def deleteLater(self) -> None: ...
+
+
 class NovelShellFactory(Protocol):
     """Builds an embedded novel reader shell hosted inside Main."""
 
@@ -46,7 +76,7 @@ class NovelShellFactory(Protocol):
         show_back_button: bool,
         start_page_index: int | None,
         parent: QWidget | None,
-    ) -> QWidget: ...
+    ) -> EmbeddedReaderShell: ...
 
 
 @dataclass(frozen=True)
