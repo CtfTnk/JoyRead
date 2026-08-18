@@ -1,0 +1,45 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, "**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # macos-14+ runners are Apple Silicon, which is the only platform whose
+    # bundled 7-Zip helper is vendored, so the real archive backends run here
+    # rather than falling back to py7zr.
+    runs-on: macos-14
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+
+      - name: Confirm the bundled 7-Zip helper is executable
+        # Git preserves only the executable bit; a helper that lost it would
+        # silently push every 7z/RAR test onto the py7zr fallback path instead
+        # of failing, quietly hiding a whole backend from CI.
+        run: |
+          helper=src/joyread/resources/extractors/7zip/darwin-arm64/7zz
+          chmod +x "$helper"
+          "$helper" i > /dev/null
+
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m pytest -q
