@@ -17,13 +17,18 @@ dependencies = [
     "pyzipper>=0.3",
     "platformdirs>=4.2",
     "rarfile>=4.2",
-    "lxml>=5.0",
     "natsort>=8.4",
     "pyobjc-core>=12.2.1,<13; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa>=12.2.1,<13; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
+# The novel (EPUB) reader. Only joyread.novel needs lxml, and that package is
+# imported solely by the composition root when EPUB_ACCESS_ENABLED is on, so a
+# build without this extra is a complete, working app -- see AGENTS.md.
+epub = [
+    "lxml>=5.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",

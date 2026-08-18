@@ -19,6 +19,16 @@ jobs:
     runs-on: macos-14
     timeout-minutes: 20
 
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both halves of the novel-reader split. "dev" is the shipping v1.0.0
+        # configuration and proves the app is complete without the feature or
+        # its lxml dependency; "dev,epub" additionally runs tests/novel/.
+        extras: ["dev,epub", "dev"]
+
+    name: test (${{ matrix.extras }})
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +38,19 @@ jobs:
           cache: pip
 
       - name: Install
-        run: python -m pip install --upgrade pip && python -m pip install -e '.[dev]'
+        run: python -m pip install --upgrade pip && python -m pip install -e '.[${{ matrix.extras }}]'
+
+      - name: Confirm lxml is absent
+        if: matrix.extras == 'dev'
+        # The whole point of this leg. A transitive dependency quietly pulling
+        # lxml back in would make the run pass while proving nothing.
+        run: |
+          python - <<'PY'
+          import importlib.util, sys
+          if importlib.util.find_spec("lxml") is not None:
+              sys.exit("lxml is installed; this leg cannot prove the app runs without it")
+          print("lxml absent, as required")
+          PY
 
       - name: Confirm the bundled 7-Zip helper is executable
         # Git preserves only the executable bit; a helper that lost it would
@@ -42,4 +64,6 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: python -m pytest -q
+        # -rs so the "dev" leg reports tests/novel/ as skipped rather than
+        # silently collecting nothing there.
+        run: python -m pytest -q -rs

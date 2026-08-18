@@ -155,6 +155,10 @@ THIS SOFTWARE.
 lxml
 ----
 
+Ships only in builds with the novel (EPUB) reader enabled -- it is required by
+the EPUB parser and by nothing else, and is packaged as the ``joyread[epub]``
+extra. A default JoyRead build does not contain it.
+
 Copyright (c) 2004 Infrae. All rights reserved.
 
 Distributed under the BSD 3-clause license.

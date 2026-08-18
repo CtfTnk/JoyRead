@@ -132,6 +132,19 @@ datas = [
 hiddenimports = collect_submodules("py7zr")
 if sys.platform == "darwin":
     hiddenimports.extend(["objc", "Foundation", "AppKit"])
+
+# The novel reader enters the app through one function-level import in
+# bootstrap, which PyInstaller's static analysis follows regardless of the
+# gate that guards it at runtime. Left alone, a gate-off build would ship the
+# whole disabled feature and lxml with it, so the exclusion has to be explicit.
+# Gate-on builds need the opposite: the package is only ever reached
+# dynamically, so its submodules have to be named to be collected at all.
+excludes = ["tkinter"]
+if EPUB_ACCESS_ENABLED:
+    hiddenimports.extend(collect_submodules("joyread.novel"))
+    hiddenimports.extend(["lxml", "lxml.etree"])
+else:
+    excludes.extend(["joyread.novel", "lxml"])
 for legal_name in ("License.txt", "readme.txt", "History.txt"):
     legal_path = extractor_directory / legal_name
     if legal_path.is_file():
@@ -146,7 +159,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tkinter"],
+    excludes=excludes,
     noarchive=False,
     optimize=1,
 )

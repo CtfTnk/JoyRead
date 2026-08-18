@@ -23,7 +23,6 @@ from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderContentsItem,
 )
 from joyread.ui.views.main_window import MainWindow
-from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -45,14 +44,10 @@ def test_bookmark_rename_dialog_uses_active_locale() -> None:
     try:
         locale_service.load_language("Chinese")
         ReaderShellWidget._show_rename_bookmark_dialog(receiver, "bookmark-1", "旧书签")
-        NovelReaderShellWidget._show_rename_bookmark_dialog(receiver, "bookmark-2", "旧书签")
 
-        assert [call["args"][:2] for call in calls] == [
-            ("重命名书签", "书签名称"),
-            ("重命名书签", "书签名称"),
-        ]
-        assert [call["kwargs"]["confirm_text"] for call in calls] == ["重命名", "重命名"]
-        assert [call["kwargs"]["cancel_text"] for call in calls] == ["取消", "取消"]
+        assert [call["args"][:2] for call in calls] == [("重命名书签", "书签名称")]
+        assert [call["kwargs"]["confirm_text"] for call in calls] == ["重命名"]
+        assert [call["kwargs"]["cancel_text"] for call in calls] == ["取消"]
         assert calls[0]["kwargs"]["validator"]("   ") == "书签名称不能为空。"
     finally:
         locale_service.load_language("English")
