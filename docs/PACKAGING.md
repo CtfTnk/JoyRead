@@ -41,8 +41,17 @@ JOYREAD_RUNTIME_DIR=/tmp/joyread-release-smoke python -m joyread.app.main
 Check initialization, import, Library recovery, CBZ/ZIP/7z/RAR/PDF,
 thumbnail scrolling, Reader close/reopen, and application restart.
 
-EPUB code remains in the repository but access is intentionally disabled for
-this release until the reader is complete.
+The novel (EPUB) reader remains in the repository, under `src/joyread/novel/`,
+but is disabled for this release until it is complete. With
+`EPUB_ACCESS_ENABLED` off the spec excludes both `joyread.novel` and `lxml`
+from the bundle — PyInstaller's static analysis follows the gated import in
+`bootstrap.py` regardless of the runtime flag, so without those exclusions a
+gate-off build would ship the whole disabled feature.
+
+Re-enabling it later therefore means three things, not one: flip the flag,
+build in an environment with the extra installed (`pip install -e
+'.[release,epub]'`), and re-check `THIRD_PARTY_NOTICES.txt`, where the lxml
+entry is currently marked as shipping only in EPUB-enabled builds.
 
 ## 3. Build
 

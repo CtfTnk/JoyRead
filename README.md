@@ -59,6 +59,10 @@ python -m pip install -e '.[dev]'
 python -m joyread.app.main
 ```
 
+To work on the (disabled) novel reader, install its extra as well —
+`python -m pip install -e '.[dev,epub]'` — which adds `lxml` and enables the
+`tests/novel/` suite.
+
 To run the test suite:
 
 ```bash
@@ -74,8 +78,10 @@ supplying the corresponding `7zz` binary — see [docs/PACKAGING.md](docs/PACKAG
 
 ## Known limitations
 
-- **EPUB is not enabled.** The code is present but access is switched off until
-  the novel reader is finished.
+- **EPUB is not enabled.** The novel reader lives in `src/joyread/novel/` and
+  is switched off until it is finished. It is a separable feature: the app is
+  built and tested without it, and its `lxml` dependency is the optional
+  `joyread[epub]` extra.
 - **Cached pages from encrypted archives are stored unencrypted.** To keep
   encrypted archives fast, decrypted pages are written to the extraction pool in
   the clear. Settings → Privacy → "Delete cached pages when closing" is enabled
