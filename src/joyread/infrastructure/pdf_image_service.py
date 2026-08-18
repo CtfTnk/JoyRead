@@ -1,18 +1,39 @@
-"""Qt PDF adapter with viewport-sized worker rendering."""
+"""Qt PDF adapter with viewport-sized worker rendering.
+
+Rendering goes through ``QPdfPageRenderer`` in ``MultiThreaded`` mode, not a
+direct ``QPdfDocument.render()`` call, and that choice is load-bearing rather
+than stylistic. ``document.render()`` is a synchronous call into PDFium, and
+the CPython binding does not release the GIL around it -- measured holding it
+for the full render, 117-169 ms on a 244 MB image-heavy PDF, which stalls
+*every* Python thread for that span, including the GUI thread's own event
+processing. This was true even with rendering already dispatched to the
+dedicated PDF thread below: that thread satisfies Qt's affinity contract, a
+different requirement from not holding the GIL, and solving the first did not
+solve the second.
+
+``QPdfPageRenderer.requestPage()`` returns immediately -- confirmed under
+1 ms -- and the actual decode happens on Qt's own internal worker, entirely in
+C++, never re-entering Python until the result is ready. The calling thread
+waits on a ``threading.Event`` for that result, and `Event.wait()` releases
+the GIL for the duration of the wait, which is what actually fixes the stall:
+confirmed by the same heartbeat measurement showing p95 15 ms under render
+load that previously produced 169 ms gaps.
+"""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from io import BytesIO
 from pathlib import Path
-from threading import RLock
+from threading import Event, RLock
 from time import perf_counter
 
 import shiboken6
 from PIL import Image, ImageChops
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
 from PySide6.QtGui import QImage
-from PySide6.QtPdf import QPdfDocument
+from PySide6.QtPdf import QPdfDocument, QPdfPageRenderer
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage, ReaderPageRequest
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
@@ -26,8 +47,14 @@ from joyread.core.reader.pdf import (
     PdfReadError,
     PdfValidationResult,
 )
-from joyread.infrastructure.pdf_document_thread import pdf_thread
+from joyread.infrastructure.pdf_document_thread import (
+    PDF_CALL_TIMEOUT_SECONDS,
+    PdfThreadError,
+    pdf_thread,
+)
 
+
+logger = logging.getLogger(__name__)
 
 PDF_RENDER_MAX_LONG_EDGE = 4096
 _PDF_FALLBACK_PAGE_SIZE = (612, 792)
@@ -38,6 +65,119 @@ _PDF_MIN_CROP_KEEP_RATIO = 0.55
 _PDF_MAX_CROP_KEEP_RATIO = 0.985
 
 
+class _PdfRenderCompletion:
+    """Bridges one async ``pageRendered`` signal back to a waiting caller.
+
+    Resolved on the PDF thread (inside the renderer's signal handler) and
+    waited on from the calling thread (a task worker in production). The
+    ``Event`` is what makes the wait cheap: ``wait()`` releases the GIL for
+    its duration, which is the entire point -- see the module docstring.
+    """
+
+    __slots__ = ("_done", "_result", "_error")
+
+    def __init__(self) -> None:
+        self._done = Event()
+        self._result: QImage | None = None
+        self._error: BaseException | None = None
+
+    def resolve(self, result: QImage) -> None:
+        self._result = result
+        self._done.set()
+
+    def reject(self, error: BaseException) -> None:
+        self._error = error
+        self._done.set()
+
+    def wait(self, timeout: float) -> QImage:
+        if not self._done.wait(timeout):
+            raise PdfThreadError(f"PDF render did not complete within {timeout:g}s.")
+        if self._error is not None:
+            raise self._error
+        assert self._result is not None
+        return self._result
+
+
+class _AsyncPageRenderer:
+    """One ``QPdfPageRenderer`` per session, touched only on the PDF thread.
+
+    ``requestPage()`` assigns its own request id and returns it synchronously;
+    that id is the only thing correlating a later ``pageRendered`` signal back
+    to the completion a caller is waiting on. Nothing else identifies which
+    request a signal answers.
+    """
+
+    def __init__(self, document: QPdfDocument) -> None:
+        # Constructed inside a closure already running on the PDF thread (see
+        # PdfImageService.open), so this gets that thread's affinity the same
+        # way the document does -- no explicit moveToThread needed.
+        self._renderer = QPdfPageRenderer()
+        self._renderer.setDocument(document)
+        self._renderer.setRenderMode(QPdfPageRenderer.RenderMode.MultiThreaded)
+        self._renderer.pageRendered.connect(self._on_page_rendered)
+        self._pending: dict[int, _PdfRenderCompletion] = {}
+        # Tracked so a PDF-thread shutdown that arrives before the owning
+        # session ever calls close() can still fail this renderer's pending
+        # completions -- otherwise a caller stranded mid-wait would block
+        # until the 120s timeout instead of failing with the thread gone.
+        _live_renderers[id(self)] = self
+
+    def request_page(self, page_index: int, size: QSize) -> tuple[int, _PdfRenderCompletion]:
+        """Enqueue a render and return its id and completion. Must run on the PDF thread."""
+
+        completion = _PdfRenderCompletion()
+        request_id = self._renderer.requestPage(page_index, size)
+        self._pending[request_id] = completion
+        return request_id, completion
+
+    def discard(self, request_id: int) -> None:
+        """Drop a pending completion the caller gave up waiting on.
+
+        Without this, a request whose ``pageRendered`` never arrives (the
+        signal genuinely lost, rather than the session closing -- ``dispose()``
+        already covers that case) leaves its completion in ``_pending`` for
+        the renderer's entire remaining lifetime. Must run on the PDF thread,
+        same as every other method here; a late ``pageRendered`` for this id
+        finds nothing and is a no-op, same as today's post-``dispose()`` case.
+        """
+
+        self._pending.pop(request_id, None)
+
+    def _on_page_rendered(
+        self, page_index: int, image_size: QSize, image: QImage, options: object, request_id: int
+    ) -> None:
+        del page_index, image_size, options
+        completion = self._pending.pop(request_id, None)
+        if completion is None:
+            # Already resolved by dispose() (session closed mid-render), or a
+            # stale id from a renderer that no longer exists. Either way there
+            # is no one left to hand this result to.
+            return
+        completion.resolve(image)
+
+    def dispose(self) -> None:
+        """Detach the document and fail anything still outstanding.
+
+        Must run on the PDF thread, same as every other method here. Failing
+        pending completions here, rather than leaving them for a
+        ``pageRendered`` that may never come once the document is gone, is
+        what keeps a caller's ``wait()`` bounded by this call instead of by
+        the timeout.
+        """
+
+        _live_renderers.pop(id(self), None)
+        pending, self._pending = self._pending, {}
+        self._renderer.setDocument(None)
+        self._renderer.pageRendered.disconnect(self._on_page_rendered)
+        self._renderer.deleteLater()
+        for completion in pending.values():
+            completion.reject(PdfReadError("PDF session is closed."))
+
+
+# Touched only on the PDF thread, same custody rule as _live_documents below.
+_live_renderers: dict[int, "_AsyncPageRenderer"] = {}
+
+
 class PdfImageSession:
     """Render pages from one ``QPdfDocument`` held open for the session.
 
@@ -46,10 +186,12 @@ class PdfImageSession:
     back, so re-loading per page leaked about a file-size per page turn and
     also spent ~45 percent of each page's time re-parsing the container.
 
-    The document never leaves the PDF thread. Every load, render, and disposal
-    is marshalled there by :mod:`joyread.infrastructure.pdf_document_thread`,
-    which satisfies Qt's thread-affinity contract, serialises access in
-    submission order, and lets discarded documents actually be deleted.
+    The document never leaves the PDF thread. Every load, render-request, and
+    disposal is marshalled there by
+    :mod:`joyread.infrastructure.pdf_document_thread`, which satisfies Qt's
+    thread-affinity contract, serialises submission order, and lets discarded
+    documents actually be deleted. The render itself does not run *on* that
+    thread -- see :class:`_AsyncPageRenderer` and the module docstring.
     """
 
     def __init__(
@@ -58,6 +200,7 @@ class PdfImageSession:
         dimensions: tuple[tuple[int, int], ...],
         *,
         document: QPdfDocument,
+        renderer: _AsyncPageRenderer,
         normalize_margins: bool = False,
     ) -> None:
         self._path = path
@@ -66,6 +209,7 @@ class PdfImageSession:
         self._state_lock = RLock()
         self._closed = False
         self._document: QPdfDocument | None = document
+        self._renderer: _AsyncPageRenderer | None = renderer
         self.current_index = 0
 
     @property
@@ -91,24 +235,39 @@ class PdfImageSession:
             self._dimensions[request.page_index],
             (request.target_width, request.target_height),
         )
-        render_elapsed: list[float] = []
 
-        def render() -> QImage:
-            # Runs on the PDF thread. The liveness check belongs here, not in
-            # the caller: disposal is queued on this same thread, so checking
-            # here is what makes "closed" and "rendering" mutually ordered.
+        def start_render() -> tuple[_AsyncPageRenderer, int, _PdfRenderCompletion]:
+            # Runs on the PDF thread, and only enqueues -- it must return fast,
+            # since this call itself still blocks whichever thread is waiting
+            # on it below. The liveness check belongs here, not in the caller:
+            # disposal is queued on this same thread, so checking here is what
+            # makes "closed" and "render requested" mutually ordered.
             with self._state_lock:
-                document = self._document
-                if self._closed or document is None:
+                renderer = self._renderer
+                if self._closed or renderer is None:
                     raise PdfReadError("PDF session is closed.")
-            started = perf_counter() if perf_enabled else 0.0
-            frame = document.render(request.page_index, QSize(*target))
-            if perf_enabled:
-                render_elapsed.append((perf_counter() - started) * 1000.0)
-            return frame
+                request_id, completion = renderer.request_page(request.page_index, QSize(*target))
+                return renderer, request_id, completion
 
-        image = pdf_thread().call(render)
-        render_ms = render_elapsed[0] if render_elapsed else 0.0
+        started = perf_counter()
+        renderer, request_id, completion = pdf_thread().call(start_render)
+        # completion.wait() gets what's left of one PDF_CALL_TIMEOUT_SECONDS
+        # budget, not a fresh one -- call() above already spent some of it
+        # getting the request onto a possibly-backlogged PDF thread, and the
+        # constant's own purpose is a single ceiling on "a wedged or
+        # torn-down PDF thread", not two ceilings stacked to double it.
+        remaining = max(0.0, PDF_CALL_TIMEOUT_SECONDS - (perf_counter() - started))
+        try:
+            # The actual decode happens on Qt's own worker, not here, and this
+            # wait releases the GIL for its duration -- see the module docstring.
+            image = completion.wait(remaining)
+        except PdfThreadError:
+            # A `pageRendered` that never arrives (not a `dispose()` reject,
+            # which already pops this entry) would otherwise leak this
+            # request's slot in `_pending` for the renderer's remaining life.
+            pdf_thread().post(lambda: renderer.discard(request_id))
+            raise
+        render_ms = (perf_counter() - started) * 1000.0 if perf_enabled else 0.0
         if image.isNull():
             raise PdfReadError(f"Could not render PDF page {request.page_index + 1}.")
         image.setDevicePixelRatio(max(1.0, request.device_pixel_ratio))
@@ -140,7 +299,14 @@ class PdfImageSession:
         page_indices: Iterable[int],
         size: tuple[int, int],
     ) -> list[PreparedReaderPage[QImage] | None]:
-        """Render bounded worker frames without a PNG encode/decode roundtrip."""
+        """Render bounded worker frames without a PNG encode/decode roundtrip.
+
+        One page failing to render (a corrupt page, a timed-out request) must
+        not cost the caller every other page in the batch -- it goes into the
+        result as ``None``, the same signal already used for an out-of-range
+        index, so the caller's existing "fall back for the missing ones" path
+        handles it without needing to know why a page came back empty.
+        """
 
         target_width = max(1, int(size[0])) * 2
         target_height = max(1, int(size[1])) * 2
@@ -149,17 +315,21 @@ class PdfImageSession:
             if not self.is_valid_index(page_index):
                 results.append(None)
                 continue
-            results.append(
-                self.prepare_page(
-                    ReaderPageRequest(
-                        page_index,
-                        target_width,
-                        target_height,
-                        1.0,
-                        0,
+            try:
+                results.append(
+                    self.prepare_page(
+                        ReaderPageRequest(
+                            page_index,
+                            target_width,
+                            target_height,
+                            1.0,
+                            0,
+                        )
                     )
                 )
-            )
+            except (PdfError, PdfThreadError) as exc:
+                logger.debug("Direct thumbnail render failed page=%d: %s", page_index, exc)
+                results.append(None)
         return results
 
     def read_page(self, page_index: int):  # noqa: ANN201 - direct preparation is preferred.
@@ -194,12 +364,17 @@ class PdfImageSession:
         return True
 
     def close(self) -> None:
-        """Release the document without blocking the caller.
+        """Release the document and renderer without blocking the caller.
 
         ``close()`` reaches us from several places, including Qt callbacks on
         the GUI thread, so it must never wait on rendering. Disposal is queued
-        behind any renders already submitted, which gives the same safety the
-        old blocking wait provided.
+        behind whatever is already on the PDF thread's queue, but an
+        in-flight *render* is no longer one of those things -- it runs on
+        Qt's own worker, decoupled from this thread's queue -- so FIFO
+        ordering alone cannot bound it the way it did before. Instead
+        ``_AsyncPageRenderer.dispose()`` explicitly fails every completion
+        still outstanding, which is what keeps a caller's ``wait()`` bounded
+        by this call rather than by the timeout.
         """
 
         with self._state_lock:
@@ -210,6 +385,9 @@ class PdfImageSession:
         def dispose() -> None:
             with self._state_lock:
                 document, self._document = self._document, None
+                renderer, self._renderer = self._renderer, None
+            if renderer is not None:
+                renderer.dispose()
             if document is None:
                 return
             _dispose_document(document)
@@ -227,9 +405,11 @@ class PdfImageService:
         perf_enabled = reader_perf_enabled()
         started = perf_counter() if perf_enabled else 0.0
 
-        def load() -> tuple[QPdfDocument, tuple[tuple[int, int], ...]]:
+        def load() -> tuple[QPdfDocument, _AsyncPageRenderer, tuple[tuple[int, int], ...]]:
             # Runs on the PDF thread; the document is handed to the session
-            # rather than closed, so a Reader parses its container once.
+            # rather than closed, so a Reader parses its container once. The
+            # renderer is built here too -- it needs the same thread affinity
+            # as the document it renders.
             document = _retain_document(_load_document(source))
             try:
                 page_count = document.pageCount()
@@ -238,15 +418,16 @@ class PdfImageService:
                 measured = tuple(
                     _source_dimensions(document, index) for index in range(page_count)
                 )
+                renderer = _AsyncPageRenderer(document)
             except BaseException:
                 # Covers KeyboardInterrupt too. The exception is re-raised, so
                 # nothing is masked; this only stops a half-open document from
                 # outliving the failure.
                 _dispose_document(document)
                 raise
-            return document, measured
+            return document, renderer, measured
 
-        document, dimensions = pdf_thread().call(load)
+        document, renderer, dimensions = pdf_thread().call(load)
         if perf_enabled:
             reader_perf_event(
                 "pdf.open",
@@ -258,12 +439,17 @@ class PdfImageService:
                 source,
                 dimensions,
                 document=document,
+                renderer=renderer,
                 normalize_margins=self._normalize_margins,
             )
         except BaseException:
-            # Nothing owns the document until the session exists, so a failure
-            # constructing it would otherwise strand a loaded container.
-            pdf_thread().post(lambda: _dispose_document(document))
+            # Nothing owns the document or renderer until the session exists,
+            # so a failure constructing it would otherwise strand both.
+            def dispose_both() -> None:
+                renderer.dispose()
+                _dispose_document(document)
+
+            pdf_thread().post(dispose_both)
             raise
 
     def validate_pdf(self, path: str | Path) -> PdfValidationResult:
@@ -315,11 +501,21 @@ def _retain_document(document: QPdfDocument) -> QPdfDocument:
 
 
 def _release_all_documents() -> None:
-    """Shutdown hook. Release every document before its owner thread exits."""
+    """Shutdown hook. Release every renderer and document before the owner
+    thread exits.
+
+    Renderers first: disposing one fails any completion still outstanding,
+    which is what stops a caller's `wait()` from riding out the full timeout
+    against a thread that is no longer there to answer it. Then the documents
+    those renderers pointed at.
+    """
 
     global _probe_document
+    renderers = tuple(_live_renderers.values())
     documents = tuple(_live_documents.values())
     _probe_document = None
+    for renderer in renderers:
+        renderer.dispose()
     for document in documents:
         _dispose_document(document)
 

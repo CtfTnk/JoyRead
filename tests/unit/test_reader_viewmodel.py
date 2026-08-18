@@ -225,13 +225,59 @@ class _CountingSessionService(_FakeSessionService):
         return super().load_pages(session, page_indices)
 
 
+class _FakeSessionWithThumbnails(_FakeSession):
+    """Mimics PdfImageSession's direct thumbnail path.
+
+    Records calls so a test can prove the size-aware path was used instead
+    of the byte-extraction fallback, and returns None for pages an index
+    tells it to fail, so the partial-miss fallback can be exercised too.
+    """
+
+    def __init__(self, *, fail_indices: frozenset[int] = frozenset()) -> None:
+        super().__init__()
+        self.thumbnail_calls: list[tuple[tuple[int, ...], tuple[int, int]]] = []
+        self._fail_indices = fail_indices
+
+    def thumbnail_batch_size(self, _page_index: int) -> int:
+        # >1 so a multi-page request reaches prepare_thumbnail_pages() as one
+        # batch -- the default of 1 would give each page its own load() call,
+        # which cannot exercise a *partial* miss within one batch.
+        return 8
+
+    def prepare_thumbnail_pages(
+        self, page_indices: tuple[int, ...], size: tuple[int, int]
+    ) -> list[PreparedReaderPage | None]:
+        self.thumbnail_calls.append((tuple(page_indices), size))
+        return [
+            None
+            if index in self._fail_indices
+            else PreparedReaderPage(index, f"frame-{index}", self._dimensions, size, 0)
+            for index in page_indices
+        ]
+
+
+class _SessionServiceWithThumbnails(_CountingSessionService):
+    """Adds prepare_thumbnail_pages() on top of _CountingSessionService's
+    page_requests tracking, so a test can assert both which path served a
+    page *and* that the byte-extraction path was not reached for it."""
+
+    def __init__(self, *, fail_indices: frozenset[int] = frozenset()) -> None:
+        super().__init__()
+        self._session = _FakeSessionWithThumbnails(fail_indices=fail_indices)
+
+
 class _RecordingThumbnailRenderer:
-    def __init__(self) -> None:
+    def __init__(self, *, fail_prepared_indices: frozenset[int] = frozenset()) -> None:
         self.prepared_calls: list[tuple[object, tuple[int, int]]] = []
         self.encoded_calls: list[tuple[bytes, tuple[int, int]]] = []
+        self._fail_prepared_indices = fail_prepared_indices
 
     def render_prepared(self, frame: object, size: tuple[int, int]) -> bytes:
         self.prepared_calls.append((frame, size))
+        if isinstance(frame, str) and frame.startswith("frame-"):
+            index = int(frame.split("-")[1])
+            if index in self._fail_prepared_indices:
+                raise RuntimeError(f"synthetic render_prepared failure for page {index}")
         return b"prepared-thumbnail"
 
     def render_encoded(self, image_bytes: bytes, size: tuple[int, int]) -> bytes:
@@ -1093,6 +1139,122 @@ def test_reader_topic_falls_back_when_prepared_frame_is_too_small(tmp_path: Path
     assert session_service.page_requests == [(0,)]
     assert renderer.prepared_calls == []
     assert renderer.encoded_calls
+
+
+def test_reader_topic_uses_a_direct_thumbnail_render_when_the_session_offers_one(
+    tmp_path: Path,
+) -> None:
+    """The PDF case: an unread page must not round-trip through PNG bytes.
+
+    Before this, any page without a cached Reader frame fell straight to
+    read_pages() -- for PDF, a full-page-sized render plus a PNG encode the
+    caller immediately decoded again. A session that exposes
+    prepare_thumbnail_pages() must be asked for a thumbnail-sized frame
+    directly instead, and the PNG-bytes fallback must not run at all.
+    """
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-direct"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    # Page 0 (and its companion, if paired) are already cached by the open --
+    # that is the *other* fast path (reuse), covered by
+    # test_reader_topic_reuses_sufficient_prepared_frame_without_archive_read.
+    # This test is about a page nothing has displayed yet, so it must pick
+    # one outside whatever open_path just populated.
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((3,), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((3,), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [], "must not fall through to the PNG byte path"
+    assert renderer.encoded_calls == []
+    assert renderer.prepared_calls == [("frame-3", (100, 142))]
+    assert ready == [(3, b"prepared-thumbnail")]
+
+
+def test_reader_topic_falls_back_per_page_when_the_direct_render_misses(
+    tmp_path: Path,
+) -> None:
+    """A page prepare_thumbnail_pages() cannot serve (returns None for) must
+    still reach the PNG fallback -- the fast path is an addition, not a
+    replacement, and one page's miss must not take the whole batch down with
+    it."""
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails(fail_indices=frozenset({3}))
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-partial"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    # Same reasoning as above: pick pages outside whatever open_path already
+    # cached, so both land in the "never displayed" branch this test targets.
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((2, 3), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((2, 3), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [(3,)], "only the miss must reach the PNG path"
+    assert renderer.prepared_calls == [("frame-2", (100, 142))]
+    assert renderer.encoded_calls
+    assert sorted(page_index for page_index, _ in ready) == [2, 3]
+
+
+def test_reader_topic_falls_back_when_a_prepared_direct_frame_fails_to_render(
+    tmp_path: Path,
+) -> None:
+    """A page prepare_thumbnail_pages() *did* prepare, but whose subsequent
+    render_prepared() call raises, must still reach the PNG fallback rather
+    than being silently dropped -- distinct from the miss case above, where
+    prepare_thumbnail_pages() itself returned None for the page."""
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails()
+    renderer = _RecordingThumbnailRenderer(fail_prepared_indices=frozenset({3}))
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-render-fail"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((3,), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((3,), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [(3,)], (
+        "a render_prepared() failure on the direct path must still fall back to the PNG path"
+    )
+    assert ready == [(3, b"encoded-thumbnail")]
 
 
 def _cache_service(tmp_path: Path) -> CacheService:

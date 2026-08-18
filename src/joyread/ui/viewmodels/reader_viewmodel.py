@@ -1062,8 +1062,41 @@ class ReaderViewModel:
                     continue
                 emit_item(ThumbnailStreamItem(page_index, rendered))
 
-            pages = document.read_pages(tuple(missing)) if missing else {}
-            for page_index in missing:
+            if not missing:
+                return
+
+            # A page never read yet has no prepared frame to reuse above.
+            # Ask for a thumbnail-sized render directly where the document
+            # supports it (PDF) instead of falling straight to read_pages(),
+            # whose PDF implementation renders at full-page size and PNG
+            # round-trips a page this loader is about to shrink right back
+            # down -- three Qt-level operations to do the one render below
+            # already does directly.
+            direct = document.prepare_thumbnail_pages(tuple(missing), size)
+            still_missing = list(missing)
+            if direct is not None:
+                still_missing = []
+                for page_index, prepared in zip(missing, direct):
+                    if prepared is None:
+                        still_missing.append(page_index)
+                        continue
+                    try:
+                        rendered = renderer.render_prepared(prepared.frame, size)
+                    except Exception as exc:
+                        logger.warning("Topic thumbnail render failed page=%d: %s", page_index, exc)
+                        still_missing.append(page_index)
+                        continue
+                    emit_item(ThumbnailStreamItem(page_index, rendered))
+                # zip() stops at the shorter sequence; a `direct` shorter than
+                # `missing` would otherwise drop its unpaired tail silently
+                # instead of falling back for it.
+                if len(direct) < len(missing):
+                    still_missing.extend(missing[len(direct) :])
+                if not still_missing:
+                    return
+
+            pages = document.read_pages(tuple(still_missing))
+            for page_index in still_missing:
                 image = pages.get(page_index)
                 if image is None:
                     continue

@@ -158,6 +158,26 @@ class SessionReaderDocumentSource:
         promote = getattr(self._session, "promote_cache", None)
         return bool(promote(persistent_key)) if callable(promote) else False
 
+    def prepare_thumbnail_pages(
+        self,
+        page_indices: tuple[int, ...],
+        size: tuple[int, int],
+    ) -> list[PreparedReaderPage[FrameT] | None] | None:
+        """Render bounded thumbnail frames directly, at the caller's size.
+
+        Only sessions that gain something from it define this -- PDF, where
+        the alternative is a page render sized for full-page display followed
+        by a PNG encode the caller immediately decodes again. Archive reads
+        are already cheap byte extraction with nothing to skip, so most
+        sessions have no such method; ``None`` tells the caller to fall back
+        to ``read_pages()``.
+        """
+
+        provider = getattr(self._session, "prepare_thumbnail_pages", None)
+        if not callable(provider):
+            return None
+        return list(provider(page_indices, size))
+
     def close(self) -> None:
         close = getattr(self._session, "close", None)
         if callable(close):

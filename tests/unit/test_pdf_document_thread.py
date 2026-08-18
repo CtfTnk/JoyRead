@@ -186,7 +186,14 @@ def test_rendering_never_touches_the_document_from_another_thread(
     tmp_path: Path,
     qtbot,  # noqa: ANN001, ARG001
 ) -> None:
-    """The whole point of the refactor: one owning thread for the document."""
+    """The whole point of the refactor: one owning thread for the document.
+
+    Rendering itself now happens on Qt's own MultiThreaded worker, not this
+    one -- see the module docstring in pdf_image_service.py. What still must
+    hold, and is what this test actually guards, is that *issuing* the render
+    request touches the QPdfDocument-affiliated QPdfPageRenderer only from its
+    owning thread, matching every other document interaction.
+    """
 
     pdf_path = tmp_path / "affinity.pdf"
     _write_pdf(pdf_path, pages=3)
@@ -195,13 +202,14 @@ def test_rendering_never_touches_the_document_from_another_thread(
     seen: list[object] = []
     errors: list[str] = []
 
-    original_render = session._document.render  # noqa: SLF001
+    async_renderer = session._renderer  # noqa: SLF001
+    original_request_page = async_renderer._renderer.requestPage  # noqa: SLF001
 
-    def recording_render(index, size):  # noqa: ANN001, ANN202
+    def recording_request_page(index, size):  # noqa: ANN001, ANN202
         seen.append(QThread.currentThread())
-        return original_render(index, size)
+        return original_request_page(index, size)
 
-    session._document.render = recording_render  # type: ignore[method-assign]  # noqa: SLF001
+    async_renderer._renderer.requestPage = recording_request_page  # type: ignore[method-assign]  # noqa: SLF001
 
     def prepare(page: int) -> None:
         try:

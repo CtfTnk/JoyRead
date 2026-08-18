@@ -117,6 +117,13 @@ class ReaderDocumentHandle(ReaderDocumentSource):
     def read_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
         return self._source.read_pages(page_indices)
 
+    def prepare_thumbnail_pages(
+        self,
+        page_indices: tuple[int, ...],
+        size: tuple[int, int],
+    ) -> list[PreparedReaderPage | None] | None:
+        return self._source.prepare_thumbnail_pages(page_indices, size)
+
     def prepare_page(
         self,
         request: ReaderPageRequest,
