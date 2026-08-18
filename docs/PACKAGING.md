@@ -1,7 +1,11 @@
 # JoyRead Packaging Guide
 
-This guide builds a local v0.1.0 preview with PyInstaller. Build each target
-on its own operating system; PyInstaller does not cross-compile desktop apps.
+This guide builds JoyRead v1.0.0 with PyInstaller. Build each target on its own
+operating system; PyInstaller does not cross-compile desktop apps.
+
+The version is read from `pyproject.toml` by `packaging/joyread.spec`, so it is
+set in exactly one place. `src/joyread/__init__.py` carries the same string for
+runtime reporting and must be bumped alongside it.
 
 ## 1. Create the release environment
 
@@ -60,8 +64,9 @@ Expected artifact on macOS:
 dist/JoyRead.app
 ```
 
-This is an unsigned local preview. Open it once from Finder and repeat the
-smoke test against a new Library. Inspect `Contents/MacOS` and
+Without `JOYREAD_CODESIGN_IDENTITY` set (see section 5) this is an unsigned
+build, fine for local testing and not distributable. Open it once from Finder
+and repeat the smoke test against a new Library. Inspect `Contents/MacOS` and
 `Contents/Frameworks` if startup fails; JoyRead logs remain under the normal
 platform user log directory.
 
@@ -77,19 +82,71 @@ src/joyread/resources/extractors/7zip/windows-x86_64/7zz.exe
 src/joyread/resources/extractors/7zip/linux-x86_64/7zz
 ```
 
-The repository currently contains only the Darwin ARM64 target directory.
-Windows also needs a proper `.ico` application icon before public release.
+The repository currently contains only the Darwin ARM64 target directory, which
+is why v1.0.0 ships for Apple Silicon only. Windows also needs a proper `.ico`
+application icon before it can be released.
 
-## 5. Public macOS release
+## 5. Signing and notarizing a public macOS release
 
-The current artifact is suitable for local testing, not public distribution.
-A public macOS build still needs:
+An unsigned, un-notarized app downloaded from the internet is quarantined by
+macOS and refused with "JoyRead is damaged and can't be opened". Signing is
+therefore not optional for a public build.
 
-1. Apple Developer ID Application signing for the app and bundled helper.
-2. Hardened Runtime validation and any required entitlements.
-3. Apple notarization and stapling.
-4. A DMG or ZIP distribution artifact.
-5. A clean-machine Gatekeeper test.
+The spec reads two environment variables. Set both, then build:
+
+```bash
+export JOYREAD_CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export JOYREAD_ENTITLEMENTS="packaging/entitlements.plist"
+python scripts/build_release.py
+```
+
+PyInstaller signs the executables it produces, but not the outer `.app`, and it
+does not sign the bundled `7zz` helper. Sign the helper and the bundle
+afterwards, inner to outer:
+
+```bash
+codesign --force --options runtime --timestamp \
+  --sign "$JOYREAD_CODESIGN_IDENTITY" \
+  "dist/JoyRead.app/Contents/Resources/joyread/resources/extractors/7zip/darwin-arm64/7zz"
+
+codesign --force --options runtime --timestamp \
+  --entitlements "$JOYREAD_ENTITLEMENTS" \
+  --sign "$JOYREAD_CODESIGN_IDENTITY" \
+  "dist/JoyRead.app"
+
+codesign --verify --deep --strict --verbose=2 "dist/JoyRead.app"
+```
+
+Then notarize and staple:
+
+```bash
+ditto -c -k --keepParent "dist/JoyRead.app" "dist/JoyRead.zip"
+xcrun notarytool submit "dist/JoyRead.zip" \
+  --keychain-profile "JoyReadNotary" --wait
+xcrun stapler staple "dist/JoyRead.app"
+xcrun stapler validate "dist/JoyRead.app"
+```
+
+`--keychain-profile` refers to credentials stored once with
+`xcrun notarytool store-credentials`. Ship the stapled `.app` inside a fresh
+DMG or ZIP — re-zip *after* stapling, or the ticket is lost.
+
+Finally, verify on a machine that has never seen the build:
+
+```bash
+spctl --assess --type execute --verbose=4 "dist/JoyRead.app"
+```
+
+`source=Notarized Developer ID` is the passing result. Testing on the build
+machine is not sufficient: it trusts your own signing identity locally and will
+pass even when a clean machine would refuse.
+
+### Hardened Runtime notes
+
+JoyRead spawns the bundled `7zz` as a child process. If the Hardened Runtime
+blocks it, the entitlements file needs
+`com.apple.security.cs.allow-unsigned-executable-memory` only as a last resort —
+prefer signing the helper properly, as above, which is what makes it loadable.
 
 The macOS bundle registers JoyRead as an alternate viewer for supported manga
 archives and PDF files. Qt `QFileOpenEvent` handles Finder Open With requests;

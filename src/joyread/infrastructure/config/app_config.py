@@ -11,7 +11,9 @@ class AppConfig:
     app_name: str = "JoyRead"
     app_author: str = "JoyRead"
     organization_domain: str = "joyread.local"
-    application_id: str = "local.joyread.joyread"
+    # Matches CFBundleIdentifier in packaging/joyread.spec. The single-instance
+    # broker derives its socket name from this, so the two must not drift.
+    application_id: str = "io.github.ctftnk.joyread"
     max_background_workers: int = max(1, min(4, cpu_count() or 1))
     # Cache budgets are also surfaced via ``AppSettings`` so users can tune
     # them at runtime. The ``AppConfig`` values act as the install-time floor

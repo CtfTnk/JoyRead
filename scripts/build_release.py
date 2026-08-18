@@ -1,4 +1,10 @@
-"""Build a local JoyRead preview artifact from the active Python environment."""
+"""Build a JoyRead release artifact from the active Python environment.
+
+Signing is opt-in through ``JOYREAD_CODESIGN_IDENTITY``/``JOYREAD_ENTITLEMENTS``,
+which ``packaging/joyread.spec`` reads. A build with neither set is unsigned and
+is for local testing only -- see "Signing and notarizing a public macOS release"
+in ``docs/PACKAGING.md``.
+"""
 
 from __future__ import annotations
 

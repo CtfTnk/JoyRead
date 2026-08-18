@@ -1,7 +1,8 @@
-"""PyInstaller specification for JoyRead desktop preview builds."""
+"""PyInstaller specification for JoyRead desktop builds."""
 
 from __future__ import annotations
 
+import os
 import platform
 from pathlib import Path
 import runpy
@@ -16,6 +17,17 @@ PACKAGE_ROOT = ROOT / "src" / "joyread"
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 APP_NAME = "JoyRead"
 VERSION = str(PROJECT["version"])
+# Reverse-DNS under the project's GitHub namespace. macOS caches UTI
+# registrations by identifier, so changing these after a public release
+# strands the old ones in Launch Services -- treat them as frozen.
+BUNDLE_ID = "io.github.ctftnk.joyread"
+COMIC_ARCHIVE_UTI = f"{BUNDLE_ID}.comic-archive"
+COPYRIGHT = "Copyright (C) 2026 JoyRead contributors. Licensed under GPL-3.0."
+# Set by the release build to a Developer ID Application identity; an unsigned
+# build stays possible for local development, but a distributed one must be
+# signed and notarized or Gatekeeper refuses to open it.
+CODESIGN_IDENTITY = os.environ.get("JOYREAD_CODESIGN_IDENTITY") or None
+ENTITLEMENTS_FILE = os.environ.get("JOYREAD_ENTITLEMENTS") or None
 FILE_TYPES = runpy.run_path(str(PACKAGE_ROOT / "core" / "file_types.py"))
 ARCHIVE_DOCUMENT_EXTENSIONS = sorted(
     extension.removeprefix(".") for extension in FILE_TYPES["ARCHIVE_EXTENSIONS"]
@@ -38,7 +50,7 @@ MACOS_DOCUMENT_TYPES = [
         "CFBundleTypeRole": "Viewer",
         "LSHandlerRank": "Alternate",
         "LSItemContentTypes": [
-            "local.joyread.comic-archive",
+            COMIC_ARCHIVE_UTI,
             "public.zip-archive",
             "com.rarlab.rar-archive",
             "org.7-zip.7-zip-archive",
@@ -153,6 +165,8 @@ exe = EXE(
     upx=False,
     console=False,
     icon=str(icon_path) if sys.platform == "darwin" else None,
+    codesign_identity=CODESIGN_IDENTITY,
+    entitlements_file=ENTITLEMENTS_FILE,
 )
 collection = COLLECT(
     exe,
@@ -168,7 +182,7 @@ if sys.platform == "darwin":
         collection,
         name=f"{APP_NAME}.app",
         icon=str(icon_path),
-        bundle_identifier="local.joyread.joyread",
+        bundle_identifier=BUNDLE_ID,
         info_plist={
             "CFBundleDisplayName": APP_NAME,
             "CFBundleShortVersionString": VERSION,
@@ -177,11 +191,12 @@ if sys.platform == "darwin":
             "LSMinimumSystemVersion": "13.0",
             "LSSupportsOpeningDocumentsInPlace": True,
             "NSHighResolutionCapable": True,
+            "NSHumanReadableCopyright": COPYRIGHT,
             "UTExportedTypeDeclarations": [
                 {
                     "UTTypeConformsTo": ["public.archive", "public.data"],
                     "UTTypeDescription": "JoyRead Manga Archive",
-                    "UTTypeIdentifier": "local.joyread.comic-archive",
+                    "UTTypeIdentifier": COMIC_ARCHIVE_UTI,
                     "UTTypeTagSpecification": {
                         "public.filename-extension": COMIC_ARCHIVE_EXTENSIONS,
                     },

@@ -49,7 +49,7 @@ class SingleInstanceBroker(QObject):
         self,
         support_root: Path,
         *,
-        application_id: str = "local.joyread.joyread",
+        application_id: str = "io.github.ctftnk.joyread",
         connect_timeout_ms: int = 3000,
         parent: QObject | None = None,
     ) -> None:
