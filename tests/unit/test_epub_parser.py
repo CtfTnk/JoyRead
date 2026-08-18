@@ -6,13 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from joyread.core.reader.epub import (
+from joyread.novel.core.epub import (
     InvalidEpubError,
     ZipFileAssetReader,
     flatten_toc,
     open_epub,
 )
-from joyread.core.reader.epub_session import open_epub_session
+from joyread.novel.core.epub_session import open_epub_session
 
 from tests.support.epub_fixtures import write_tiny_epub
 

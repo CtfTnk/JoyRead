@@ -192,7 +192,7 @@ def _create_novel_reader_provider() -> NovelReaderProvider | None:
 
     if not EPUB_ACCESS_ENABLED:
         return None
-    from joyread.ui.views.novel_reader_provider import create_novel_reader_provider
+    from joyread.novel.app.provider import create_novel_reader_provider
 
     return create_novel_reader_provider()
 

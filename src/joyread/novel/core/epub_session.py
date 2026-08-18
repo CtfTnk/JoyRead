@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from joyread.core.file_types import EPUB_EXTENSIONS
-from joyread.core.reader.epub import (
+from joyread.novel.core.epub import (
     EpubAssetReader,
     EpubBook,
     EpubSpineItem,
@@ -127,7 +127,7 @@ class EpubReaderSession:
     # --- Helpers ------------------------------------------------------------
 
     def _flat_toc(self) -> tuple[EpubTocItem, ...]:
-        from joyread.core.reader.epub import flatten_toc
+        from joyread.novel.core.epub import flatten_toc
 
         return flatten_toc(self._book.toc)
 

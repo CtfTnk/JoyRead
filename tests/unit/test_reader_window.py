@@ -23,7 +23,7 @@ from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderContentsItem,
 )
 from joyread.ui.views.main_window import MainWindow
-from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
+from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel

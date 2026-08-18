@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QMainWindow, QWidget
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
+from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
 
 
 class NovelReaderWindow(QMainWindow):

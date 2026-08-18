@@ -13,8 +13,8 @@ import posixpath
 from dataclasses import dataclass
 from pathlib import Path
 
-from joyread.core.reader.epub import EpubAssetReader, EpubBook, flatten_toc
-from joyread.core.reader.epub_session import EpubChapter, EpubReaderSession
+from joyread.novel.core.epub import EpubAssetReader, EpubBook, flatten_toc
+from joyread.novel.core.epub_session import EpubChapter, EpubReaderSession
 from joyread.app.tasking import TaskExecutor, TaskHandle
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.reader_items import (
@@ -112,7 +112,7 @@ class NovelReaderViewModel:
         path = self._source_path
 
         def runner() -> EpubReaderSession:
-            from joyread.core.reader.epub_session import open_epub_session
+            from joyread.novel.core.epub_session import open_epub_session
 
             return open_epub_session(path)
 

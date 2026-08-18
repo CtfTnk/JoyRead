@@ -14,9 +14,9 @@ from joyread.core.reader import ReaderDirection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.app.windows.manager import ApplicationWindowManager
 from joyread.app.windows.requests import StandaloneReaderRequest
-from joyread.ui.views.novel_reader_provider import create_novel_reader_provider
-from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
-from joyread.ui.views.novel_reader_window import NovelReaderWindow
+from joyread.novel.app.provider import create_novel_reader_provider
+from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
+from joyread.novel.ui.novel_reader_window import NovelReaderWindow
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup

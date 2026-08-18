@@ -32,12 +32,12 @@ from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderProgress
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
+from joyread.novel.ui.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
 from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
-from joyread.ui.widgets.novel_content_area import NovelContentArea
-from joyread.ui.widgets.novel_custom_panel import NovelCustomPanel
+from joyread.novel.ui.novel_content_area import NovelContentArea
+from joyread.novel.ui.novel_custom_panel import NovelCustomPanel
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 

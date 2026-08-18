@@ -16,7 +16,7 @@ from PySide6.QtCore import QByteArray, QEvent, QPoint, QTimer, QUrl, Qt, Signal 
 from PySide6.QtGui import QFont, QImage, QMouseEvent, QResizeEvent, QTextDocument
 from PySide6.QtWidgets import QTextBrowser, QWidget
 
-from joyread.core.reader.epub import EpubAssetReader
+from joyread.novel.core.epub import EpubAssetReader
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 

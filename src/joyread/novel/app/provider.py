@@ -17,8 +17,8 @@ from PySide6.QtWidgets import QMainWindow, QWidget
 from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderRequest
 from joyread.core.file_types import EPUB_EXTENSIONS
-from joyread.ui.views.novel_reader_shell import NovelReaderShellWidget
-from joyread.ui.views.novel_reader_window import NovelReaderWindow
+from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
+from joyread.novel.ui.novel_reader_window import NovelReaderWindow
 
 
 if TYPE_CHECKING:
