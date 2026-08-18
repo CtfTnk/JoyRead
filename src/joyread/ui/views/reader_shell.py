@@ -20,6 +20,7 @@ from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
+from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
@@ -30,7 +31,7 @@ from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPa
 logger = logging.getLogger(__name__)
 
 
-class ReaderShellWidget(QWidget):
+class ReaderShellWidget(ReaderShellBase):
     """Figma reader surface that can live inside either MainWindow or ReaderWindow."""
 
     back_requested = QtSignal()
@@ -188,12 +189,6 @@ class ReaderShellWidget(QWidget):
         )
         self.viewmodel.topic_thumbnail_ready.connect(self.topic_panel.set_thumbnail)
 
-    def _sync_title_control_mode(self) -> None:
-        settings_vm = self._context.settings_viewmodel
-        self.header.set_title_control_mode(
-            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
-        )
-
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
         # Late-bind both callbacks via lambdas: tests monkeypatch
@@ -324,14 +319,6 @@ class ReaderShellWidget(QWidget):
         if position.x() >= self.width() - edge:
             self._show_controls((self.right_arrow,), reset_timer=True)
 
-    def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        self.auto_hide.show(widgets, reset_timer=False)
-        if reset_timer:
-            self._start_hide_timer_if_allowed()
-
-    def _hide_inactive_controls(self) -> None:
-        self.auto_hide.hide_inactive()
-
     def _control_interaction_active(self) -> bool:
         if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
             return True
@@ -349,11 +336,6 @@ class ReaderShellWidget(QWidget):
                 return True
             widget = widget.parentWidget()
         return False
-
-    def _start_hide_timer_if_allowed(self) -> None:
-        if self.dialog_overlay.isVisible():
-            return
-        self.auto_hide.restart()
 
     def _activate_left_outer(self) -> None:
         if self.viewmodel.is_right_to_left:
@@ -418,20 +400,6 @@ class ReaderShellWidget(QWidget):
             self.devicePixelRatioF(),
         )
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
-        painter.fillPath(path, QColor(Theme.color_reader_background))
-        painter.end()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self.handle_key_press(event):
-            return
-        super().keyPressEvent(event)
-
     def handle_key_press(self, event: QKeyEvent) -> bool:
         if event.key() == Qt.Key.Key_Left:
             self.viewmodel.handle_horizontal_key("left")
@@ -454,22 +422,6 @@ class ReaderShellWidget(QWidget):
             return True
         return False
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if watched is self.header:
-            if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
-                if event.button() == Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    self._drag_position = event.globalPosition().toPoint() - window.frameGeometry().topLeft()
-            if event.type() == QEvent.Type.MouseMove and isinstance(event, QMouseEvent):
-                if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    if not window.isMaximized():
-                        window.move(event.globalPosition().toPoint() - self._drag_position)
-                    return True
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self._drag_position = None
-        return super().eventFilter(watched, event)
-
     def closeEvent(self, event: QCloseEvent) -> None:
         logger.info(
             "ReaderShellWidget close: path=%s book=%s",
@@ -485,12 +437,6 @@ class ReaderShellWidget(QWidget):
         x = max(0, self.width() - self.settings_panel.width())
         self.settings_panel.move(x, 0)
 
-    def _position_topic_panel(self) -> None:
-        width = min(Theme.reader_topic_panel_width, max(Theme.reader_topic_panel_min_width, self.width() - 32))
-        height = min(Theme.reader_topic_panel_height, max(Theme.reader_topic_panel_min_height, self.height() - 32))
-        self.topic_panel.setFixedSize(width, height)
-        self.topic_panel.move((self.width() - width) // 2, (self.height() - height) // 2)
-
     def _hide_settings_panel_if_visible(self) -> None:
         if self.settings_panel.isVisible():
             self._hide_settings_panel()
@@ -505,26 +451,6 @@ class ReaderShellWidget(QWidget):
             return
         self.settings_panel.hide()
         self.panel_filter.deactivate(self.settings_panel)
-        self._start_hide_timer_if_allowed()
-
-    def _seek_from_topic_panel(self, page_index: int) -> None:
-        """Navigate, then dismiss the panel that asked for it.
-
-        Every mode of this panel is a way of saying "take me there", so the
-        panel has done its job once it has; leaving it up covers the page the
-        user just chose. Hiding happens after the seek so the panel's own
-        selection handling finishes first.
-        """
-
-        self.viewmodel.seek(page_index)
-        self._hide_topic_panel()
-
-    def _hide_topic_panel(self) -> None:
-        if self.topic_panel.isHidden():
-            return
-        self.topic_panel.hide()
-        self.header.clear_topic_active_mode()
-        self.panel_filter.deactivate(self.topic_panel)
         self._start_hide_timer_if_allowed()
 
     def _raise_settings_panel_if_visible(self) -> None:
@@ -570,18 +496,6 @@ class ReaderShellWidget(QWidget):
                 return True
             widget = widget.parentWidget()
         return False
-
-    def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
-        self.dialog_overlay.show_input(
-            t("reader.bookmark_rename_title"),
-            t("reader.bookmark_name_header"),
-            on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(bookmark_uuid, name),
-            initial_text=current_name,
-            confirm_text=t("reader.bookmark_rename"),
-            cancel_text=t("dialog.btn_cancel"),
-            validator=lambda value: None if value.strip() else t("reader.bookmark_name_required"),
-        )
-
 
 def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
     if book is None:

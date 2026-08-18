@@ -35,6 +35,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.novel.ui.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
 from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContentsItem
 from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
+from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.novel.ui.novel_content_area import NovelContentArea
 from joyread.novel.ui.novel_custom_panel import NovelCustomPanel
@@ -45,7 +46,7 @@ from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPa
 logger = logging.getLogger(__name__)
 
 
-class NovelReaderShellWidget(QWidget):
+class NovelReaderShellWidget(ReaderShellBase):
     """Reader shell for novel/EPUB content; skeleton until engine lands."""
 
     back_requested = QtSignal()
@@ -223,12 +224,6 @@ class NovelReaderShellWidget(QWidget):
         self.viewmodel.error_changed.connect(self._handle_error_changed)
         self.viewmodel.writing_mode_warning.connect(self._handle_writing_mode_warning)
 
-    def _sync_title_control_mode(self) -> None:
-        settings_vm = self._context.settings_viewmodel
-        self.header.set_title_control_mode(
-            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
-        )
-
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
         self.auto_hide = AutoHideController(
@@ -363,24 +358,6 @@ class NovelReaderShellWidget(QWidget):
         self.panel_filter.deactivate(self.custom_panel)
         self._start_hide_timer_if_allowed()
 
-    def _seek_from_topic_panel(self, page_index: int) -> None:
-        """Navigate, then dismiss the panel that asked for it.
-
-        Matches the manga shell: a selection means "take me there", so the
-        panel has done its job and should stop covering the destination.
-        """
-
-        self.viewmodel.seek(page_index)
-        self._hide_topic_panel()
-
-    def _hide_topic_panel(self) -> None:
-        if self.topic_panel.isHidden():
-            return
-        self.topic_panel.hide()
-        self.header.clear_topic_active_mode()
-        self.panel_filter.deactivate(self.topic_panel)
-        self._start_hide_timer_if_allowed()
-
     def _hide_floating_panels_if_visible(self) -> None:
         if self.custom_panel.isVisible():
             self._hide_custom_panel()
@@ -399,12 +376,6 @@ class NovelReaderShellWidget(QWidget):
         self.custom_panel.setFixedHeight(self.height())
         x = max(0, self.width() - self.custom_panel.width())
         self.custom_panel.move(x, 0)
-
-    def _position_topic_panel(self) -> None:
-        width = min(Theme.reader_topic_panel_width, max(Theme.reader_topic_panel_min_width, self.width() - 32))
-        height = min(Theme.reader_topic_panel_height, max(Theme.reader_topic_panel_min_height, self.height() - 32))
-        self.topic_panel.setFixedSize(width, height)
-        self.topic_panel.move((self.width() - width) // 2, (self.height() - height) // 2)
 
     def _is_custom_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
         # ``windowType()`` returns the WindowType after masking; bitwise
@@ -502,28 +473,7 @@ class NovelReaderShellWidget(QWidget):
         self._writing_mode_hint_shown = True
         self.dialog_overlay.show_info(t("reader.heads_up"), message)
 
-    def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
-        self.dialog_overlay.show_input(
-            t("reader.bookmark_rename_title"),
-            t("reader.bookmark_name_header"),
-            on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(
-                bookmark_uuid, name
-            ),
-            initial_text=current_name,
-            confirm_text=t("reader.bookmark_rename"),
-            cancel_text=t("dialog.btn_cancel"),
-            validator=lambda value: None if value.strip() else t("reader.bookmark_name_required"),
-        )
-
     # --- Auto-hide helpers ----------------------------------------------
-    def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        self.auto_hide.show(widgets, reset_timer=False)
-        if reset_timer:
-            self._start_hide_timer_if_allowed()
-
-    def _hide_inactive_controls(self) -> None:
-        self.auto_hide.hide_inactive()
-
     def _control_interaction_active(self) -> bool:
         if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
             return True
@@ -541,11 +491,6 @@ class NovelReaderShellWidget(QWidget):
                 return True
             widget = widget.parentWidget()
         return False
-
-    def _start_hide_timer_if_allowed(self) -> None:
-        if self.dialog_overlay.isVisible():
-            return
-        self.auto_hide.restart()
 
     # --- Qt event hooks -------------------------------------------------
     def resizeEvent(self, event) -> None:  # type: ignore[override]
@@ -585,20 +530,6 @@ class NovelReaderShellWidget(QWidget):
         self._position_custom_panel()
         self._raise_panels_if_visible()
 
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
-        painter.fillPath(path, QColor(Theme.color_reader_background))
-        painter.end()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self.handle_key_press(event):
-            return
-        super().keyPressEvent(event)
-
     def handle_key_press(self, event: QKeyEvent) -> bool:
         if event.key() == Qt.Key.Key_Down or event.key() == Qt.Key.Key_PageDown:
             self.content_area.scroll_by_viewport(1)
@@ -620,22 +551,6 @@ class NovelReaderShellWidget(QWidget):
             event.accept()
             return True
         return False
-
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if watched is self.header:
-            if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
-                if event.button() == Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    self._drag_position = event.globalPosition().toPoint() - window.frameGeometry().topLeft()
-            if event.type() == QEvent.Type.MouseMove and isinstance(event, QMouseEvent):
-                if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    if not window.isMaximized():
-                        window.move(event.globalPosition().toPoint() - self._drag_position)
-                    return True
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self._drag_position = None
-        return super().eventFilter(watched, event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         logger.info(
