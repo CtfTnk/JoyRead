@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -19,9 +20,16 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.collection import Collection
+from joyread.core.models.tag import Tag
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.selection import toggle_selection
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
+
+
+logger = logging.getLogger(__name__)
 
 
 class DialogTextButton(QFrame):
@@ -41,7 +49,7 @@ class DialogTextButton(QFrame):
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(Theme.dialog_button_shadow_blur)
-        shadow.setOffset(Theme.dialog_button_shadow_offset, Theme.dialog_button_shadow_offset)
+        shadow.setOffset(0, Theme.dialog_button_shadow_offset)
         shadow.setColor(QColor(*Theme.color_shadow_rgba))
         self.setGraphicsEffect(shadow)
 
@@ -254,10 +262,15 @@ class DialogPasswordContent(QWidget):
     def __init__(
         self,
         headers: tuple[str, ...] = ("Old Password", "New Password", "Confirm New Password"),
+        echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogPasswordContent")
+        if echo_modes is None:
+            echo_modes = tuple(QLineEdit.EchoMode.Password for _ in headers)
+        if len(echo_modes) != len(headers):
+            raise ValueError("echo_modes length must match headers length")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -282,8 +295,8 @@ class DialogPasswordContent(QWidget):
         input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.fields: list[DialogInputFieldWithHeader] = []
-        for header in headers:
-            field = DialogInputFieldWithHeader(header, echo_mode=QLineEdit.EchoMode.Password)
+        for header, echo_mode in zip(headers, echo_modes):
+            field = DialogInputFieldWithHeader(header, echo_mode=echo_mode)
             self.fields.append(field)
             input_layout.addWidget(field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
@@ -344,8 +357,12 @@ class DialogCollectionChoiceRow(QFrame):
             icon = QLabel()
             icon.setObjectName("DialogCollectionChoiceIcon")
             icon.setFixedSize(Theme.icon_size, Theme.icon_size)
+            # Match the sidebar treatment: hidable collections show the
+            # strike-eye variant so the Add-to dialog can't visually
+            # confuse a hidable target with a normal one.
+            icon_name = "icon_collection_hiden.svg" if collection.is_hidable else "icon_collection.svg"
             icon.setPixmap(
-                QIcon(str(resources.icon_path("icon_collection.svg"))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
+                QIcon(str(resources.icon_path(icon_name))).pixmap(QSize(Theme.icon_size, Theme.icon_size))
             )
             layout.addWidget(icon)
 
@@ -491,6 +508,120 @@ class DialogCollectionSelectContent(QWidget):
             row.set_selected(row_uuid == collection_uuid)
 
 
+class DialogTagFilterContent(QWidget):
+    """Figma tag-filter content with a fixed 260px tag list panel."""
+
+    def __init__(
+        self,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...] = (),
+        parent: QWidget | None = None,
+        *,
+        allocation_mode: bool = False,
+        empty_hint: str | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogTagFilterContent")
+        self._tags = tuple(tags)
+        self._selected_tag_ids = set(selected_tag_ids)
+        self._allocation_mode = allocation_mode
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+            Theme.dialog_content_outer_padding,
+        )
+        layout.setSpacing(0)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        input_area = QWidget()
+        input_area.setObjectName("DialogInputArea")
+        input_layout = QVBoxLayout(input_area)
+        input_layout.setContentsMargins(
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+            Theme.dialog_input_area_padding,
+        )
+        input_layout.setSpacing(0)
+        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        panel = QFrame()
+        panel.setObjectName("DialogTagFilterScrollPanel")
+        panel.setFixedSize(Theme.dialog_collection_scroll_width, Theme.dialog_tag_filter_panel_height)
+        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+            Theme.dialog_collection_scroll_layout_margin,
+        )
+        panel_layout.setSpacing(0)
+
+        self._row_scroll = QScrollArea()
+        self._row_scroll.setObjectName("DialogTagFilterInnerScrollArea")
+        self._row_scroll.setWidgetResizable(True)
+        self._row_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._row_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._row_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._row_scroll.viewport().setObjectName("DialogTagFilterInnerViewport")
+        self._row_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
+        scroll_height = max(0, Theme.dialog_tag_filter_panel_height - (Theme.dialog_collection_scroll_layout_margin * 2))
+        self._chip_flow = TagChipFlowWidget(object_name="DialogTagFilterListHost")
+        self._chip_flow.setMinimumHeight(scroll_height)
+        self._chip_flow.tag_clicked.connect(self._handle_tag_clicked)
+        self._chip_flow.blank_clicked.connect(self._handle_blank_clicked)
+        self._chip_flow.set_tags(self._tags, self._selected_tag_ids, include_add_chip=False)
+        if self._tags:
+            self._row_scroll.setWidget(self._chip_flow)
+        else:
+            hint = QLabel(empty_hint or "")
+            hint.setObjectName("DialogTagEmptyHint")
+            hint.setProperty("class", "JoyReadDialogContent")
+            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hint.setWordWrap(True)
+            hint.setMinimumHeight(scroll_height)
+            self._row_scroll.setWidget(hint)
+        self._row_scroll.setFixedHeight(scroll_height)
+        panel_layout.addWidget(self._row_scroll)
+        input_layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
+        layout.addWidget(input_area)
+        self.setFixedHeight(Theme.dialog_content_max_height)
+
+    @property
+    def selected_tag_ids(self) -> tuple[str, ...]:
+        return tuple(tag.tag_id for tag in self._tags if tag.tag_id in self._selected_tag_ids)
+
+    def clear_selection(self) -> None:
+        self._selected_tag_ids = set()
+        self._chip_flow.clear_selection()
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+        self._row_scroll.verticalScrollBar().setValue(0)
+
+    def _handle_tag_clicked(self, tag_id: str, additive: bool) -> None:
+        if self._allocation_mode:
+            if additive:
+                self._selected_tag_ids = {tag_id}
+            elif tag_id in self._selected_tag_ids:
+                self._selected_tag_ids.remove(tag_id)
+            else:
+                self._selected_tag_ids.add(tag_id)
+        else:
+            self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
+        self._chip_flow.set_selected_tag_ids(self._selected_tag_ids)
+
+    def _handle_blank_clicked(self, additive: bool) -> None:
+        if self._allocation_mode and additive:
+            self.clear_selection()
+
+
 class JoyReadDialogPanel(QFrame):
     """Figma's 400px popup panel with dynamic content up to 215px."""
 
@@ -560,19 +691,31 @@ class JoyReadDialogPanel(QFrame):
         self._option_layout = QHBoxLayout(self._option_area)
         self._option_layout.setContentsMargins(0, 0, 0, 0)
         self._option_layout.setSpacing(Theme.dialog_option_gap)
-        self._option_layout.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignBottom)
+        self._option_layout.setAlignment(Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignBottom)
         root_layout.addWidget(self._option_area)
 
     def sizeHint(self) -> QSize:
         return QSize(Theme.dialog_width, self._preferred_height or self.layout().sizeHint().height())
+
+    @property
+    def title_text(self) -> str:
+        return self._title_label.text()
 
     def set_info(self, title: str, message: str, button_text: str) -> None:
         self._set_title(title)
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(((button_text, self.accepted.emit),))
 
-    def set_confirm(self, title: str, message: str, cancel_text: str, confirm_text: str) -> None:
-        self._set_title(title)
+    def set_confirm(
+        self,
+        title: str,
+        message: str,
+        cancel_text: str,
+        confirm_text: str,
+        *,
+        destructive: bool = False,
+    ) -> None:
+        self._set_title(title, destructive=destructive)
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(
             (
@@ -597,11 +740,38 @@ class JoyReadDialogPanel(QFrame):
         buttons.append((confirm_text, self.accepted.emit))
         self._set_buttons(tuple(buttons))
 
+    def set_tag_filter_content(
+        self,
+        title: str,
+        content: DialogTagFilterContent,
+        *,
+        include_cancel: bool = False,
+    ) -> None:
+        self._set_title(title)
+        self._set_content_widget(content)
+        buttons: list[tuple[str, Callable[[], None]]] = []
+        if include_cancel:
+            buttons.append((t("dialog.btn_cancel"), self.rejected.emit))
+        buttons.extend(
+            (
+                (t("dialog.btn_reset"), content.clear_selection),
+                (t("dialog.btn_confirm"), self.accepted.emit),
+            )
+        )
+        self._set_buttons(tuple(buttons))
+
     def refresh_size(self) -> None:
         self._refresh_size()
 
-    def _set_title(self, title: str) -> None:
+    def _set_title(self, title: str, *, destructive: bool = False) -> None:
         self._title_label.setText(title)
+        # ``destructive`` property pairs with the QSS rule
+        # ``QLabel[class="JoyReadDialogTitle"][destructive="true"]`` so the
+        # title goes red whenever a Reset/Erase-style dialog reuses this
+        # panel; resetting the property keeps subsequent dialogs neutral.
+        self._title_label.setProperty("destructive", "true" if destructive else "false")
+        self._title_label.style().unpolish(self._title_label)
+        self._title_label.style().polish(self._title_label)
 
     def _set_buttons(self, buttons: tuple[tuple[str, Callable[[], None]], ...]) -> None:
         while self._option_layout.count():
@@ -616,6 +786,7 @@ class JoyReadDialogPanel(QFrame):
             button = DialogTextButton(label, self)
             button.clicked.connect(callback)
             self._option_layout.addWidget(button)
+        self._option_layout.addStretch(1)
         self._refresh_size()
 
     def _set_content_widget(self, widget: QWidget) -> None:
@@ -692,7 +863,6 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject: Callable[[], None] | None = None
         self._on_skip: Callable[[], None] | None = None
         self._before_accept: Callable[[], bool] | None = None
-        self._key_forward_target: QLineEdit | None = None
 
         self._panel = JoyReadDialogPanel(self)
         self._panel.accepted.connect(self._accept)
@@ -704,12 +874,12 @@ class JoyReadDialogOverlay(QWidget):
     def panel(self) -> JoyReadDialogPanel:
         return self._panel
 
-    def show_info(self, title: str, message: str, button_text: str = "Confirm") -> None:
+    def show_info(self, title: str, message: str, button_text: str | None = None) -> None:
         self._on_accept = None
         self._on_reject = None
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_info(title, message, button_text)
+        self._panel.set_info(title, message, button_text or t("dialog.btn_confirm"))
         self._show_centered()
 
     def show_confirm(
@@ -718,14 +888,22 @@ class JoyReadDialogOverlay(QWidget):
         message: str,
         on_confirm: Callable[[], None],
         on_cancel: Callable[[], None] | None = None,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
-        ) -> None:
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
+        *,
+        destructive: bool = False,
+    ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_confirm(title, message, cancel_text, confirm_text)
+        self._panel.set_confirm(
+            title,
+            message,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+            destructive=destructive,
+        )
         self._show_centered()
 
     def show_input(
@@ -735,8 +913,8 @@ class JoyReadDialogOverlay(QWidget):
         on_confirm: Callable[[str], None],
         *,
         initial_text: str = "",
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         validator: Callable[[str], str | None] | None = None,
     ) -> None:
         content = DialogInputContent(header, initial_text)
@@ -756,10 +934,17 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = None
         self._on_skip = None
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
         content.submitted.connect(self._panel.accepted.emit)
-        self._show_centered()
-        self._focus_line_edit_deferred(content.field.line_edit, select_all_text=initial_text)
+        self._show_centered(
+            focus_target=content.field.line_edit,
+            select_all_text=initial_text,
+        )
 
     def show_password_input(
         self,
@@ -767,8 +952,8 @@ class JoyReadDialogOverlay(QWidget):
         header: str,
         on_confirm: Callable[[str], None],
         *,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
         validator: Callable[[str], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
         on_skip: Callable[[], None] | None = None,
@@ -778,7 +963,6 @@ class JoyReadDialogOverlay(QWidget):
     ) -> None:
         content = DialogInputContent(
             header,
-            echo_mode=QLineEdit.EchoMode.PasswordEchoOnEdit,
             detail_text=detail_text,
         )
         if state_prompt:
@@ -799,10 +983,58 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.value)
         self._on_reject = on_cancel
         self._on_skip = on_skip
-        self._panel.set_input_content(title, content, cancel_text, confirm_text, skip_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+            skip_text,
+        )
         content.submitted.connect(self._panel.accepted.emit)
-        self._show_centered()
-        self._focus_line_edit_deferred(content.field.line_edit, select_all_text="")
+        self._show_centered(focus_target=content.field.line_edit)
+
+    def show_multi_password_input(
+        self,
+        title: str,
+        headers: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+        *,
+        echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
+        validator: Callable[[tuple[str, ...]], str | None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
+    ) -> None:
+        # Multi-field password panel used by Hidden Space setup (Password /
+        # Confirm / Hint) and Change Password (Old / New / Confirm). The
+        # validator returns ``None`` on success or a user-visible error
+        # string that gets piped into ``set_state_prompt`` so the panel
+        # stays open on validation failure.
+        content = DialogPasswordContent(headers=headers, echo_modes=echo_modes)
+
+        def before_accept() -> bool:
+            if validator is None:
+                return True
+            error = validator(content.values)
+            if error is None:
+                return True
+            content.set_state_prompt(error)
+            self._panel.refresh_size()
+            self._position_panel()
+            return False
+
+        self._before_accept = before_accept
+        self._on_accept = lambda: on_confirm(content.values)
+        self._on_reject = on_cancel
+        self._on_skip = None
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
+        focus_target = content.fields[0].line_edit if content.fields else None
+        self._show_centered(focus_target=focus_target)
 
     def show_collection_select(
         self,
@@ -810,8 +1042,8 @@ class JoyReadDialogOverlay(QWidget):
         collections: list[Collection],
         on_confirm: Callable[[str], None],
         *,
-        confirm_text: str = "Confirm",
-        cancel_text: str = "Cancel",
+        confirm_text: str | None = None,
+        cancel_text: str | None = None,
     ) -> None:
         content = DialogCollectionSelectContent(collections, self._resources)
 
@@ -822,7 +1054,47 @@ class JoyReadDialogOverlay(QWidget):
         self._on_accept = lambda: on_confirm(content.selected_collection_uuid or "")
         self._on_reject = None
         self._on_skip = None
-        self._panel.set_input_content(title, content, cancel_text, confirm_text)
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            confirm_text or t("dialog.btn_confirm"),
+        )
+        self._show_centered()
+
+    def show_tag_filter(
+        self,
+        title: str,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+    ) -> None:
+        content = DialogTagFilterContent(tags, selected_tag_ids)
+        self._before_accept = None
+        self._on_accept = lambda: on_confirm(content.selected_tag_ids)
+        self._on_reject = None
+        self._on_skip = None
+        self._panel.set_tag_filter_content(title, content)
+        self._show_centered()
+
+    def show_tag_allocation(
+        self,
+        title: str,
+        tags: list[Tag],
+        selected_tag_ids: tuple[str, ...],
+        on_confirm: Callable[[tuple[str, ...]], None],
+    ) -> None:
+        content = DialogTagFilterContent(
+            tags,
+            selected_tag_ids,
+            allocation_mode=True,
+            empty_hint=t("dialog.no_tags_hint"),
+        )
+        self._before_accept = None
+        self._on_accept = lambda: on_confirm(content.selected_tag_ids)
+        self._on_reject = None
+        self._on_skip = None
+        self._panel.set_tag_filter_content(title, content, include_cancel=True)
         self._show_centered()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -834,8 +1106,6 @@ class JoyReadDialogOverlay(QWidget):
         if event.key() == Qt.Key.Key_Escape:
             event.accept()
             return
-        if self._forward_key_to_active_input(event):
-            return
         super().keyPressEvent(event)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -846,49 +1116,27 @@ class JoyReadDialogOverlay(QWidget):
         super().showEvent(event)
         self._position_panel()
 
-    def _show_centered(self) -> None:
+    def _show_centered(
+        self,
+        *,
+        focus_target: QLineEdit | None = None,
+        select_all_text: str | None = None,
+    ) -> None:
         self._panel.refresh_size()
         self._position_panel()
         self.show()
         self.raise_()
         self._panel.raise_()
-        self.setFocus(Qt.FocusReason.PopupFocusReason)
+        if focus_target is None:
+            self.setFocus(Qt.FocusReason.PopupFocusReason)
+            return
 
-    def _focus_line_edit_deferred(self, line_edit: QLineEdit, *, select_all_text: str) -> None:
-        self._key_forward_target = line_edit
-
-        def focus_line_edit() -> None:
-            if not self.isVisible() or not line_edit.isVisible():
-                return
-            line_edit.setFocus(Qt.FocusReason.PopupFocusReason)
-            # If a fast first key arrived while the overlay still had focus,
-            # do not select that inserted text and make the next key replace it.
-            if line_edit.text() == select_all_text:
-                line_edit.selectAll()
-
-        QTimer.singleShot(0, focus_line_edit)
-
-    def _forward_key_to_active_input(self, event: QKeyEvent) -> bool:
-        target = self._key_forward_target
-        if target is None or not target.isVisible():
-            return False
-        if event.key() in {
-            Qt.Key.Key_Return,
-            Qt.Key.Key_Enter,
-            Qt.Key.Key_Escape,
-            Qt.Key.Key_Tab,
-            Qt.Key.Key_Backtab,
-        }:
-            return False
-        if event.modifiers() & (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.MetaModifier):
-            return False
-        text = event.text()
-        if not text:
-            return False
-        target.setFocus(Qt.FocusReason.PopupFocusReason)
-        target.insert(text)
-        event.accept()
-        return True
+        # A password archive may use an IME. Giving the actual editor focus
+        # synchronously lets Qt deliver its pre-edit/commit events natively;
+        # forwarding a raw first key from the overlay corrupts CJK composition.
+        focus_target.setFocus(Qt.FocusReason.PopupFocusReason)
+        if select_all_text is not None and focus_target.text() == select_all_text:
+            focus_target.selectAll()
 
     def _position_panel(self) -> None:
         x = (self.width() - self._panel.width()) // 2
@@ -899,12 +1147,14 @@ class JoyReadDialogOverlay(QWidget):
         if self._before_accept is not None and not self._before_accept():
             return
         callback = self._on_accept
+        logger.info("Dialog accepted title=%r", self._panel.title_text)
         self._clear_and_hide()
         if callback is not None:
             callback()
 
     def _reject(self) -> None:
         callback = self._on_reject
+        logger.info("Dialog rejected title=%r", self._panel.title_text)
         self._clear_and_hide()
         if callback is not None:
             callback()
@@ -920,5 +1170,4 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject = None
         self._on_skip = None
         self._before_accept = None
-        self._key_forward_target = None
         self.hide()

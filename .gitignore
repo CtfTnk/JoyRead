@@ -9,16 +9,22 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.hypothesis/
 .mypy_cache/
 .ruff_cache/
 .pyre/
+.tox/
+.nox/
 .coverage
 .coverage.*
 coverage.xml
+junit.xml
 htmlcov/
 
 # Virtual environments and local Python tooling
 .venv/
+.conda/
+conda-meta/
 venv/
 env/
 ENV/
@@ -40,9 +46,15 @@ wheelhouse/
 # IDE/editor local state
 .idea/
 .vscode/
+.fleet/
 *.swp
 *.swo
 *~
+
+# Windows / Linux desktop metadata
+Thumbs.db
+Desktop.ini
+.directory
 
 # Local environment and secrets
 .env
@@ -53,6 +65,8 @@ wheelhouse/
 *.log
 .joyread_support/
 .joyread_storage/
+.joyread_storage_/
+/JoyRead-Library/
 /logs/
 /Logs/
 /runtime/
@@ -75,6 +89,15 @@ wheelhouse/
 # Local sample books and large manual test data
 test_set/
 
-# Generated reports
-reports/
-artifacts/
+# Generated reports and build output, at the repository root only.
+# Unanchored patterns would also swallow docs/reports/, which is tracked
+# documentation rather than generated output.
+/reports/
+/artifacts/
+
+# Local agent files
+.agent.md
+.claude/settings.local.json
+
+# Codex pets
+.codex-pets/

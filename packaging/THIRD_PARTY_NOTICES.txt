@@ -1,0 +1,246 @@
+JoyRead Third-Party Notices
+===========================
+
+JoyRead itself is distributed under the GNU General Public License, version 3.
+See the LICENSE file in the source repository, or Contents/Resources in a
+packaged macOS build.
+
+This file lists the third-party components redistributed inside a packaged
+JoyRead build, together with the licenses they are used under. Components that
+are only used to build or test JoyRead, and are not redistributed, are not
+listed here.
+
+
+Qt for Python (PySide6) and Qt
+------------------------------
+
+PySide6 is offered under your choice of LGPL-3.0-only, GPL-2.0-only, or
+GPL-3.0-only. JoyRead is a GPL-3.0 application and redistributes PySide6 and
+the Qt libraries it wraps under the GNU General Public License, version 3.
+
+Copyright (C) The Qt Company Ltd. and other contributors.
+
+The full text of the GNU General Public License version 3 is distributed with
+JoyRead as the LICENSE file. Qt sources are available from
+<https://download.qt.io/> and PySide6 sources from
+<https://pypi.org/project/PySide6/>.
+
+
+7-Zip (bundled 7zz executable)
+------------------------------
+
+JoyRead bundles the 7-Zip console executable (7zz) to read 7z, CB7, RAR, and
+CBR archives, and to convert archives into its page cache.
+
+7-Zip Copyright (C) 1999-2026 Igor Pavlov.
+
+The licenses for the 7zz file are:
+  - The "GNU LGPL" as main license for most of the code
+  - The "GNU LGPL" with "unRAR license restriction" for some code
+  - The "BSD 3-clause License" for some code
+  - The "BSD 2-clause License" for some code
+
+The complete 7-Zip license text, including the BSD clauses and the unRAR
+restriction, is redistributed verbatim alongside the executable at:
+
+    joyread/resources/extractors/7zip/<platform>/License.txt
+
+unRAR license restriction
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The decompression engine for RAR archives in 7-Zip was developed using source
+code of the unRAR program. All copyrights to original unRAR code are owned by
+Alexander Roshal. The original unRAR license carries this restriction:
+
+    The unRAR sources cannot be used to re-create the RAR compression
+    algorithm, which is proprietary. Distribution of modified unRAR sources in
+    separate form or as a part of other software is permitted, provided that it
+    is clearly stated in the documentation and source comments that the code
+    may not be used to develop a RAR (WinRAR) compatible archiver.
+
+Accordingly, and as required by that restriction: the RAR-reading code
+redistributed with JoyRead may not be used to develop a RAR (WinRAR) compatible
+archiver. JoyRead only reads RAR archives; it never creates them.
+
+
+Pillow
+------
+
+Copyright (C) 2010-2024 by Jeffrey A. Clark and contributors.
+Original PIL code Copyright (C) 1995-2011 by Fredrik Lundh and contributors.
+
+Distributed under the MIT-CMU (HPND) license.
+
+Permission to use, copy, modify and distribute this software and its
+documentation for any purpose and without fee is hereby granted, provided that
+the above copyright notice appears in all copies, and that both that copyright
+notice and this permission notice appear in supporting documentation, and that
+the name of the copyright holder not be used in advertising or publicity
+pertaining to distribution of the software without specific, written prior
+permission.
+
+THE COPYRIGHT HOLDER DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE,
+INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT
+SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY SPECIAL, INDIRECT OR CONSEQUENTIAL
+DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
+OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+
+py7zr (and its codec dependencies)
+----------------------------------
+
+py7zr is used as the fallback 7z reader where no bundled 7-Zip backend
+resolves. It is distributed under the GNU Lesser General Public License,
+version 2.1 or later.
+
+Copyright (C) 2019-2025 Hiroshi Miura and contributors.
+
+py7zr depends on several compression codec libraries that may also be
+redistributed, including pyppmd, pybcj, inflate64, pyzstd, brotli, and
+multivolumefile. Their licenses accompany their respective distributions; see
+<https://pypi.org/project/py7zr/> for the current dependency set and sources.
+
+A copy of the GNU Lesser General Public License is available at
+<https://www.gnu.org/licenses/lgpl-2.1.html>. Sources for py7zr are available
+from <https://pypi.org/project/py7zr/>.
+
+
+pyzipper
+--------
+
+Copyright (c) 2019 Daniel Hillier
+Portions Copyright (c) 2001-2019 Python Software Foundation
+
+Distributed under the MIT license.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software is furnished to do so,
+subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+
+rarfile
+-------
+
+Copyright (c) 2005-2024 Marko Kreen <markokr@gmail.com>
+
+Distributed under the ISC license.
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.
+
+
+lxml
+----
+
+Ships only in builds with the novel (EPUB) reader enabled -- it is required by
+the EPUB parser and by nothing else, and is packaged as the ``joyread[epub]``
+extra. A default JoyRead build does not contain it.
+
+Copyright (c) 2004 Infrae. All rights reserved.
+
+Distributed under the BSD 3-clause license.
+
+Redistribution and use in source and binary forms, with or without modification,
+are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of Infrae nor the names of its contributors may be used to
+   endorse or promote products derived from this software without specific prior
+   written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND
+ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR
+ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGE.
+
+lxml also links libxml2 and libxslt, Copyright (C) 1998-2012 Daniel Veillard and
+contributors, distributed under the MIT license.
+
+
+natsort
+-------
+
+Copyright (c) 2012-2023 Seth M. Morton
+
+Distributed under the MIT license; full text as reproduced in the pyzipper
+section above, with copyright held by Seth M. Morton.
+
+
+platformdirs
+------------
+
+Copyright (c) 2010-202x The platformdirs developers
+
+Distributed under the MIT license; full text as reproduced in the pyzipper
+section above, with copyright held by the platformdirs developers.
+
+
+PyObjC
+------
+
+JoyRead's macOS build includes pyobjc-core and pyobjc-framework-Cocoa.
+
+(This is the MIT license, note that libffi-src is a separate product with its
+own license)
+
+Copyright 2002, 2003 - Bill Bumgarner, Ronald Oussoren, Steve Majewski,
+Lele Gaifax, et.al.
+Copyright 2003-2025 - Ronald Oussoren
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+
+Python
+------
+
+JoyRead bundles a CPython runtime, Copyright (c) 2001-2025 Python Software
+Foundation, distributed under the Python Software Foundation License Version 2.
+See <https://docs.python.org/3/license.html>.

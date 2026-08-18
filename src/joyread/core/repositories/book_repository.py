@@ -16,6 +16,9 @@ class BookRepository(Protocol):
     def list_books(self) -> list[Book]:
         ...
 
+    def get_book(self, book_id: str) -> Book | None:
+        ...
+
     def list_collections(self) -> list[Collection]:
         ...
 
@@ -28,6 +31,21 @@ class BookRepository(Protocol):
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
         ...
 
+    def set_book_hidden(self, book_id: str, hidden: bool) -> None:
+        ...
+
+    def set_collection_hidable(self, collection_id: str, hidable: bool) -> None:
+        ...
+
+    def revert_hidden_state(self) -> None:
+        ...
+
+    def list_hidden_book_ids(self) -> list[str]:
+        ...
+
+    def list_hidable_collection_ids(self) -> list[str]:
+        ...
+
     def update_book_metadata(
         self,
         book_id: str,
@@ -36,6 +54,9 @@ class BookRepository(Protocol):
         author: str | None = None,
         language_tag: str | None = None,
     ) -> None:
+        ...
+
+    def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
         ...
 
     def delete_book(self, book_id: str) -> None:

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import io
-
 import pytest
 from PySide6.QtCore import QRectF
-from PIL import Image
+from PySide6.QtGui import QColor, QImage
 
+from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.core.reader import (
     PageDraw,
     ReaderDisplayMode,
     ReaderLayoutResult,
-    ReaderPageImage,
     RectF,
 )
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_canvas import _status_text_is_clipped, _wrapped_status_text_rect
+from joyread.ui.widgets import reader_canvas as reader_canvas_module
 
 
 def _layout_with(*page_indices: int) -> ReaderLayoutResult:
@@ -32,10 +31,10 @@ def _layout_with(*page_indices: int) -> ReaderLayoutResult:
     )
 
 
-def _png_bytes(size: tuple[int, int] = (4, 4)) -> bytes:
-    buffer = io.BytesIO()
-    Image.new("RGB", size, "#ff0000").save(buffer, format="PNG")
-    return buffer.getvalue()
+def _prepared(page_index: int, size: tuple[int, int] = (4, 4)) -> PreparedReaderPage[QImage]:
+    frame = QImage(size[0], size[1], QImage.Format.Format_RGB32)
+    frame.fill(QColor("#ff0000"))
+    return PreparedReaderPage(page_index, frame, size, size, generation=1)
 
 
 @pytest.fixture()
@@ -60,32 +59,48 @@ def test_spinner_stops_when_every_drawn_page_has_a_pixmap(canvas: ReaderCanvas) 
     canvas.set_layout_result(_layout_with(0))
     assert canvas._spinner_timer.isActive()
 
-    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(0))
 
     assert not canvas._spinner_timer.isActive()
 
 
 def test_spinner_keeps_running_until_every_visible_page_has_a_pixmap(canvas: ReaderCanvas) -> None:
     canvas.set_layout_result(_layout_with(0, 1))
-    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(0))
 
     # Page 1 is still missing on a SPREAD: indicator must remain active so
     # the user can see *which* slot is still loading.
     assert canvas._spinner_timer.isActive()
 
-    canvas.set_page_image(ReaderPageImage(page_index=1, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(1))
     assert not canvas._spinner_timer.isActive()
 
 
 def test_spinner_resumes_when_layout_advances_to_a_new_unloaded_page(canvas: ReaderCanvas) -> None:
     canvas.set_layout_result(_layout_with(0))
-    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(0))
     assert not canvas._spinner_timer.isActive()
 
     # Navigating forward selects an unloaded page; the indicator must come
     # back without requiring an extra "loading" call on the canvas.
     canvas.set_layout_result(_layout_with(5))
 
+    assert canvas._spinner_timer.isActive()
+
+
+def test_failed_page_stops_spinner_and_failure_is_cleared_with_layout(canvas: ReaderCanvas) -> None:
+    canvas.set_layout_result(_layout_with(3))
+    assert canvas._spinner_timer.isActive()
+
+    canvas.set_page_failed(3)
+
+    assert not canvas._spinner_timer.isActive()
+    assert canvas._failed_pages == {3}
+
+    canvas.set_layout_result(None)
+    canvas.set_layout_result(_layout_with(3))
+
+    assert canvas._failed_pages == set()
     assert canvas._spinner_timer.isActive()
 
 
@@ -102,10 +117,10 @@ def test_spinner_phase_advances_when_timer_fires(canvas: ReaderCanvas) -> None:
 def test_canvas_ignores_non_visible_page_images_and_prunes_old_pixmaps(canvas: ReaderCanvas) -> None:
     canvas.set_layout_result(_layout_with(0))
 
-    canvas.set_page_image(ReaderPageImage(page_index=1, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(1))
     assert canvas._pixmaps == {}
 
-    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(0))
     assert set(canvas._pixmaps) == {0}
 
     canvas.set_layout_result(_layout_with(1))
@@ -114,13 +129,64 @@ def test_canvas_ignores_non_visible_page_images_and_prunes_old_pixmaps(canvas: R
 
 
 def test_canvas_keeps_resident_page_image_that_arrives_before_layout(canvas: ReaderCanvas) -> None:
-    canvas.set_page_image(ReaderPageImage(page_index=0, image_bytes=_png_bytes(), dimensions=(4, 4)))
+    canvas.set_page_frame(_prepared(0))
     assert set(canvas._pixmaps) == {0}
 
     canvas.set_layout_result(_layout_with(0))
 
     assert set(canvas._pixmaps) == {0}
     assert not canvas._spinner_timer.isActive()
+
+
+def test_canvas_replaces_existing_pixmap_with_newly_prepared_frame(canvas: ReaderCanvas) -> None:
+    canvas.set_layout_result(_layout_with(0))
+    canvas.set_page_frame(_prepared(0, (4, 4)))
+
+    canvas.set_page_frame(_prepared(0, (12, 16)))
+
+    replacement = canvas._pixmaps[0]
+    assert replacement.width() == 12
+    assert replacement.height() == 16
+
+
+def test_canvas_skips_duplicate_qimage_conversion(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(reader_canvas_module, "reader_perf_enabled", lambda: True)
+    widget = ReaderCanvas()
+    qtbot.addWidget(widget)
+    widget.set_layout_result(_layout_with(0))
+    prepared = _prepared(0, (12, 16))
+
+    widget.set_page_frame(prepared)
+    widget.set_page_frame(prepared)
+
+    snapshot = widget.performance_snapshot()
+    assert snapshot["pixmap_conversions"] == 1
+    assert snapshot["pixmap_duplicate_skips"] == 1
+
+    widget.reset_performance_measurements()
+    reset = widget.performance_snapshot()
+    assert reset["pixmap_conversions"] == 0
+    assert reset["pixmap_duplicate_skips"] == 0
+
+
+def test_canvas_converts_new_same_sized_qimage_and_clears_signature(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(reader_canvas_module, "reader_perf_enabled", lambda: True)
+    widget = ReaderCanvas()
+    qtbot.addWidget(widget)
+    widget.set_layout_result(_layout_with(0))
+
+    widget.set_page_frame(_prepared(0, (12, 16)))
+    widget.set_page_frame(_prepared(0, (12, 16)))
+
+    assert widget.performance_snapshot()["pixmap_conversions"] == 2
+    assert 0 in widget._frame_signatures
+
+    widget.set_page_failed(0)
+    assert 0 not in widget._frame_signatures
+
+
+def test_performance_heartbeat_timer_is_not_created_by_default(canvas: ReaderCanvas) -> None:
+    assert canvas._perf_heartbeat_timer is None
 
 
 def test_canvas_clear_pages_drops_pixmaps_layout_and_spinner(canvas: ReaderCanvas) -> None:

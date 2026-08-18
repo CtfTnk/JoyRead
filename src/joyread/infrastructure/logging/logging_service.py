@@ -7,6 +7,7 @@ import logging.handlers
 import os
 import time
 from contextlib import contextmanager
+from functools import partial
 from pathlib import Path
 from typing import Iterator
 
@@ -147,6 +148,40 @@ def get_logger(name: str) -> logging.Logger:
     """
 
     return logging.getLogger(name)
+
+
+def describe_callback(callback: object) -> str:
+    """Return a stable human-readable name for a function-like object.
+
+    Task and database traces often receive lambdas, bound methods, or callable
+    helper objects. Python's default ``repr`` includes memory addresses, which
+    makes logs hard to compare between runs. This helper keeps the useful part:
+    module + qualified callback name.
+    """
+
+    if isinstance(callback, partial):
+        return f"functools.partial({describe_callback(callback.func)})"
+
+    function = getattr(callback, "__func__", None)
+    if function is not None:
+        owner = getattr(callback, "__self__", None)
+        owner_type = owner if isinstance(owner, type) else type(owner)
+        module = getattr(function, "__module__", None) or owner_type.__module__
+        return f"{module}.{owner_type.__qualname__}.{function.__name__}"
+
+    owner = getattr(callback, "__self__", None)
+    name = getattr(callback, "__name__", None)
+    if owner is not None and name is not None:
+        owner_type = owner if isinstance(owner, type) else type(owner)
+        return f"{owner_type.__module__}.{owner_type.__qualname__}.{name}"
+
+    module = getattr(callback, "__module__", None)
+    qualname = getattr(callback, "__qualname__", None) or name
+    if module is not None and qualname is not None:
+        return f"{module}.{qualname}"
+
+    callback_type = type(callback)
+    return f"{callback_type.__module__}.{callback_type.__qualname__}"
 
 
 @contextmanager

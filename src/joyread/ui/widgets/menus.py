@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QScrollArea,
 
 from joyread.core.models.book import Book
 from joyread.core.models.language import Language
+from joyread.infrastructure.i18n.locale_service import book_language_display_name, t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 
@@ -247,7 +248,7 @@ class LanguageDropdownMenu(QWidget):
         selected: bool = False,
     ) -> MenuItem:
         item = MenuItem(
-            language.plain_text,
+            book_language_display_name(language.iso_code, language.plain_text),
             selected=selected,
         )
         item.clicked.connect(lambda: self._trigger(lambda: on_selected(language.iso_code)))
@@ -353,17 +354,35 @@ def build_book_context_menu(
     on_delete: Callable[[str], None],
     *,
     show_remove: bool = True,
+    on_hide: Callable[[str], None] | None = None,
+    on_unhide: Callable[[str], None] | None = None,
+    show_hide_action: bool = False,
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
-    menu.add_item("Read", lambda: on_read(book.uuid))
-    menu.add_item("Unfavourite" if book.is_favourite else "Favourite", lambda: on_favourite(book.uuid))
-    menu.add_item("Detail", lambda: on_detail(book.uuid))
-    menu.add_item("Add to...", lambda: on_add_to_collection(book.uuid))
-    menu.add_item("Export", lambda: on_export(book.uuid))
+    menu.add_item(t("menu.read"), lambda: on_read(book.uuid))
+    # Hidden books cannot be favourited (Favourites is one of the
+    # surfaces that hidden books vanish from); skip the row entirely so
+    # the menu doesn't surface a no-op action.
+    if not book.is_hidden:
+        menu.add_item(
+            t("menu.unfavourite") if book.is_favourite else t("menu.favourite"),
+            lambda: on_favourite(book.uuid),
+        )
+    menu.add_item(t("menu.detail"), lambda: on_detail(book.uuid))
+    menu.add_item(t("menu.add_to"), lambda: on_add_to_collection(book.uuid))
+    menu.add_item(t("menu.export"), lambda: on_export(book.uuid))
     if show_remove:
-        menu.add_item("Remove", lambda: on_remove(book.uuid))
-    menu.add_item("Delete", lambda: on_delete(book.uuid), destructive=True)
+        menu.add_item(t("menu.remove"), lambda: on_remove(book.uuid))
+    # The Hide/Unhide row is only built when the Privacy toggle is on AND
+    # the feature is initialised — both gates are owned by the caller. The
+    # menu code itself doesn't reach into settings/state.
+    if show_hide_action and on_hide is not None and on_unhide is not None:
+        if book.is_hidden:
+            menu.add_item(t("menu.unhide"), lambda: on_unhide(book.uuid))
+        else:
+            menu.add_item(t("menu.hide"), lambda: on_hide(book.uuid))
+    menu.add_item(t("menu.delete"), lambda: on_delete(book.uuid), destructive=True)
 
     return menu
 
@@ -376,9 +395,9 @@ def build_action_menu(
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
-    menu.add_item("Open Book", on_open_book)
-    menu.add_item("Open & Import", on_open_and_import)
-    menu.add_item("Import", on_import)
+    menu.add_item(t("menu.open_book"), on_open_book)
+    menu.add_item(t("menu.open_and_import"), on_open_and_import)
+    menu.add_item(t("menu.import"), on_import)
 
     return menu
 
@@ -388,11 +407,20 @@ def build_collection_context_menu(
     collection_uuid: str,
     on_rename: Callable[[str], None],
     on_delete: Callable[[str], None],
+    *,
+    is_hidable: bool = False,
+    on_set_hidable: Callable[[str, bool], None] | None = None,
+    show_hide_action: bool = False,
 ) -> FigmaMenu:
     menu = _figma_menu(parent)
 
-    menu.add_item("Rename", lambda: on_rename(collection_uuid))
-    menu.add_item("Delete", lambda: on_delete(collection_uuid), destructive=True)
+    menu.add_item(t("menu.rename"), lambda: on_rename(collection_uuid))
+    if show_hide_action and on_set_hidable is not None:
+        if is_hidable:
+            menu.add_item(t("menu.make_normal"), lambda: on_set_hidable(collection_uuid, False))
+        else:
+            menu.add_item(t("menu.make_hidable"), lambda: on_set_hidable(collection_uuid, True))
+    menu.add_item(t("menu.delete"), lambda: on_delete(collection_uuid), destructive=True)
 
     return menu
 

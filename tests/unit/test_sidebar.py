@@ -63,7 +63,12 @@ def test_sidebar_items_keep_figma_label_group_spacing_and_selection(qtbot) -> No
     qtbot.addWidget(sidebar)
 
     items = sidebar_items(sidebar)
-    assert len(items) == 5
+    # 4 Book Shelf rows (All, Recent, Favourites, Hidden) + New Collection + Settings.
+    # The Hidden row is built up-front but starts hidden — Privacy toggle reveals it.
+    assert len(items) == 6
+    hidden_item = next((item for item in items if item.findChild(QLabel, "SidebarItemLabel").text() == "Hidden"), None)
+    assert hidden_item is not None
+    assert not hidden_item.isVisibleTo(sidebar)
 
     for item in items:
         margins = item.layout().contentsMargins()
@@ -101,7 +106,7 @@ def test_sidebar_renders_all_collections_and_navigates_by_collection_key(qtbot) 
     labels = [label.text() for label in sidebar.findChildren(QLabel, "SidebarItemLabel")]
     assert "Reading Queue" in labels
     assert "Finished" in labels
-    assert len(sidebar_items(sidebar)) == 7
+    assert len(sidebar_items(sidebar)) == 8
 
     sidebar.set_active(collection_shelf_key(collections[0].uuid))
     collection_item = [item for item in sidebar_items(sidebar) if item.property("selected") == "true"]

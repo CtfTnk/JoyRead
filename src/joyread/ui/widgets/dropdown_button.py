@@ -54,7 +54,7 @@ class FigmaDropdownButton(QFrame):
 
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(4)
-        shadow.setOffset(0, 0)
+        shadow.setOffset(0, 1)
         shadow.setColor(QColor(0, 0, 0, 64))
         self.setGraphicsEffect(shadow)
 
@@ -105,6 +105,18 @@ class FigmaDropdownButton(QFrame):
         self._label.setText(value)
         if changed and emit:
             self.value_changed.emit(value)
+
+    def update_options(self, options: Sequence[str], new_value: str) -> None:
+        """Replace the option list and select a new value without emitting a signal.
+
+        Used when display labels change (e.g. on language switch) while the
+        logical selection stays the same.
+        """
+        if new_value not in options:
+            raise ValueError(f"update_options: new_value {new_value!r} not in options")
+        self._options = tuple(options)
+        self._value = new_value
+        self._label.setText(new_value)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

@@ -15,6 +15,7 @@ from threading import Event, Thread
 from typing import Callable, Generic, TypeVar
 
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
+from joyread.infrastructure.logging import describe_callback
 
 
 T = TypeVar("T")
@@ -40,10 +41,17 @@ class _QueuedDatabaseRequest(Generic[T]):
     sequence: int
     callback: Callable[[sqlite3.Connection], T] | None = field(compare=False)
     future: Future[T] | None = field(compare=False)
+    callback_label: str = field(default="<stop>", compare=False)
 
 
 class DatabaseInterpreter:
-    """Owns a single SQLite connection and executes requests serially."""
+    """Owns one SQLite connection and executes callbacks serially.
+
+    Repositories submit small functions instead of opening their own
+    connections. That makes SQLite thread ownership explicit: all DB work
+    happens on ``JoyReadDatabaseInterpreter``, while callers wait on a Future
+    or receive errors through that Future.
+    """
 
     def __init__(self, database_path: Path, *, autostart: bool = True) -> None:
         self.database_path = database_path
@@ -77,12 +85,14 @@ class DatabaseInterpreter:
             sequence=next(self._sequence),
             callback=callback,
             future=future,
+            callback_label=describe_callback(callback),
         )
         self._queue.put(request)  # type: ignore[arg-type]
         logger.debug(
-            "DB request queued seq=%d priority=%s queue_depth=%d",
+            "DB request queued seq=%d priority=%s callback=%s queue_depth=%d",
             request.sequence,
             DatabasePriority(request.priority).name,
+            request.callback_label,
             self._queue.qsize(),
         )
         return future
@@ -115,6 +125,7 @@ class DatabaseInterpreter:
                 sequence=next(self._sequence),
                 callback=None,
                 future=None,
+                callback_label="<stop>",
             )
         )
         if self._thread.is_alive():
@@ -136,9 +147,21 @@ class DatabaseInterpreter:
                     # it (typically a viewmodel that was torn down between
                     # submit and execute). Running the callback now would
                     # just waste a connection-bound SQL roundtrip, so skip.
+                    logger.debug(
+                        "DB request skipped seq=%d priority=%s callback=%s (future cancelled)",
+                        request.sequence,
+                        DatabasePriority(request.priority).name,
+                        request.callback_label,
+                    )
                     self._queue.task_done()
                     continue
                 start = time.perf_counter()
+                logger.debug(
+                    "DB request starting seq=%d priority=%s callback=%s",
+                    request.sequence,
+                    DatabasePriority(request.priority).name,
+                    request.callback_label,
+                )
                 try:
                     result = request.callback(connection)
                 except Exception as exc:
@@ -147,9 +170,10 @@ class DatabaseInterpreter:
                     # ``future.result()``. Previously this was the silent
                     # site that hid the schema-drift OperationalError.
                     logger.error(
-                        "DB request failed seq=%d priority=%s: %s",
+                        "DB request failed seq=%d priority=%s callback=%s: %s",
                         request.sequence,
                         DatabasePriority(request.priority).name,
+                        request.callback_label,
                         exc,
                         exc_info=True,
                     )
@@ -158,13 +182,20 @@ class DatabaseInterpreter:
                 else:
                     if request.future is not None:
                         request.future.set_result(result)
+                    logger.debug(
+                        "DB request completed seq=%d priority=%s callback=%s",
+                        request.sequence,
+                        DatabasePriority(request.priority).name,
+                        request.callback_label,
+                    )
                 finally:
                     elapsed_ms = (time.perf_counter() - start) * 1000.0
                     if elapsed_ms >= _SLOW_QUERY_MS:
                         logger.warning(
-                            "Slow DB request seq=%d priority=%s elapsed_ms=%.0f",
+                            "Slow DB request seq=%d priority=%s callback=%s elapsed_ms=%.0f",
                             request.sequence,
                             DatabasePriority(request.priority).name,
+                            request.callback_label,
                             elapsed_ms,
                         )
                     self._queue.task_done()

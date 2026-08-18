@@ -2,25 +2,55 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+import shiboken6
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFrame, QScrollArea
+from PySide6.QtWidgets import QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
+from joyread.app.windows.manager import ApplicationWindowManager
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderDirection, ReaderSettings
+from joyread.infrastructure.i18n import locale_service
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.reader_viewmodel import ReaderBookmarkItem, ReaderTopicThumbnailBatch
+from joyread.ui.viewmodels.reader_viewmodel import (
+    ReaderBookmarkItem,
+    ReaderContentsItem,
+)
 from joyread.ui.views.main_window import MainWindow
+from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
+from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
+
+
+def test_bookmark_rename_dialog_uses_active_locale() -> None:
+    calls: list[dict[str, object]] = []
+
+    class FakeDialog:
+        def show_input(self, *args, **kwargs) -> None:
+            calls.append({"args": args, "kwargs": kwargs})
+
+    receiver = SimpleNamespace(dialog_overlay=FakeDialog(), viewmodel=SimpleNamespace(rename_bookmark=lambda *_args: None))
+
+    try:
+        locale_service.load_language("Chinese")
+        ReaderShellWidget._show_rename_bookmark_dialog(receiver, "bookmark-1", "旧书签")
+
+        assert [call["args"][:2] for call in calls] == [("重命名书签", "书签名称")]
+        assert [call["kwargs"]["confirm_text"] for call in calls] == ["重命名"]
+        assert [call["kwargs"]["cancel_text"] for call in calls] == ["取消"]
+        assert calls[0]["kwargs"]["validator"]("   ") == "书签名称不能为空。"
+    finally:
+        locale_service.load_language("English")
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:
@@ -39,6 +69,7 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert window.height() == Theme.reader_height
     assert window.minimumWidth() == Theme.reader_min_width
     assert window.minimumHeight() == Theme.reader_min_height
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
     assert window.header.height() == Theme.reader_banner_height
     assert window.footer.height() == Theme.reader_footer_height
     assert window.left_arrow.size().width() == Theme.reader_side_button_width
@@ -58,6 +89,31 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
     assert direction_buttons[ReaderDirection.LEFT_TO_RIGHT].property("iconName") == "icon_read-from-right.svg"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].toolTip() == "Top-to-down"
     assert direction_buttons[ReaderDirection.TOP_TO_BOTTOM].property("iconName") == "icon_read-from-top.svg"
+
+    window.close()
+    context.close()
+
+
+def test_reader_window_inspection_mode_shows_non_macos_title_control_group(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    context.settings_viewmodel.set_inspect_non_native_title_control(True)
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.show()
+
+    title_controls = window.header.findChild(TitleControlGroup, "TitleControlGroup")
+    stoplights = window.header.findChild(StoplightControlsWidget)
+
+    assert window.windowFlags() & Qt.WindowType.FramelessWindowHint
+    assert title_controls is not None
+    assert stoplights is not None
+    assert title_controls.isVisible()
+    assert stoplights.isHidden()
 
     window.close()
     context.close()
@@ -119,6 +175,34 @@ def test_reader_topic_button_group_disables_unavailable_modes_for_direct_files(q
     window.shell._hide_topic_panel()
 
     assert window.header.topic_button_group.active_mode is None
+
+    window.close()
+    context.close()
+
+
+def test_reader_topic_contents_enables_for_archive_folders(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader-contents.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "000.png")
+        archive.write(image, "Chapter1/001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    qtbot.waitUntil(lambda: window.shell.viewmodel.can_use_contents, timeout=5000)
+
+    assert window.header.detail_button.isEnabled()
+    assert [(item.label, item.page_index, item.depth) for item in window.shell.viewmodel.contents] == [
+        ("Chapter1", 1, 0),
+    ]
+
+    window.shell._show_topic_panel(ReaderTopicMode.CONTENTS)
+    assert window.topic_panel.isVisible()
+    assert window.topic_panel.mode == ReaderTopicMode.CONTENTS
 
     window.close()
     context.close()
@@ -190,7 +274,6 @@ def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qt
     panel.reset_thumbnails(80)
     panel.show()
     panel.set_mode(ReaderTopicMode.THUMBNAILS)
-    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, 80, False, ()))
 
     thumbnail_scroll = panel.findChild(QScrollArea, "ReaderTopicThumbnailsScrollArea")
     bookmark_scroll = panel.findChild(QScrollArea, "ReaderTopicBookmarksScrollArea")
@@ -214,6 +297,27 @@ def test_reader_topic_panel_keeps_one_visible_mode_and_independent_scrollbars(qt
 
     assert panel._stack.currentWidget() is thumbnail_scroll
     assert thumbnail_scroll.verticalScrollBar().value() == thumbnail_value
+
+    context.close()
+
+
+def test_reader_topic_contents_renders_one_based_page_number(qtbot) -> None:
+    locale_service.load_language("English")
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_contents((ReaderContentsItem("Nested archive", 18, 0),))
+    panel.set_mode(ReaderTopicMode.CONTENTS)
+    panel.show()
+    qtbot.wait(0)
+
+    index_labels = [
+        label
+        for label in panel.findChildren(QLabel)
+        if label.property("class") == "ReaderTopicItemIndex"
+    ]
+
+    assert [label.text() for label in index_labels] == ["page 19"]
 
     context.close()
 
@@ -243,31 +347,31 @@ def test_reader_topic_bookmark_row_elides_long_names_without_expanding_panel(qtb
     context.close()
 
 
-def test_reader_topic_panel_requests_more_thumbnails_after_append_without_resize(qtbot) -> None:
+def test_reader_topic_panel_updates_interest_when_virtual_grid_scrolls(qtbot) -> None:
     context = create_app_context()
     panel = ReaderTopicPanel(context.resources)
     qtbot.addWidget(panel)
-    requests: list[tuple[int, int, tuple[int, int]]] = []
-    panel.thumbnail_batch_requested.connect(
-        lambda start, batch_size, size: requests.append((start, batch_size, size))
+    interests: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, int]]] = []
+    panel.thumbnail_interest_changed.connect(
+        lambda visible, prefetch, size: interests.append((visible, prefetch, size))
     )
     panel.resize(Theme.reader_topic_panel_width, Theme.reader_topic_panel_height)
     panel.show()
     panel.set_mode(ReaderTopicMode.THUMBNAILS)
     panel.reset_thumbnails(100)
 
-    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
-    assert requests[-1][0] == 0
+    qtbot.waitUntil(lambda: bool(interests), timeout=1000)
+    assert interests[-1][0][0] == 0
 
-    requests.clear()
-    panel.apply_thumbnail_batch(ReaderTopicThumbnailBatch(0, Theme.reader_topic_thumbnail_batch_size, True, ()))
+    interests.clear()
+    scrollbar = panel._thumbnails_scroll.verticalScrollBar()
+    scrollbar.setValue(scrollbar.maximum())
 
-    qtbot.waitUntil(lambda: bool(requests), timeout=1000)
-    assert requests[-1] == (
-        Theme.reader_topic_thumbnail_batch_size,
-        Theme.reader_topic_thumbnail_batch_size,
-        (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
-    )
+    qtbot.waitUntil(lambda: bool(interests), timeout=1000)
+    visible, prefetch, size = interests[-1]
+    assert visible[0] > 0
+    assert prefetch
+    assert size == (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
 
     context.close()
 
@@ -544,7 +648,8 @@ def test_reader_settings_vertical_switch_is_independent_from_reading_direction(q
 
 def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
-    window = MainWindow(context)
+    launch_requests: list[object] = []
+    window = MainWindow(context, standalone_reader_launcher=launch_requests.append)
     qtbot.addWidget(window)
     book = context.shelf_viewmodel.books[0]
 
@@ -552,7 +657,7 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 
     assert window._embedded_reader is not None
     assert not window._embedded_reader.header.back_button.isHidden()
-    assert not window._reader_windows
+    assert launch_requests == []
 
     window.close()
     context.close()
@@ -561,22 +666,23 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path: Path, monkeypatch) -> None:
     context = _context_with_imported_book(tmp_path, monkeypatch)
     context.settings_store.update(individual_read_window=True)
-    window = MainWindow(context)
-    qtbot.addWidget(window)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
     book = context.shelf_viewmodel.books[0]
 
     window.open_reader_for_book(book.uuid)
 
     assert window._embedded_reader is None
-    assert len(window._reader_windows) == 1
-    reader = window._reader_windows[0]
+    assert len(manager.reader_windows) == 1
+    reader = manager.reader_windows[0]
     assert reader.testAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     assert not reader.header.back_button.isVisible()
 
     reader.close()
     qtbot.wait(0)
-    assert window._reader_windows == []
+    assert manager.reader_windows == ()
     window.close()
+    qtbot.wait(0)
     context.close()
 
 
@@ -615,20 +721,151 @@ def test_shelf_reader_reloads_saved_per_book_settings(qtbot, tmp_path: Path, mon
     context.close()
 
 
-def test_main_window_close_closes_independent_readers(qtbot, tmp_path: Path, monkeypatch) -> None:
+def test_main_window_restored_book_opens_after_click(qtbot, tmp_path: Path, monkeypatch) -> None:
+    # Patch B contract: a book whose file disappears and then comes
+    # back must open on the next click without showing the missing
+    # dialog. The shelf-click path runs the VM's
+    # ``_refresh_book_state``, which flips the row back to healthy
+    # the moment storage_path exists again.
     context = _context_with_imported_book(tmp_path, monkeypatch)
-    context.settings_store.update(individual_read_window=True)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+    file_path = Path(book.file_path)
+
+    # Delete the file, click once → VM detects missing → dialog.
+    backup = tmp_path / "backup.bytes"
+    backup.write_bytes(file_path.read_bytes())
+    file_path.unlink()
+    context.shelf_viewmodel.open_book(book.uuid)
+    qtbot.waitUntil(lambda: any(b.uuid == book.uuid and b.is_missing for b in context.shelf_viewmodel.books), timeout=2000)
+
+    # Restore the file. Next click heals the row and opens the reader.
+    file_path.write_bytes(backup.read_bytes())
+    context.shelf_viewmodel.open_book(book.uuid)
+    qtbot.waitUntil(lambda: any(b.uuid == book.uuid and not b.is_missing for b in context.shelf_viewmodel.books), timeout=2000)
+    qtbot.waitUntil(lambda: window._embedded_reader is not None, timeout=2000)
+
+    window.close()
+    context.close()
+
+
+def test_main_window_shelf_view_no_longer_re_emits_open_signals(qtbot, tmp_path: Path, monkeypatch) -> None:
+    # The shelf view used to relay ``book_open_requested`` through
+    # ``read_book_requested``. Patch B removed the relay; MainWindow
+    # subscribes to the VM directly so the relay isn't even defined.
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert not hasattr(window.shelf_view, "read_book_requested")
+    assert not hasattr(window.shelf_view, "read_book_at_requested")
+
+    window.close()
+    context.close()
+
+
+def test_main_window_missing_book_dialog_delete_button_triggers_deletion(qtbot, tmp_path: Path, monkeypatch) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
     window = MainWindow(context)
     qtbot.addWidget(window)
     book = context.shelf_viewmodel.books[0]
 
+    # Confirm path runs the destructive lambda.
+    window._show_missing_book_dialog(book.uuid)
+    accept = window.dialog_overlay._on_accept
+    assert accept is not None
+    accept()
+    qtbot.waitUntil(lambda: not any(b.uuid == book.uuid for b in context.shelf_viewmodel.books), timeout=2000)
+
+    window.close()
+    context.close()
+
+
+def test_main_window_missing_book_dialog_cancel_keeps_book(qtbot, tmp_path: Path, monkeypatch) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    book = context.shelf_viewmodel.books[0]
+
+    # Cancel path is wired to None — pressing Esc / clicking outside
+    # must not delete the book.
+    window._show_missing_book_dialog(book.uuid)
+    assert window.dialog_overlay._on_reject is None
+    # Dismiss without action; book stays in library.
+    window.dialog_overlay.hide()
+    assert any(b.uuid == book.uuid for b in context.shelf_viewmodel.books)
+
+    window.close()
+    context.close()
+
+
+def test_main_window_close_takes_the_readers_it_opened(qtbot, tmp_path: Path, monkeypatch) -> None:
+    """A Reader launched from the shelf belongs to that Library session."""
+
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    context.settings_store.update(individual_read_window=True)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
+    book = context.shelf_viewmodel.books[0]
+
     window.open_reader_for_book(book.uuid)
-    assert len(window._reader_windows) == 1
+    assert len(manager.reader_windows) == 1
 
     window.close()
     qtbot.wait(0)
 
-    assert window._reader_windows == []
+    assert manager.main_window is None
+    assert manager.reader_windows == ()
+    context.close()
+
+
+def test_main_window_close_keeps_readers_opened_by_the_operating_system(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    """An "Open With" Reader is a root window and must survive the Library."""
+
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    context.settings_store.update(individual_read_window=True)
+    manager = ApplicationWindowManager(context)
+    window = manager.show_library()
+    book = context.shelf_viewmodel.books[0]
+
+    readers = manager.open_files((book.file_path,))
+    assert len(readers) == 1
+    reader = readers[0]
+
+    window.close()
+    qtbot.wait(0)
+
+    assert manager.main_window is None
+    assert manager.reader_windows == (reader,)
+    assert reader.isVisible()
+    reader.close()
+    qtbot.wait(0)
+    context.close()
+
+
+def test_rebuilt_main_drops_error_subscribers_from_deleted_window(
+    qtbot,
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    manager = ApplicationWindowManager(context)
+    first = manager.show_library()
+
+    first.close()
+    qtbot.waitUntil(lambda: not shiboken6.isValid(first), timeout=1000)
+    second = manager.show_library()
+
+    context.shelf_viewmodel.delete_failed.emit("Delete failed after Main rebuild.")
+
+    assert not second.dialog_overlay.isHidden()
+    assert second.dialog_overlay.panel.title_text == "Delete Failed"
+
+    second.close()
+    qtbot.wait(0)
     context.close()
 
 
@@ -718,6 +955,132 @@ def test_reader_footer_updates_progress_slider_direction(qtbot, tmp_path: Path) 
     assert window.footer.slider.reading_direction == ReaderDirection.RIGHT_TO_LEFT
     assert window.footer.slider.invertedAppearance()
     assert window.footer.page_indicator.text() == "3/10"
+
+    window.close()
+    context.close()
+
+
+# ---------------------------------------------------------------------------
+# Hidden Space launch lock overlay
+
+
+def _initialised_hidden_space_context(tmp_path: Path, monkeypatch) -> object:
+    # Mirrors ``_context_with_imported_book`` but also primes the Hidden
+    # Space service so the next ``MainWindow`` construction has to gate
+    # the shelf behind the lock overlay. The setup goes through the
+    # SettingsViewModel so the in-memory ``show_hidden_collection`` /
+    # ``hidden_space_initialized`` mirrors stay in sync with the
+    # persisted state (which MainWindow now reads from the VM, not the
+    # raw settings dataclass).
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    context.settings_viewmodel.initialize_hidden_space("Pass1234", "Pass1234", "remember the dog")
+    context.settings = context.settings_store.load()
+    return context
+
+
+def test_main_window_shows_hidden_space_lock_when_show_collections_persisted(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert window._lock_overlay is not None
+    # ``isVisible`` returns False until the parent window is shown, which
+    # we deliberately skip in tests; ``isHidden`` is the visibility-state
+    # check that doesn't require an actual window-server.
+    assert window._lock_overlay.isHidden() is False
+
+    window.close()
+    context.close()
+
+
+def test_main_window_lock_overlay_verifies_password_and_reveals_shelf(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    assert window._lock_overlay is not None
+
+    # Wrong password leaves the overlay in place.
+    window._lock_overlay._password.setText("WrongPass")
+    window._lock_overlay._on_verify_clicked()
+    assert window._lock_overlay is not None
+    assert window._lock_overlay.isHidden() is False
+
+    # Correct password tears the overlay down and keeps the toggle on.
+    window._lock_overlay._password.setText("Pass1234")
+    window._lock_overlay._on_verify_clicked()
+    assert window._lock_overlay is None
+    assert context.settings_store.load().show_hidden_collection is True
+
+    window.close()
+    context.close()
+
+
+def test_main_window_lock_overlay_hide_button_disables_toggle_without_password(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    assert window._lock_overlay is not None
+
+    window._lock_overlay._on_hide_clicked()
+
+    assert window._lock_overlay is None
+    # Hide flips the persisted toggle off; the password stays configured.
+    settings = context.settings_store.load()
+    assert settings.show_hidden_collection is False
+    assert settings.hidden_space_password_hash is not None
+
+    window.close()
+    context.close()
+
+
+def test_main_window_skips_lock_overlay_when_show_collections_is_off(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _initialised_hidden_space_context(tmp_path, monkeypatch)
+    # Flip the toggle off through the VM so the persisted state and the
+    # VM mirror stay in sync (MainWindow reads the latter).
+    context.settings_viewmodel.set_show_hidden_collection(False)
+    context.settings = context.settings_store.load()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+
+    assert window._lock_overlay is None
+
+    window.close()
+    context.close()
+
+
+def test_reader_topic_thumbnail_selection_closes_the_panel(qtbot, tmp_path: Path) -> None:
+    """Picking a page from the thumbnail grid is a "take me there", so the
+    panel should stop covering the page the user just chose."""
+
+    source = tmp_path / "reader-select.cbz"
+    image = tmp_path / "page.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        for index in range(4):
+            archive.write(image, f"{index:03d}.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+    qtbot.waitUntil(lambda: window.shell.viewmodel.page_count == 4, timeout=3000)
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)  # noqa: SLF001
+    assert window.topic_panel.isVisible()
+
+    window.topic_panel.thumbnail_selected.emit(2)
+
+    assert window.shell.viewmodel.current_index == 2, "the seek must still happen"
+    assert window.topic_panel.isHidden(), "selecting a page must dismiss the panel"
+    assert window.header.topic_button_group.active_mode is None
 
     window.close()
     context.close()

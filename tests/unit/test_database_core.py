@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from io import BytesIO
+import logging
 from pathlib import Path
+import sqlite3
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pyzipper
@@ -10,17 +12,24 @@ from PIL import Image
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import create_app_context
-from joyread.core.archive import ArchiveImageService
+from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.archive_extraction_pool import HiddenImageExtractionPool
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
-from joyread.core.services.storage_migration_service import StorageMigrationService
+from joyread.core.services.storage_migration_service import (
+    StorageMigrationError,
+    StorageMigrationService,
+)
+from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.database.migrations import MIGRATIONS
+from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
 from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.infrastructure.pdf_image_service import PdfImageService
 
 
 def _database(tmp_path: Path) -> DatabaseInterpreter:
@@ -83,8 +92,28 @@ def _import_service(tmp_path: Path) -> tuple[ImportService, DatabaseInterpreter,
     paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
     paths.ensure_directories()
     database = _database(paths.paths.database)
-    service = ImportService(paths, database, ArchiveImageService(), HashService())
+    service = ImportService(
+        paths,
+        database,
+        ArchiveImageService(),
+        HashService(),
+        pdf_service=PdfImageService(),
+    )
     return service, database, paths
+
+
+class _RecordingHashService(HashService):
+    def __init__(self) -> None:
+        self.compute_paths: list[Path] = []
+        self.copy_paths: list[tuple[Path, Path]] = []
+
+    def compute(self, path: Path, algorithm: str = "sha256") -> str:
+        self.compute_paths.append(Path(path))
+        return super().compute(path, algorithm)
+
+    def copy_with_hash(self, source: Path, destination: Path, algorithm: str = "sha256") -> str:
+        self.copy_paths.append((Path(source), Path(destination)))
+        return super().copy_with_hash(source, destination, algorithm)
 
 
 def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) -> None:
@@ -143,9 +172,87 @@ def test_migrations_create_expected_tables_and_are_idempotent(tmp_path: Path) ->
         }
     )
     assert "original_file_name" in book_file_columns
+    assert "file_size" not in book_file_columns
+    assert "mtime_ns" not in book_file_columns
+    assert "integrity_error_code" in book_file_columns
     assert "vertical_zoom_percent" in reader_settings_columns
     assert "vertical_fit_width" in reader_settings_columns
     database.close()
+
+
+def test_migration_v12_rebuilds_book_files_without_losing_foreign_key_links(tmp_path: Path) -> None:
+    """A v11 library keeps public/private ownership when v12 drops metadata."""
+
+    connection = open_sqlite_connection(tmp_path / "legacy-v11.sqlite3")
+    connection.create_function("joyread_basename", 1, lambda value: Path(str(value or "book")).name)
+    connection.create_function("joyread_storage_relative", 1, lambda value: value)
+    try:
+        for version, migration in MIGRATIONS:
+            if version >= 12:
+                break
+            assert isinstance(migration, str)
+            connection.executescript(
+                f"""
+                BEGIN;
+                {migration}
+                INSERT INTO schema_migrations(version) VALUES ({version});
+                COMMIT;
+                """
+            )
+        connection.executescript(
+            """
+            INSERT INTO book_files(
+                file_id, original_path, original_file_name, storage_path, file_format,
+                file_size, mtime_ns, hash_algorithm, content_hash, state, created_at, updated_at
+            ) VALUES (
+                'file-1', '/source/legacy.cbz', 'legacy.cbz', 'Books/aa/legacy.cbz', 'CBZ',
+                123, 456, 'sha256', 'legacy-hash', 'healthy', '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            INSERT INTO books(
+                book_id, file_id, title, author, language_tag, book_type,
+                cover_path, is_favourite, created_at, updated_at
+            ) VALUES (
+                'book-1', 'file-1', 'Public', 'Unknown', 'und', 'manga', NULL, 0,
+                '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            INSERT INTO private_books(
+                private_book_id, file_id, title, author, language_tag, book_type,
+                cover_path, encrypted_cover_path, encryption_status,
+                private_collection_id, created_at, updated_at
+            ) VALUES (
+                'private-1', 'file-1', 'Private', 'Unknown', 'und', 'manga', NULL, NULL,
+                'not_encrypted', NULL, '2026-01-01T00:00:00', '2026-01-01T00:00:00'
+            );
+            """
+        )
+
+        apply_migrations(connection)
+
+        columns = {
+            row["name"] for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+        }
+        row = connection.execute(
+            "SELECT original_file_name, content_hash, state, integrity_error_code FROM book_files WHERE file_id = 'file-1'"
+        ).fetchone()
+        public_file_id = connection.execute(
+            "SELECT file_id FROM books WHERE book_id = 'book-1'"
+        ).fetchone()["file_id"]
+        private_file_id = connection.execute(
+            "SELECT file_id FROM private_books WHERE private_book_id = 'private-1'"
+        ).fetchone()["file_id"]
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        journal_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'library_maintenance_journal'"
+        ).fetchone()
+
+        assert {"file_size", "mtime_ns"}.isdisjoint(columns)
+        assert {"state", "integrity_error_code", "original_file_name"} <= columns
+        assert tuple(row) == ("legacy.cbz", "legacy-hash", "healthy", None)
+        assert public_file_id == private_file_id == "file-1"
+        assert violations == []
+        assert journal_table is not None
+    finally:
+        connection.close()
 
 
 def test_language_migration_normalizes_legacy_language_values(tmp_path: Path) -> None:
@@ -231,6 +338,29 @@ def test_database_interpreter_respects_priority_before_start(tmp_path: Path) -> 
     database.close()
 
 
+def test_database_interpreter_debug_logs_callback_name(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    database = DatabaseInterpreter(tmp_path / "callback-trace.sqlite3", autostart=False)
+
+    def trace_callback(connection) -> int:  # noqa: ANN001 - sqlite connection type is evident from caller.
+        return connection.execute("SELECT 1").fetchone()[0]
+
+    try:
+        with caplog.at_level(logging.DEBUG, logger="joyread.infrastructure.database.database_interpreter"):
+            future = database.submit(trace_callback, DatabasePriority.NORMAL)
+            database.start()
+            assert future.result(timeout=2) == 1
+    finally:
+        database.close()
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("DB request queued" in message and "trace_callback" in message for message in messages)
+    assert any("DB request starting" in message and "trace_callback" in message for message in messages)
+    assert any("DB request completed" in message and "trace_callback" in message for message in messages)
+
+
 def test_settings_config_is_outside_storage_root(tmp_path: Path) -> None:
     store = SettingsStore(
         support_root=tmp_path / "support",
@@ -302,6 +432,150 @@ def test_duplicate_manifest_import_reuses_existing_book(tmp_path: Path) -> None:
     database.close()
 
 
+@pytest.mark.parametrize("verify_integrity", [True, False])
+def test_import_hashes_staging_copy_in_both_integrity_modes(
+    tmp_path: Path,
+    verify_integrity: bool,
+) -> None:
+    source = tmp_path / "hash-mode.cbz"
+    _write_cbz(source)
+    paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
+    paths.ensure_directories()
+    database = _database(paths.paths.database)
+    hash_service = _RecordingHashService()
+    service = ImportService(
+        paths,
+        database,
+        ArchiveImageService(),
+        hash_service,
+        verify_imported_file_integrity=verify_integrity,
+    )
+
+    result = service.import_files([source])
+    book = SqliteBookRepository(database).list_books()[0]
+
+    assert result.imported_count == 1
+    assert book.file_id == result.items[0].file_id
+    assert hash_service.copy_paths and hash_service.copy_paths[0][0] == source
+    assert hash_service.copy_paths[0][1].parent == paths.paths.books / ".staging"
+    assert hash_service.compute_paths == ([source] if verify_integrity else [])
+    assert list((paths.paths.books / ".staging").iterdir()) == []
+    database.close()
+
+
+def test_sqlite_repository_persists_book_cover_path(tmp_path: Path) -> None:
+    source = tmp_path / "cover-path.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    cover_path = paths.paths.thumbnails / "covers" / "custom-cover.png"
+
+    repository.set_book_cover_path(book.uuid, str(cover_path))
+
+    refreshed = repository.list_books()[0]
+    assert refreshed.cover_thumbnail_path == str(cover_path)
+    database.close()
+
+
+def test_import_persists_relative_storage_path(tmp_path: Path) -> None:
+    source = tmp_path / "relative-storage.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+
+    stored = database.execute(
+        lambda connection: connection.execute("SELECT storage_path FROM book_files").fetchone()[
+            "storage_path"
+        ]
+    )
+    book = SqliteBookRepository(database).list_books()[0]
+
+    # Persisted relative to the storage root, surfaced absolute to callers.
+    assert not Path(stored).is_absolute()
+    assert stored.startswith("Books/")
+    assert Path(book.file_path).is_absolute()
+    assert Path(book.file_path).exists()
+    assert paths.resolver.to_storage_relative(book.file_path) == stored
+    database.close()
+
+
+def test_set_book_cover_path_persists_relative(tmp_path: Path) -> None:
+    source = tmp_path / "cover-relative.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    cover_path = paths.paths.thumbnails / "covers" / "custom-cover.png"
+
+    repository.set_book_cover_path(book.uuid, str(cover_path))
+
+    stored = database.execute(
+        lambda connection: connection.execute("SELECT cover_path FROM books").fetchone()["cover_path"]
+    )
+    refreshed = repository.list_books()[0]
+    assert stored == "Thumbnails/covers/custom-cover.png"
+    assert Path(refreshed.cover_thumbnail_path) == cover_path
+    database.close()
+
+
+def test_migration_normalizes_absolute_managed_paths(tmp_path: Path) -> None:
+    paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
+    paths.ensure_directories()
+    database = _database(paths.paths.database)
+
+    root = paths.storage_root
+    inside = root / "Books" / "ab" / "inside.cbz"
+    outside = tmp_path / "elsewhere" / "outside.cbz"
+    cover_inside = root / "Thumbnails" / "covers" / "c.png"
+
+    def seed(connection: sqlite3.Connection) -> None:
+        for file_id, content_hash, storage_path in (
+            ("f1", "h1", str(inside)),
+            ("f2", "h2", str(outside)),
+        ):
+            connection.execute(
+                """
+                INSERT INTO book_files(
+                    file_id, original_path, original_file_name, storage_path, file_format,
+                    hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
+                ) VALUES(?, 'orig', 'inside.cbz', ?, 'CBZ', 'sha256', ?, 'healthy', NULL, 't', 't')
+                """,
+                (file_id, storage_path, content_hash),
+            )
+        connection.execute(
+            """
+            INSERT INTO books(book_id, file_id, title, author, book_type, cover_path, created_at, updated_at)
+            VALUES('b1', 'f1', 'T', 'A', 'manga', ?, 't', 't')
+            """,
+            (str(cover_inside),),
+        )
+        # Simulate a pre-normalization database so the migration re-runs.
+        connection.execute("DELETE FROM schema_migrations WHERE version = 11")
+
+    database.execute(seed)
+    database.execute(apply_migrations, DatabasePriority.CRITICAL)
+
+    stored = database.execute(
+        lambda connection: {
+            row["file_id"]: row["storage_path"]
+            for row in connection.execute("SELECT file_id, storage_path FROM book_files").fetchall()
+        }
+    )
+    cover = database.execute(
+        lambda connection: connection.execute(
+            "SELECT cover_path FROM books WHERE book_id = 'b1'"
+        ).fetchone()["cover_path"]
+    )
+
+    assert stored["f1"] == "Books/ab/inside.cbz"
+    assert stored["f2"] == str(outside)  # outside the storage root: left as-is (surfaces as missing)
+    assert cover == "Thumbnails/covers/c.png"
+    database.close()
+
+
 def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
     source = tmp_path / "Readable PDF.pdf"
     _write_pdf(source)
@@ -314,6 +588,106 @@ def test_import_files_accepts_readable_pdf(tmp_path: Path, qtbot) -> None:  # no
     assert result.failed_count == 0
     assert books[0].file_format == "PDF"
     assert books[0].book_type == "manga"
+    database.close()
+
+
+def test_import_batch_keeps_one_archive_limits_snapshot(tmp_path: Path, monkeypatch) -> None:
+    first = tmp_path / "first.cbz"
+    second = tmp_path / "second.cbz"
+    _write_cbz(first)
+    _write_cbz(second, color="#cc4422")
+    service, database, _paths = _import_service(tmp_path)
+    initial_limits = ArchiveOpenLimits(max_source_bytes=5 * 1024 * 1024)
+    service.set_archive_open_limits(initial_limits)
+    observed_limits: list[ArchiveOpenLimits] = []
+    original_validate = service._validate_staged_file
+
+    def validate_staged(path: Path, limits: ArchiveOpenLimits):
+        observed_limits.append(limits)
+        if len(observed_limits) == 1:
+            # A settings update after the first staged probe applies to later
+            # batches, not remaining entries in this one.
+            service.set_archive_open_limits(ArchiveOpenLimits(max_source_bytes=1))
+        return original_validate(path, limits)
+
+    monkeypatch.setattr(service, "_validate_staged_file", validate_staged)
+
+    result = service.import_files([first, second])
+
+    assert result.imported_count == 2
+    assert observed_limits == [initial_limits, initial_limits]
+    database.close()
+
+
+def test_list_books_preserves_persisted_state_without_refresh(tmp_path: Path) -> None:
+    # State refresh runs only on the user-action ``get_book`` path. The
+    # shelf load (``list_books``) returns whatever was last persisted —
+    # the file disappearing between load and click does not flip the
+    # row until a user action fetches it. This test pins that contract
+    # so a future regression cannot reintroduce the per-shelf-load
+    # ``Path.exists()`` stat.
+    source = tmp_path / "source" / "Persisted File.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    refreshed = repository.list_books()[0]
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert refreshed.is_missing is False
+    assert state == "healthy"
+    database.close()
+
+
+def test_get_book_marks_missing_when_file_deleted(tmp_path: Path) -> None:
+    source = tmp_path / "source" / "Missing Get.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    refreshed = repository.get_book(book.uuid)
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert refreshed is not None
+    assert refreshed.is_missing is True
+    assert state == "missing"
+    database.close()
+
+
+def test_get_export_records_marks_missing_when_file_deleted(tmp_path: Path) -> None:
+    # Export is a manual user action; if a targeted file has been moved
+    # or deleted, the row should flip to ``missing`` so the shelf and
+    # the export failure surface agree without waiting for the user to
+    # click the book separately.
+    source = tmp_path / "source" / "Missing Export.cbz"
+    source.parent.mkdir()
+    _write_cbz(source)
+    service, database, _paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database)
+    book = repository.list_books()[0]
+    Path(book.file_path).unlink()
+
+    records = repository.get_export_records((book.uuid,))
+    state = database.execute(
+        lambda connection: connection.execute("SELECT state FROM book_files").fetchone()["state"]
+    )
+
+    assert len(records) == 1
+    assert records[0].is_missing is True
+    assert state == "missing"
     database.close()
 
 
@@ -362,18 +736,18 @@ def test_import_skips_encrypted_archives_without_adding_books(tmp_path: Path) ->
     database.close()
 
 
-def test_import_skips_unencrypted_archives_containing_encrypted_archives(tmp_path: Path) -> None:
+def test_import_probes_only_top_level_and_allows_nested_encrypted_archives(tmp_path: Path) -> None:
     source = tmp_path / "outer.cbz"
     _write_cbz_with_nested_encrypted_archive(source)
     service, database, _paths = _import_service(tmp_path)
 
     result = service.import_files([source])
 
-    assert result.imported_count == 0
-    assert result.skipped_count == 1
+    assert result.imported_count == 1
+    assert result.skipped_count == 0
     assert result.failed_count == 0
-    assert "outer.cbz::nested.cbz" in (result.items[0].message or "")
-    assert SqliteBookRepository(database).list_books() == []
+    assert result.items[0].status == "imported"
+    assert [book.title for book in SqliteBookRepository(database).list_books()] == ["outer"]
     database.close()
 
 
@@ -478,16 +852,18 @@ def test_reader_progress_round_trips_without_page_count(tmp_path: Path) -> None:
 def test_import_failures_are_recorded_without_books(tmp_path: Path) -> None:
     unsupported = tmp_path / "sample.txt"
     unsupported.write_text("not a book", encoding="utf-8")
+    shelved_epub = tmp_path / "shelved.epub"
+    shelved_epub.write_bytes(b"epub access disabled")
     corrupt = tmp_path / "corrupt.cbz"
     corrupt.write_bytes(b"not a zip")
     service, database, _paths = _import_service(tmp_path)
 
-    result = service.import_files([tmp_path / "missing.cbz", unsupported, corrupt])
+    result = service.import_files([tmp_path / "missing.cbz", unsupported, shelved_epub, corrupt])
     item_rows = database.execute(lambda connection: connection.execute("SELECT status FROM import_items").fetchall())
 
-    assert result.failed_count == 3
+    assert result.failed_count == 4
     assert SqliteBookRepository(database).list_books() == []
-    assert [row["status"] for row in item_rows] == ["failed", "failed", "failed"]
+    assert [row["status"] for row in item_rows] == ["failed", "failed", "failed", "failed"]
     database.close()
 
 
@@ -524,6 +900,25 @@ def test_collection_delete_and_private_move_keep_public_books_consistent(tmp_pat
         lambda connection: connection.execute("SELECT COUNT(*) AS count FROM private_books").fetchone()["count"]
     )
     assert private_count == 1
+    database.close()
+
+
+def test_list_collections_orders_newest_first(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    repository = SqliteBookRepository(database)
+
+    def _insert(connection, collection_id: str, name: str, when: str) -> None:
+        connection.execute(
+            "INSERT INTO collections(collection_id, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            (collection_id, name, when, when),
+        )
+
+    database.execute(lambda c: _insert(c, "old", "Old Collection", "2026-01-01T00:00:00.000000"))
+    database.execute(lambda c: _insert(c, "mid", "Mid Collection", "2026-02-01T00:00:00.000000"))
+    database.execute(lambda c: _insert(c, "new", "New Collection", "2026-03-01T00:00:00.000000"))
+
+    ordered = [collection.uuid for collection in repository.list_collections()]
+    assert ordered == ["new", "mid", "old"]
     database.close()
 
 
@@ -682,20 +1077,121 @@ def test_progress_stores_page_index_and_percent_without_clamping(tmp_path: Path)
     database.close()
 
 
-def test_storage_migration_moves_storage_and_updates_config(tmp_path: Path) -> None:
-    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "old")
-    store.save(AppSettings(storage_location=str(tmp_path / "old")))
+def _seed_library(root: Path) -> None:
+    """Create a valid migrated JoyRead library with one book file at ``root``."""
+
+    database = root / "Database" / "joyread.sqlite3"
+    database.parent.mkdir(parents=True, exist_ok=True)
+    connection = open_sqlite_connection(database)
+    apply_migrations(connection)
+    connection.close()
+    book = root / "Books" / "ab" / "book.cbz"
+    book.parent.mkdir(parents=True, exist_ok=True)
+    book.write_bytes(b"book")
+
+
+def _migration_service(store: SettingsStore) -> StorageMigrationService:
+    return StorageMigrationService(store, StorageValidationService())
+
+
+def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path: Path) -> None:
     old = tmp_path / "old"
-    old.mkdir()
-    (old / "Books").mkdir()
-    (old / "Books" / "book.cbz").write_bytes(b"book")
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
 
-    result = StorageMigrationService(store).move_storage_location(old, tmp_path / "new")
+    result = _migration_service(store).move_to_parent(old, parent)
 
-    assert (tmp_path / "new" / "Books" / "book.cbz").exists()
-    assert result.old_backup_root is not None
-    assert result.old_backup_root.exists()
-    assert store.load().storage_location == str((tmp_path / "new").resolve())
+    target = parent / LIBRARY_DIRECTORY_NAME
+    assert result.target_root == target.resolve()
+    assert (target / "Books" / "ab" / "book.cbz").exists()
+    assert (target / "Database" / "joyread.sqlite3").exists()
+    assert store.load().storage_location == str(target.resolve())
+    assert not old.exists()  # old root removed after a successful move
+
+
+def test_move_to_parent_points_the_recovery_fallback_at_the_new_root(tmp_path: Path) -> None:
+    """The old root is deleted by this very call.
+
+    Leaving `last_good_storage_location` on it would send startup recovery to
+    a directory that no longer exists, and it is only corrected on the next
+    clean launch -- exactly the launch that would need it if the destination
+    became unavailable in the meantime.
+    """
+
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old), last_good_storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+
+    result = _migration_service(store).move_to_parent(old, parent)
+
+    settings = store.load()
+    assert settings.last_good_storage_location == str(result.target_root)
+    assert settings.storage_location == settings.last_good_storage_location
+
+
+def test_a_failed_move_leaves_the_recovery_fallback_alone(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old), last_good_storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+    (parent / LIBRARY_DIRECTORY_NAME).mkdir(parents=True)
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().last_good_storage_location == str(old)
+
+
+def test_move_to_parent_fails_when_target_exists_and_keeps_settings(tmp_path: Path) -> None:
+    old = tmp_path / "old"
+    _seed_library(old)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+    (parent / LIBRARY_DIRECTORY_NAME).mkdir(parents=True)
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().storage_location == str(old)
+    assert old.exists()
+
+
+def test_move_to_parent_rolls_back_when_validation_fails(tmp_path: Path) -> None:
+    # A library with no database fails staging validation; nothing is adopted.
+    old = tmp_path / "old"
+    (old / "Books").mkdir(parents=True)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
+    store.save(AppSettings(storage_location=str(old)))
+    parent = tmp_path / "elsewhere"
+
+    with pytest.raises(StorageMigrationError):
+        _migration_service(store).move_to_parent(old, parent)
+
+    assert store.load().storage_location == str(old)
+    assert old.exists()
+    assert not (parent / LIBRARY_DIRECTORY_NAME).exists()
+    # Staging copies are cleaned up.
+    assert not any(
+        child.name.startswith(f".{LIBRARY_DIRECTORY_NAME}.staging-")
+        for child in parent.iterdir()
+    )
+
+
+def test_reset_library_clears_root(tmp_path: Path) -> None:
+    root = tmp_path / "lib"
+    _seed_library(root)
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=root)
+
+    _migration_service(store).reset_library(root)
+
+    assert root.exists()
+    assert list(root.iterdir()) == []
 
 
 def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Path) -> None:
@@ -705,8 +1201,93 @@ def test_app_context_uses_sqlite_repository_by_default(monkeypatch, tmp_path: Pa
 
     assert isinstance(context.book_repository, SqliteBookRepository)
     assert (context.paths.paths.database / "joyread.sqlite3").exists()
+    assert Path(context.settings.storage_location).is_relative_to(
+        tmp_path / "runtime" / LIBRARY_DIRECTORY_NAME
+    )
     assert context.settings_store.settings_path.is_relative_to(tmp_path / "runtime" / ".joyread_support")
     context.database_interpreter.close()
+
+
+def test_settings_store_source_checkout_default_uses_library_directory_name(
+    monkeypatch, tmp_path: Path
+) -> None:
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    (tmp_path / "src" / "joyread").mkdir(parents=True)
+    monkeypatch.chdir(tmp_path)
+
+    store = SettingsStore(support_root=tmp_path / "support")
+
+    assert store.default_storage_root == (tmp_path / LIBRARY_DIRECTORY_NAME).resolve()
+
+
+def test_app_context_move_storage_preserves_books_under_new_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    source = tmp_path / "moved.cbz"
+    _write_cbz(source)
+    context.import_service.import_files([source])
+    assert len(context.book_repository.list_books()) == 1
+    old_root = Path(context.settings.storage_location)
+    parent = tmp_path / "newhome"
+
+    context.move_storage_to_parent(parent)
+
+    new_root = (parent / LIBRARY_DIRECTORY_NAME).resolve()
+    assert Path(context.settings.storage_location) == new_root
+    assert (new_root / "Database" / "joyread.sqlite3").exists()
+    books = context.book_repository.list_books()
+    assert len(books) == 1
+    # Relative storage paths resolve under the new root and the file exists.
+    assert Path(books[0].file_path).is_relative_to(new_root)
+    assert Path(books[0].file_path).exists()
+    assert not old_root.exists()
+    context.close()
+
+
+def test_app_context_reset_storage_empties_library(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    source = tmp_path / "reset.cbz"
+    _write_cbz(source)
+    context.import_service.import_files([source])
+    assert len(context.book_repository.list_books()) == 1
+
+    context.reset_storage()
+
+    assert context.book_repository.list_books() == []
+    assert (Path(context.settings.storage_location) / "Database" / "joyread.sqlite3").exists()
+    context.close()
+
+
+def test_app_context_select_existing_library_switches_root(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    other = tmp_path / "other" / "Arbitrary-Library-Name"
+    _seed_library(other)
+
+    result = context.select_storage(other)
+
+    assert result.ok
+    assert Path(context.settings.storage_location) == other.resolve()
+    assert Path(context.settings_store.load().last_good_storage_location) == other.resolve()
+    assert other.exists()  # Select never deletes the chosen library.
+    context.close()
+
+
+def test_app_context_select_existing_library_rejects_invalid(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "runtime"))
+    context = create_app_context()
+    original_root = context.settings.storage_location
+    invalid = tmp_path / "not-a-library"
+    invalid.mkdir()
+
+    result = context.select_storage(invalid)
+
+    assert not result.ok
+    # Settings unchanged; the current library keeps running.
+    assert context.settings.storage_location == original_root
+    assert context.book_repository.list_books() == []
+    context.close()
 
 
 def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeypatch, tmp_path: Path) -> None:
@@ -727,3 +1308,125 @@ def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeyp
     assert context.archive_extraction_pool.directory.name == ".archive_image_pages"
     assert not any(path.is_file() for path in old_directory.rglob("*"))
     context.close()
+
+
+def test_migration_9_adds_is_hidden_and_is_hidable_columns(tmp_path: Path) -> None:
+    database = _database(tmp_path)
+    book_columns = database.execute(
+        lambda connection: {
+            row["name"] for row in connection.execute("PRAGMA table_info(books)").fetchall()
+        }
+    )
+    collection_columns = database.execute(
+        lambda connection: {
+            row["name"] for row in connection.execute("PRAGMA table_info(collections)").fetchall()
+        }
+    )
+    indexes = database.execute(
+        lambda connection: {
+            row["name"]
+            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='index'").fetchall()
+        }
+    )
+
+    assert "is_hidden" in book_columns
+    assert "is_hidable" in collection_columns
+    assert "idx_books_is_hidden" in indexes
+    assert "idx_collections_is_hidable" in indexes
+    database.close()
+
+
+def test_set_book_hidden_clears_favourite_recent_and_normal_collection(tmp_path: Path) -> None:
+    source = tmp_path / "to-hide.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    repository.set_favourite(book.uuid, True)
+    repository.set_progress(book.uuid, page_index=5, progress_percent=50.0)
+    normal = repository.create_collection("Reading Queue")
+    hidable = repository.create_collection("Hidden Stash")
+    repository.add_book_to_collection(book.uuid, normal.uuid)
+    repository.add_book_to_collection(book.uuid, hidable.uuid)
+    repository.set_collection_hidable(hidable.uuid, True)
+
+    repository.set_book_hidden(book.uuid, True)
+    refreshed = repository.get_book(book.uuid)
+
+    assert refreshed is not None
+    assert refreshed.is_hidden is True
+    assert refreshed.is_favourite is False
+    assert refreshed.last_read_at is None
+    # Hidden books leave normal collections but stay in hidable ones.
+    assert normal.uuid not in refreshed.collection_ids
+    assert hidable.uuid in refreshed.collection_ids
+    database.close()
+
+
+def test_set_collection_hidable_demotion_drops_hidden_members(tmp_path: Path) -> None:
+    source = tmp_path / "demote.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    hidable = repository.create_collection("Hidable")
+    repository.set_collection_hidable(hidable.uuid, True)
+    repository.add_book_to_collection(book.uuid, hidable.uuid)
+    repository.set_book_hidden(book.uuid, True)
+
+    repository.set_collection_hidable(hidable.uuid, False)
+    refreshed = repository.get_book(book.uuid)
+
+    assert refreshed is not None
+    # Book stays hidden but is detached from the now-normal collection.
+    assert refreshed.is_hidden is True
+    assert hidable.uuid not in refreshed.collection_ids
+    database.close()
+
+
+def test_revert_hidden_state_clears_flags_without_deleting_rows(tmp_path: Path) -> None:
+    source = tmp_path / "revert.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    hidable = repository.create_collection("Hidable")
+    repository.set_collection_hidable(hidable.uuid, True)
+    repository.set_book_hidden(book.uuid, True)
+
+    repository.revert_hidden_state()
+
+    assert repository.list_hidden_book_ids() == []
+    assert repository.list_hidable_collection_ids() == []
+    refreshed = repository.get_book(book.uuid)
+    assert refreshed is not None
+    assert refreshed.is_hidden is False
+    # Row counts unchanged: revert is a flag clear, not a delete.
+    counts = database.execute(
+        lambda connection: {
+            "books": connection.execute("SELECT COUNT(*) AS c FROM books").fetchone()["c"],
+            "collections": connection.execute("SELECT COUNT(*) AS c FROM collections").fetchone()["c"],
+        }
+    )
+    assert counts == {"books": 1, "collections": 1}
+    database.close()
+
+
+def test_app_settings_round_trips_hidden_space_fields(tmp_path: Path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+
+    store.update(
+        hidden_space_password_hash="deadbeef",
+        hidden_space_password_salt="c2FsdA==",
+        hidden_space_password_hint="dog name",
+        show_hidden_collection=True,
+    )
+    loaded = store.load()
+
+    assert loaded.hidden_space_password_hash == "deadbeef"
+    assert loaded.hidden_space_password_salt == "c2FsdA=="
+    assert loaded.hidden_space_password_hint == "dog name"
+    assert loaded.show_hidden_collection is True

@@ -20,7 +20,7 @@ class Theme:
     # Window and page layout
     window_width = 1200
     window_height = 860
-    window_min_width = 900
+    window_min_width = 700
     window_min_height = 600
     window_corner_radius = 18
     sidebar_width = 260
@@ -43,7 +43,7 @@ class Theme:
     cover_width = 170
     cover_height = 241
     cover_radius = 6
-    book_list_row_width = 400
+    book_list_row_width = 360
     book_list_row_height = 120
     book_list_cover_width = 71
     book_list_cover_height = 100
@@ -77,6 +77,15 @@ class Theme:
     detail_content_padding = 4
     detail_meta_height = 252
     detail_meta_name_gap = 10
+    detail_tag_box_height = 144
+    detail_tag_box_compact_height = 120
+    detail_tag_box_gap = 8
+    detail_tag_box_radius = 8
+    detail_tag_box_border_width = 1
+    detail_tag_box_background_opacity = 0.6
+    detail_tag_box_visual_padding = 10
+    detail_tag_box_layout_margin = detail_tag_box_visual_padding - detail_tag_box_border_width
+    detail_attribute_height = 25
     detail_attribute_padding_horizontal = 6
     detail_attribute_gap = 10
     detail_attribute_border_width = 1
@@ -102,7 +111,39 @@ class Theme:
     detail_thumbnail_row_padding_vertical = 5
     detail_thumbnail_gap = 20
     detail_thumbnail_row_gap = 10
-    detail_thumbnail_min_width = 400
+    detail_description_narrow_threshold = 550
+    detail_thumbnail_min_width = 360
+
+    # Cover editor dialog from Figma node 734:4133.
+    cover_editor_width = 360
+    cover_editor_height = 500
+    cover_editor_border_width = 1
+    cover_editor_radius = 8
+    cover_editor_visual_padding = 10
+    cover_editor_layout_margin = cover_editor_visual_padding - cover_editor_border_width
+    cover_editor_section_padding = 10
+    cover_editor_gap = 10
+    cover_editor_adjust_height = 310
+    cover_editor_controls_gap = 16
+    cover_editor_import_row_gap = 10
+    cover_editor_import_button_width = 100
+    cover_editor_import_button_height = 28
+    cover_editor_import_button_radius = 6
+    cover_editor_icon_button_size = 28
+    cover_editor_icon_size = 24
+    cover_editor_icon_button_padding = 1
+    cover_editor_icon_button_gap = 30
+    cover_editor_zoom_step = 5
+    cover_editor_max_zoom_percent = 400
+    cover_editor_outside_opacity = 0.6
+    cover_editor_thumbnail_min_width_extra = 2
+    cover_editor_thumbnail_min_width = (
+        (detail_thumbnail_width * 2)
+        + detail_thumbnail_gap
+        + ((detail_thumbnail_frame_padding + detail_thumbnail_row_padding_horizontal) * 2)
+        + cover_editor_thumbnail_min_width_extra
+    )
+
     grid_min_gap = 20
     grid_gap = grid_min_gap
     grid_top_padding = 4
@@ -130,6 +171,13 @@ class Theme:
     traffic_light_size = 14
     traffic_light_group_width = 62
     traffic_light_group_height = 16
+    title_control_group_width = 96
+    title_control_group_height = 24
+    title_control_group_right_inset = 6
+    title_control_gap = 9
+    title_control_button_size = 24
+    title_control_button_radius = 6
+    title_control_stroke_width = 1.5
     chrome_button_size = 36
     action_button_width = 42
     action_button_height = 36
@@ -265,13 +313,34 @@ class Theme:
     settings_path_height = 20
     settings_switch_width = 28
     settings_switch_height = 16
-    settings_switch_option_padding_horizontal = 6
     settings_switch_border_width = 1
     settings_switch_visual_padding = 2
     settings_switch_layout_margin = settings_switch_visual_padding - settings_switch_border_width
     settings_switch_radius = 8
     settings_switch_knob_size = 12
     settings_switch_knob_radius = 6
+
+    # Tags management page (Figma node 688:3630).
+    tag_manager_height = 360
+    tag_manager_padding = 10
+    tag_manager_gap = 10
+    tag_manager_radius = 8
+    tag_chip_min_width = 60
+    tag_chip_max_width = 200
+    tag_chip_height = 26
+    tag_chip_border_width = 1
+    tag_chip_radius = 6
+    tag_chip_padding_horizontal = 7
+    tag_chip_padding_vertical = 4
+    tag_chip_gap = 4
+    tag_chip_font_size = 14
+    tag_control_bar_height = 40
+    tag_control_button_width = 100
+    tag_control_button_height = 28
+    tag_control_button_radius = 6
+    tag_input_field_width = 192
+    tag_disabled_opacity = 0.6
+    color_tag_manager_background = "#f3f3f3"
 
     # General popup dialog from Figma node 483:1989.
     dialog_width = 400
@@ -304,6 +373,11 @@ class Theme:
     dialog_collection_scroll_layout_margin = dialog_collection_scroll_visual_padding - dialog_collection_scroll_border_width
     dialog_collection_scrollbar_margin = dialog_collection_scroll_radius
     dialog_collection_item_gap = 2
+    dialog_tag_filter_panel_height = (
+        dialog_content_max_height
+        - (dialog_content_outer_padding * 2)
+        - (dialog_input_area_padding * 2)
+    )
     dialog_option_gap = 10
     dialog_button_width = 100
     dialog_button_height = 28
@@ -312,7 +386,7 @@ class Theme:
     dialog_button_layout_margin = dialog_button_visual_padding - dialog_button_border_width
     dialog_button_radius = 10
     dialog_button_shadow_blur = 4
-    dialog_button_shadow_offset = 0
+    dialog_button_shadow_offset = 1
     dialog_font_size = 12
     tooltip_radius = 2
     tooltip_padding = 4
@@ -409,13 +483,18 @@ class Theme:
     reader_topic_add_icon_size = 18
     reader_topic_index_font_size = 10
     reader_topic_scroll_threshold = 400
-    reader_topic_thumbnail_batch_size = 24
-    reader_topic_thumbnail_cache_bytes = 32 * 1024 * 1024
     reader_auto_hide_delay_ms = 1600
     reader_fade_duration_ms = 160
     reader_edge_reveal_distance = 78
     reader_pan_step_ratio = 0.18
     reader_pan_min_step = 80
+    # Novel reader (Figma node 616:4911). Right-side "Custom" panel
+    # mirrors the settings panel width per Figma; content area renders
+    # a long placeholder until the EPUB engine lands.
+    novel_custom_panel_width = 260
+    novel_content_margin = 48
+    novel_content_max_width = 760
+    novel_placeholder_font_size = 14
 
     # Palette
     color_window = "#ffffff"
@@ -455,7 +534,7 @@ class Theme:
     color_reader_settings_background_rgba = (255, 255, 255, 204)
     color_reader_settings_control_rgba = (255, 255, 255, 230)
     color_reader_settings_switch_background_rgba = (185, 185, 185, 230)
-    color_reader_topic_item_hover_rgba = (238, 238, 238, 230)
+    color_reader_topic_item_hover_rgba = (238, 238, 238, 204)
     missing_book_opacity = 0.6
 
     # General spacing scale
@@ -572,6 +651,11 @@ class Theme:
             "__DETAIL_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_menu_background_rgba),
             "__DETAIL_PANEL_BORDER_WIDTH__": f"{cls.detail_panel_border_width}px",
             "__DETAIL_PANEL_RADIUS__": f"{cls.detail_panel_radius}px",
+            "__DETAIL_TAG_BOX_BACKGROUND__": cls._hex_rgba_qss(
+                cls.color_window, cls.detail_tag_box_background_opacity
+            ),
+            "__DETAIL_TAG_BOX_BORDER_WIDTH__": f"{cls.detail_tag_box_border_width}px",
+            "__DETAIL_TAG_BOX_RADIUS__": f"{cls.detail_tag_box_radius}px",
             "__DETAIL_ATTRIBUTE_RADIUS__": f"{cls.detail_attribute_radius}px",
             "__DETAIL_BUTTON_BORDER_WIDTH__": f"{cls.detail_button_border_width}px",
             "__DETAIL_BUTTON_LAYOUT_MARGIN__": f"{cls.detail_button_layout_margin}px",
@@ -579,6 +663,10 @@ class Theme:
             "__DETAIL_TITLE_FONT_SIZE__": f"{cls.detail_title_font_size}px",
             "__DETAIL_META_FONT_SIZE__": f"{cls.detail_meta_font_size}px",
             "__DETAIL_READ_FONT_SIZE__": f"{cls.detail_read_font_size}px",
+            "__COVER_EDITOR_BORDER_WIDTH__": f"{cls.cover_editor_border_width}px",
+            "__COVER_EDITOR_RADIUS__": f"{cls.cover_editor_radius}px",
+            "__COVER_EDITOR_IMPORT_RADIUS__": f"{cls.cover_editor_import_button_radius}px",
+            "__COVER_EDITOR_ICON_BUTTON_PADDING__": f"{cls.cover_editor_icon_button_padding}px",
             "__SHELF_SCROLLBAR_WIDTH__": f"{cls.shelf_scrollbar_width}px",
             "__SHELF_SCROLLBAR_RADIUS__": f"{cls.shelf_scrollbar_radius}px",
             "__SHELF_SCROLLBAR_MIN_HEIGHT__": f"{cls.shelf_scrollbar_min_height}px",
@@ -586,8 +674,25 @@ class Theme:
             "__SHELF_SCROLLBAR_HANDLE_HIDDEN__": cls._rgba_qss(cls.color_scrollbar_handle_hidden_rgba),
             "__SHELF_SCROLLBAR_HANDLE__": cls._rgba_qss(cls.color_scrollbar_handle_rgba),
             "__SHELF_SCROLLBAR_HANDLE_HOVER__": cls._rgba_qss(cls.color_scrollbar_handle_hover_rgba),
+            "__TAG_MANAGER_BACKGROUND__": cls.color_tag_manager_background,
+            "__TAG_MANAGER_RADIUS__": f"{cls.tag_manager_radius}px",
+            "__TAG_CHIP_BORDER_WIDTH__": f"{cls.tag_chip_border_width}px",
+            "__TAG_CHIP_RADIUS__": f"{cls.tag_chip_radius}px",
+            "__TAG_CHIP_FONT_SIZE__": f"{cls.tag_chip_font_size}px",
+            "__TAG_BUTTON_RADIUS__": f"{cls.tag_control_button_radius}px",
         }
 
     @staticmethod
     def _rgba_qss(value: tuple[int, int, int, int]) -> str:
         return f"rgba({value[0]}, {value[1]}, {value[2]}, {value[3]})"
+
+    @staticmethod
+    def _hex_rgba_qss(hex_color: str, opacity: float) -> str:
+        value = hex_color.removeprefix("#")
+        if len(value) != 6:
+            raise ValueError(f"Expected #rrggbb color, got {hex_color!r}")
+        red = int(value[0:2], 16)
+        green = int(value[2:4], 16)
+        blue = int(value[4:6], 16)
+        alpha = max(0, min(255, int((opacity * 255) + 0.5)))
+        return f"rgba({red}, {green}, {blue}, {alpha})"

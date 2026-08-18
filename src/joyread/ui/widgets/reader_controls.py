@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
@@ -19,10 +21,14 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.reader import ReaderDirection, ReaderTransitionMode
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
-from joyread.ui.widgets.window_chrome import WindowControlsWidget
+from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReaderTopicButtonGroup(QFrame):
@@ -59,19 +65,19 @@ class ReaderTopicButtonGroup(QFrame):
             resources,
             ReaderTopicMode.CONTENTS,
             "icon_list_detailMode.svg",
-            "Contents",
+            t("reader.contents"),
         )
         self.bookmark_button = self._make_button(
             resources,
             ReaderTopicMode.BOOKMARKS,
             "icon_bookmark.svg",
-            "Bookmarks",
+            t("reader.bookmarks"),
         )
         self.thumbnail_button = self._make_button(
             resources,
             ReaderTopicMode.THUMBNAILS,
             "icon_list_cardMode.svg",
-            "Thumbnails",
+            t("reader.thumbnails"),
         )
         layout.addWidget(self.contents_button)
         layout.addWidget(self.bookmark_button)
@@ -140,9 +146,18 @@ class ReaderHeader(QWidget):
     back_requested = QtSignal()
     mouse_activity = QtSignal()
     topic_mode_requested = QtSignal(object)
+    custom_requested = QtSignal()
 
-    def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        resources: ResourceLoader,
+        parent: QWidget | None = None,
+        *,
+        show_custom_button: bool = False,
+        platform_name: str | None = None,
+    ) -> None:
         super().__init__(parent)
+        self._platform_name = platform_name or sys.platform
         self.setObjectName("ReaderHeader")
         self.setMouseTracking(True)
         self.setFixedHeight(Theme.reader_banner_height)
@@ -152,13 +167,13 @@ class ReaderHeader(QWidget):
         layout.setContentsMargins(18, 8, 8, 8)
         layout.setSpacing(10)
 
-        controls = WindowControlsWidget()
-        controls.close_requested.connect(lambda: self.window().close())
-        controls.minimize_requested.connect(lambda: self.window().showMinimized())
-        controls.zoom_requested.connect(self._toggle_zoom)
-        layout.addWidget(controls)
+        self._stoplight_controls = StoplightControlsWidget()
+        self._stoplight_controls.close_requested.connect(lambda: self.window().close())
+        self._stoplight_controls.minimize_requested.connect(lambda: self.window().showMinimized())
+        self._stoplight_controls.zoom_requested.connect(self._toggle_zoom)
+        layout.addWidget(self._stoplight_controls)
 
-        self.back_button = reader_button(resources, "icon_left.svg", "Back")
+        self.back_button = reader_button(resources, "icon_left.svg", t("reader.back"))
         self.back_button.setProperty("class", "ChromeButton")
         self.back_button.clicked.connect(self.back_requested.emit)
         layout.addWidget(self.back_button)
@@ -180,7 +195,31 @@ class ReaderHeader(QWidget):
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.title.setFixedHeight(Theme.reader_control_size)
         layout.addStretch(1)
-        layout.addWidget(QWidget(), stretch=0)
+        # Optional gear at the right edge for the novel reader's Custom
+        # panel. Manga passes ``show_custom_button=False`` so its layout
+        # is unchanged (a zero-size spacer keeps title-centering symmetry).
+        self.custom_button = reader_button(
+            resources,
+            "icon_setting.svg",
+            t("reader.custom"),
+            self.custom_requested.emit,
+        )
+        self.custom_button.setVisible(show_custom_button)
+        if show_custom_button:
+            layout.addWidget(self.custom_button)
+        else:
+            self._custom_placeholder = QWidget()
+            self._custom_placeholder.setFixedSize(0, 0)
+            layout.addWidget(self._custom_placeholder, stretch=0)
+
+        self._title_control_group = TitleControlGroup(resources)
+        self._title_control_group.close_requested.connect(lambda: self.window().close())
+        self._title_control_group.minimize_requested.connect(lambda: self.window().showMinimized())
+        self._title_control_group.zoom_requested.connect(self._toggle_zoom)
+        layout.addWidget(self._title_control_group, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self.set_title_control_mode(
+            force_non_macos_title_controls=False,
+        )
 
     def set_back_visible(self, visible: bool) -> None:
         self.back_button.setVisible(visible)
@@ -197,7 +236,21 @@ class ReaderHeader(QWidget):
     def set_bookmarks_enabled(self, enabled: bool) -> None:
         self.topic_button_group.set_bookmarks_enabled(enabled)
 
+    def set_title_control_mode(
+        self,
+        *,
+        force_non_macos_title_controls: bool,
+    ) -> None:
+        show_non_macos_controls = force_non_macos_title_controls or self._platform_name != "darwin"
+        show_stoplights = self._platform_name == "darwin" and not show_non_macos_controls
+        self._stoplight_controls.setVisible(show_stoplights)
+        self._title_control_group.setVisible(show_non_macos_controls)
+        self._position_title()
+
     def set_topic_active_mode(self, mode: ReaderTopicMode | None) -> None:
+        logger.debug(
+            "ReaderHeader topic mode=%s", mode.value if mode is not None else None
+        )
         self.topic_button_group.set_active_mode(mode)
 
     def clear_topic_active_mode(self) -> None:
@@ -224,15 +277,34 @@ class ReaderHeader(QWidget):
 
     def _position_title(self) -> None:
         left_edge = self.topic_button_group.geometry().right() + 12 if self.topic_button_group.width() else 160
-        right_edge = 52 + 12
+        right_controls = [
+            widget
+            for widget in (self.custom_button, self._title_control_group)
+            if widget.isVisible() and widget.width() > 0
+        ]
+        if right_controls:
+            right_edge = self.width() - min(widget.geometry().left() for widget in right_controls) + 12
+        else:
+            right_edge = 52 + 12
         safe_side = max(left_edge, right_edge)
-        max_width = max(80, self.width() - (safe_side * 2))
+        available = self.width() - (safe_side * 2)
+        was_visible = getattr(self, "_title_visible", True)
+        if available < 40:
+            if was_visible:
+                logger.debug("ReaderHeader title hidden (header width=%d)", self.width())
+            self._title_visible = False
+            self.title.hide()
+            return
         metrics = QFontMetrics(self.title.font())
-        self.title.setFixedWidth(max_width)
-        self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, max_width))
+        self.title.setFixedWidth(available)
+        self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, available))
         self.title.setToolTip(self._full_title if self.title.text() != self._full_title else "")
         self.title.move((self.width() - self.title.width()) // 2, (self.height() - self.title.height()) // 2)
         self.title.raise_()
+        self.title.show()
+        if not was_visible:
+            logger.debug("ReaderHeader title shown (header width=%d)", self.width())
+        self._title_visible = True
 
     def _toggle_zoom(self) -> None:
         window = self.window()
@@ -284,8 +356,8 @@ class ReaderFooter(QWidget):
         left_layout = QHBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
-        self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", "Jump to start", self.start_requested.emit)
-        self.left_inner_button = reader_button(resources, "icon_left.svg", "Previous page", self.previous_requested.emit)
+        self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", t("reader.jump_to_start"), self.start_requested.emit)
+        self.left_inner_button = reader_button(resources, "icon_left.svg", t("reader.previous_page"), self.previous_requested.emit)
         left_layout.addWidget(self.left_outer_button)
         left_layout.addWidget(self.left_inner_button)
         upper_layout.addWidget(left)
@@ -313,8 +385,8 @@ class ReaderFooter(QWidget):
         right_layout = QHBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        self.right_inner_button = reader_button(resources, "icon_right.svg", "Next page", self.next_requested.emit)
-        self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", "Jump to end", self.end_requested.emit)
+        self.right_inner_button = reader_button(resources, "icon_right.svg", t("reader.next_page"), self.next_requested.emit)
+        self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", t("reader.jump_to_end"), self.end_requested.emit)
         right_layout.addWidget(self.right_inner_button)
         right_layout.addWidget(self.right_outer_button)
         upper_layout.addWidget(right)
@@ -333,9 +405,9 @@ class ReaderFooter(QWidget):
         self.direction_switch = ReaderSwitch(
             resources,
             (
-                ("Right-to-left", "icon_read-from-left.svg", ReaderDirection.RIGHT_TO_LEFT),
-                ("Left-to-right", "icon_read-from-right.svg", ReaderDirection.LEFT_TO_RIGHT),
-                ("Top-to-down", "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
+                (t("reader.dir_rtl"), "icon_read-from-left.svg", ReaderDirection.RIGHT_TO_LEFT),
+                (t("reader.dir_ltr"), "icon_read-from-right.svg", ReaderDirection.LEFT_TO_RIGHT),
+                (t("reader.dir_ttb"), "icon_read-from-top.svg", ReaderDirection.TOP_TO_BOTTOM),
             ),
         )
         self.direction_switch.value_changed.connect(self.direction_changed.emit)
@@ -343,8 +415,8 @@ class ReaderFooter(QWidget):
         self.effect_switch = ReaderSwitch(
             resources,
             (
-                ("none", "icon_change-page_no-effect.svg", ReaderTransitionMode.NONE),
-                ("slide", "icon_change-page_slide.svg", ReaderTransitionMode.SLIDE),
+                (t("reader.effect_none"), "icon_change-page_no-effect.svg", ReaderTransitionMode.NONE),
+                (t("reader.effect_slide"), "icon_change-page_slide.svg", ReaderTransitionMode.SLIDE),
             ),
         )
         self.effect_switch.value_changed.connect(self.transition_changed.emit)
@@ -353,11 +425,11 @@ class ReaderFooter(QWidget):
         self.shift_button = reader_button(
             resources,
             "icon_shift-by-one.svg",
-            "Shift spread pairing",
+            t("reader.shift_spread"),
             self.spread_shift_requested.emit,
         )
         lower_layout.addWidget(self.shift_button)
-        self.settings_button = reader_button(resources, "icon_setting.svg", "Reader settings", self.settings_requested.emit)
+        self.settings_button = reader_button(resources, "icon_setting.svg", t("reader.settings"), self.settings_requested.emit)
         lower_layout.addWidget(self.settings_button)
         layout.addWidget(lower)
 
@@ -375,15 +447,15 @@ class ReaderFooter(QWidget):
         self.direction_switch.set_value(direction)
         self.slider.set_reading_direction(direction)
         if direction == ReaderDirection.RIGHT_TO_LEFT:
-            self.left_outer_button.setToolTip("Jump to end")
-            self.left_inner_button.setToolTip("Next page")
-            self.right_inner_button.setToolTip("Previous page")
-            self.right_outer_button.setToolTip("Jump to start")
+            self.left_outer_button.setToolTip(t("reader.jump_to_end"))
+            self.left_inner_button.setToolTip(t("reader.next_page"))
+            self.right_inner_button.setToolTip(t("reader.previous_page"))
+            self.right_outer_button.setToolTip(t("reader.jump_to_start"))
         else:
-            self.left_outer_button.setToolTip("Jump to start")
-            self.left_inner_button.setToolTip("Previous page")
-            self.right_inner_button.setToolTip("Next page")
-            self.right_outer_button.setToolTip("Jump to end")
+            self.left_outer_button.setToolTip(t("reader.jump_to_start"))
+            self.left_inner_button.setToolTip(t("reader.previous_page"))
+            self.right_inner_button.setToolTip(t("reader.next_page"))
+            self.right_outer_button.setToolTip(t("reader.jump_to_end"))
 
     def set_transition_mode(self, mode: ReaderTransitionMode) -> None:
         self.effect_switch.set_value(mode)

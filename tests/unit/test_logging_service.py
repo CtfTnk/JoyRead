@@ -15,6 +15,7 @@ from joyread.infrastructure.logging.logging_service import (
     LOG_FILE_MAX_BYTES,
     LOG_FILE_NAME,
     configure_logging,
+    describe_callback,
     get_logger,
     log_timed_block,
 )
@@ -123,6 +124,23 @@ def test_get_logger_returns_named_logger() -> None:
     two = get_logger("joyread.facade.test")
     assert one is two
     assert one.name == "joyread.facade.test"
+
+
+def test_describe_callback_names_plain_lambda_and_bound_method() -> None:
+    def local_callback() -> None:
+        pass
+
+    class Receiver:
+        def handle(self) -> None:
+            pass
+
+    lambda_label = describe_callback(lambda: None)
+    function_label = describe_callback(local_callback)
+    method_label = describe_callback(Receiver().handle)
+
+    assert lambda_label.endswith(".<lambda>")
+    assert function_label.endswith("test_describe_callback_names_plain_lambda_and_bound_method.<locals>.local_callback")
+    assert method_label.endswith("Receiver.handle")
 
 
 def test_log_timed_block_emits_start_and_done(

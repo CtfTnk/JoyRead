@@ -35,13 +35,14 @@ QWidget#ViewPanel {
     border-bottom-right-radius: __WINDOW_RADIUS__;
 }
 
+QWidget#TitleBar,
 QWidget#WindowChrome {
     background: #ffffff;
     border-top-left-radius: __WINDOW_RADIUS__;
     border-top-right-radius: __WINDOW_RADIUS__;
 }
 
-/* Frameless chrome controls */
+/* Custom title bar controls */
 QToolButton#CloseButton,
 QToolButton#MinimizeButton,
 QToolButton#ZoomButton {
@@ -280,6 +281,10 @@ QFrame[class="ReaderSettingsSmallSwitch"] {
     border-radius: __SETTINGS_SWITCH_RADIUS__;
 }
 
+QFrame[class="ReaderSettingsSmallSwitch"][checked="true"] {
+    background: __WINDOW_COLOR__;
+}
+
 QFrame[class="ReaderSettingsSmallSwitchKnob"] {
     background: __SETTINGS_SWITCH_KNOB__;
     border: none;
@@ -457,6 +462,10 @@ QScrollArea#SidebarScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
+QScrollArea#SidebarScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
+}
+
 QScrollArea#SidebarScrollArea QScrollBar::add-line:vertical,
 QScrollArea#SidebarScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
@@ -513,6 +522,7 @@ QWidget#DialogMessageContent,
 QWidget#DialogInputContent,
 QWidget#DialogPasswordContent,
 QWidget#DialogCollectionSelectContent,
+QWidget#DialogTagFilterContent,
 QWidget#DialogInputArea {
     background: transparent;
     border: none;
@@ -522,7 +532,10 @@ QScrollArea#JoyReadDialogContentScrollArea,
 QWidget#JoyReadDialogContentViewport,
 QScrollArea#DialogCollectionInnerScrollArea,
 QWidget#DialogCollectionInnerViewport,
-QWidget#DialogCollectionRowContent {
+QWidget#DialogCollectionRowContent,
+QScrollArea#DialogTagFilterInnerScrollArea,
+QWidget#DialogTagFilterInnerViewport,
+QWidget#DialogTagFilterListHost {
     background: transparent;
     border: none;
 }
@@ -573,7 +586,8 @@ QLabel#DialogDetailPrompt {
     font-weight: 400;
 }
 
-QFrame#DialogCollectionScrollPanel {
+QFrame#DialogCollectionScrollPanel,
+QFrame#DialogTagFilterScrollPanel {
     background: __WINDOW_COLOR__;
     border: __DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
     border-radius: __DIALOG_COLLECTION_SCROLL_RADIUS__;
@@ -633,33 +647,47 @@ QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
     margin: __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 2px __DIALOG_COLLECTION_SCROLLBAR_MARGIN__ 0;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
     border-radius: __SHELF_SCROLLBAR_RADIUS__;
     min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
 }
 
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-line:vertical,
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-line:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::add-line:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
     border: none;
     height: 0;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-page:vertical,
-QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical {
+QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-page:vertical,
+QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::add-page:vertical,
+QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
@@ -674,14 +702,63 @@ QFrame[class="SearchPanel"] {
 
 QFrame[class="FigmaDropdownButton"],
 QFrame[class="FigmaSearchBar"],
-QToolButton[class="FigmaSearchOuterButton"] {
+QToolButton[class="FigmaSearchOuterButton"],
+QFrame[class="FigmaTagFilterButton"] {
     background: __WINDOW_COLOR__;
     border: 1px solid __BUTTON_EDGE__;
     border-radius: __CONTROL_RADIUS__;
 }
 
-QToolButton[class="FigmaSearchOuterButton"]:hover {
+QToolButton[class="FigmaSearchOuterButton"]:hover,
+QFrame[class="FigmaTagFilterButton"]:hover,
+QFrame[class="FigmaTagFilterButton"][active="true"] {
     background: __SELECTED_COLOR__;
+}
+
+QFrame#CoverEditorPanel {
+    background: __WINDOW_COLOR__;
+    border: __COVER_EDITOR_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_RADIUS__;
+}
+
+QFrame#CoverEditorAdjustArea,
+QWidget#CoverEditorEditArea,
+QWidget#CoverEditorControls,
+QWidget#CoverEditorImportRow,
+QWidget#CoverEditorActionRow,
+QWidget#CoverThumbnailPickerPage,
+QScrollArea#CoverThumbnailScrollArea,
+QScrollArea#CoverThumbnailScrollArea QWidget#CoverThumbnailViewport {
+    background: transparent;
+    border: none;
+}
+
+QFrame#CoverEditorImportButton {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_IMPORT_RADIUS__;
+}
+
+QFrame#CoverEditorImportButton:hover,
+QToolButton#CoverEditorBrowseButton:hover,
+QToolButton#CoverEditorCancelButton:hover,
+QToolButton#CoverEditorConfirmButton:hover {
+    background: __SELECTED_COLOR__;
+}
+
+QLabel#CoverEditorImportText {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_FONT_SIZE__;
+    font-weight: 400;
+}
+
+QToolButton#CoverEditorBrowseButton,
+QToolButton#CoverEditorCancelButton,
+QToolButton#CoverEditorConfirmButton {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __COVER_EDITOR_IMPORT_RADIUS__;
+    padding: __COVER_EDITOR_ICON_BUTTON_PADDING__;
 }
 
 QLabel[class="FigmaDropdownText"] {
@@ -717,6 +794,10 @@ QToolButton[class="FigmaSearchInnerButton"] {
 
 QToolButton[class="FigmaSearchInnerButton"]:hover {
     background: __SELECTED_COLOR__;
+}
+
+QLabel#TagFilterButtonIcon {
+    background: transparent;
 }
 
 QFrame#ToolbarSpacer {
@@ -807,7 +888,6 @@ QWidget#SettingsRightViewport,
 QWidget#SettingsRightContent,
 QWidget#SettingsItemName,
 QWidget#SettingsItemOption,
-QWidget#SettingsSwitchOption,
 QWidget#SettingsAddressOption,
 QWidget#SettingsDropdownIndicator {
     background: transparent;
@@ -900,6 +980,10 @@ QFrame[class="SettingsSwitch"] {
     background: __SETTINGS_SWITCH_BACKGROUND__;
     border: 1px solid __BUTTON_INNER_EDGE__;
     border-radius: __SETTINGS_SWITCH_RADIUS__;
+}
+
+QFrame[class="SettingsSwitch"][checked="true"] {
+    background: __WINDOW_COLOR__;
 }
 
 QFrame[class="SettingsSwitchKnob"] {
@@ -1103,41 +1187,58 @@ QWidget#BookDetailNameAuthor,
 QWidget#BookDetailAttributes,
 QWidget#BookDetailControlPanel,
 QWidget#BookDetailControlLeftSide,
-QWidget#BookDetailThumbnails {
+QWidget#BookDetailThumbnails,
+QScrollArea#BookDetailTagScrollArea,
+QWidget#BookDetailTagViewport,
+QWidget#BookDetailTagListHost {
     background: transparent;
     border: none;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar:vertical {
+QFrame#BookDetailTagBox {
+    background: __DETAIL_TAG_BOX_BACKGROUND__;
+    border: __DETAIL_TAG_BOX_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __DETAIL_TAG_BOX_RADIUS__;
+}
+
+QScrollArea#BookDetailScrollArea QScrollBar:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
     width: __SHELF_SCROLLBAR_WIDTH__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
     border-radius: __SHELF_SCROLLBAR_RADIUS__;
     min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover {
+QScrollArea#BookDetailScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#BookDetailTagScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
-QScrollArea#BookDetailScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar[scrollHandleVisible="false"]::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE_HIDDEN__;
 }
 
 QScrollArea#BookDetailScrollArea QScrollBar::add-line:vertical,
-QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::add-line:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
     border: none;
     height: 0;
 }
 
 QScrollArea#BookDetailScrollArea QScrollBar::add-page:vertical,
-QScrollArea#BookDetailScrollArea QScrollBar::sub-page:vertical {
+QScrollArea#BookDetailScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::add-page:vertical,
+QScrollArea#BookDetailTagScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
 }
 
@@ -1209,4 +1310,93 @@ QLabel[class="StateTitle"] {
 QLabel[class="StateBody"] {
     color: #6d6d6d;
     font-size: 14px;
+}
+
+/* Hidden Space launch lock overlay */
+QWidget#HiddenSpaceLockOverlay {
+    background: __READER_BACKGROUND__;
+    border-radius: __WINDOW_RADIUS__;
+}
+
+QLabel#HiddenSpaceLockHint {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __SIDEBAR_ITEM_FONT_SIZE__;
+}
+
+QLabel#HiddenSpaceLockState {
+    color: __MENU_DESTRUCTIVE__;
+    font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
+}
+
+QLabel[class="HiddenSpaceLockButtonText"] {
+    color: __TEXT_COLOR__;
+    font-size: __DIALOG_INPUT_HEADER_FONT_SIZE__;
+    font-weight: 600;
+}
+
+/* Destructive variants reuse the menu red token. */
+QLabel[class="JoyReadDialogTitle"][destructive="true"] {
+    color: __MENU_DESTRUCTIVE__;
+}
+
+QFrame[class="SettingsItem"][destructive="true"] QLabel[class="SettingsItemNameText"],
+QToolButton[class="SettingsPushButton"][destructive="true"] {
+    color: __MENU_DESTRUCTIVE__;
+}
+
+/* Tag management page (Figma node 688:3630). */
+QFrame#TagManager {
+    background: __TAG_MANAGER_BACKGROUND__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_MANAGER_RADIUS__;
+}
+
+QScrollArea#TagListScrollArea,
+QWidget#TagListViewport,
+QWidget#TagListHost {
+    background: transparent;
+    border: none;
+}
+
+QFrame[class="TagChip"] {
+    background: __WINDOW_COLOR__;
+    border: __TAG_CHIP_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_CHIP_RADIUS__;
+}
+
+QFrame[class="TagChip"][selected="true"] {
+    background: __SELECTED_COLOR__;
+}
+
+QFrame[class="TagChip"] QLabel[class="TagChipLabel"] {
+    color: __TEXT_COLOR__;
+    font-size: __TAG_CHIP_FONT_SIZE__;
+    font-weight: 500;
+    background: transparent;
+}
+
+QLineEdit[class="TagInputField"] {
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_BUTTON_RADIUS__;
+    padding: __DIALOG_INPUT_FIELD_PADDING__;
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_CONTROL_FONT_SIZE__;
+}
+
+/* Tag-page push buttons override the default Settings 4px radius with the
+   Figma 6px radius, and supply an explicit faded-disabled treatment so
+   Qt's default disabled palette doesn't leave them looking interactive. */
+QToolButton[class="SettingsPushButton"][variant="tag"] {
+    border-radius: __TAG_BUTTON_RADIUS__;
+}
+
+QToolButton[class="SettingsPushButton"][variant="tag"]:disabled {
+    color: rgba(0, 0, 0, 102);
+    background: rgba(255, 255, 255, 153);
+    border: 1px solid rgba(224, 224, 224, 153);
+}
+
+QToolButton[class="SettingsPushButton"][variant="tag"][destructive="true"]:disabled {
+    color: rgba(191, 12, 12, 102);
 }

@@ -2,16 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 from datetime import datetime
+import hashlib
 from uuid import uuid4
 
+import py7zr
 from PIL import Image
 
-from joyread.core.archive import ArchiveEmptyError, ArchivePasswordRejected, ArchivePasswordRequired
+from joyread.core.archive import (
+    ArchiveImageService,
+    ArchiveContentsEntry,
+    ArchiveEmptyError,
+    ArchivePasswordRejected,
+    ArchivePasswordRequired,
+    ArchiveResourceLimitError,
+)
 from joyread.core.models.bookmark import Bookmark
-from joyread.core.reader import ReaderDirection, ReaderDisplayMode, ReaderPageImage, ReaderSettings
+from joyread.core.reader import (
+    ReaderDirection,
+    ReaderDisplayMode,
+    ReaderPageImage,
+    ReaderSessionService,
+    ReaderSettings,
+)
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
-from joyread.core.services.cache_service import CacheService
-from joyread.core.services.task_service import TaskHandle, TaskStatus
+from joyread.core.services.cache_service import CacheService, ThumbnailCacheKey
+from joyread.core.services.hash_service import HashService
+from joyread.app.reader_document_runtime import ReaderDocumentRuntime
+from joyread.app.reader_page_pipeline import PreparedReaderPage
+from joyread.app.tasking import TaskHandle, TaskStatus
+from joyread.infrastructure.thumbnail_renderer import PillowThumbnailRenderer
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
 
 
@@ -121,8 +140,13 @@ class _DeferredSettingsTaskService:
 class _FakeSession:
     page_count = 5
 
-    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
+    def __init__(
+        self,
+        dimensions: tuple[int, int] = (600, 900),
+        contents: tuple[ArchiveContentsEntry, ...] = (),
+    ) -> None:
         self._dimensions = dimensions
+        self.contents = contents
 
     def get_image(self, index: int) -> bytes | None:
         if not 0 <= index < self.page_count:
@@ -136,8 +160,12 @@ class _FakeSession:
 
 
 class _FakeSessionService:
-    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
-        self._session = _FakeSession(dimensions)
+    def __init__(
+        self,
+        dimensions: tuple[int, int] = (600, 900),
+        contents: tuple[ArchiveContentsEntry, ...] = (),
+    ) -> None:
+        self._session = _FakeSession(dimensions, contents)
 
     def open_document(  # noqa: ANN001
         self,
@@ -146,14 +174,16 @@ class _FakeSessionService:
         passwords=None,
         skipped_archives=None,
         *,
-        archive_internal_max_depth=2,
+        nested_archive_max_depth=2,
+        archive_global_file_max_depth=100,
     ):
         return self.open_archive(
             path,
             password=password,
             passwords=passwords,
             skipped_archives=skipped_archives,
-            archive_internal_max_depth=archive_internal_max_depth,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
         )
 
     def open_archive(  # noqa: ANN001
@@ -163,9 +193,10 @@ class _FakeSessionService:
         passwords=None,
         skipped_archives=None,
         *,
-        archive_internal_max_depth=2,
+        nested_archive_max_depth=2,
+        archive_global_file_max_depth=100,
     ):
-        del archive_internal_max_depth
+        del nested_archive_max_depth, archive_global_file_max_depth
         return self._session
 
     def load_page(self, session: _FakeSession, page_index: int) -> ReaderPageImage | None:
@@ -182,6 +213,76 @@ class _FakeSessionService:
             if page is not None:
                 loaded[page_index] = page
         return loaded
+
+
+class _CountingSessionService(_FakeSessionService):
+    def __init__(self, dimensions: tuple[int, int] = (600, 900)) -> None:
+        super().__init__(dimensions)
+        self.page_requests: list[tuple[int, ...]] = []
+
+    def load_pages(self, session: _FakeSession, page_indices: tuple[int, ...]) -> dict[int, ReaderPageImage]:
+        self.page_requests.append(page_indices)
+        return super().load_pages(session, page_indices)
+
+
+class _FakeSessionWithThumbnails(_FakeSession):
+    """Mimics PdfImageSession's direct thumbnail path.
+
+    Records calls so a test can prove the size-aware path was used instead
+    of the byte-extraction fallback, and returns None for pages an index
+    tells it to fail, so the partial-miss fallback can be exercised too.
+    """
+
+    def __init__(self, *, fail_indices: frozenset[int] = frozenset()) -> None:
+        super().__init__()
+        self.thumbnail_calls: list[tuple[tuple[int, ...], tuple[int, int]]] = []
+        self._fail_indices = fail_indices
+
+    def thumbnail_batch_size(self, _page_index: int) -> int:
+        # >1 so a multi-page request reaches prepare_thumbnail_pages() as one
+        # batch -- the default of 1 would give each page its own load() call,
+        # which cannot exercise a *partial* miss within one batch.
+        return 8
+
+    def prepare_thumbnail_pages(
+        self, page_indices: tuple[int, ...], size: tuple[int, int]
+    ) -> list[PreparedReaderPage | None]:
+        self.thumbnail_calls.append((tuple(page_indices), size))
+        return [
+            None
+            if index in self._fail_indices
+            else PreparedReaderPage(index, f"frame-{index}", self._dimensions, size, 0)
+            for index in page_indices
+        ]
+
+
+class _SessionServiceWithThumbnails(_CountingSessionService):
+    """Adds prepare_thumbnail_pages() on top of _CountingSessionService's
+    page_requests tracking, so a test can assert both which path served a
+    page *and* that the byte-extraction path was not reached for it."""
+
+    def __init__(self, *, fail_indices: frozenset[int] = frozenset()) -> None:
+        super().__init__()
+        self._session = _FakeSessionWithThumbnails(fail_indices=fail_indices)
+
+
+class _RecordingThumbnailRenderer:
+    def __init__(self, *, fail_prepared_indices: frozenset[int] = frozenset()) -> None:
+        self.prepared_calls: list[tuple[object, tuple[int, int]]] = []
+        self.encoded_calls: list[tuple[bytes, tuple[int, int]]] = []
+        self._fail_prepared_indices = fail_prepared_indices
+
+    def render_prepared(self, frame: object, size: tuple[int, int]) -> bytes:
+        self.prepared_calls.append((frame, size))
+        if isinstance(frame, str) and frame.startswith("frame-"):
+            index = int(frame.split("-")[1])
+            if index in self._fail_prepared_indices:
+                raise RuntimeError(f"synthetic render_prepared failure for page {index}")
+        return b"prepared-thumbnail"
+
+    def render_encoded(self, image_bytes: bytes, size: tuple[int, int]) -> bytes:
+        self.encoded_calls.append((image_bytes, size))
+        return b"encoded-thumbnail"
 
 
 class _FakeLibraryService:
@@ -325,7 +426,7 @@ def test_reader_viewmodel_uses_rtl_navigation_and_shifted_spreads(tmp_path: Path
     assert viewmodel.current_display_indices == (1, 2)
 
 
-def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None:
+def test_reader_viewmodel_publishes_primary_before_spread_is_complete(tmp_path: Path) -> None:
     viewmodel = _viewmodel(tmp_path)
     layout_modes: list[ReaderDisplayMode] = []
     viewmodel.layout_changed.connect(lambda result: layout_modes.append(result.mode))
@@ -334,7 +435,7 @@ def test_reader_viewmodel_waits_for_spread_before_layout(tmp_path: Path) -> None
     viewmodel.set_viewport_size(1600, 900)
 
     assert layout_modes
-    assert ReaderDisplayMode.SINGLE not in layout_modes
+    assert ReaderDisplayMode.SINGLE in layout_modes
     assert layout_modes[-1] == ReaderDisplayMode.DOUBLE
 
 
@@ -585,6 +686,66 @@ def test_reader_viewmodel_vertical_fit_width_uses_page_width_for_scroll_step(tmp
     assert viewmodel.current_index == 1
 
 
+def test_reader_viewmodel_vertical_last_page_can_scroll_until_bottom_aligns(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+    # Custom + 200% zoom makes every page render at 1600px tall, so the
+    # last page can't fit the 800px viewport without scrolling down past
+    # the page top.
+    viewmodel.set_vertical_custom_enabled(True)
+    viewmodel.set_vertical_zoom_percent(200)
+
+    last_index = viewmodel.page_count - 1
+    viewmodel.seek(last_index)
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == 0.0
+
+    # Scroll well past the natural floor — the clamp should land at
+    # ``viewport_height - page_height`` so the page bottom sits at the
+    # viewport bottom.
+    assert viewmodel.handle_vertical_scroll(-10_000) is True
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == -800.0
+    last_draw = next(
+        draw for draw in viewmodel.layout_result.page_draws if draw.page_index == last_index
+    )
+    # rect.y is the page-top offset; page_top + page_height should equal
+    # viewport_height when the bottom is flush.
+    assert last_draw.rect.y + last_draw.rect.height == 800
+
+    # Scrolling up by a small amount keeps the anchor on the last page
+    # but accumulates positive scroll_y so the backward transition can
+    # eventually fire. (A previous, over-eager clamp pinned scroll_y to
+    # ``<= 0`` here and prevented escape from the last page.)
+    assert viewmodel.handle_vertical_scroll(400) is True
+    assert viewmodel.current_index == last_index
+    assert viewmodel._vertical_scroll_y == -400.0
+
+    # A large upward scroll has to walk back through every page step
+    # and land on the first page at the natural top clamp.
+    assert viewmodel.handle_vertical_scroll(100_000) is True
+    assert viewmodel.current_index == 0
+    assert viewmodel._vertical_scroll_y == 0.0
+
+
+def test_reader_viewmodel_vertical_last_page_short_enough_keeps_anchor_at_top(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    viewmodel.set_direction(ReaderDirection.TOP_TO_BOTTOM)
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1000, 800)
+
+    last_index = viewmodel.page_count - 1
+    viewmodel.seek(last_index)
+    # Default zoom keeps the page exactly viewport-tall; the new clamp
+    # must not let the user scroll past the page top in that case.
+    assert viewmodel.handle_vertical_scroll(-5_000) is True
+    assert viewmodel._vertical_scroll_y == 0.0
+
+
 def test_reader_settings_saves_latest_per_book_when_changes_overlap(tmp_path: Path) -> None:
     library = _FakeLibraryService()
     task_service = _DeferredSettingsTaskService()
@@ -736,9 +897,22 @@ def test_reader_viewmodel_reports_password_cancel_as_undecrypted_archive(tmp_pat
     assert viewmodel.is_loading is False
 
 
+def test_reader_viewmodel_localizes_resource_limit_error_without_member_details(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+    sensitive_member = "private/secret-page.png"
+
+    viewmodel._handle_open_failure(
+        viewmodel._task_generation,
+        ArchiveResourceLimitError("image_pixels", subject=sensitive_member),
+    )
+
+    assert viewmodel.error_message == "This archive exceeds the current resource limits."
+    assert sensitive_member not in viewmodel.error_message
+
+
 def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) -> None:
     vm = ReaderViewModel(
-        _RejectedPasswordSessionService(),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_RejectedPasswordSessionService()),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -761,7 +935,7 @@ def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) ->
 
 def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_path: Path) -> None:
     vm = ReaderViewModel(
-        _RejectedPagePasswordSessionService(),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_RejectedPagePasswordSessionService()),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -784,7 +958,7 @@ def test_reader_viewmodel_reprompts_when_page_extraction_rejects_password(tmp_pa
 def test_reader_viewmodel_skip_password_request_reopens_with_skipped_archive(tmp_path: Path) -> None:
     session_service = _RequiredThenSkipSessionService()
     vm = ReaderViewModel(
-        session_service,  # type: ignore[arg-type]
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -805,7 +979,7 @@ def test_reader_viewmodel_skip_password_request_reopens_with_skipped_archive(tmp
 def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipped(tmp_path: Path) -> None:
     session_service = _SkipLeavesNoPagesSessionService()
     vm = ReaderViewModel(
-        session_service,  # type: ignore[arg-type]
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
         _SyncTaskService(),  # type: ignore[arg-type]
         _cache_service(tmp_path).issue_reader_namespace(),
         title="Book",
@@ -820,6 +994,37 @@ def test_reader_viewmodel_skip_password_request_reports_no_images_when_all_skipp
     assert errors[-1] == "No readable images. Encrypted archives were skipped."
     assert vm.error_message == "No readable images. Encrypted archives were skipped."
     assert vm.page_count == 0
+
+
+def test_reader_viewmodel_exposes_archive_contents_and_clears_them_on_cancel(tmp_path: Path) -> None:
+    contents = (
+        ArchiveContentsEntry("Chapter1", 0, 0),
+        ArchiveContentsEntry("Part2", 3, 1),
+    )
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(_FakeSessionService(contents=contents)),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    changes: list[tuple] = []
+    vm.contents_changed.connect(changes.append)
+
+    vm.open_path(tmp_path / "contents.cbz")
+
+    assert vm.can_use_contents
+    assert [(item.label, item.page_index, item.depth) for item in vm.contents] == [
+        ("Chapter1", 0, 0),
+        ("Part2", 3, 1),
+    ]
+
+    vm.seek(vm.contents[1].page_index)
+    assert vm.current_index == 3
+
+    vm.cancel()
+    assert vm.contents == ()
+    assert not vm.can_use_contents
+    assert changes[-1] == ()
 
 
 def test_reader_viewmodel_bookmarks_sync_from_library_service(tmp_path: Path) -> None:
@@ -865,21 +1070,191 @@ def test_reader_viewmodel_ignores_bookmark_actions_without_library(tmp_path: Pat
     assert changes[-1] == ()
 
 
-def test_reader_viewmodel_emits_topic_thumbnail_batches_from_active_session(tmp_path: Path) -> None:
+def test_reader_viewmodel_streams_topic_thumbnails_from_active_session(tmp_path: Path) -> None:
     vm = _viewmodel(tmp_path)
-    batches = []
+    items: list[tuple[int, bytes]] = []
 
-    vm.topic_thumbnail_batch_ready.connect(batches.append)
+    vm.topic_thumbnail_ready.connect(lambda page_index, image_bytes: items.append((page_index, image_bytes)))
     vm.open_path(tmp_path / "book.cbz")
-    vm.request_topic_thumbnail_batch(0, 2, (100, 142))
+    vm.set_topic_thumbnail_interest((0, 1), (), (100, 142))
 
-    assert batches
-    batch = batches[-1]
-    assert batch.start_index == 0
-    assert batch.next_index == 2
-    assert batch.has_more is True
-    assert [item.page_index for item in batch.items] == [0, 1]
-    assert all(item.image_bytes for item in batch.items)
+    assert [page_index for page_index, _image_bytes in items] == [0, 1]
+    assert all(image_bytes for _page_index, image_bytes in items)
+
+
+def test_reader_topic_reuses_sufficient_prepared_frame_without_archive_read(tmp_path: Path) -> None:
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    session_service = _CountingSessionService()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-reuse"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((0,), (), (100, 142))
+
+    assert session_service.page_requests == []
+    assert renderer.prepared_calls
+    assert renderer.encoded_calls == []
+    assert ready == [(0, b"prepared-thumbnail")]
+
+
+def test_reader_topic_falls_back_when_prepared_frame_is_too_small(tmp_path: Path) -> None:
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    session_service = _CountingSessionService()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    page_cache = cache.issue_reader_namespace()
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        page_cache,
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-fallback"),
+    )
+
+    vm.open_path(source)
+    page_cache.clear()
+    page_cache.put(
+        0,
+        PreparedReaderPage(0, b"tiny", (600, 900), (10, 10), vm._task_generation),
+        10,
+        10,
+    )
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((0,), (), (100, 142))
+
+    assert session_service.page_requests == [(0,)]
+    assert renderer.prepared_calls == []
+    assert renderer.encoded_calls
+
+
+def test_reader_topic_uses_a_direct_thumbnail_render_when_the_session_offers_one(
+    tmp_path: Path,
+) -> None:
+    """The PDF case: an unread page must not round-trip through PNG bytes.
+
+    Before this, any page without a cached Reader frame fell straight to
+    read_pages() -- for PDF, a full-page-sized render plus a PNG encode the
+    caller immediately decoded again. A session that exposes
+    prepare_thumbnail_pages() must be asked for a thumbnail-sized frame
+    directly instead, and the PNG-bytes fallback must not run at all.
+    """
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails()
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-direct"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    # Page 0 (and its companion, if paired) are already cached by the open --
+    # that is the *other* fast path (reuse), covered by
+    # test_reader_topic_reuses_sufficient_prepared_frame_without_archive_read.
+    # This test is about a page nothing has displayed yet, so it must pick
+    # one outside whatever open_path just populated.
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((3,), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((3,), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [], "must not fall through to the PNG byte path"
+    assert renderer.encoded_calls == []
+    assert renderer.prepared_calls == [("frame-3", (100, 142))]
+    assert ready == [(3, b"prepared-thumbnail")]
+
+
+def test_reader_topic_falls_back_per_page_when_the_direct_render_misses(
+    tmp_path: Path,
+) -> None:
+    """A page prepare_thumbnail_pages() cannot serve (returns None for) must
+    still reach the PNG fallback -- the fast path is an addition, not a
+    replacement, and one page's miss must not take the whole batch down with
+    it."""
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails(fail_indices=frozenset({3}))
+    renderer = _RecordingThumbnailRenderer()
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-partial"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    # Same reasoning as above: pick pages outside whatever open_path already
+    # cached, so both land in the "never displayed" branch this test targets.
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((2, 3), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((2, 3), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [(3,)], "only the miss must reach the PNG path"
+    assert renderer.prepared_calls == [("frame-2", (100, 142))]
+    assert renderer.encoded_calls
+    assert sorted(page_index for page_index, _ in ready) == [2, 3]
+
+
+def test_reader_topic_falls_back_when_a_prepared_direct_frame_fails_to_render(
+    tmp_path: Path,
+) -> None:
+    """A page prepare_thumbnail_pages() *did* prepare, but whose subsequent
+    render_prepared() call raises, must still reach the PNG fallback rather
+    than being silently dropped -- distinct from the miss case above, where
+    prepare_thumbnail_pages() itself returned None for the page."""
+
+    source = tmp_path / "book.pdf"
+    source.write_bytes(b"fake")
+    session_service = _SessionServiceWithThumbnails()
+    renderer = _RecordingThumbnailRenderer(fail_prepared_indices=frozenset({3}))
+    cache = _cache_service(tmp_path)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(session_service),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+        title="Book",
+        thumbnail_renderer=renderer,
+        thumbnail_cache_client=cache.issue_thumbnail_client("topic-render-fail"),
+    )
+    ready: list[tuple[int, bytes]] = []
+    vm.topic_thumbnail_ready.connect(lambda page_index, data: ready.append((page_index, data)))
+
+    vm.open_path(source)
+    session_service.page_requests.clear()
+    vm.set_topic_thumbnail_interest((3,), (), (100, 142))
+
+    assert session_service._session.thumbnail_calls == [((3,), (100, 142))]  # noqa: SLF001
+    assert session_service.page_requests == [(3,)], (
+        "a render_prepared() failure on the direct path must still fall back to the PNG path"
+    )
+    assert ready == [(3, b"encoded-thumbnail")]
 
 
 def _cache_service(tmp_path: Path) -> CacheService:
@@ -901,7 +1276,7 @@ def _viewmodel(
     source.write_bytes(b"fake")
     cache = cache_service or _cache_service(tmp_path)
     return ReaderViewModel(
-        _FakeSessionService(dimensions),  # type: ignore[arg-type]
+        ReaderDocumentRuntime(_FakeSessionService(dimensions)),  # type: ignore[arg-type]
         task_service or _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         library_service,  # type: ignore[arg-type]
@@ -909,6 +1284,7 @@ def _viewmodel(
         title="Book",
         prefetch_before=prefetch_before,
         prefetch_after=prefetch_after,
+        thumbnail_renderer=PillowThumbnailRenderer(),
     )
 
 
@@ -930,7 +1306,7 @@ def test_reader_viewmodel_cancel_clears_only_its_namespace_in_shared_cache(tmp_p
     bytes_after = cache_service.reader_page_cache.current_bytes
     assert bytes_after > 0
     assert bytes_after < bytes_before
-    assert vm_a._session is None
+    assert vm_a._document is None
     assert vm_a._pages == {}
     assert vm_a._layout_result is None
     assert vm_a.page_count == 0
@@ -974,7 +1350,6 @@ def test_reader_viewmodel_ignores_late_page_results_after_cancel(tmp_path: Path)
 
     assert ready == []
     assert vm._pages == {}
-    assert vm._page_handles == {}
 
 
 def test_reader_viewmodel_keeps_prefetch_pages_out_of_resident_pages(tmp_path: Path) -> None:
@@ -1058,9 +1433,269 @@ def test_reader_viewmodel_rtl_swaps_prefetch_window(tmp_path: Path) -> None:
         assert namespace.get(index) is not None, f"page {index} should be prefetched"
 
 
+def test_reader_viewmodel_disabling_always_one_page_recovers_double_spread_from_lru(tmp_path: Path) -> None:
+    # Repro for the post-revert "stuck on loading" bug: when "always one
+    # page" was on we ran in single-page mode, but the prefetch warmed the
+    # companion page into the shared LRU cache. Flipping the toggle off
+    # used to call ``_request_page`` which synchronously resolved the
+    # companion from the LRU, then ``recalculate_layout`` would still fall
+    # through to ``_wait_for_layout_pages`` and clobber the freshly-built
+    # spread with a loading placeholder. Now the re-check picks up the
+    # synchronously-stored page and the spread lands without a resize.
+    vm = _viewmodel(
+        tmp_path,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    # LTR so the directional prefetch window points to the *next* archive
+    # index — the future companion if the user disables Always One Page.
+    vm.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    vm.set_custom_enabled(True)
+    vm.set_always_one_page(True)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(1600, 900)
+
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.SINGLE
+    # Companion lives in LRU only, not in the layout-resident page set.
+    assert 1 not in vm._pages
+    assert vm._page_cache.get(1) is not None
+
+    vm.set_always_one_page(False)
+
+    assert vm.loading_page_index is None
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.DOUBLE
+    assert vm.current_display_indices == (0, 1)
+
+
+def test_reader_viewmodel_disabling_custom_neutralises_always_one_page(tmp_path: Path) -> None:
+    # The horizontal "Always one page" row is gated behind the master
+    # "Enable Custom" toggle in the UI; the engine must mirror that.
+    # Otherwise the orphaned ``always_one_page=True`` value persists
+    # silently and keeps forcing single-page mode even with custom off.
+    vm = _viewmodel(
+        tmp_path,
+        prefetch_before=0,
+        prefetch_after=1,
+    )
+    vm.set_custom_enabled(True)
+    vm.set_always_one_page(True)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(1600, 900)
+
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.SINGLE
+
+    vm.set_custom_enabled(False)
+
+    assert vm.loading_page_index is None
+    assert vm.layout_result is not None
+    assert vm.layout_result.mode == ReaderDisplayMode.DOUBLE
+    assert vm.current_display_indices == (0, 1)
+    # The stored value remains True — only the *effective* gating changes.
+    assert vm.settings.always_one_page is True
+    assert vm.settings.custom_enabled is False
+
+
 def _png_bytes() -> bytes:
     from io import BytesIO
 
     output = BytesIO()
     Image.new("RGB", (8, 12), "#336699").save(output, format="PNG")
     return output.getvalue()
+
+
+def test_external_expensive_reader_promotes_ephemeral_cache_after_first_frame(tmp_path: Path) -> None:
+    source = tmp_path / "external.cb7"
+    with py7zr.SevenZipFile(source, "w") as archive:
+        archive.writestr(_png_bytes(), "001.png")
+        archive.writestr(_png_bytes(), "002.png")
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    cache = CacheService(pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(
+            ReaderSessionService(ArchiveImageService(extraction_pool=pool)),
+            archive_extraction_cache=pool,
+            hash_service=HashService(),
+        ),
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+    )
+
+    vm.open_path(source)
+
+    assert list((tmp_path / "pool").glob("x-*.partial.zip"))
+    assert not list((tmp_path / "pool").glob("e-*.zip"))
+
+    vm.cancel()
+
+    assert list((tmp_path / "pool").glob("x-*.partial.zip"))
+    assert not list((tmp_path / "pool").glob("e-*"))
+
+
+def test_external_cache_is_not_promoted_when_source_changes_during_hash(tmp_path: Path) -> None:
+    class _MutatingHashService:
+        def compute(self, path: Path, _algorithm: str = "sha256") -> str:
+            original = path.read_bytes()
+            digest = hashlib.sha256(original).hexdigest()
+            path.write_bytes(original + b"changed-during-hash")
+            return digest
+
+    source = tmp_path / "changing.cb7"
+    with py7zr.SevenZipFile(source, "w") as archive:
+        archive.writestr(_png_bytes(), "001.png")
+    pool = ArchiveExtractionPool(tmp_path / "pool", max_bytes=4 * 1024 * 1024)
+    cache = CacheService(pool, reader_page_cache_max_bytes=4 * 1024 * 1024)
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(
+            ReaderSessionService(ArchiveImageService(extraction_pool=pool)),
+            archive_extraction_cache=pool,
+            hash_service=_MutatingHashService(),  # type: ignore[arg-type]
+        ),
+        _SyncTaskService(),  # type: ignore[arg-type]
+        cache.issue_reader_namespace(),
+    )
+
+    vm.open_path(source)
+    assert not list((tmp_path / "pool").glob("x-*"))
+
+    vm.cancel()
+
+    assert not list((tmp_path / "pool").glob("e-*"))
+    assert not list((tmp_path / "pool").glob("x-*"))
+
+
+def test_flush_pending_writes_drains_the_serialized_settings_chain(tmp_path: Path) -> None:
+    """A storage transition has no "next save" to catch up: the database this
+    Reader writes to is about to be replaced.
+
+    The chain still runs one write at a time -- two concurrent writes for the
+    same book could persist the older one last -- so the flush reports work
+    outstanding until the queue is genuinely empty.
+    """
+
+    library = _FakeLibraryService()
+    task_service = _DeferredSettingsTaskService()
+    viewmodel = _viewmodel(tmp_path, library_service=library, task_service=task_service)
+
+    viewmodel.set_direction(ReaderDirection.LEFT_TO_RIGHT)
+    # A second change while the first is in flight leaves a pending save that
+    # only a later completion submits.
+    viewmodel.set_vertical_custom_enabled(True)
+    assert len(task_service.settings_tasks) == 1
+
+    assert viewmodel.flush_pending_writes(), "the first write is still outstanding"
+    task_service.complete_next_settings_task()
+
+    assert len(task_service.settings_tasks) == 1, "the queued save follows its predecessor"
+    assert viewmodel.flush_pending_writes(), "the second write is now outstanding"
+    task_service.complete_next_settings_task()
+
+    assert viewmodel.flush_pending_writes() == (), "the chain has drained"
+    assert len(library.settings_calls) == 2
+
+
+def test_flush_pending_writes_does_not_cancel_the_progress_save(tmp_path: Path) -> None:
+    """`cancel()` cancels the progress handle, which is exactly what the flush
+    path must not do -- that is the write a storage move would otherwise lose."""
+
+    library = _FakeLibraryService()
+    viewmodel = _viewmodel(tmp_path, library_service=library)
+
+    viewmodel.flush_pending_writes()
+
+    handle = viewmodel._save_handle  # noqa: SLF001
+    if handle is not None:
+        assert handle.status != TaskStatus.CANCELLED
+
+
+def test_flush_pending_writes_returns_nothing_when_nothing_is_dirty(tmp_path: Path) -> None:
+    viewmodel = _viewmodel(tmp_path)
+
+    assert viewmodel.flush_pending_writes() == ()
+
+
+def test_closing_a_reader_releases_its_share_of_both_shared_caches(tmp_path: Path) -> None:
+    """Both releases are implicit consequences of other calls -- the page
+    budget goes back via the pipeline's `clear_cache`, and the thumbnail
+    client via the topic stream's cancel. Neither is obvious at the call site,
+    and dropping either would leak shared budget on every reader close: page
+    frames until LRU pressure reclaims them, and pinned thumbnails forever,
+    because pins are unevictable.
+    """
+
+    cache_service = CacheService(
+        archive_extraction_pool=ArchiveExtractionPool(None, 0),
+        reader_page_cache_max_bytes=8 * 1024 * 1024,
+        thumbnail_cache_max_bytes=4 * 1024 * 1024,
+        reader_frame_sizer=len,
+    )
+    namespace = cache_service.issue_reader_namespace()
+    thumbnail_client = cache_service.issue_thumbnail_client()
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    viewmodel = ReaderViewModel(
+        ReaderDocumentRuntime(_FakeSessionService()),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        namespace,
+        None,  # type: ignore[arg-type]
+        title="Book",
+        thumbnail_cache_client=thumbnail_client,
+        thumbnail_renderer=PillowThumbnailRenderer(),
+    )
+
+    for page in range(6):
+        namespace.put(page, b"x" * 200_000, 1600, 900)
+    thumbnail_client.set_pins(
+        frozenset({ThumbnailCacheKey("book", index, 200, 300) for index in range(4)})
+    )
+    assert cache_service.reader_page_cache.current_bytes > 0
+    assert cache_service.thumbnail_cache._pins_by_client  # noqa: SLF001
+
+    viewmodel.cancel()
+
+    assert cache_service.reader_page_cache.current_bytes == 0, (
+        "a closed reader must hand its page budget back"
+    )
+    assert not cache_service.thumbnail_cache._pins_by_client, (  # noqa: SLF001
+        "a closed reader must drop its thumbnail pins, which are unevictable"
+    )
+
+
+def test_a_spread_survives_a_resize_across_the_pairing_threshold(tmp_path: Path) -> None:
+    """The engine's hysteresis only works if the ViewModel tells it what is
+    already on screen. Without that wiring every resize re-decides from
+    scratch, and dragging a window edge near the boundary flips the layout
+    back and forth."""
+
+    viewmodel = _viewmodel(tmp_path, dimensions=(620, 1000))
+    viewmodel.open_path(tmp_path / "book.cbz")
+
+    viewmodel.set_viewport_size(1240, 1000)
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+    # Past the floor but inside the release band: a pair already on screen
+    # stays, where a fresh decision at this size would not pair.
+    viewmodel.set_viewport_size(1000, 1000)
+
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+
+def test_stickiness_does_not_follow_the_reader_into_the_next_spread(tmp_path: Path) -> None:
+    """Hysteresis is scoped to the pages it was measured on. Carrying it
+    forward would make a spread's layout depend on what was read before it,
+    which is the order-dependence the engine is built to avoid."""
+
+    viewmodel = _viewmodel(tmp_path, dimensions=(620, 1000))
+    viewmodel.open_path(tmp_path / "book.cbz")
+    viewmodel.set_viewport_size(1240, 1000)
+    viewmodel.set_viewport_size(1000, 1000)
+    assert viewmodel.layout_result is not None
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.DOUBLE
+
+    viewmodel.seek(2)
+
+    # These pages were never paired on screen, so they get the strict floor.
+    assert viewmodel.layout_result.mode == ReaderDisplayMode.SINGLE

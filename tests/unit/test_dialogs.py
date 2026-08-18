@@ -1,31 +1,63 @@
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QWidget
+from PySide6.QtGui import QInputMethodEvent
+from PySide6.QtWidgets import QApplication, QLabel, QLineEdit, QScrollArea, QToolButton, QWidget
+from PIL import Image
 
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
-from joyread.core.services.import_service import ImportPreflightResult
+from joyread.core.models.tag import Tag
+from joyread.core.services.library_service import LibraryService
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
+from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.widgets.dialogs import (
     DialogCollectionSelectContent,
     DialogInputContent,
     DialogInputFieldWithHeader,
     DialogPasswordContent,
+    DialogTagFilterContent,
     DialogTextButton,
     JoyReadDialogOverlay,
     JoyReadDialogPanel,
 )
+from joyread.ui.widgets.tag_chip import TagChipWidget
+from joyread.ui.widgets.tag_management_page import TagManagementPage
+from tests.support.in_memory_book_repository import InMemoryBookRepository
 
 
 def apply_theme() -> None:
     app = QApplication.instance()
     assert app is not None
     app.setStyleSheet(ResourceLoader().load_stylesheet())
+
+
+def _png_bytes(size: tuple[int, int] = (80, 120), color: str = "#336699") -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", size, color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+class _DialogFakeTagService:
+    def __init__(self, tags: tuple[Tag, ...], links: dict[str, tuple[str, ...]]) -> None:
+        self._tags = tags
+        self._links = dict(links)
+
+    def list_tags(self) -> list[Tag]:
+        return sorted(self._tags, key=lambda tag: tag.name_normalized)
+
+    def list_tag_ids_for_books(self, book_ids: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
+        return {book_id: self._links.get(book_id, ()) for book_id in book_ids}
+
+    def set_book_tag_ids(self, book_id: str, tag_ids: tuple[str, ...]) -> None:
+        self._links[book_id] = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
 
 
 def test_dialog_panel_matches_figma_frame_and_button_geometry(qtbot) -> None:
@@ -71,8 +103,17 @@ def test_dialog_panel_matches_figma_frame_and_button_geometry(qtbot) -> None:
     assert {(button.width(), button.height()) for button in buttons} == {
         (Theme.dialog_button_width, Theme.dialog_button_height)
     }
+    for button in buttons:
+        effect = button.graphicsEffect()
+        assert effect is not None
+        assert effect.offset().x() == 0
+        assert effect.offset().y() == Theme.dialog_button_shadow_offset
     assert buttons[1].x() > buttons[0].x()
     assert buttons[0].y() == buttons[1].y()
+    button_group_left = min(button.x() for button in buttons)
+    button_group_right = max(button.geometry().right() for button in buttons)
+    button_group_center = (button_group_left + button_group_right) // 2
+    assert abs(button_group_center - option_area.rect().center().x()) <= 1
 
 
 def test_dialog_content_grows_to_max_viewport_then_scrolls(qtbot) -> None:
@@ -291,6 +332,164 @@ def test_dialog_openings_reset_collection_scroll_state(qtbot) -> None:
     assert overlay.panel.height() < tall_panel_height
 
 
+def test_tag_filter_dialog_allows_empty_tag_panel_and_confirm_off_state(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_filter("Tag Filter", [], (), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    buttons = overlay.panel.findChildren(DialogTextButton)
+    scroll_panel = overlay.panel.findChild(QWidget, "DialogTagFilterScrollPanel")
+
+    assert content is not None
+    assert scroll_panel is not None
+    assert scroll_panel.width() == Theme.dialog_collection_scroll_width
+    assert scroll_panel.height() == Theme.dialog_tag_filter_panel_height
+    assert [button.text for button in buttons] == ["Reset", "Confirm"]
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == [()]
+
+
+def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_filter("Tag Filter", tags, ("tag-action",), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+
+    assert content is not None
+    assert [chip.tag_id for chip in chips if chip.selected] == ["tag-action"]
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert overlay.isVisible()
+    assert content.selected_tag_ids == ()
+    assert all(not chip.selected for chip in chips)
+
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert confirmed == [()]
+
+
+def test_tag_allocation_dialog_uses_replace_set_selection_rules(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_allocation("Assign Tags", tags, ("tag-action",), confirmed.append)
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+    flow = overlay.panel.findChild(QWidget, "DialogTagFilterListHost")
+
+    assert content is not None
+    assert flow is not None
+    assert [button.text for button in buttons] == ["Cancel", "Reset", "Confirm"]
+    assert [chip.tag_id for chip in chips if chip.selected] == ["tag-action"]
+
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-comedy",)
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-action", "tag-comedy")
+
+    qtbot.mouseClick(chips[1], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ("tag-comedy",)
+
+    qtbot.mouseClick(
+        flow,
+        Qt.MouseButton.LeftButton,
+        Qt.KeyboardModifier.ShiftModifier,
+        pos=QPoint(flow.width() - 2, flow.height() - 2),
+    )
+    QApplication.processEvents()
+    assert content.selected_tag_ids == ()
+
+    qtbot.mouseClick(buttons[2], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == [()]
+
+
+def test_tag_filter_buttons_follow_active_locale(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+
+    try:
+        locale_service.load_language("Chinese")
+        overlay.show_tag_allocation("分配标签", [Tag("tag-action", "Action")], (), lambda _ids: None)
+        QApplication.processEvents()
+
+        buttons = overlay.panel.findChildren(DialogTextButton)
+
+        assert [button.text for button in buttons] == ["取消", "重置", "确认"]
+    finally:
+        locale_service.load_language("English")
+
+
+def test_tag_allocation_cancel_discards_selection_and_no_tag_hint(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    confirmed: list[tuple[str, ...]] = []
+
+    overlay.show_tag_allocation("Assign Tags", [Tag("tag-action", "Action")], (), confirmed.append)
+    QApplication.processEvents()
+    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    buttons = overlay.panel.findChildren(DialogTextButton)
+
+    qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == []
+
+    overlay.show_tag_allocation("Assign Tags", [], (), confirmed.append)
+    QApplication.processEvents()
+    hint = overlay.panel.findChild(QLabel, "DialogTagEmptyHint")
+
+    assert hint is not None
+    assert hint.text() == "No tags yet. Add or edit tags in Settings > Tags."
+
+
 def test_dialog_overlay_centers_panel_and_tracks_resize(qtbot) -> None:
     apply_theme()
     root = QWidget()
@@ -398,7 +597,7 @@ def test_dialog_password_input_cancel_callback_and_unicode_text(qtbot) -> None:
     assert result == ["cancel"]
 
 
-def test_dialog_password_input_forwards_first_key_when_overlay_has_focus(qtbot) -> None:
+def test_dialog_archive_password_input_uses_visible_native_ime_focus(qtbot) -> None:
     apply_theme()
     root = QWidget()
     qtbot.addWidget(root)
@@ -409,17 +608,24 @@ def test_dialog_password_input_forwards_first_key_when_overlay_has_focus(qtbot) 
 
     result: list[str] = []
     overlay.show_password_input("Archive Password", "Password", on_confirm=result.append)
-    QApplication.processEvents()
     line_edit = overlay.panel.findChild(QLineEdit)
     assert line_edit is not None
+    assert line_edit.echoMode() == QLineEdit.EchoMode.Normal
 
-    overlay.setFocus(Qt.FocusReason.PopupFocusReason)
-    qtbot.keyClicks(overlay, "tan'ke")
+    # The overlay must not turn a raw pinyin key into committed text before
+    # Qt's input method has focused the editor.
+    qtbot.keyClicks(overlay, "t")
+    QApplication.processEvents()
+    assert QApplication.focusWidget() is line_edit
+
+    input_event = QInputMethodEvent()
+    input_event.setCommitString("坦克")
+    QApplication.sendEvent(line_edit, input_event)
     QApplication.processEvents()
     qtbot.mouseClick(overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
     QApplication.processEvents()
 
-    assert result == ["tan'ke"]
+    assert result == ["坦克"]
 
 
 def test_dialog_password_input_shows_failure_prompt(qtbot) -> None:
@@ -584,7 +790,327 @@ def test_main_window_uses_global_confirm_dialog_for_delete(qtbot) -> None:
     context.close()
 
 
-def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, tmp_path: Path) -> None:
+def test_main_window_confirms_tag_delete_before_deleting(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    context.tag_service.create("Comedy")
+    context.tag_management_viewmodel.refresh()
+    window._handle_navigation("settings")
+    context.settings_viewmodel.set_section(SettingsSectionKey.TAGS)
+    QApplication.processEvents()
+
+    tag_page = window.settings_view.page.findChild(TagManagementPage)
+    assert tag_page is not None
+    chip = next(chip for chip in tag_page.findChildren(TagChipWidget) if not chip.is_add_chip)
+    qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(tag_page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    title_labels = [
+        label.text()
+        for label in window.dialog_overlay.panel.findChildren(QLabel)
+        if label.property("class") == "JoyReadDialogTitle"
+    ]
+    buttons = [button.text for button in window.dialog_overlay.panel.findChildren(DialogTextButton)]
+
+    assert window.dialog_overlay.isVisible()
+    assert title_labels == ["Delete Tag"]
+    assert buttons == ["Cancel", "Delete"]
+    assert [tag.name for tag in context.tag_service.list_tags()] == ["Comedy"]
+
+    qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[0], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert [tag.name for tag in context.tag_service.list_tags()] == ["Comedy"]
+
+    qtbot.mouseClick(tag_page.delete_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert context.tag_service.list_tags() == []
+    context.close()
+
+
+def test_detail_tag_click_activates_all_shelf_filter_and_closes_detail(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"),),
+            {"mock-book-01": ("tag-action",)},
+        )
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.show_detail("mock-book-01")
+        QApplication.processEvents()
+
+        chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.tag_id == "tag-action"
+        )
+        qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert context.shelf_viewmodel.current_shelf == ShelfKey.ALL.value
+        assert context.shelf_viewmodel.tag_filter_ids == ("tag-action",)
+        assert context.shelf_viewmodel.detail_book_uuid is None
+        assert window.shelf_view.detail_panel.isHidden()
+    finally:
+        context.close()
+
+
+def test_detail_tag_click_activates_hidden_shelf_for_hidden_book(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        repo.set_book_hidden("mock-book-03", True)
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"),),
+            {"mock-book-03": ("tag-action",)},
+        )
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.set_current_shelf(ShelfKey.HIDDEN.value)
+        context.shelf_viewmodel.show_detail("mock-book-03")
+        QApplication.processEvents()
+
+        chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.tag_id == "tag-action"
+        )
+        qtbot.mouseClick(chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert context.shelf_viewmodel.current_shelf == ShelfKey.HIDDEN.value
+        assert context.shelf_viewmodel.tag_filter_ids == ("tag-action",)
+        assert context.shelf_viewmodel.detail_book_uuid is None
+        assert window.shelf_view.detail_panel.isHidden()
+    finally:
+        context.close()
+
+
+def test_detail_plus_opens_allocation_and_confirm_updates_detail_tags(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        repo = InMemoryBookRepository()
+        tag_service = _DialogFakeTagService(
+            (Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")),
+            {"mock-book-01": ("tag-action",)},
+        )
+        context.tag_service = tag_service  # type: ignore[assignment]
+        context.shelf_viewmodel.replace_services(
+            LibraryService(repo),
+            context.thumbnail_service,
+            tag_service,  # type: ignore[arg-type]
+        )
+        context.shelf_viewmodel.load_books()
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+        context.shelf_viewmodel.show_detail("mock-book-01")
+        QApplication.processEvents()
+
+        add_chip = next(
+            chip
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if chip.is_add_chip
+        )
+        qtbot.mouseClick(add_chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        dialog_chips = [
+            chip
+            for chip in window.dialog_overlay.panel.findChildren(TagChipWidget)
+            if not chip.is_add_chip
+        ]
+        buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
+        assert window.dialog_overlay.isVisible()
+        assert [chip.tag_id for chip in dialog_chips if chip.selected] == ["tag-action"]
+
+        comedy_chip = next(chip for chip in dialog_chips if chip.tag_id == "tag-comedy")
+        qtbot.mouseClick(comedy_chip, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+        qtbot.mouseClick(buttons[2], Qt.MouseButton.LeftButton)
+
+        qtbot.waitUntil(
+            lambda: context.shelf_viewmodel.tag_ids_for_book("mock-book-01") == (
+                "tag-action",
+                "tag-comedy",
+            ),
+            timeout=2000,
+        )
+        QApplication.processEvents()
+
+        detail_tag_ids = {
+            chip.tag_id
+            for chip in window.shelf_view.detail_panel.findChildren(TagChipWidget)
+            if not chip.is_add_chip
+        }
+        assert detail_tag_ids == {"tag-action", "tag-comedy"}
+    finally:
+        context.close()
+
+
+def test_detail_cover_editor_opens_and_confirm_save_calls_viewmodel(
+    qtbot,
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        source = _png_bytes((320, 80))
+        book = Book(
+            uuid="book-cover",
+            title="Cover Book",
+            author=None,
+            language_tag="en",
+            book_type="Comic",
+            file_format="CBZ",
+            file_path=str(tmp_path / "cover.cbz"),
+            progress=0.0,
+            cover_thumbnail_path=None,
+            added_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1),
+            last_read_at=None,
+            is_favourite=False,
+        )
+        context.shelf_viewmodel.books = [book]
+        saved: list[tuple[str, Path]] = []
+        target_path = tmp_path / "edited-cover.png"
+
+        class _CoverSource:
+            source_id = "session:cover-test"
+            page_count = 1
+
+            @staticmethod
+            def preferred_batch_size(_page_index: int) -> int:
+                return 1
+
+            @staticmethod
+            def read_page(_page_index: int):  # noqa: ANN205
+                return type("Page", (), {"image_bytes": source})()
+
+            @staticmethod
+            def close() -> None:
+                return None
+
+        monkeypatch.setattr(context.thumbnail_service, "can_generate_from", lambda _book: True)
+        monkeypatch.setattr(
+            context.thumbnail_service,
+            "open_thumbnail_source",
+            lambda _book: _CoverSource(),
+        )
+        monkeypatch.setattr(context.thumbnail_service, "save_edited_cover", lambda *_args: target_path)
+        monkeypatch.setattr(
+            context.shelf_viewmodel,
+            "set_book_cover_path",
+            lambda book_uuid, path: saved.append((book_uuid, Path(path))),
+        )
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+
+        window._show_cover_editor(book.uuid)
+        qtbot.waitUntil(window.cover_editor_overlay.isVisible, timeout=2000)
+        confirm_button = window.cover_editor_overlay.editor.findChild(QToolButton, "CoverEditorConfirmButton")
+        assert confirm_button is not None
+        qtbot.mouseClick(confirm_button, Qt.MouseButton.LeftButton)
+        QApplication.processEvents()
+
+        assert window.dialog_overlay.isVisible()
+        assert [
+            label.text()
+            for label in window.dialog_overlay.panel.findChildren(QLabel)
+            if label.property("class") == "JoyReadDialogTitle"
+        ] == ["Replace Cover"]
+
+        qtbot.mouseClick(window.dialog_overlay.panel.findChildren(DialogTextButton)[1], Qt.MouseButton.LeftButton)
+        qtbot.waitUntil(lambda: saved == [(book.uuid, target_path)], timeout=2000)
+    finally:
+        context.close()
+
+
+def test_unsupported_book_cover_editor_shows_info_dialog(qtbot, monkeypatch, tmp_path: Path) -> None:
+    apply_theme()
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        window = MainWindow(context)
+        qtbot.addWidget(window)
+        book = Book(
+            uuid="book-epub",
+            title="Novel",
+            author=None,
+            language_tag="en",
+            book_type="Novel",
+            file_format="EPUB",
+            file_path=str(tmp_path / "novel.epub"),
+            progress=0.0,
+            cover_thumbnail_path=None,
+            added_at=datetime(2026, 1, 1),
+            updated_at=datetime(2026, 1, 1),
+            last_read_at=None,
+            is_favourite=False,
+        )
+        context.shelf_viewmodel.books = [book]
+        window.resize(Theme.window_width, Theme.window_height)
+        window.show()
+
+        window._show_cover_editor(book.uuid)
+        QApplication.processEvents()
+
+        assert window.cover_editor_overlay.isHidden()
+        assert window.dialog_overlay.isVisible()
+        assert [
+            label.text()
+            for label in window.dialog_overlay.panel.findChildren(QLabel)
+            if label.property("class") == "JoyReadDialogTitle"
+        ] == ["Cover Editor"]
+    finally:
+        context.close()
+
+
+def test_open_import_starts_reader_and_background_import_without_source_probe(qtbot, monkeypatch, tmp_path: Path) -> None:
     apply_theme()
     context = create_app_context()
     window = MainWindow(context)
@@ -593,36 +1119,29 @@ def test_open_import_skipped_file_prompts_read_only_reader(qtbot, monkeypatch, t
     window.show()
     QApplication.processEvents()
 
-    opened: list[Path] = []
     import_started: list[Path] = []
     source = tmp_path / "encrypted.cbz"
-    monkeypatch.setattr(window, "_show_reader_window", lambda path, **_kwargs: opened.append(Path(path)))
     monkeypatch.setattr(window, "_start_open_and_import", lambda path, _settings: import_started.append(Path(path)))
 
-    window._handle_open_import_preflight(
-        source,
-        object(),
-        ImportPreflightResult(
-            source_path=str(source),
-            can_import=False,
-            status="skipped",
-            message="Skipped encrypted archive.",
-        ),
-    )
+    window.open_reader_for_file(source, import_mode=True)
     QApplication.processEvents()
 
-    buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
-    assert window.dialog_overlay.isVisible()
-    assert [button.text for button in buttons] == ["Cancel", "Read Only"]
-    assert opened == []
-    assert import_started == []
-
-    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
-    QApplication.processEvents()
-
+    assert import_started == [source]
     assert window.dialog_overlay.isHidden()
-    assert opened == [source]
-    assert import_started == []
+    context.close()
+
+
+def test_main_window_invalidates_cover_thumbnail_source_on_archive_limit_change(qtbot, monkeypatch) -> None:
+    apply_theme()
+    context = create_app_context()
+    window = MainWindow(context)
+    qtbot.addWidget(window)
+    calls: list[None] = []
+    monkeypatch.setattr(window._cover_editor_thumbnail_viewmodel, "invalidate_source", lambda: calls.append(None))
+
+    context.settings_viewmodel.archive_open_limits_changed.emit()
+
+    assert calls == [None]
     context.close()
 
 

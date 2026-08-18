@@ -1,3 +1,5 @@
+import tomllib
+
 from PySide6.QtGui import QIcon
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -35,6 +37,18 @@ def test_noto_font_resources_are_available() -> None:
     }
     assert all(path.exists() for path in font_paths)
     assert (font_dir / "OFL.txt").exists()
+
+
+def test_locale_resources_are_available_and_packaged() -> None:
+    loader = ResourceLoader()
+    locale_dir = loader.locale_dir()
+
+    assert locale_dir.exists()
+    assert {path.name for path in locale_dir.glob("*.json")} >= {"en.json", "zh.json", "ja.json"}
+
+    pyproject = tomllib.loads((loader.package_root.parent.parent / "pyproject.toml").read_text(encoding="utf-8"))
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["joyread"]
+    assert "resources/locales/*.json" in package_data
 
 
 def test_stylesheet_uses_noto_font_stack() -> None:

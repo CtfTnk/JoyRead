@@ -1,13 +1,15 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "joyread"
-version = "0.1.0"
+version = "1.0.0"
 description = "Cross-platform desktop manga and light novel reader."
-readme = "docs/CODEX_MAIN_UI_BRIEF.md"
+readme = "README.md"
 requires-python = ">=3.11"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = [
     "Pillow>=11.0",
     "PySide6>=6.7",
@@ -15,12 +17,25 @@ dependencies = [
     "pyzipper>=0.3",
     "platformdirs>=4.2",
     "rarfile>=4.2",
+    "natsort>=8.4",
+    "pyobjc-core>=12.2.1,<13; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=12.2.1,<13; sys_platform == 'darwin'",
 ]
 
 [project.optional-dependencies]
+# The novel (EPUB) reader. Only joyread.novel needs lxml, and that package is
+# imported solely by the composition root when EPUB_ACCESS_ENABLED is on, so a
+# build without this extra is a complete, working app -- see AGENTS.md.
+epub = [
+    "lxml>=5.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-qt>=4.4",
+    "psutil>=6.0",
+]
+release = [
+    "pyinstaller>=6.21,<7",
 ]
 
 [project.scripts]
@@ -34,6 +49,7 @@ joyread = [
     "ui/resources/styles/*.qss",
     "ui/resources/icons/*",
     "ui/resources/fonts/*",
+    "resources/locales/*.json",
     "resources/extractors/7zip/*",
     "resources/extractors/7zip/*/*",
 ]

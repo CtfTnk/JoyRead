@@ -1,15 +1,28 @@
 from dataclasses import replace
 from datetime import datetime
 from io import BytesIO
+from math import ceil
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QSize, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QGraphicsOpacityEffect, QLabel, QLineEdit, QToolButton, QWidget
+from PySide6.QtCore import QPoint, QPointF, QSize, Qt
+from PySide6.QtGui import QImage
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsOpacityEffect,
+    QLabel,
+    QLineEdit,
+    QScrollArea,
+    QToolButton,
+    QWidget,
+)
 from PIL import Image
 
 from joyread.core.models.book import Book
+from joyread.core.models.tag import Tag
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from joyread.core.services.library_service import LibraryService
+from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -23,8 +36,10 @@ from joyread.ui.widgets.book_detail import (
 )
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListRowWidget, BookListWidget
+from joyread.ui.widgets.cover_editor import CoverEditorOverlay, CoverEditorWidget, CoverZoomSpinButton
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
+from joyread.ui.widgets.tag_chip import TagChipWidget
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, collection_shelf_key
 from joyread.ui.views.shelf_view import ShelfView
@@ -44,6 +59,153 @@ def make_test_image_bytes(size: tuple[int, int] = (40, 60), color: str = "#cc442
     buffer = BytesIO()
     Image.new("RGB", size, color).save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+def make_test_qimage(size: tuple[int, int] = (40, 60), color: str = "#cc4422") -> QImage:
+    return QImage.fromData(make_test_image_bytes(size, color))
+
+
+def test_cover_editor_matches_figma_geometry_and_zoom_bounds(qtbot) -> None:
+    apply_theme()
+    editor = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(editor)
+    editor.show()
+    assert editor.set_source(make_test_qimage((320, 80)), "page:1")
+    QApplication.processEvents()
+
+    crop_rect = editor.canvas._crop_rect()
+
+    assert editor.size().toTuple() == (Theme.cover_editor_width, Theme.cover_editor_height)
+    assert editor.canvas.width() == Theme.cover_editor_width - (Theme.cover_editor_border_width * 2)
+    assert editor.canvas.height() == Theme.cover_editor_adjust_height
+    assert crop_rect.width() == Theme.cover_width
+    assert crop_rect.height() == Theme.cover_height
+    assert editor.canvas.zoom_percent == 100
+    assert editor.zoom_spin.value == 100
+
+    editor.canvas.set_zoom_percent(1)
+    assert editor.canvas.zoom_percent == round(editor.canvas.minimum_zoom_percent)
+    editor.canvas.set_zoom_percent(999)
+    assert editor.canvas.zoom_percent == Theme.cover_editor_max_zoom_percent
+    editor.zoom_spin.set_value(ceil(editor.canvas.minimum_zoom_percent))
+    assert editor.canvas.crop_state().zoom_percent == editor.canvas.minimum_zoom_percent
+
+
+def test_cover_editor_refresh_labels_translates_controls(qtbot) -> None:
+    apply_theme()
+    editor = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(editor)
+
+    try:
+        locale_service.load_language("Chinese")
+        editor.refresh_labels()
+
+        import_label = editor.findChild(QLabel, "CoverEditorImportText")
+        browse_button = editor.findChild(QToolButton, "CoverEditorBrowseButton")
+        cancel_button = editor.findChild(QToolButton, "CoverEditorCancelButton")
+        confirm_button = editor.findChild(QToolButton, "CoverEditorConfirmButton")
+
+        assert import_label is not None
+        assert import_label.text() == "导入图片"
+        assert browse_button is not None
+        assert browse_button.toolTip() == "从书页选择"
+        assert cancel_button is not None
+        assert cancel_button.toolTip() == "取消封面编辑"
+        assert confirm_button is not None
+        assert confirm_button.toolTip() == "确认封面编辑"
+    finally:
+        locale_service.load_language("English")
+
+
+def test_cover_editor_drag_changes_pan_and_confirm_emits_crop_state(qtbot) -> None:
+    apply_theme()
+    overlay = CoverEditorOverlay(ResourceLoader())
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    source = make_test_qimage((320, 80))
+    emitted: list[object] = []
+    overlay.save_requested.connect(emitted.append)
+
+    assert overlay.open_editor(source, "page:1")
+    QApplication.processEvents()
+    canvas = overlay.editor.canvas
+    center = canvas._crop_rect().center().toPoint()
+    qtbot.mousePress(canvas, Qt.MouseButton.LeftButton, pos=center)
+    qtbot.mouseMove(canvas, pos=center + QPoint(20, 0))
+    qtbot.mouseRelease(canvas, Qt.MouseButton.LeftButton, pos=center + QPoint(20, 0))
+    confirm_button = overlay.editor.findChild(QToolButton, "CoverEditorConfirmButton")
+    assert confirm_button is not None
+    assert confirm_button.iconSize() == QSize(Theme.cover_editor_icon_size, Theme.cover_editor_icon_size)
+    qtbot.mouseClick(confirm_button, Qt.MouseButton.LeftButton)
+
+    assert canvas.crop_state().pan_x > 0
+    assert len(emitted) == 1
+    assert emitted[0].source_id == "page:1"
+
+
+def test_cover_editor_crop_pan_is_normalized_across_preview_resolutions(qtbot) -> None:
+    apply_theme()
+    low = CoverEditorWidget(ResourceLoader())
+    high = CoverEditorWidget(ResourceLoader())
+    qtbot.addWidget(low)
+    qtbot.addWidget(high)
+    assert low.set_source(make_test_qimage((320, 80)), "page:1")
+    assert high.set_source(make_test_qimage((640, 160)), "page:1")
+
+    for editor in (low, high):
+        editor.canvas.set_zoom_percent(200)
+        max_x, max_y = editor.canvas._maximum_pan()
+        editor.canvas._pan = QPointF(max_x * 0.5, max_y * -0.25)
+
+    low_state = low.crop_state()
+    high_state = high.crop_state()
+    assert low_state.pan_x == high_state.pan_x == 0.5
+    assert low_state.pan_y == high_state.pan_y == -0.25
+
+
+def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
+    apply_theme()
+    overlay = CoverEditorOverlay(ResourceLoader())
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    interests: list[tuple[tuple[int, ...], tuple[int, ...], tuple[int, int]]] = []
+    selected: list[int] = []
+    overlay.thumbnail_interest_changed.connect(
+        lambda visible, prefetch, size: interests.append((visible, prefetch, size))
+    )
+    overlay.thumbnail_selected.connect(selected.append)
+
+    assert overlay.open_editor(make_test_qimage((80, 120)), "page:1")
+    overlay.set_thumbnail_page_count(3)
+    browse_button = overlay.editor.findChild(QToolButton, "CoverEditorBrowseButton")
+    assert browse_button is not None
+    qtbot.mouseClick(browse_button, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    for index in range(3):
+        overlay.set_thumbnail(index, make_test_image_bytes((40, 60)))
+    QApplication.processEvents()
+    thumbnail = overlay.picker.findChild(DetailThumbnailWidget)
+    assert thumbnail is not None
+    qtbot.mouseClick(thumbnail, Qt.MouseButton.LeftButton)
+
+    assert overlay.picker._grid.minimumWidth() == Theme.cover_editor_thumbnail_min_width
+    assert overlay.picker._grid._calculate_columns() == 2
+    assert overlay.picker._grid.width() < Theme.detail_thumbnail_min_width
+    assert interests
+    assert set((*interests[-1][0], *interests[-1][1])) == {0, 1, 2}
+    assert interests[-1][2] == (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
+    assert selected == [0]
+
+
+def test_cover_zoom_spin_steps_by_editor_theme_amount(qtbot) -> None:
+    apply_theme()
+    spin = CoverZoomSpinButton(100, 1, Theme.cover_editor_max_zoom_percent, "%", ResourceLoader())
+    qtbot.addWidget(spin)
+
+    spin.step_by(Theme.cover_editor_zoom_step)
+    assert spin.value == 100 + Theme.cover_editor_zoom_step
+    spin.set_range(120, Theme.cover_editor_max_zoom_percent)
+    assert spin.value == 120
 
 
 def test_toolbar_uses_figma_content_frame_padding(qtbot) -> None:
@@ -113,6 +275,26 @@ def test_shelf_content_switches_left_outer_radius_when_sidebar_hidden(qtbot) -> 
     view.set_sidebar_visible(True)
 
     assert view.property("sidebarVisible") == "true"
+
+
+def test_shelf_view_localizes_fixed_page_titles_from_canonical_shelf_state(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+
+    locale_service.load_language("Chinese")
+    view.render()
+    title = view.toolbar.findChild(QLabel, "PageTitle")
+    assert title is not None
+    assert title.text() == "全部"
+
+    viewmodel.set_current_shelf(ShelfKey.RECENT.value)
+    QApplication.processEvents()
+
+    assert title.text() == "最近阅读"
+    locale_service.load_language("English")
 
 
 def test_grid_spacing_justifies_cards_across_available_row_width(qtbot) -> None:
@@ -269,7 +451,8 @@ def test_two_line_elided_label_reserves_two_lines_and_tooltips_when_clipped(qtbo
 
     assert label.max_lines == 2
     assert label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
-    assert len(label.text().splitlines()) <= 2
+    assert label.text().count("\n") == 1
+    assert len(label.text().splitlines()) == 2
     assert label.text() != long_title
     assert label.toolTip() == long_title
 
@@ -280,12 +463,27 @@ def test_two_line_elided_label_reserves_two_lines_and_tooltips_when_clipped(qtbo
 
     assert label.text() == short_title
     assert label.toolTip() == ""
+    # Short content shrinks the label to a single-line height even though
+    # max_lines=2 — that's how the list row / detail panel push the author
+    # label up directly under short titles.
+    assert label.height() == label.fontMetrics().lineSpacing() + Theme.elided_label_clip_guard
 
 
-def test_book_title_surfaces_reserve_two_lines(qtbot) -> None:
+def test_two_line_elided_label_reserves_full_height_when_requested(qtbot) -> None:
+    label = ElidedLabel("Short", max_lines=2, reserve_full_height=True)
+    qtbot.addWidget(label)
+    label.resize(400, 100)
+    label.show()
+    QApplication.processEvents()
+
+    assert label.text() == "Short"
+    assert label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
+
+
+def test_book_title_surfaces_height_matches_actual_lines(qtbot) -> None:
     apply_theme()
     now = datetime(2026, 1, 1)
-    book = Book(
+    long_book = Book(
         uuid="long-title",
         title="A Very Long JoyRead Title That Should Use The Two Line Display Space",
         author="Author",
@@ -300,30 +498,58 @@ def test_book_title_surfaces_reserve_two_lines(qtbot) -> None:
         last_read_at=None,
         is_favourite=False,
     )
-    card = BookCardWidget(book, ResourceLoader())
-    row = BookListRowWidget(book, ResourceLoader())
+    short_book = replace(long_book, uuid="short-title", title="Short")
+
+    card = BookCardWidget(long_book, ResourceLoader())
+    row = BookListRowWidget(long_book, ResourceLoader())
     detail = BookDetailPanel(ResourceLoader())
     qtbot.addWidget(card)
     qtbot.addWidget(row)
     qtbot.addWidget(detail)
-    detail.set_book(book)
+    detail.set_book(long_book)
     for widget in (card, row, detail):
         widget.show()
     QApplication.processEvents()
 
-    title_labels = [
-        label
-        for widget in (card, row, detail)
-        for label in widget.findChildren(ElidedLabel)
-        if label.property("class") in {"BookTitle", "BookDetailTitle"}
-    ]
+    def _title_label(widget) -> ElidedLabel:
+        return next(
+            label
+            for label in widget.findChildren(ElidedLabel)
+            if label.property("class") in {"BookTitle", "BookDetailTitle"}
+        )
 
-    assert len(title_labels) == 3
-    assert all(label.max_lines == 2 for label in title_labels)
-    assert all(
-        label.height() == (label.fontMetrics().lineSpacing() * 2) + Theme.elided_label_clip_guard
-        for label in title_labels
-    )
+    card_title = _title_label(card)
+    row_title = _title_label(row)
+    detail_title = _title_label(detail)
+    guard = Theme.elided_label_clip_guard
+
+    def expected(label: ElidedLabel, lines: int) -> int:
+        return (label.fontMetrics().lineSpacing() * lines) + guard
+
+    # Grid card always reserves two-line height so its control bar lines up
+    # across cards regardless of title length.
+    assert card_title.height() == expected(card_title, 2)
+
+    # List row and detail panel shrink to fit when the title is short and
+    # expand to two lines when the title wraps.
+    assert row_title.height() == expected(row_title, 2)
+    assert detail_title.height() == expected(detail_title, 2)
+
+    card.set_book(short_book)
+    # BookListRowWidget builds its title in __init__; instantiate a fresh
+    # row for the short book instead of mutating the existing one.
+    short_row = BookListRowWidget(short_book, ResourceLoader())
+    qtbot.addWidget(short_row)
+    short_row.show()
+    detail.set_book(short_book)
+    QApplication.processEvents()
+
+    short_card_title = _title_label(card)
+    short_row_title = _title_label(short_row)
+    short_detail_title = _title_label(detail)
+    assert short_card_title.height() == expected(short_card_title, 2)
+    assert short_row_title.height() == expected(short_row_title, 1)
+    assert short_detail_title.height() == expected(short_detail_title, 1)
     assert card.height() == Theme.book_card_height
 
 
@@ -441,6 +667,8 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     cover_panel = panel.findChild(QWidget, "BookDetailCoverPanel")
     cover = panel.findChild(QWidget, "BookCover")
     read_button = panel.findChild(DetailReadButton)
+    tag_box = panel.findChild(QFrame, "BookDetailTagBox")
+    tag_scroll = panel.findChild(QScrollArea, "BookDetailTagScrollArea")
     thumbnails = panel.findChildren(DetailThumbnailWidget)
 
     assert title_labels[0].text() == book.title
@@ -464,8 +692,16 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     assert progress_unit.geometry().center().x() == cover.geometry().center().x()
     assert progress is not None
     assert progress.width() == Theme.detail_progress_width
+    assert tag_box is not None
+    assert tag_box.height() == Theme.detail_tag_box_height
+    assert tag_scroll is not None
+    assert tag_box.findChildren(AutoHideScrollHandle)
     assert read_button is not None
     assert read_button.size() == QSize(Theme.detail_read_button_width, Theme.detail_button_size)
+    read_shadow = read_button.graphicsEffect()
+    assert read_shadow is not None
+    assert read_shadow.offset().x() == 0
+    assert read_shadow.offset().y() == 1
     read_margins = read_button.layout().contentsMargins()
     assert (read_margins.left(), read_margins.top(), read_margins.right(), read_margins.bottom()) == (
         Theme.detail_button_layout_margin,
@@ -481,6 +717,93 @@ def test_book_detail_panel_binds_figma_metadata_and_starts_without_page_count_th
     panel.read_requested.connect(emitted.append)
     qtbot.mouseClick(read_button, Qt.MouseButton.LeftButton)
     assert emitted == [book.uuid]
+
+
+def test_book_detail_panel_refresh_labels_localizes_metadata_values(qtbot) -> None:
+    apply_theme()
+    book = replace(
+        InMemoryBookRepository().list_books()[1],
+        author=None,
+        language_tag="ja",
+        language_name="Japanese",
+        book_type="Novel",
+    )
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(876, 760)
+    panel.set_book(book)
+
+    try:
+        locale_service.load_language("Chinese")
+        panel.set_book(book)
+
+        author_label = next(
+            label for label in panel.findChildren(QLabel) if label.property("class") == "BookDetailAuthor"
+        )
+        pill_labels = [
+            label.text()
+            for label in panel.findChildren(QLabel)
+            if label.property("class") == "BookDetailPillText"
+        ]
+        read_label = next(
+            label for label in panel.findChildren(QLabel) if label.property("class") == "DetailReadButtonText"
+        )
+
+        assert author_label.text() == "作者：无"
+        assert "语言: Japanese" not in pill_labels
+        assert "语言：日语" in pill_labels
+        assert f"书籍类型：{book.file_format}" in pill_labels
+        assert read_label.text() == "阅读"
+    finally:
+        locale_service.load_language("English")
+
+
+def test_book_detail_tag_box_shrinks_when_title_uses_two_rows(qtbot) -> None:
+    apply_theme()
+    book = replace(
+        InMemoryBookRepository().list_books()[1],
+        title="A Very Long Manga Title That Must Wrap Onto Two Rows In The Detail Panel",
+    )
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(520, 760)
+    panel.set_book(book)
+    panel.show()
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    tag_box = panel.findChild(QFrame, "BookDetailTagBox")
+
+    assert tag_box is not None
+    assert tag_box.height() == Theme.detail_tag_box_compact_height
+
+
+def test_book_detail_tag_chips_emit_filter_and_allocation_requests(qtbot) -> None:
+    apply_theme()
+    book = InMemoryBookRepository().list_books()[1]
+    panel = BookDetailPanel(ResourceLoader())
+    qtbot.addWidget(panel)
+    panel.resize(876, 760)
+    panel.set_book(
+        book,
+        tags=(Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")),
+    )
+    panel.show()
+    QApplication.processEvents()
+
+    filter_requests: list[tuple[str, str]] = []
+    allocation_requests: list[str] = []
+    panel.tag_filter_requested.connect(lambda book_uuid, tag_id: filter_requests.append((book_uuid, tag_id)))
+    panel.tag_allocation_requested.connect(allocation_requests.append)
+    chips = panel.findChildren(TagChipWidget)
+    tag_chip = next(chip for chip in chips if chip.tag_id == "tag-action")
+    add_chip = next(chip for chip in chips if chip.is_add_chip)
+
+    qtbot.mouseClick(tag_chip, Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(add_chip, Qt.MouseButton.LeftButton)
+
+    assert filter_requests == [(book.uuid, "tag-action")]
+    assert allocation_requests == [book.uuid]
 
 
 def test_book_detail_inline_edits_emit_metadata_change_requests(qtbot) -> None:
@@ -597,33 +920,33 @@ def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> Non
     grid = DetailThumbnailGrid()
     qtbot.addWidget(grid)
     grid.set_thumbnail_count(2)
+    grid.set_interest((0, 1))
 
     grid.set_thumbnail(1, make_test_image_bytes())
 
-    assert grid._thumbnails[0]._pixmap is None
+    assert 0 not in grid._thumbnails
     assert grid._thumbnails[1]._pixmap is not None
 
 
-def test_book_detail_panel_requests_more_thumbnails_only_after_visible(qtbot) -> None:
-    apply_theme()
-    book = InMemoryBookRepository().list_books()[0]
-    panel = BookDetailPanel(ResourceLoader())
-    qtbot.addWidget(panel)
-    panel.set_book(book)
+def test_detail_thumbnail_grid_virtualizes_large_page_counts_and_releases_offscreen_pixmaps(qtbot) -> None:
+    grid = DetailThumbnailGrid()
+    qtbot.addWidget(grid)
+    grid.resize(864, 400)
+    grid.set_thumbnail_count(100_000)
 
-    emitted: list[str] = []
-    panel.more_thumbnails_requested.connect(emitted.append)
-    panel._emit_more_thumbnails_if_near_bottom()
-    assert emitted == []
+    assert grid.page_count == 100_000
+    assert grid._thumbnails == {}
+    assert grid.minimumHeight() > 1_000_000
 
-    panel.show()
-    QApplication.processEvents()
-    panel._emit_more_thumbnails_if_near_bottom()
+    grid.set_interest((0, 1))
+    grid.set_thumbnail(0, make_test_image_bytes())
+    assert grid._thumbnails[0]._pixmap is not None
 
-    assert emitted == [book.uuid]
+    grid.set_interest((90, 91))
+    assert 0 not in grid._thumbnails
 
 
-def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> None:
+def test_shelf_view_ignores_live_thumbnail_paints_while_popup_is_active(qtbot) -> None:
     apply_theme()
     viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
@@ -642,7 +965,9 @@ def test_shelf_view_defers_thumbnail_updates_while_popup_is_active(qtbot) -> Non
     view._popup_interaction_depth = 0
     assert view._flush_deferred_detail_thumbnail_updates() is False
 
-    assert 0 in view.detail_panel._thumbnail_grid._thumbnails
+    # The stream already placed the item in the shared byte cache. The view
+    # does not retain another copy while a popup is active.
+    assert view.detail_panel._thumbnail_grid._thumbnails == {}
 
 
 def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(qtbot) -> None:
@@ -667,7 +992,7 @@ def test_shelf_view_drops_deferred_thumbnail_updates_after_detail_book_changes(q
     assert view.detail_panel._thumbnail_grid._thumbnails == {}
 
 
-def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> None:
+def test_shelf_view_refreshes_dynamic_interest_after_popup_closes(qtbot) -> None:
     apply_theme()
     viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
@@ -675,22 +1000,25 @@ def test_shelf_view_defers_next_thumbnail_batch_until_popup_closes(qtbot) -> Non
     qtbot.addWidget(view)
     view.show()
     book = viewmodel.visible_books[0]
-    requested: list[str] = []
-    view._request_next_detail_thumbnail_batch = requested.append  # type: ignore[method-assign]
     viewmodel.show_detail(book.uuid)
     QApplication.processEvents()
-    requested.clear()
+    submitted: list[tuple] = []
+    refreshed: list[str] = []
+    panel_refreshed: list[bool] = []
+    viewmodel.set_detail_thumbnail_interest = lambda *args: submitted.append(args)  # type: ignore[method-assign]
+    viewmodel.refresh_detail_thumbnail_interest = refreshed.append  # type: ignore[method-assign]
+    view.detail_panel.refresh_thumbnail_interest = lambda: panel_refreshed.append(True)  # type: ignore[method-assign]
 
     view._popup_interaction_depth = 1
-    view._handle_detail_thumbnail_batch_finished(book.uuid, 14, True)
+    view._handle_detail_thumbnail_interest(book.uuid, (0, 1), (2,))
 
-    assert requested == []
+    assert submitted == []
 
     view._popup_interaction_depth = 0
-    assert view._flush_deferred_detail_thumbnail_updates() is True
-    QApplication.processEvents()
+    assert view._flush_deferred_detail_thumbnail_updates() is False
 
-    assert requested == [book.uuid]
+    assert refreshed == [book.uuid]
+    assert panel_refreshed == [True]
 
 
 def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
@@ -948,9 +1276,14 @@ def test_stylesheet_resolves_content_and_scrollbar_tokens() -> None:
     assert "__PROGRESS_BACKGROUND__" not in stylesheet
     assert "__DETAIL_PANEL_BACKGROUND__" not in stylesheet
     assert "__DETAIL_PANEL_RADIUS__" not in stylesheet
+    assert "__DETAIL_TAG_BOX_BACKGROUND__" not in stylesheet
     assert "__SHELF_SCROLLBAR_WIDTH__" not in stylesheet
     assert "__SHELF_SCROLLBAR_BOTTOM_MARGIN__" not in stylesheet
     assert "__SHELF_SCROLLBAR_HANDLE_HIDDEN__" not in stylesheet
+    assert (
+        f"background: {Theme._hex_rgba_qss(Theme.color_window, Theme.detail_tag_box_background_opacity)};"
+        in stylesheet
+    )
     assert 'QWidget#ShelfContent[sidebarVisible="false"]' in stylesheet
     assert f"border-bottom-left-radius: {Theme.window_corner_radius}px;" in stylesheet
     assert "QScrollArea[class=\"ShelfScrollArea\"] QScrollBar:vertical" in stylesheet

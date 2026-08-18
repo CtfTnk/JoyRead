@@ -70,6 +70,14 @@ class ReaderLayoutSettings:
 
 @dataclass(frozen=True)
 class ReaderLayoutResult:
+    """Output of the layout engine for one viewport.
+
+    Tells the canvas which pages to draw (``page_draws``), at what scale,
+    and — in horizontal pan mode for ultra-wide pages — what pan range is
+    valid. The layout engine recomputes this on every viewport resize and
+    every settings change.
+    """
+
     mode: ReaderDisplayMode
     scale: float
     page_draws: tuple[PageDraw, ...]
@@ -84,6 +92,16 @@ class ReaderLayoutResult:
 
 @dataclass(frozen=True)
 class ReaderSettings:
+    """Per-book persisted reader preferences.
+
+    These map 1:1 to the ``reader_settings`` SQL row. They control the
+    display direction (right-to-left for manga vs left-to-right for
+    Western books, top-to-bottom for vertical scroll), spread layout
+    (always-one-page vs facing pages), and fit/zoom behaviour. Defaults
+    favour the manga case because that is the dominant use-case in the
+    test library.
+    """
+
     direction: ReaderDirection = ReaderDirection.RIGHT_TO_LEFT
     vertical_custom_enabled: bool = False
     vertical_fit_width: bool = False
@@ -112,12 +130,27 @@ class ReaderSettings:
 
 @dataclass(frozen=True)
 class ReaderProgress:
+    """How far through a book the user has read.
+
+    ``page_index`` is a zero-based offset into the reader's "spine" — the
+    ordered list of pages the reader engine exposes, which may not match
+    the raw file order for archives that contain multiple chapters.
+    ``progress_percent`` is the percentage form shown in the shelf row.
+    """
+
     page_index: int
     progress_percent: float
 
 
 @dataclass(frozen=True)
 class ReaderPageImage:
+    """One decoded page produced by an image reader session.
+
+    ``image_bytes`` is encoded (PNG/JPEG) — the canvas decodes it via
+    :class:`QPixmap` on the UI thread. ``dimensions`` is the source pixel
+    size before scaling so the layout engine can pick a fit ratio.
+    """
+
     page_index: int
     image_bytes: bytes
     dimensions: tuple[int, int]

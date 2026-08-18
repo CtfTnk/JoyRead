@@ -10,6 +10,8 @@ Public surface for the rest of the app:
 - ``get_logger`` — thin facade over :func:`logging.getLogger`; lets us layer
   future cross-cutting concerns (rate-limiting, structured fields,
   per-subsystem filters) without touching every module.
+- ``describe_callback`` — stable names for lambdas, bound methods, and
+  callable objects in async callback traces.
 - ``log_timed_block`` — context manager that brackets a block with
   ``start`` / ``done in N ms`` lines.
 
@@ -24,6 +26,7 @@ from joyread.infrastructure.logging.logging_service import (
     LOG_FILE_NAME,
     configure_early_logging,
     configure_logging,
+    describe_callback,
     get_logger,
     log_timed_block,
 )
@@ -36,6 +39,7 @@ __all__ = [
     "LOG_FILE_NAME",
     "configure_early_logging",
     "configure_logging",
+    "describe_callback",
     "get_logger",
     "log_timed_block",
 ]

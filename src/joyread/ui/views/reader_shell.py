@@ -5,15 +5,22 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
+from joyread.app.reader_page_pipeline import PreparedReaderPage
+from joyread.app.reader_document_runtime import ReaderDocumentRuntime
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection, ReaderPageImage, ReaderProgress, ReaderSettings
+from joyread.core.reader import ReaderDirection, ReaderProgress, ReaderSettings
+from joyread.infrastructure.i18n.locale_service import t
+from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
+from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
+from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
+from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
@@ -24,7 +31,7 @@ from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPa
 logger = logging.getLogger(__name__)
 
 
-class ReaderShellWidget(QWidget):
+class ReaderShellWidget(ReaderShellBase):
     """Figma reader surface that can live inside either MainWindow or ReaderWindow."""
 
     back_requested = QtSignal()
@@ -46,11 +53,6 @@ class ReaderShellWidget(QWidget):
         self._source_path = Path(source_path)
         self._drag_position: QPoint | None = None
         self._show_back_button = show_back_button
-        self._control_widgets: tuple[QWidget, ...] = ()
-        self._visible_controls: set[QWidget] = set()
-        self._app_event_filter_installed = False
-        self._settings_event_filter_installed = False
-        self._topic_event_filter_installed = False
         self._topic_page_count = -1
 
         self.setObjectName("ReaderRootPanel")
@@ -62,6 +64,8 @@ class ReaderShellWidget(QWidget):
         self.canvas = ReaderCanvas(self)
         self.header = ReaderHeader(context.resources, self)
         self.header.set_back_visible(show_back_button)
+        self._sync_title_control_mode()
+        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
         self.left_arrow = _side_button(context.resources, "icon_left.svg", self)
         self.right_arrow = _side_button(context.resources, "icon_right.svg", self)
@@ -72,8 +76,7 @@ class ReaderShellWidget(QWidget):
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
         self.dialog_overlay.hide()
 
-        app_settings = context.settings_store.load()
-        context.settings = app_settings
+        app_settings = context.reload_settings()
         logger.info(
             "ReaderShellWidget init: path=%s book=%s embedded=%s",
             self._source_path,
@@ -81,7 +84,17 @@ class ReaderShellWidget(QWidget):
             show_back_button,
         )
         self.viewmodel = ReaderViewModel(
-            context.reader_session_service,
+            ReaderDocumentRuntime(
+                context.reader_session_service,
+                document_cache_key=(
+                    f"file:{book.file_id}" if book is not None and book.file_id else None
+                ),
+                archive_extraction_cache=context.archive_extraction_pool,
+                hash_service=context.hash_service,
+                purge_encrypted_cache_on_close=bool(
+                    getattr(app_settings, "purge_encrypted_cache_on_close", True)
+                ),
+            ),
             context.task_service,
             context.cache_service.issue_reader_namespace(),
             context.library_service if book is not None else None,
@@ -91,9 +104,16 @@ class ReaderShellWidget(QWidget):
             progress=_reader_progress_for_book(context, book, start_page_index),
             prefetch_before=context.config.page_prefetch_before,
             prefetch_after=context.config.page_prefetch_after,
-            archive_internal_max_depth=app_settings.archive_internal_max_depth,
+            nested_archive_max_depth=app_settings.nested_archive_max_depth,
+            archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
+            archive_limits=context.settings_viewmodel.archive_open_limits,
+            thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
+            archive_warmup_coordinator=context.archive_warmup_coordinator,
+            page_decoder=QtPageFrameDecoder(),
+            thumbnail_renderer=context.thumbnail_renderer or QtThumbnailRenderer(),
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        self.header.set_contents_enabled(self.viewmodel.can_use_contents)
         self._connect_signals()
         self._install_auto_hide()
 
@@ -140,9 +160,11 @@ class ReaderShellWidget(QWidget):
         self.canvas.wheel_scrolled.connect(self.viewmodel.handle_vertical_scroll)
         self.left_arrow.clicked.connect(self.viewmodel.activate_left_side)
         self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
-        self.topic_panel.thumbnail_batch_requested.connect(self.viewmodel.request_topic_thumbnail_batch)
-        self.topic_panel.thumbnail_selected.connect(self.viewmodel.seek)
-        self.topic_panel.bookmark_selected.connect(self.viewmodel.seek)
+        self.topic_panel.thumbnail_interest_changed.connect(self.viewmodel.set_topic_thumbnail_interest)
+        self.topic_panel.thumbnail_interest_released.connect(self.viewmodel.release_topic_thumbnail_interest)
+        self.topic_panel.thumbnail_selected.connect(self._seek_from_topic_panel)
+        self.topic_panel.contents_selected.connect(self._seek_from_topic_panel)
+        self.topic_panel.bookmark_selected.connect(self._seek_from_topic_panel)
         self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)
         self.topic_panel.bookmark_rename_requested.connect(self._show_rename_bookmark_dialog)
         self.topic_panel.bookmark_delete_requested.connect(self.viewmodel.delete_bookmark)
@@ -156,30 +178,53 @@ class ReaderShellWidget(QWidget):
         self.viewmodel.state_changed.connect(self._sync_state)
         self.viewmodel.layout_changed.connect(self._sync_layout)
         self.viewmodel.page_ready.connect(self._sync_page)
+        self.viewmodel.page_failed.connect(self.canvas.set_page_failed)
         self.viewmodel.error_changed.connect(self._show_reader_error)
         self.viewmodel.password_required.connect(self._show_password_dialog)
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
         self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
+        self.viewmodel.contents_changed.connect(self._handle_contents_changed)
         self.viewmodel.bookmark_error_changed.connect(
-            lambda message: self.dialog_overlay.show_info("Bookmarks", message)
+            lambda message: self.dialog_overlay.show_info(t("reader.bookmarks"), message)
         )
-        self.viewmodel.topic_thumbnail_batch_ready.connect(self.topic_panel.apply_thumbnail_batch)
+        self.viewmodel.topic_thumbnail_ready.connect(self.topic_panel.set_thumbnail)
 
     def _install_auto_hide(self) -> None:
-        self._control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
-        for widget in self._control_widgets:
-            self._visible_controls.add(widget)
-            widget.installEventFilter(self)
-
-        self._hide_timer = QTimer(self)
-        self._hide_timer.setSingleShot(True)
-        self._hide_timer.setInterval(Theme.reader_auto_hide_delay_ms)
-        self._hide_timer.timeout.connect(self._hide_inactive_controls)
-        self._hide_timer.start()
+        control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
+        # Late-bind both callbacks via lambdas: tests monkeypatch
+        # ``_control_interaction_active`` on the shell to force hide
+        # behaviour, and the panel-raise helper depends on panel state
+        # that changes after the controller is constructed.
+        self.auto_hide = AutoHideController(
+            self,
+            control_widgets,
+            delay_ms=Theme.reader_auto_hide_delay_ms,
+            interaction_predicate=lambda: self._control_interaction_active(),
+            on_after_show=lambda: self._raise_settings_panel_if_visible(),
+        )
+        # Header still needs the shell as an event filter for window-drag,
+        # so install the shell on it directly. Other control widgets only
+        # need the auto-hide controller's filter for reveal-on-hover.
+        self.header.installEventFilter(self)
+        self.panel_filter = PanelOutsideClickFilter(self)
+        self.panel_filter.register(
+            self.settings_panel,
+            safe_click_predicate=self._is_settings_safe_click,
+            on_outside_click=self._hide_settings_panel,
+        )
+        self.panel_filter.register(
+            self.topic_panel,
+            safe_click_predicate=self._is_topic_safe_click,
+            on_outside_click=self._hide_topic_panel,
+        )
+        self.auto_hide.start()
 
     def _sync_state(self) -> None:
         self.header.set_title(self.viewmodel.title)
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
+        self.header.set_contents_enabled(self.viewmodel.can_use_contents)
+        if not self.viewmodel.can_use_contents and self.topic_panel.mode == ReaderTopicMode.CONTENTS:
+            self._hide_topic_panel()
         if not self.viewmodel.can_use_bookmarks and self.topic_panel.mode == ReaderTopicMode.BOOKMARKS:
             self._hide_topic_panel()
         self.footer.set_page_state(
@@ -196,17 +241,17 @@ class ReaderShellWidget(QWidget):
         if self.viewmodel.error_message:
             self.canvas.set_status_text(self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
-            self.canvas.set_status_text("Loading...")
+            self.canvas.set_status_text(t("reader.loading"))
         elif self.viewmodel.loading_page_index is not None:
-            self.canvas.set_status_text(f"Loading page {self.viewmodel.loading_page_index + 1}...")
+            self.canvas.set_status_text(t("reader.loading_page", index=self.viewmodel.loading_page_index + 1))
         elif self.viewmodel.page_count <= 0:
-            self.canvas.set_status_text("No readable pages.")
+            self.canvas.set_status_text(t("reader.no_readable_pages"))
 
     def _sync_layout(self, _result) -> None:  # noqa: ANN001 - signal carries the layout dataclass.
         self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x)
 
-    def _sync_page(self, image: ReaderPageImage) -> None:
-        self.canvas.set_page_image(image)
+    def _sync_page(self, image: PreparedReaderPage) -> None:
+        self.canvas.set_page_frame(image)
 
     def _show_reader_error(self, message: str | None) -> None:
         if message:
@@ -214,17 +259,17 @@ class ReaderShellWidget(QWidget):
 
     def _show_password_dialog(self, prompt: ReaderPasswordPrompt) -> None:
         self.dialog_overlay.show_password_input(
-            "Archive Password",
-            f"Password for: {prompt.display_name}",
+            t("reader.archive_password_title"),
+            t("reader.archive_password_header", name=prompt.display_name),
             on_confirm=self.open_with_password,
-            confirm_text="Open",
-            cancel_text="Cancel",
-            skip_text="Skip",
-            validator=lambda value: None if value else "Password cannot be empty.",
+            confirm_text=t("reader.open"),
+            cancel_text=t("dialog.btn_cancel"),
+            skip_text=t("reader.skip"),
+            validator=lambda value: None if value else t("reader.password_required"),
             on_cancel=self.viewmodel.cancel_password_request,
             on_skip=self.skip_password_request,
             detail_text=prompt.archive_path,
-            state_prompt="Incorrect password. Please try again." if prompt.is_retry else None,
+            state_prompt=t("reader.password_retry") if prompt.is_retry else None,
         )
 
     def _toggle_settings_panel(self) -> None:
@@ -235,11 +280,11 @@ class ReaderShellWidget(QWidget):
         self._position_settings_panel()
         self.settings_panel.show()
         self.settings_panel.raise_()
-        self._install_settings_event_filter()
+        self.panel_filter.activate(self.settings_panel)
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
-        if mode == ReaderTopicMode.CONTENTS:
+        if mode == ReaderTopicMode.CONTENTS and not self.viewmodel.can_use_contents:
             self.header.clear_topic_active_mode()
             return
         if mode == ReaderTopicMode.BOOKMARKS and not self.viewmodel.can_use_bookmarks:
@@ -253,8 +298,12 @@ class ReaderShellWidget(QWidget):
         self._position_topic_panel()
         self.topic_panel.show()
         self.topic_panel.raise_()
-        self._install_topic_event_filter()
+        self.panel_filter.activate(self.topic_panel)
         self._start_hide_timer_if_allowed()
+
+    def _handle_contents_changed(self, items) -> None:  # noqa: ANN001 - signal carries immutable TOC items.
+        self.topic_panel.set_contents(items)
+        self.header.set_contents_enabled(bool(items))
 
     def _handle_canvas_mouse_move(self, position: QPoint) -> None:
         edge = Theme.reader_edge_reveal_distance
@@ -269,33 +318,6 @@ class ReaderShellWidget(QWidget):
             return
         if position.x() >= self.width() - edge:
             self._show_controls((self.right_arrow,), reset_timer=True)
-
-    def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        target_widgets = widgets or self._control_widgets
-        for widget in target_widgets:
-            self._set_control_visible(widget, True)
-        self._raise_settings_panel_if_visible()
-        if reset_timer:
-            self._start_hide_timer_if_allowed()
-
-    def _hide_inactive_controls(self) -> None:
-        if self._control_interaction_active():
-            self._hide_timer.start()
-            return
-        for widget in self._control_widgets:
-            self._set_control_visible(widget, False)
-
-    def _set_control_visible(self, widget: QWidget, visible: bool) -> None:
-        if widget not in self._control_widgets:
-            return
-        if visible:
-            self._visible_controls.add(widget)
-            widget.show()
-            widget.raise_()
-            self._raise_settings_panel_if_visible()
-        else:
-            self._visible_controls.discard(widget)
-            widget.hide()
 
     def _control_interaction_active(self) -> bool:
         if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
@@ -314,11 +336,6 @@ class ReaderShellWidget(QWidget):
                 return True
             widget = widget.parentWidget()
         return False
-
-    def _start_hide_timer_if_allowed(self) -> None:
-        if self.dialog_overlay.isVisible():
-            return
-        self._hide_timer.start()
 
     def _activate_left_outer(self) -> None:
         if self.viewmodel.is_right_to_left:
@@ -377,21 +394,11 @@ class ReaderShellWidget(QWidget):
         self.dialog_overlay.setGeometry(rect)
         self._position_settings_panel()
         self._raise_settings_panel_if_visible()
-        self.viewmodel.set_viewport_size(self.width(), self.height())
-
-    def paintEvent(self, event: QPaintEvent) -> None:
-        del event
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
-        painter.fillPath(path, QColor(Theme.color_reader_background))
-        painter.end()
-
-    def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self.handle_key_press(event):
-            return
-        super().keyPressEvent(event)
+        self.viewmodel.set_viewport_size(
+            self.width(),
+            self.height(),
+            self.devicePixelRatioF(),
+        )
 
     def handle_key_press(self, event: QKeyEvent) -> bool:
         if event.key() == Qt.Key.Key_Left:
@@ -415,61 +422,20 @@ class ReaderShellWidget(QWidget):
             return True
         return False
 
-    def eventFilter(self, watched: object, event: QEvent) -> bool:
-        if (
-            self._settings_event_filter_installed
-            and self.settings_panel.isVisible()
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(event, QMouseEvent)
-        ):
-            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
-            if not self._is_settings_safe_click(widget):
-                self._hide_settings_panel()
-        if (
-            self._topic_event_filter_installed
-            and self.topic_panel.isVisible()
-            and event.type() == QEvent.Type.MouseButtonPress
-            and isinstance(event, QMouseEvent)
-        ):
-            widget = watched if isinstance(watched, QWidget) else QApplication.widgetAt(QCursor.pos())
-            if not self._is_topic_safe_click(widget):
-                self._hide_topic_panel()
-        if watched in self._control_widgets and event.type() in {
-            QEvent.Type.Enter,
-            QEvent.Type.MouseMove,
-        }:
-            self._show_controls((watched,), reset_timer=True)  # type: ignore[arg-type]
-        if watched is self.header:
-            if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
-                if event.button() == Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    self._drag_position = event.globalPosition().toPoint() - window.frameGeometry().topLeft()
-            if event.type() == QEvent.Type.MouseMove and isinstance(event, QMouseEvent):
-                if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    if not window.isMaximized():
-                        window.move(event.globalPosition().toPoint() - self._drag_position)
-                    return True
-            if event.type() == QEvent.Type.MouseButtonRelease:
-                self._drag_position = None
-        return super().eventFilter(watched, event)
-
     def closeEvent(self, event: QCloseEvent) -> None:
+        logger.info(
+            "ReaderShellWidget close: path=%s book=%s",
+            self._source_path,
+            getattr(self.viewmodel, "book_uuid", None),
+        )
         self.cancel()
-        self._remove_settings_event_filter()
-        self._remove_topic_event_filter()
+        self.panel_filter.deactivate_all()
         super().closeEvent(event)
 
     def _position_settings_panel(self) -> None:
         self.settings_panel.setFixedHeight(self.height())
         x = max(0, self.width() - self.settings_panel.width())
         self.settings_panel.move(x, 0)
-
-    def _position_topic_panel(self) -> None:
-        width = min(Theme.reader_topic_panel_width, max(Theme.reader_topic_panel_min_width, self.width() - 32))
-        height = min(Theme.reader_topic_panel_height, max(Theme.reader_topic_panel_min_height, self.height() - 32))
-        self.topic_panel.setFixedSize(width, height)
-        self.topic_panel.move((self.width() - width) // 2, (self.height() - height) // 2)
 
     def _hide_settings_panel_if_visible(self) -> None:
         if self.settings_panel.isVisible():
@@ -484,15 +450,7 @@ class ReaderShellWidget(QWidget):
         if self.settings_panel.isHidden():
             return
         self.settings_panel.hide()
-        self._remove_settings_event_filter()
-        self._start_hide_timer_if_allowed()
-
-    def _hide_topic_panel(self) -> None:
-        if self.topic_panel.isHidden():
-            return
-        self.topic_panel.hide()
-        self.header.clear_topic_active_mode()
-        self._remove_topic_event_filter()
+        self.panel_filter.deactivate(self.settings_panel)
         self._start_hide_timer_if_allowed()
 
     def _raise_settings_panel_if_visible(self) -> None:
@@ -503,58 +461,28 @@ class ReaderShellWidget(QWidget):
         if self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
 
-    def _install_settings_event_filter(self) -> None:
-        if self._settings_event_filter_installed:
-            return
-        self._settings_event_filter_installed = True
-        self._ensure_app_event_filter()
-
-    def _remove_settings_event_filter(self) -> None:
-        if not self._settings_event_filter_installed:
-            return
-        self._settings_event_filter_installed = False
-        self._remove_app_event_filter_if_unused()
-
-    def _install_topic_event_filter(self) -> None:
-        if self._topic_event_filter_installed:
-            return
-        self._topic_event_filter_installed = True
-        self._ensure_app_event_filter()
-
-    def _remove_topic_event_filter(self) -> None:
-        if not self._topic_event_filter_installed:
-            return
-        self._topic_event_filter_installed = False
-        self._remove_app_event_filter_if_unused()
-
-    def _ensure_app_event_filter(self) -> None:
-        if self._app_event_filter_installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
-            self._app_event_filter_installed = True
-
-    def _remove_app_event_filter_if_unused(self) -> None:
-        if self._settings_event_filter_installed or self._topic_event_filter_installed:
-            return
-        if not self._app_event_filter_installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
-        self._app_event_filter_installed = False
-
-    def _is_settings_safe_click(self, widget: QWidget | None) -> bool:
+    def _is_settings_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
+        # See ``NovelReaderShellWidget._is_custom_safe_click`` for why
+        # ``windowType()`` is used instead of a bitwise AND against the
+        # Popup flag.
+        #
+        # Geometric guard: a click on a blank panel area (no child widget)
+        # propagates up to the shell. The filter fires again with watched=shell,
+        # so the ancestor-chain walk misses the panel. Check cursor position
+        # first to catch that propagated re-delivery.
+        if QRect(self.settings_panel.mapToGlobal(QPoint(0, 0)), self.settings_panel.size()).contains(global_position):
+            return True
         while widget is not None:
             if widget in {self.settings_panel, self.footer.settings_button}:
                 return True
-            if widget.window().windowFlags() & Qt.WindowType.Popup:
+            if widget.window().windowType() == Qt.WindowType.Popup:
                 return True
             widget = widget.parentWidget()
         return False
 
-    def _is_topic_safe_click(self, widget: QWidget | None) -> bool:
+    def _is_topic_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
+        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(global_position):
+            return True
         while widget is not None:
             if widget in {
                 self.topic_panel,
@@ -564,22 +492,10 @@ class ReaderShellWidget(QWidget):
                 self.header.thumbnail_button,
             }:
                 return True
-            if widget.window().windowFlags() & Qt.WindowType.Popup:
+            if widget.window().windowType() == Qt.WindowType.Popup:
                 return True
             widget = widget.parentWidget()
         return False
-
-    def _show_rename_bookmark_dialog(self, bookmark_uuid: str, current_name: str) -> None:
-        self.dialog_overlay.show_input(
-            "Rename Bookmark",
-            "Bookmark Name",
-            on_confirm=lambda name, bookmark_uuid=bookmark_uuid: self.viewmodel.rename_bookmark(bookmark_uuid, name),
-            initial_text=current_name,
-            confirm_text="Rename",
-            cancel_text="Cancel",
-            validator=lambda value: None if value.strip() else "Bookmark name cannot be empty.",
-        )
-
 
 def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
     if book is None:

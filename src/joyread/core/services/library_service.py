@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from joyread.core.models.book import Book
 from joyread.core.models.bookmark import Bookmark
 from joyread.core.models.collection import Collection
@@ -10,18 +12,39 @@ from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.reader.models import ReaderProgress, ReaderSettings
 
 
+logger = logging.getLogger(__name__)
+
+
 class LibraryService:
+    """Business-facing facade over the book repository.
+
+    ViewModels depend on this service, not directly on SQLite repositories.
+    That leaves room for validation, batching, async orchestration, and future
+    plugin hooks without changing the UI layer's dependency shape.
+    """
+
     def __init__(self, book_repository: BookRepository) -> None:
         self._book_repository = book_repository
 
     def list_books(self) -> list[Book]:
-        return self._book_repository.list_books()
+        books = self._book_repository.list_books()
+        logger.debug("LibraryService.list_books count=%d", len(books))
+        return books
+
+    def get_book(self, book_uuid: str) -> Book | None:
+        book = self._book_repository.get_book(book_uuid)
+        logger.debug("LibraryService.get_book book=%s found=%s", book_uuid, book is not None)
+        return book
 
     def list_collections(self) -> list[Collection]:
-        return self._book_repository.list_collections()
+        collections = self._book_repository.list_collections()
+        logger.debug("LibraryService.list_collections count=%d", len(collections))
+        return collections
 
     def list_languages(self) -> list[Language]:
-        return self._book_repository.list_languages()
+        languages = self._book_repository.list_languages()
+        logger.debug("LibraryService.list_languages count=%d", len(languages))
+        return languages
 
     def set_favourite(self, book_uuid: str, is_favourite: bool) -> None:
         self._book_repository.set_favourite(book_uuid, is_favourite)
@@ -29,6 +52,25 @@ class LibraryService:
     def set_favourites(self, book_uuids: tuple[str, ...], is_favourite: bool) -> None:
         for book_uuid in book_uuids:
             self.set_favourite(book_uuid, is_favourite)
+
+    def set_book_hidden(self, book_uuid: str, hidden: bool) -> None:
+        self._book_repository.set_book_hidden(book_uuid, hidden)
+
+    def set_books_hidden(self, book_uuids: tuple[str, ...], hidden: bool) -> None:
+        for book_uuid in book_uuids:
+            self.set_book_hidden(book_uuid, hidden)
+
+    def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
+        self._book_repository.set_collection_hidable(collection_uuid, hidable)
+
+    def revert_hidden_state(self) -> None:
+        self._book_repository.revert_hidden_state()
+
+    def list_hidden_book_ids(self) -> list[str]:
+        return self._book_repository.list_hidden_book_ids()
+
+    def list_hidable_collection_ids(self) -> list[str]:
+        return self._book_repository.list_hidable_collection_ids()
 
     def update_book_metadata(
         self,
@@ -44,6 +86,9 @@ class LibraryService:
             author=author,
             language_tag=language_tag,
         )
+
+    def set_book_cover_path(self, book_uuid: str, cover_path: str) -> None:
+        self._book_repository.set_book_cover_path(book_uuid, cover_path)
 
     def delete_book(self, book_uuid: str) -> None:
         self._book_repository.delete_book(book_uuid)

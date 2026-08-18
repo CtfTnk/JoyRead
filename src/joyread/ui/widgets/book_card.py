@@ -15,6 +15,7 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPixmap,
+    QPixmapCache,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.book import Book
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -45,15 +47,16 @@ class BookCardWidget(QFrame):
         super().__init__(parent)
         self.book = book
         self._resources = resources
-        self._is_missing = book.is_missing
+        self._is_unavailable = not book.is_available
         self.setProperty("class", "BookCard")
         self.setProperty("selected", "false")
         self.setProperty("missing", "true" if book.is_missing else "false")
+        self.setProperty("unavailable", "true" if book.is_unavailable else "false")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedSize(Theme.book_card_width, Theme.book_card_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
-        self._apply_missing_state(book.is_missing, force=True)
+        self._apply_unavailable_state(not book.is_available, force=True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
@@ -67,7 +70,7 @@ class BookCardWidget(QFrame):
         self._cover = BookCoverWidget(_placeholder_cover(), QSize(Theme.cover_width, Theme.cover_height))
         layout.addWidget(self._cover, alignment=Qt.AlignmentFlag.AlignCenter | Qt.AlignmentFlag.AlignTop)
 
-        self._title = ElidedLabel(book.title, max_lines=2)
+        self._title = ElidedLabel(book.title, max_lines=2, reserve_full_height=True)
         self._title.setProperty("class", "BookTitle")
         self._title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         layout.addWidget(self._title)
@@ -94,25 +97,24 @@ class BookCardWidget(QFrame):
         option_layout.setContentsMargins(0, 0, 0, 0)
         option_layout.setSpacing(Theme.book_option_frame_gap)
 
-        detail_button = QToolButton()
-        detail_button.setProperty("class", "CardButton")
-        detail_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_detail.svg"))))
-        detail_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        detail_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
-        detail_button.setToolTip("Detail")
-        detail_button.clicked.connect(lambda: self.detail_requested.emit(self.book.uuid))
-        option_layout.addWidget(detail_button)
+        self._detail_button = QToolButton()
+        self._detail_button.setProperty("class", "CardButton")
+        self._detail_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_detail.svg"))))
+        self._detail_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+        self._detail_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
+        self._detail_button.clicked.connect(lambda: self.detail_requested.emit(self.book.uuid))
+        option_layout.addWidget(self._detail_button)
 
-        option_button = QToolButton()
-        option_button.setProperty("class", "CardButton")
-        option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
-        option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        option_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
-        option_button.setToolTip("More options")
-        option_button.clicked.connect(
-            lambda _checked=False, button=option_button: self._emit_option_menu(button)
+        self._option_button = QToolButton()
+        self._option_button.setProperty("class", "CardButton")
+        self._option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
+        self._option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+        self._option_button.setFixedSize(Theme.card_button_size, Theme.card_button_size)
+        self._option_button.clicked.connect(
+            lambda _checked=False, button=self._option_button: self._emit_option_menu(button)
         )
-        option_layout.addWidget(option_button)
+        option_layout.addWidget(self._option_button)
+        self.refresh_labels()
 
         control_bar.addWidget(option_frame)
         layout.addWidget(control_bar_frame)
@@ -121,7 +123,19 @@ class BookCardWidget(QFrame):
         self.book = book
         self._title.set_full_text(book.title)
         self._progress.set_progress(book.progress_percent)
-        self._apply_missing_state(book.is_missing)
+        missing = "true" if book.is_missing else "false"
+        unavailable = "true" if book.is_unavailable else "false"
+        state_changed = (
+            self.property("missing") != missing or self.property("unavailable") != unavailable
+        )
+        self.setProperty("missing", missing)
+        self.setProperty("unavailable", unavailable)
+        self._apply_unavailable_state(not book.is_available, force=state_changed)
+        self.refresh_labels()
+
+    def refresh_labels(self) -> None:
+        self._detail_button.setToolTip(t("menu.detail"))
+        self._option_button.setToolTip(t("detail.more_options"))
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", "true" if selected else "false")
@@ -151,12 +165,11 @@ class BookCardWidget(QFrame):
     def _emit_option_menu(self, button: QToolButton) -> None:
         self.menu_requested.emit(self.book.uuid, button.mapToGlobal(QPoint(0, button.height())))
 
-    def _apply_missing_state(self, is_missing: bool, *, force: bool = False) -> None:
-        if not force and is_missing == self._is_missing:
+    def _apply_unavailable_state(self, is_unavailable: bool, *, force: bool = False) -> None:
+        if not force and is_unavailable == self._is_unavailable:
             return
-        self._is_missing = is_missing
-        self.setProperty("missing", "true" if is_missing else "false")
-        if is_missing:
+        self._is_unavailable = is_unavailable
+        if is_unavailable:
             opacity = QGraphicsOpacityEffect(self)
             opacity.setOpacity(Theme.missing_book_opacity)
             self.setGraphicsEffect(opacity)
@@ -188,13 +201,9 @@ class BookCoverWidget(QFrame):
         self.update()
 
     def set_pixmap_from_path(self, path: Path) -> None:
+        QPixmapCache.remove(str(path))
         pixmap = QPixmap(str(path))
         self.set_pixmap(pixmap)
-
-    def set_pixmap_from_bytes(self, image_bytes: bytes) -> None:
-        pixmap = QPixmap()
-        if pixmap.loadFromData(image_bytes):
-            self.set_pixmap(pixmap)
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

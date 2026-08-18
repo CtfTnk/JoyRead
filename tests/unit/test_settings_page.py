@@ -1,8 +1,13 @@
+import json
+
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.app.app_context import create_app_context
+from joyread.core.archive.limits import GIB, MEGAPIXEL
 from joyread.core.models.cache import ArchiveCacheStrategy
+from joyread.infrastructure.i18n import locale_service
+from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
@@ -10,7 +15,9 @@ from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.widgets.settings_page import (
     SettingsAddressItem,
+    SettingsCacheStatusItem,
     SettingsContentPanel,
+    SettingsDropdownButton,
     SettingsPageWidget,
     SettingsSidebarItem,
     SettingsSpinButtonSmall,
@@ -33,21 +40,100 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_section(SettingsSectionKey.TAGS)
     viewmodel.set_import_book_when_opening(True)
     viewmodel.set_individual_read_window(True)
+    viewmodel.set_inspect_non_native_title_control(True)
     viewmodel.set_language("English")
-    viewmodel.set_storage_location("~/Documents/JoyRead Library")
+    viewmodel.set_storage_location("~/Documents/JoyRead-Library-Test")
     viewmodel.set_archive_cache_strategy("Hidden image files")
     viewmodel.set_import_folder_max_depth(3)
-    viewmodel.set_archive_internal_max_depth(4)
+    viewmodel.set_nested_archive_max_depth(4)
+    viewmodel.set_archive_global_file_max_depth(250)
+    viewmodel.set_archive_max_source_size_enabled(False)
+    viewmodel.set_archive_max_source_size_gb(12)
+    viewmodel.set_archive_resource_guardrails_enabled(False)
+    viewmodel.set_archive_max_extracted_item_gb(8)
+    viewmodel.set_archive_max_operation_data_gb(32)
+    viewmodel.set_archive_max_image_megapixels(800)
+    viewmodel.set_archive_external_command_timeout_seconds(900)
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
     assert viewmodel.import_book_when_opening is True
     assert viewmodel.individual_read_window is True
-    assert viewmodel.storage_location == "~/Documents/JoyRead Library"
+    assert viewmodel.inspect_non_native_title_control is True
+    assert viewmodel.storage_location == "~/Documents/JoyRead-Library-Test"
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
     assert viewmodel.archive_cache_strategy_label == "Hidden image files"
     assert viewmodel.import_folder_max_depth == 3
-    assert viewmodel.archive_internal_max_depth == 4
-    assert len(changes) == 7
+    assert viewmodel.nested_archive_max_depth == 4
+    assert viewmodel.archive_global_file_max_depth == 250
+    assert viewmodel.archive_max_source_size_enabled is False
+    assert viewmodel.archive_max_source_size_gb == 12
+    assert viewmodel.archive_resource_guardrails_enabled is False
+    assert viewmodel.archive_max_extracted_item_gb == 8
+    assert viewmodel.archive_max_operation_data_gb == 32
+    assert viewmodel.archive_max_image_megapixels == 800
+    assert viewmodel.archive_external_command_timeout_seconds == 900
+    assert len(changes) == 16
+
+
+def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinels() -> None:
+    viewmodel = SettingsViewModel()
+    depth_changes: list[None] = []
+    viewmodel.archive_depth_limits_changed.connect(lambda: depth_changes.append(None))
+
+    viewmodel.set_nested_archive_max_depth(-1)
+    viewmodel.set_archive_global_file_max_depth(-1)
+
+    assert viewmodel.nested_archive_max_depth == -1
+    assert viewmodel.archive_global_file_max_depth == -1
+    assert viewmodel.archive_open_limits.nested_archive_max_depth is None
+    assert viewmodel.archive_open_limits.global_file_max_depth is None
+
+    viewmodel.set_nested_archive_max_depth(0)
+    viewmodel.set_archive_global_file_max_depth(-2)
+
+    assert viewmodel.nested_archive_max_depth == -1
+    assert viewmodel.archive_global_file_max_depth == -1
+    assert len(depth_changes) == 2
+
+
+def test_settings_viewmodel_converts_archive_guardrails_to_none_without_losing_values() -> None:
+    viewmodel = SettingsViewModel()
+    limit_changes: list[None] = []
+    viewmodel.archive_open_limits_changed.connect(lambda: limit_changes.append(None))
+
+    viewmodel.set_archive_max_source_size_gb(9)
+    viewmodel.set_archive_max_extracted_item_gb(-1)
+    viewmodel.set_archive_max_operation_data_gb(12)
+    viewmodel.set_archive_max_image_megapixels(250)
+    viewmodel.set_archive_external_command_timeout_seconds(45)
+
+    limits = viewmodel.archive_open_limits
+    assert limits.max_source_bytes == 9 * GIB
+    assert limits.max_extracted_item_bytes is None
+    assert limits.max_operation_bytes == 12 * GIB
+    assert limits.max_image_pixels == 250 * MEGAPIXEL
+    assert limits.external_command_timeout_seconds == 45
+
+    viewmodel.set_archive_resource_guardrails_enabled(False)
+    disabled = viewmodel.archive_open_limits
+    assert disabled.max_source_bytes == 9 * GIB
+    assert disabled.max_extracted_item_bytes is None
+    assert disabled.max_operation_bytes is None
+    assert disabled.max_image_pixels is None
+    assert disabled.external_command_timeout_seconds is None
+    assert viewmodel.archive_max_operation_data_gb == 12
+
+    viewmodel.set_archive_resource_guardrails_enabled(True)
+    restored = viewmodel.archive_open_limits
+    assert restored.max_operation_bytes == 12 * GIB
+    assert restored.max_image_pixels == 250 * MEGAPIXEL
+    assert restored.external_command_timeout_seconds == 45
+
+    viewmodel.set_archive_max_operation_data_gb(0)
+    viewmodel.set_archive_max_image_megapixels(-2)
+    assert viewmodel.archive_max_operation_data_gb == 12
+    assert viewmodel.archive_max_image_megapixels == 250
+    assert len(limit_changes) == 7
 
 
 def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -> None:
@@ -100,16 +186,135 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     assert sidebar_item_positions["Tags"] - sidebar_item_positions["General"] == (
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
-    assert sidebar_item_positions["Private Space"] - sidebar_item_positions["Tags"] == (
+    assert sidebar_item_positions["Privacy"] - sidebar_item_positions["Tags"] == (
         Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     )
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four original General rows, two Import depth rows, and five Cache rows.
-    assert len(setting_items) == 11
+    # Five General rows (Storage moved to Privacy), three Import depth rows,
+    # seven Archive rows, five Cache rows, and the Library maintenance action.
+    assert len(setting_items) == 21
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 5
+    assert len(spin_buttons) == 11
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
+
+
+def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+    switches = page.findChildren(SettingsSwitchItem)
+
+    assert "Use Native Title Control" not in labels
+    assert "Inspect Windows/Linux Title Control" in labels
+    assert len(switches) == 6
+
+    inspect_item = next(
+        item
+        for item in page.findChildren(SettingsSwitchItem)
+        if next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        ).text()
+        == "Inspect Windows/Linux Title Control"
+    )
+    assert inspect_item.switch.isEnabled()
+
+    inspect_item.switch.set_checked(True)
+    QApplication.processEvents()
+
+    assert viewmodel.inspect_non_native_title_control is True
+
+
+def test_general_tab_library_maintenance_button_emits_viewmodel_request(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    requested: list[bool] = []
+    viewmodel.library_maintenance_requested.connect(lambda: requested.append(True))
+
+    button = next(
+        item
+        for item in page.findChildren(SettingsButtonItem)
+        if any(
+            label.text() == "Verify Library & Clean Cache"
+            for label in item.findChildren(QLabel)
+        )
+    )
+    button.button.click()
+
+    assert requested == [True]
+
+
+def test_language_dropdown_displays_native_names_but_persists_canonical_value(qtbot, tmp_path) -> None:
+    apply_theme()
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.update(language="English")
+    viewmodel = SettingsViewModel(settings, store)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    language_dropdown = page.findChildren(SettingsDropdownButton)[0]
+
+    assert language_dropdown.value == "English"
+    assert language_dropdown._options == ("English", "中文", "日本語")
+
+    language_dropdown.set_value("中文")
+    QApplication.processEvents()
+
+    assert viewmodel.language == "Chinese"
+    assert store.load().language == "Chinese"
+    locale_service.load_language("English")
+
+
+def test_language_dropdown_selected_display_follows_canonical_viewmodel_value(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel(AppSettings(storage_location="~/Library", language="Japanese"))
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    language_dropdown = page.findChildren(SettingsDropdownButton)[0]
+
+    assert language_dropdown.value == "日本語"
+
+
+def test_settings_page_refresh_labels_updates_sidebar_and_current_content(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    assert any(item.findChild(QLabel).text() == "General" for item in page.findChildren(SettingsSidebarItem))
+
+    locale_service.load_language("Chinese")
+    page.refresh_labels()
+    QApplication.processEvents()
+
+    sidebar_labels = [item.findChild(QLabel).text() for item in page.findChildren(SettingsSidebarItem)]
+    setting_labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+
+    assert "通用" in sidebar_labels
+    assert "语言" in setting_labels
+    locale_service.load_language("English")
 
 
 def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> None:
@@ -154,6 +359,28 @@ def test_settings_overlay_resizes_panel_within_figma_min_max(qtbot) -> None:
     assert overlay.page.geometry().center() == overlay.rect().center()
 
 
+def test_settings_switch_and_button_items_share_right_gutter(qtbot) -> None:
+    # Privacy + General show switches and buttons in the same column; the
+    # Figma right-aligns every option control to a common gutter, so the
+    # switch row must not add extra horizontal padding around the switch.
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    panel = SettingsContentPanel()
+    qtbot.addWidget(panel)
+    switch_item = SettingsSwitchItem("Switch", False)
+    button_item = SettingsButtonItem("Button", "Change")
+    panel.set_items([switch_item, button_item])
+    panel.resize(420, 200)
+    panel.show()
+    QApplication.processEvents()
+
+    switch_right = switch_item.switch.mapTo(panel, switch_item.switch.rect().topRight()).x()
+    button_right = button_item.button.mapTo(panel, button_item.button.rect().topRight()).x()
+
+    assert switch_right == button_right
+
+
 def test_settings_switch_control_toggles_and_keeps_figma_knob_size(qtbot) -> None:
     apply_theme()
     switch = SettingsSwitchControl(False)
@@ -167,12 +394,17 @@ def test_settings_switch_control_toggles_and_keeps_figma_knob_size(qtbot) -> Non
     assert switch.size().height() == Theme.settings_switch_height
     assert knob.size().width() == Theme.settings_switch_knob_size
     assert knob.x() == Theme.settings_switch_layout_margin
+    # Off state: QSS attribute selector picks the gray track variant.
+    assert switch.property("checked") == "false"
 
     qtbot.mouseClick(switch, Qt.MouseButton.LeftButton)
 
     assert switch.checked is True
     assert emitted == [True]
     assert knob.x() == switch.width() - Theme.settings_switch_layout_margin - Theme.settings_switch_knob_size
+    # On state flips the dynamic property so the white-track QSS rule
+    # applies — the Figma small switch fills its track when on.
+    assert switch.property("checked") == "true"
 
 
 def test_settings_spin_button_small_matches_figma_geometry_and_steps(qtbot) -> None:
@@ -254,6 +486,194 @@ def test_settings_spin_button_small_commits_editor_value_on_return(qtbot) -> Non
     assert emitted == [55, 64]
 
 
+def test_settings_depth_spin_supports_unlimited_and_rejects_zero(qtbot) -> None:
+    apply_theme()
+    spin = SettingsSpinButtonSmall(
+        1,
+        1,
+        5,
+        "",
+        ResourceLoader(),
+        unlimited_sentinel=-1,
+    )
+    qtbot.addWidget(spin)
+    emitted: list[int] = []
+    spin.value_changed.connect(emitted.append)
+    spin.show()
+    QApplication.processEvents()
+
+    buttons = spin.findChildren(QToolButton)
+    editor = spin.findChild(QLineEdit, "SettingsSpinValueEditor")
+    assert editor is not None
+
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    assert spin.value == -1
+    qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
+    assert spin.value == 1
+
+    editor.setText("0")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    assert spin.value == 1
+    assert editor.text() == "1"
+
+    editor.setText("-2")
+    qtbot.keyClick(editor, Qt.Key.Key_Return)
+    assert spin.value == 1
+    assert editor.text() == "1"
+    assert emitted == [-1, 1]
+
+
+def test_settings_store_migrates_legacy_archive_depth_and_persists_new_keys(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_internal_max_depth": -1,
+                "archive_global_file_max_depth": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+
+    assert settings.nested_archive_max_depth == -1
+    assert settings.archive_global_file_max_depth == 100
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["nested_archive_max_depth"] == -1
+    assert saved["archive_global_file_max_depth"] == 100
+    assert "archive_internal_max_depth" not in saved
+
+
+def test_settings_store_defaults_and_persists_archive_guardrail_values(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_max_source_size_enabled": False,
+                "archive_max_source_size_gb": 14,
+                "archive_resource_guardrails_enabled": True,
+                "archive_max_extracted_item_gb": -1,
+                "archive_max_operation_data_gb": 63,
+                "archive_max_image_megapixels": 999,
+                "archive_external_command_timeout_seconds": -1,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+
+    assert settings.archive_max_source_size_enabled is False
+    assert settings.archive_max_source_size_gb == 14
+    assert settings.archive_resource_guardrails_enabled is True
+    assert settings.archive_max_extracted_item_gb == -1
+    assert settings.archive_max_operation_data_gb == 63
+    assert settings.archive_max_image_megapixels == 999
+    assert settings.archive_external_command_timeout_seconds == -1
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["archive_max_source_size_enabled"] is False
+    assert saved["archive_max_source_size_gb"] == 14
+    assert saved["archive_resource_guardrails_enabled"] is True
+    assert saved["archive_max_extracted_item_gb"] == -1
+    assert saved["archive_max_operation_data_gb"] == 63
+    assert saved["archive_max_image_megapixels"] == 999
+    assert saved["archive_external_command_timeout_seconds"] == -1
+
+    legacy_store = SettingsStore(
+        support_root=tmp_path / "legacy-support",
+        default_storage_root=tmp_path / "legacy-storage",
+    )
+    legacy_store.config_dir.mkdir(parents=True)
+    legacy_store.settings_path.write_text(
+        json.dumps({"storage_location": str(tmp_path / "legacy-storage")}),
+        encoding="utf-8",
+    )
+    defaults = legacy_store.load()
+    assert defaults.archive_max_source_size_enabled is True
+    assert defaults.archive_max_source_size_gb == 5
+    assert defaults.archive_resource_guardrails_enabled is True
+    assert defaults.archive_max_extracted_item_gb == 1
+    assert defaults.archive_max_operation_data_gb == 4
+    assert defaults.archive_max_image_megapixels == 400
+    assert defaults.archive_external_command_timeout_seconds == 300
+
+
+def test_settings_store_migrates_thumbnail_cache_key_and_viewmodel_persists_new_name(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "detail_thumbnail_cache_mb": 72,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store)
+
+    assert settings.thumbnail_cache_mb == 72
+    assert viewmodel.thumbnail_cache_mb == 72
+
+    viewmodel.set_thumbnail_cache_mb(96)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+
+    assert saved["thumbnail_cache_mb"] == 96
+    assert "detail_thumbnail_cache_mb" not in saved
+
+
+def test_settings_store_migrates_archive_pool_mb_to_gb_and_saves_only_gb(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.config_dir.mkdir(parents=True)
+    store.settings_path.write_text(
+        json.dumps(
+            {
+                "storage_location": str(tmp_path / "storage"),
+                "archive_extraction_pool_mb": 1537,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    settings = store.load()
+    assert settings.archive_extraction_pool_gb == 2
+
+    store.save(settings)
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["archive_extraction_pool_gb"] == 2
+    assert "archive_extraction_pool_mb" not in saved
+
+
+def test_settings_archive_pool_uses_five_gb_default_and_one_to_fifty_range(tmp_path) -> None:
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    assert store.load().archive_extraction_pool_gb == 5
+
+    viewmodel = SettingsViewModel(store.load(), store)
+    viewmodel.set_archive_extraction_pool_gb(0)
+    assert viewmodel.archive_extraction_pool_gb == 1
+    viewmodel.set_archive_extraction_pool_gb(75)
+    assert viewmodel.archive_extraction_pool_gb == 50
+    assert store.load().archive_extraction_pool_gb == 50
+
+
+def test_archive_pool_usage_can_display_soft_budget_overrun(qtbot) -> None:
+    item = SettingsCacheStatusItem("Archive pool usage", int(6.2 * GIB), 5 * GIB)
+    qtbot.addWidget(item)
+
+    assert item.findChild(QLabel, "SettingsCacheUsageLabel").text() == "6.2 / 5 GB"
+
+
 def test_main_window_opens_centered_floating_settings_overlay_and_restores_sidebar(qtbot) -> None:
     apply_theme()
     window = MainWindow(create_app_context())
@@ -310,3 +730,226 @@ def test_stylesheet_resolves_settings_tokens() -> None:
     assert "__SETTINGS_SWITCH_KNOB__" not in stylesheet
     assert "QFrame[class=\"SettingsPanel\"]" in stylesheet
     assert "QScrollArea#SettingsRightScrollArea QScrollBar:vertical" in stylesheet
+
+
+# ---------------------------------------------------------------------------
+# Privacy tab — Hidden Space rows
+
+
+def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    button_items = page.findChildren(SettingsButtonItem)
+    switch_items = page.findChildren(SettingsSwitchItem)
+    labels = [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+
+    assert any("Show Collections" in label for label in labels)
+    assert {"Change Password", "Revert all", "Reset and Erase"}.issubset(set(labels))
+    # Storage management rows live on the Privacy tab too. The Library Location
+    # row shows the directory (address item); Select/Reset are button rows.
+    assert {"Library Location", "Select Existing Library", "Reset Library"}.issubset(
+        set(labels)
+    )
+    address_items = page.findChildren(SettingsAddressItem)
+    assert len(address_items) == 1
+
+    def _row_name(item: SettingsButtonItem) -> str:
+        label = next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        )
+        return label.text()
+
+    by_name = {_row_name(item): item for item in button_items}
+    # Three Hidden Space rows + two Storage button rows (Move is an address row).
+    assert len(button_items) == 5
+    # Hidden Space buttons are disabled until the feature is initialised; the
+    # Storage buttons are always actionable.
+    for hidden_label in ("Change Password", "Revert all", "Reset and Erase"):
+        assert by_name[hidden_label].button.isEnabled() is False
+    for storage_label in ("Select Existing Library", "Reset Library"):
+        assert by_name[storage_label].button.isEnabled() is True
+    # Two switches: Show Collections, and the encrypted-archive cache toggle.
+    # Identified by label rather than by count so adding a third row does not
+    # silently change which switch the tests below reach for.
+    assert [_row_name(item) for item in switch_items] == [
+        "Show Collections",
+        "Delete cached pages when closing",
+    ]
+
+
+def test_privacy_show_collections_toggle_emits_setup_request_when_uninitialised(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    emitted: list[str] = []
+    page.hidden_space_setup_requested.connect(lambda: emitted.append("setup"))
+    page.hidden_space_verify_requested.connect(lambda: emitted.append("verify"))
+
+    switch = page.findChildren(SettingsSwitchItem)[0].switch
+    switch.set_checked(True)
+
+    assert emitted == ["setup"]
+
+
+def test_privacy_show_collections_toggle_off_persists_immediately(qtbot, tmp_path) -> None:
+    apply_theme()
+    from joyread.core.services.hidden_space_service import HiddenSpaceService
+    from joyread.core.services.library_service import LibraryService
+    from joyread.infrastructure.config.settings_store import SettingsStore
+    from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.load()
+    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
+    service.initialize("Pass1234", "Pass1234", None)
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store, service)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+    assert viewmodel.show_hidden_collection is True
+
+    switch = page.findChildren(SettingsSwitchItem)[0].switch
+    switch.set_checked(False)
+    QApplication.processEvents()
+
+    assert viewmodel.show_hidden_collection is False
+    assert store.load().show_hidden_collection is False
+
+
+def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsButtonItem, SettingsPushButton
+
+    viewmodel = SettingsViewModel()
+    viewmodel.set_storage_location("~/Documents/JoyRead-Library")
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    emitted: list[str] = []
+    page.storage_move_requested.connect(lambda: emitted.append("move"))
+    page.storage_select_requested.connect(lambda: emitted.append("select"))
+    page.storage_reset_requested.connect(lambda: emitted.append("reset"))
+
+    # The Move row is an address item that displays the current directory.
+    address_item = page.findChildren(SettingsAddressItem)[0]
+    path_field = address_item.findChild(QLineEdit)
+    assert path_field is not None
+    assert path_field.text() == "~/Documents/JoyRead-Library"
+
+    def _row_name(item: SettingsButtonItem) -> str:
+        return next(
+            child
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        ).text()
+
+    by_name = {_row_name(item): item for item in page.findChildren(SettingsButtonItem)}
+    address_item.findChild(SettingsPushButton).click()
+    by_name["Select Existing Library"].button.click()
+    by_name["Reset Library"].button.click()
+
+    assert emitted == ["move", "select", "reset"]
+
+
+def test_storage_reset_requires_two_step_delete_confirmation(qtbot, monkeypatch) -> None:
+    apply_theme()
+    window = MainWindow(create_app_context())
+    qtbot.addWidget(window)
+
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        window.dialog_overlay,
+        "show_confirm",
+        lambda title, message, on_confirm, **kwargs: captured.update(
+            confirm=on_confirm, destructive=kwargs.get("destructive")
+        ),
+    )
+    monkeypatch.setattr(
+        window.dialog_overlay,
+        "show_input",
+        lambda title, header, on_confirm, *, validator=None, **kwargs: captured.update(
+            submit=on_confirm, validator=validator
+        ),
+    )
+    executed: list[bool] = []
+    monkeypatch.setattr(window, "_execute_reset_storage", lambda: executed.append(True))
+
+    window._request_reset_storage()
+    assert captured["destructive"] is True
+    assert not executed  # first confirm does nothing destructive on its own
+
+    captured["confirm"]()  # user presses Continue → second-step input appears
+    validator = captured["validator"]
+    assert validator("") is not None
+    assert validator("remove") is not None
+    assert validator("delete") is None
+    assert validator("DELETE") is None
+    assert validator("  delete  ") is None
+
+    captured["submit"]("delete")  # typing the word and confirming runs the reset
+    assert executed == [True]
+
+    window._context.close()
+
+
+def test_privacy_buttons_enable_once_hidden_space_initialised(qtbot, tmp_path) -> None:
+    apply_theme()
+    from joyread.core.services.hidden_space_service import HiddenSpaceService
+    from joyread.core.services.library_service import LibraryService
+    from joyread.infrastructure.config.settings_store import SettingsStore
+    from joyread.ui.widgets.settings_page import SettingsButtonItem
+    from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    settings = store.load()
+    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
+    service.initialize("Pass1234", "Pass1234", None)
+    settings = store.load()
+    viewmodel = SettingsViewModel(settings, store, service)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    button_items = page.findChildren(SettingsButtonItem)
+    for item in button_items:
+        assert item.button.isEnabled() is True
+
+
+def test_encrypted_cache_switch_persists_and_defaults_on(qtbot, tmp_path) -> None:
+    """Extracted pages of an encrypted archive are plaintext on disk, so the
+    switch that bounds how long they live has to survive a restart. Defaults
+    on: the pool is not encrypted yet, and one bulk-conversion pass per
+    session is cheap enough that privacy is the better default."""
+
+    apply_theme()
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    viewmodel = SettingsViewModel(store.load(), store)
+
+    assert viewmodel.purge_encrypted_cache_on_close is True
+
+    viewmodel.set_purge_encrypted_cache_on_close(False)
+
+    assert store.load().purge_encrypted_cache_on_close is False
+    assert SettingsViewModel(store.load(), store).purge_encrypted_cache_on_close is False

@@ -42,6 +42,9 @@ class InMemoryBookRepository:
     def list_books(self) -> list[Book]:
         return list(self._books)
 
+    def get_book(self, book_id: str) -> Book | None:
+        return next((book for book in self._books if book.uuid == book_id), None)
+
     def list_collections(self) -> list[Collection]:
         return list(self._collections)
 
@@ -71,6 +74,67 @@ class InMemoryBookRepository:
     def set_favourite(self, book_id: str, is_favourite: bool) -> None:
         self._books = [book.with_favourite(is_favourite) if book.uuid == book_id else book for book in self._books]
 
+    def set_book_hidden(self, book_id: str, hidden: bool) -> None:
+        hidable_ids = {collection.uuid for collection in self._collections if collection.is_hidable}
+        next_books: list[Book] = []
+        for book in self._books:
+            if book.uuid != book_id:
+                next_books.append(book)
+                continue
+            if hidden:
+                # Mirror the SQL repo cascade: clear favourite, drop from
+                # recent (last_read_at=None), drop non-hidable collections.
+                surviving_ids = tuple(value for value in book.collection_ids if value in hidable_ids)
+                next_books.append(
+                    replace(
+                        book,
+                        is_hidden=True,
+                        is_favourite=False,
+                        last_read_at=None,
+                        collection_ids=surviving_ids,
+                        updated_at=datetime.now(),
+                    )
+                )
+            else:
+                next_books.append(replace(book, is_hidden=False, updated_at=datetime.now()))
+        self._books = next_books
+
+    def set_collection_hidable(self, collection_id: str, hidable: bool) -> None:
+        self._collections = [
+            replace(collection, is_hidable=hidable, updated_at=datetime.now())
+            if collection.uuid == collection_id
+            else collection
+            for collection in self._collections
+        ]
+        if not hidable:
+            # Demoting drops hidden books out of this (now-normal) collection.
+            self._books = [
+                replace(
+                    book,
+                    collection_ids=tuple(value for value in book.collection_ids if value != collection_id),
+                    updated_at=datetime.now(),
+                )
+                if book.is_hidden and collection_id in book.collection_ids
+                else book
+                for book in self._books
+            ]
+
+    def revert_hidden_state(self) -> None:
+        self._books = [
+            replace(book, is_hidden=False, updated_at=datetime.now()) if book.is_hidden else book
+            for book in self._books
+        ]
+        self._collections = [
+            replace(collection, is_hidable=False, updated_at=datetime.now()) if collection.is_hidable else collection
+            for collection in self._collections
+        ]
+
+    def list_hidden_book_ids(self) -> list[str]:
+        return [book.uuid for book in self._books if book.is_hidden]
+
+    def list_hidable_collection_ids(self) -> list[str]:
+        return [collection.uuid for collection in self._collections if collection.is_hidable]
+
     def update_book_metadata(
         self,
         book_id: str,
@@ -94,6 +158,14 @@ class InMemoryBookRepository:
                 ),
                 updated_at=datetime.now(),
             )
+            if book.uuid == book_id
+            else book
+            for book in self._books
+        ]
+
+    def set_book_cover_path(self, book_id: str, cover_path: str) -> None:
+        self._books = [
+            replace(book, cover_thumbnail_path=cover_path, updated_at=datetime.now())
             if book.uuid == book_id
             else book
             for book in self._books
