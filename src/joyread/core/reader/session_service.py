@@ -16,9 +16,7 @@ from joyread.core.archive.models import (
     ArchivePasswordRequest,
     ArchivePasswordResponse,
 )
-from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
-from joyread.core.reader.epub_session import EPUB_EXTENSIONS, EpubReaderSession, open_epub_session
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease
@@ -54,9 +52,11 @@ class ReaderSessionService:
 
     Acts as a polymorphic dispatch layer: given any supported source
     path, it picks the archive or PDF backend and returns a session that
-    speaks :class:`ReaderImageSession`. EPUB has its own session type
-    handled by :class:`EpubSessionService` because the page model is
-    different (DOM-based, not image-based).
+    speaks :class:`ReaderImageSession`.
+
+    Image-paged formats only. The novel reader's chapter-flow sessions are
+    DOM-based rather than image-based, share none of this surface, and are
+    opened by that feature's own package -- see ``src/joyread/novel``.
     """
 
     def __init__(
@@ -101,15 +101,6 @@ class ReaderSessionService:
                 raise RuntimeError("No PDF image service is configured.")
             return self._pdf_image_service.open(path)
         raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
-
-    def open_epub(self, path: str | Path) -> EpubReaderSession:
-        """Open an EPUB and return a chapter-flow session.
-
-        Lives alongside ``open_archive`` / ``open_document`` so callers
-        (the novel viewmodel, tests) can address it directly without
-        going through the image-paged routing in ``open_document``.
-        """
-        return open_epub_session(path)
 
     def open_archive(
         self,
