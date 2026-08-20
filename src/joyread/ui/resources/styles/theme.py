@@ -484,7 +484,14 @@ class Theme:
     reader_topic_index_font_size = 10
     reader_topic_scroll_threshold = 400
     reader_auto_hide_delay_ms = 1600
-    reader_fade_duration_ms = 160
+    reader_page_slide_duration_ms = 160
+    reader_page_hold_delay_ms = 300
+    reader_page_repeat_interval_ms = 100
+    # How long the reader stays in rapid (animation-suppressed) navigation
+    # after its last successful step. Deliberately longer than the slide
+    # duration: click gaps in a manual burst routinely exceed 160ms, and a
+    # quiet window that short lets a mid-burst click animate again.
+    reader_rapid_navigation_quiet_ms = 300
     reader_edge_reveal_distance = 78
     reader_pan_step_ratio = 0.18
     reader_pan_min_step = 80

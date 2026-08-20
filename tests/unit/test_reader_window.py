@@ -15,7 +15,15 @@ from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 from joyread.app.app_context import create_app_context
 from joyread.app.windows.manager import ApplicationWindowManager
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection, ReaderSettings
+from joyread.core.reader import (
+    PageDraw,
+    ReaderDirection,
+    ReaderDisplayMode,
+    ReaderLayoutResult,
+    ReaderSettings,
+    ReaderTransitionMode,
+    RectF,
+)
 from joyread.infrastructure.i18n import locale_service
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import (
@@ -26,10 +34,83 @@ from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel
-from joyread.ui.widgets.reader_controls import ReaderProgressSlider, _bottom_rounded_path, _top_rounded_path
+from joyread.ui.widgets.reader_controls import (
+    ReaderProgressSlider,
+    ReaderStepButton,
+    _bottom_rounded_path,
+    _top_rounded_path,
+)
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
+
+
+class _SlideCanvas:
+    def __init__(self) -> None:
+        self.is_page_slide_active = False
+        self.is_pan_slide_active = False
+        self.capture_calls = 0
+        self.cancel_calls = 0
+        self.pan_cancel_calls = 0
+        self.started: list[tuple[object, bool]] = []
+        self.pan_started: list[float] = []
+        self.frame = object()
+
+    def capture_page_slide_frame(self) -> object:
+        self.capture_calls += 1
+        return self.frame
+
+    def start_page_slide(self, source: object, *, incoming_from_right: bool) -> bool:
+        self.started.append((source, incoming_from_right))
+        return True
+
+    def cancel_page_slide(self) -> None:
+        self.cancel_calls += 1
+        self.is_page_slide_active = False
+
+    def start_pan_slide(self, from_pan_x: float) -> bool:
+        self.pan_started.append(from_pan_x)
+        self.is_pan_slide_active = True
+        return True
+
+    def cancel_pan_slide(self) -> None:
+        self.pan_cancel_calls += 1
+        self.is_pan_slide_active = False
+
+
+class _RapidTimer:
+    def __init__(self) -> None:
+        self.delays: list[int] = []
+
+    def start(self, delay: int) -> None:
+        self.delays.append(delay)
+
+
+class _SlideShellHarness:
+    _capture_page_slide_source = ReaderShellWidget._capture_page_slide_source
+    _slide_incoming_from_right = ReaderShellWidget._slide_incoming_from_right
+    _navigate_step = ReaderShellWidget._navigate_step
+    _navigate_horizontal_key = ReaderShellWidget._navigate_horizontal_key
+    _begin_rapid_navigation = ReaderShellWidget._begin_rapid_navigation
+    _end_rapid_navigation = ReaderShellWidget._end_rapid_navigation
+
+    def __init__(
+        self,
+        *,
+        direction: ReaderDirection = ReaderDirection.LEFT_TO_RIGHT,
+        transition_mode: ReaderTransitionMode = ReaderTransitionMode.SLIDE,
+        layout_mode: ReaderDisplayMode = ReaderDisplayMode.SINGLE,
+    ) -> None:
+        self.canvas = _SlideCanvas()
+        self._rapid_navigation_active = False
+        self._rapid_navigation_timer = _RapidTimer()
+        self.viewmodel = SimpleNamespace(
+            settings=ReaderSettings(direction=direction, transition_mode=transition_mode),
+            layout_result=SimpleNamespace(mode=layout_mode),
+            current_display_indices=(0,),
+            pan_x=0.0,
+            is_right_to_left=direction == ReaderDirection.RIGHT_TO_LEFT,
+        )
 
 
 def test_bookmark_rename_dialog_uses_active_locale() -> None:
@@ -51,6 +132,270 @@ def test_bookmark_rename_dialog_uses_active_locale() -> None:
         assert calls[0]["kwargs"]["validator"]("   ") == "书签名称不能为空。"
     finally:
         locale_service.load_language("English")
+
+
+def test_reader_step_button_repeats_after_hold_and_marks_rapid_navigation(qtbot) -> None:
+    button = ReaderStepButton()
+    qtbot.addWidget(button)
+    button.show()
+    rapid_events: list[bool] = []
+    clicks: list[bool] = []
+    button.rapid_navigation_started.connect(lambda: rapid_events.append(True))
+    button.clicked.connect(lambda: clicks.append(True))
+
+    assert button.autoRepeat()
+    assert button.autoRepeatDelay() == Theme.reader_page_hold_delay_ms
+    assert button.autoRepeatInterval() == Theme.reader_page_repeat_interval_ms
+
+    qtbot.mousePress(button, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: bool(rapid_events), timeout=Theme.reader_page_hold_delay_ms + 250)
+    qtbot.waitUntil(lambda: bool(clicks), timeout=Theme.reader_page_repeat_interval_ms + 250)
+    qtbot.mouseRelease(button, Qt.MouseButton.LeftButton)
+
+    assert rapid_events == [True]
+
+
+def test_reader_shell_starts_ltr_and_rtl_slides_only_after_a_step_changes_pages() -> None:
+    ltr = _SlideShellHarness()
+
+    def ltr_next() -> None:
+        ltr.viewmodel.current_display_indices = (1,)
+
+    ltr._navigate_step(ltr_next, is_next=True)
+
+    assert ltr.canvas.started == [(ltr.canvas.frame, True)]
+
+    rtl = _SlideShellHarness(direction=ReaderDirection.RIGHT_TO_LEFT)
+
+    def rtl_next() -> None:
+        rtl.viewmodel.current_display_indices = (1,)
+
+    rtl._navigate_step(rtl_next, is_next=True)
+
+    assert rtl.canvas.started == [(rtl.canvas.frame, False)]
+
+    before = _SlideShellHarness()
+    before._navigate_step(lambda: None, is_next=True)
+
+    assert before.canvas.started == []
+
+
+@pytest.mark.parametrize(
+    ("direction", "transition_mode", "layout_mode"),
+    (
+        (ReaderDirection.TOP_TO_BOTTOM, ReaderTransitionMode.SLIDE, ReaderDisplayMode.SINGLE),
+        (ReaderDirection.LEFT_TO_RIGHT, ReaderTransitionMode.NONE, ReaderDisplayMode.SINGLE),
+        (ReaderDirection.LEFT_TO_RIGHT, ReaderTransitionMode.SLIDE, ReaderDisplayMode.WIDE_PAN),
+    ),
+)
+def test_reader_shell_skips_slide_for_non_eligible_navigation(
+    direction: ReaderDirection,
+    transition_mode: ReaderTransitionMode,
+    layout_mode: ReaderDisplayMode,
+) -> None:
+    shell = _SlideShellHarness(
+        direction=direction,
+        transition_mode=transition_mode,
+        layout_mode=layout_mode,
+    )
+
+    def next_page() -> None:
+        shell.viewmodel.current_display_indices = (1,)
+
+    shell._navigate_step(next_page, is_next=True)
+
+    assert shell.canvas.capture_calls == 0
+    assert shell.canvas.started == []
+    # Declining to animate for layout/settings reasons is not rapid input,
+    # so it must not put the reader into the suppressed-animation burst.
+    assert not shell._rapid_navigation_active
+    assert shell._rapid_navigation_timer.delays == []
+
+
+def test_reader_shell_rapid_step_cancels_active_slide_and_suppresses_the_next_one() -> None:
+    shell = _SlideShellHarness()
+    shell.canvas.is_page_slide_active = True
+
+    def next_page() -> None:
+        shell.viewmodel.current_display_indices = (1,)
+
+    shell._navigate_step(next_page, is_next=True)
+
+    assert shell._rapid_navigation_active
+    assert shell._rapid_navigation_timer.delays == [Theme.reader_rapid_navigation_quiet_ms]
+    assert shell.canvas.cancel_calls >= 1
+    assert shell.canvas.capture_calls == 0
+    assert shell.canvas.started == []
+
+
+def test_reader_shell_keyboard_autorepeat_uses_rapid_navigation_path() -> None:
+    shell = _SlideShellHarness()
+
+    def handle_horizontal_key(_side: str) -> None:
+        shell.viewmodel.current_display_indices = (1,)
+
+    shell.viewmodel.handle_horizontal_key = handle_horizontal_key
+    shell._navigate_horizontal_key("right", rapid=True)
+
+    assert shell._rapid_navigation_active
+    assert shell._rapid_navigation_timer.delays == [Theme.reader_rapid_navigation_quiet_ms]
+    assert shell.canvas.capture_calls == 0
+    assert shell.canvas.started == []
+
+    shell._end_rapid_navigation()
+    shell.viewmodel.current_display_indices = (0,)
+    shell._navigate_step(lambda: setattr(shell.viewmodel, "current_display_indices", (1,)), is_next=True)
+
+    assert not shell._rapid_navigation_active
+    assert shell.canvas.started == [(shell.canvas.frame, True)]
+
+
+def test_rapid_navigation_quiet_period_outlives_the_slide_animation() -> None:
+    """The burst window and the animation duration are separate knobs.
+
+    They used to share one 160ms constant, so a click landing more than
+    160ms after the previous one -- routine for manual clicking, though not
+    for the 100ms button auto-repeat -- escaped the burst and animated
+    again mid-sequence.
+    """
+
+    assert Theme.reader_rapid_navigation_quiet_ms > Theme.reader_page_slide_duration_ms
+
+
+def test_reader_shell_step_inside_a_burst_rearms_the_quiet_period_without_animating() -> None:
+    shell = _SlideShellHarness()
+    shell._rapid_navigation_active = True
+
+    def next_page() -> None:
+        shell.viewmodel.current_display_indices = (1,)
+
+    shell._navigate_step(next_page, is_next=True)
+
+    assert shell._rapid_navigation_active
+    assert shell._rapid_navigation_timer.delays == [Theme.reader_rapid_navigation_quiet_ms]
+    assert shell.canvas.capture_calls == 0
+    assert shell.canvas.started == []
+
+
+def test_reader_shell_blocked_step_does_not_extend_the_rapid_quiet_period() -> None:
+    """Mashing a control at a boundary must let the burst expire on schedule.
+
+    The quiet period is measured from the last step that actually moved, so
+    a blocked step arms no timer -- otherwise holding against the first or
+    last page would keep animations suppressed indefinitely.
+    """
+
+    shell = _SlideShellHarness()
+    shell._rapid_navigation_active = True
+
+    shell._navigate_step(lambda: None, is_next=True)
+
+    assert shell._rapid_navigation_timer.delays == []
+    assert shell.canvas.started == []
+
+
+def test_reader_shell_glides_a_wide_pan_move_only_under_the_slide_transition() -> None:
+    sliding = _SlideShellHarness(layout_mode=ReaderDisplayMode.WIDE_PAN)
+
+    def pan() -> None:
+        sliding.viewmodel.pan_x = -120.0
+
+    sliding._navigate_step(pan, is_next=True)
+
+    assert sliding.canvas.pan_started == [0.0]
+    assert sliding.canvas.started == []
+
+    plain = _SlideShellHarness(
+        transition_mode=ReaderTransitionMode.NONE,
+        layout_mode=ReaderDisplayMode.WIDE_PAN,
+    )
+
+    def plain_pan() -> None:
+        plain.viewmodel.pan_x = -120.0
+
+    plain._navigate_step(plain_pan, is_next=True)
+
+    assert plain.canvas.pan_started == []
+
+
+def test_reader_shell_page_turn_that_reanchors_the_pan_is_not_treated_as_a_pan_move() -> None:
+    """Turning a page re-anchors the wide pan for the new spread. That is a
+    page turn, not a pan step, so it must not glide the old offset."""
+
+    shell = _SlideShellHarness(layout_mode=ReaderDisplayMode.WIDE_PAN)
+
+    def next_page() -> None:
+        shell.viewmodel.current_display_indices = (1,)
+        shell.viewmodel.pan_x = -300.0
+
+    shell._navigate_step(next_page, is_next=True)
+
+    assert shell.canvas.pan_started == []
+
+
+def test_reader_shell_pan_glide_in_flight_suppresses_the_next_step_animation() -> None:
+    shell = _SlideShellHarness(layout_mode=ReaderDisplayMode.WIDE_PAN)
+    shell.canvas.is_pan_slide_active = True
+
+    def pan() -> None:
+        shell.viewmodel.pan_x = -120.0
+
+    shell._navigate_step(pan, is_next=True)
+
+    assert shell._rapid_navigation_active
+    assert shell._rapid_navigation_timer.delays == [Theme.reader_rapid_navigation_quiet_ms]
+    assert shell.canvas.pan_started == []
+
+
+def test_reader_shell_pan_glide_survives_the_layout_sync_it_rides_on(qtbot) -> None:
+    """Committing a pan move runs ``set_layout_result``, which cancels any
+    glide in flight. The shell starts its own glide after that, so this
+    locks the ordering the feature depends on against a future reshuffle."""
+
+    from joyread.ui.widgets.reader_canvas import ReaderCanvas
+
+    canvas = ReaderCanvas()
+    qtbot.addWidget(canvas)
+    canvas.show()
+    canvas.resize(100, 300)
+    wide = ReaderLayoutResult(
+        mode=ReaderDisplayMode.WIDE_PAN,
+        scale=1.0,
+        page_draws=(PageDraw(page_index=0, rect=RectF(x=0.0, y=0.0, width=200.0, height=300.0)),),
+        used_area=200.0 * 300.0,
+        pan_min_x=-100.0,
+        pan_max_x=0.0,
+    )
+    canvas.set_layout_result(wide, pan_x=0.0)
+
+    shell = _SlideShellHarness(layout_mode=ReaderDisplayMode.WIDE_PAN)
+    shell.canvas = canvas
+
+    def pan() -> None:
+        # Mirrors ReaderViewModel._pan_visible_wide_page: commit the offset,
+        # then emit layout_changed, which the shell syncs into the canvas.
+        shell.viewmodel.pan_x = -50.0
+        canvas.set_layout_result(wide, pan_x=-50.0)
+
+    shell._navigate_step(pan, is_next=True)
+
+    assert canvas.is_pan_slide_active
+    # Progress starts at the offset the page was actually sitting at.
+    assert canvas._effective_pan_x() == 0.0
+
+
+def test_reader_shell_disabling_slide_cancels_any_active_canvas_transition() -> None:
+    canvas = _SlideCanvas()
+    modes: list[ReaderTransitionMode] = []
+    receiver = SimpleNamespace(
+        canvas=canvas,
+        viewmodel=SimpleNamespace(set_transition_mode=modes.append),
+    )
+
+    ReaderShellWidget._set_transition_mode(receiver, ReaderTransitionMode.NONE)
+
+    assert canvas.cancel_calls == 1
+    assert modes == [ReaderTransitionMode.NONE]
 
 
 def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> None:

@@ -6,7 +6,7 @@ import logging
 import sys
 from collections.abc import Callable
 
-from PySide6.QtCore import QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal as QtSignal
 from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -314,6 +314,36 @@ class ReaderHeader(QWidget):
             window.showMaximized()
 
 
+class ReaderStepButton(QToolButton):
+    """A reader page-step control with deliberate long-press repeat."""
+
+    rapid_navigation_started = QtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAutoRepeat(True)
+        self.setAutoRepeatDelay(Theme.reader_page_hold_delay_ms)
+        self.setAutoRepeatInterval(Theme.reader_page_repeat_interval_ms)
+        self._hold_timer = QTimer(self)
+        self._hold_timer.setSingleShot(True)
+        self._hold_timer.setInterval(Theme.reader_page_hold_delay_ms)
+        self._hold_timer.timeout.connect(self._begin_rapid_navigation)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._hold_timer.start()
+        super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._hold_timer.stop()
+        super().mouseReleaseEvent(event)
+
+    def _begin_rapid_navigation(self) -> None:
+        if self.isDown():
+            self.rapid_navigation_started.emit()
+
+
 class ReaderFooter(QWidget):
     start_requested = QtSignal()
     previous_requested = QtSignal()
@@ -325,6 +355,7 @@ class ReaderFooter(QWidget):
     spread_shift_requested = QtSignal()
     settings_requested = QtSignal()
     mouse_activity = QtSignal()
+    rapid_navigation_started = QtSignal()
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -357,7 +388,13 @@ class ReaderFooter(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
         self.left_outer_button = reader_button(resources, "icon_go-left-end.svg", t("reader.jump_to_start"), self.start_requested.emit)
-        self.left_inner_button = reader_button(resources, "icon_left.svg", t("reader.previous_page"), self.previous_requested.emit)
+        self.left_inner_button = reader_step_button(
+            resources,
+            "icon_left.svg",
+            t("reader.previous_page"),
+            self.previous_requested.emit,
+        )
+        self.left_inner_button.rapid_navigation_started.connect(self.rapid_navigation_started.emit)
         left_layout.addWidget(self.left_outer_button)
         left_layout.addWidget(self.left_inner_button)
         upper_layout.addWidget(left)
@@ -385,7 +422,13 @@ class ReaderFooter(QWidget):
         right_layout = QHBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        self.right_inner_button = reader_button(resources, "icon_right.svg", t("reader.next_page"), self.next_requested.emit)
+        self.right_inner_button = reader_step_button(
+            resources,
+            "icon_right.svg",
+            t("reader.next_page"),
+            self.next_requested.emit,
+        )
+        self.right_inner_button.rapid_navigation_started.connect(self.rapid_navigation_started.emit)
         self.right_outer_button = reader_button(resources, "icon_go-right-end.svg", t("reader.jump_to_end"), self.end_requested.emit)
         right_layout.addWidget(self.right_inner_button)
         right_layout.addWidget(self.right_outer_button)
@@ -608,6 +651,25 @@ def reader_button(
     callback: Callable[[], None] | None = None,
 ) -> QToolButton:
     button = QToolButton()
+    button.setProperty("class", "ReaderButton")
+    button.setProperty("iconName", icon_name)
+    button.setIcon(_reader_icon(resources, icon_name))
+    button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
+    button.setToolTip(tooltip)
+    button.setCursor(Qt.CursorShape.PointingHandCursor)
+    button.setFixedSize(Theme.reader_control_size, Theme.reader_control_size)
+    if callback is not None:
+        button.clicked.connect(callback)
+    return button
+
+
+def reader_step_button(
+    resources: ResourceLoader,
+    icon_name: str,
+    tooltip: str,
+    callback: Callable[[], None] | None = None,
+) -> ReaderStepButton:
+    button = ReaderStepButton()
     button.setProperty("class", "ReaderButton")
     button.setProperty("iconName", icon_name)
     button.setIcon(_reader_icon(resources, icon_name))

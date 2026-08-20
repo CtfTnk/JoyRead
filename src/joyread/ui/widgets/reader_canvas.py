@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from time import perf_counter
 
-from PySide6.QtCore import QPoint, QRect, QRectF, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QRect,
+    QRectF,
+    Qt,
+    QTimer,
+    QVariantAnimation,
+    Signal as QtSignal,
+)
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -52,6 +62,15 @@ _PERF_STALL_THRESHOLD_MS = 100.0
 _PERF_SAMPLE_LIMIT = 4096
 
 
+@dataclass(frozen=True)
+class _CanvasSlideFrame:
+    """One fully-rendered layout retained for the lifetime of a page slide."""
+
+    layout_result: ReaderLayoutResult
+    pixmaps: dict[int, QPixmap]
+    pan_x: float
+
+
 class ReaderCanvas(QWidget):
     mouse_moved = QtSignal(QPoint)
     right_clicked = QtSignal()
@@ -68,6 +87,31 @@ class ReaderCanvas(QWidget):
         self._frame_signatures: dict[int, tuple[int, int, tuple[int, int], float]] = {}
         self._failed_pages: set[int] = set()
         self._pan_x = 0.0
+        self._slide_source: _CanvasSlideFrame | None = None
+        self._slide_target: _CanvasSlideFrame | None = None
+        self._slide_offset_x = 0.0
+        self._slide_progress = 0.0
+        self._slide_animation = QVariantAnimation(self)
+        self._slide_animation.setStartValue(0.0)
+        self._slide_animation.setEndValue(1.0)
+        self._slide_animation.setDuration(Theme.reader_page_slide_duration_ms)
+        self._slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._slide_animation.valueChanged.connect(self._set_slide_progress)
+        self._slide_animation.finished.connect(self._finish_page_slide)
+        # Wide-pan steps glide the viewport instead of swapping frozen
+        # frames: the animation interpolates the painted pan between the
+        # previous and the already-committed ``_pan_x``, so it needs no
+        # pixmap copies and stays valid when a sharper frame arrives
+        # mid-glide.
+        self._pan_slide_from: float | None = None
+        self._pan_slide_progress = 0.0
+        self._pan_slide_animation = QVariantAnimation(self)
+        self._pan_slide_animation.setStartValue(0.0)
+        self._pan_slide_animation.setEndValue(1.0)
+        self._pan_slide_animation.setDuration(Theme.reader_page_slide_duration_ms)
+        self._pan_slide_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._pan_slide_animation.valueChanged.connect(self._set_pan_slide_progress)
+        self._pan_slide_animation.finished.connect(self._finish_pan_slide)
         self._status_text = t("reader.loading")
         # Spinner phase advances while any visible page is still loading. The
         # timer is created lazily and stopped as soon as every draw has its
@@ -92,6 +136,12 @@ class ReaderCanvas(QWidget):
             self._perf_heartbeat_timer.start()
 
     def set_layout_result(self, result: ReaderLayoutResult | None, pan_x: float = 0.0) -> None:
+        # A later reflow changes the geometry that a frozen target frame was
+        # built against. Snap to the live layout rather than moving stale
+        # geometry across the canvas. (A pan glide for THIS layout change is
+        # started by the caller right after, from the pre-change pan.)
+        self.cancel_page_slide()
+        self.cancel_pan_slide()
         self._layout_result = result
         self._pan_x = pan_x
         self._prune_pixmaps_to_layout()
@@ -107,6 +157,9 @@ class ReaderCanvas(QWidget):
         if self._layout_result is not None and not self._layout_draws_page(image.page_index):
             logger.debug("ReaderCanvas drop stale page=%d", image.page_index)
             return
+        # A replacement image (usually caused by resize/DPR work) must not
+        # diverge from the frozen target already being painted by a slide.
+        self.cancel_page_slide()
         frame = image.frame
         if isinstance(frame, QImage):
             signature = (
@@ -157,6 +210,7 @@ class ReaderCanvas(QWidget):
             logger.warning("ReaderCanvas received invalid frame page=%d", image.page_index)
 
     def set_page_failed(self, page_index: int) -> None:
+        self.cancel_page_slide()
         self._pixmaps.pop(page_index, None)
         self._frame_signatures.pop(page_index, None)
         self._failed_pages.add(page_index)
@@ -164,6 +218,8 @@ class ReaderCanvas(QWidget):
         self.update()
 
     def clear_pages(self) -> None:
+        self.cancel_page_slide()
+        self.cancel_pan_slide()
         self._layout_result = None
         self._pixmaps.clear()
         self._frame_signatures.clear()
@@ -176,6 +232,103 @@ class ReaderCanvas(QWidget):
     def set_status_text(self, text: str) -> None:
         self._status_text = text
         self._refresh_status_tooltip()
+        self.update()
+
+    @property
+    def is_page_slide_active(self) -> bool:
+        return self._slide_source is not None and self._slide_target is not None
+
+    def capture_page_slide_frame(self) -> _CanvasSlideFrame | None:
+        """Freeze the current spread only when it can be painted without gaps.
+
+        ``QPixmap`` is implicitly shared, so copying this small mapping keeps
+        the old spread available for one animation without decoding images or
+        allocating a full-canvas screenshot.
+        """
+
+        if not self._is_fully_rendered_layout():
+            return None
+        assert self._layout_result is not None
+        return _CanvasSlideFrame(
+            layout_result=self._layout_result,
+            pixmaps={
+                draw.page_index: self._pixmaps[draw.page_index]
+                for draw in self._layout_result.page_draws
+            },
+            pan_x=self._pan_x,
+        )
+
+    def start_page_slide(
+        self,
+        source: _CanvasSlideFrame,
+        *,
+        incoming_from_right: bool,
+    ) -> bool:
+        """Animate ``source`` into the current fully-rendered layout.
+
+        The caller invokes this only after a navigation command succeeds. A
+        target that still needs a frame deliberately stays on the normal
+        loading path instead of delaying page navigation for visual polish.
+        """
+
+        self.cancel_page_slide()
+        self.cancel_pan_slide()
+        target = self.capture_page_slide_frame()
+        if target is None or target.layout_result.page_draws == source.layout_result.page_draws:
+            return False
+        if self.width() <= 0 or self.height() <= 0:
+            return False
+
+        self._slide_source = source
+        self._slide_target = target
+        self._slide_offset_x = float(self.width()) * (1.0 if incoming_from_right else -1.0)
+        self._slide_progress = 0.0
+        self._slide_animation.setDuration(Theme.reader_page_slide_duration_ms)
+        self._slide_animation.start()
+        self.update()
+        return True
+
+    def cancel_page_slide(self) -> None:
+        """Snap to the live target layout and release any old pixmap frame."""
+
+        if not self.is_page_slide_active:
+            return
+        self._slide_animation.stop()
+        self._slide_source = None
+        self._slide_target = None
+        self._slide_offset_x = 0.0
+        self._slide_progress = 0.0
+        self.update()
+
+    @property
+    def is_pan_slide_active(self) -> bool:
+        return self._pan_slide_from is not None
+
+    def start_pan_slide(self, from_pan_x: float) -> bool:
+        """Glide the painted wide-pan offset from ``from_pan_x`` to the
+        committed ``_pan_x`` instead of jumping there in one frame."""
+
+        self.cancel_page_slide()
+        self.cancel_pan_slide()
+        if self._layout_result is None or from_pan_x == self._pan_x:
+            return False
+        if self.width() <= 0 or self.height() <= 0:
+            return False
+        self._pan_slide_from = from_pan_x
+        self._pan_slide_progress = 0.0
+        self._pan_slide_animation.setDuration(Theme.reader_page_slide_duration_ms)
+        self._pan_slide_animation.start()
+        self.update()
+        return True
+
+    def cancel_pan_slide(self) -> None:
+        """Snap the painted pan to the committed ``_pan_x``."""
+
+        if not self.is_pan_slide_active:
+            return
+        self._pan_slide_animation.stop()
+        self._pan_slide_from = None
+        self._pan_slide_progress = 0.0
         self.update()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -212,33 +365,102 @@ class ReaderCanvas(QWidget):
         painter.setClipPath(shell_clip)
         painter.fillRect(self.rect(), QColor(Theme.color_reader_background))
 
-        if self._layout_result is None or not self._layout_result.page_draws:
+        if self.is_page_slide_active:
+            self._paint_page_slide(painter)
+        elif self._layout_result is None or not self._layout_result.page_draws:
             _draw_wrapped_status_text(painter, QRectF(self.rect()), self._status_text)
-            painter.end()
-            self._record_paint(perf_started)
-            return
+        else:
+            self._paint_layout(
+                painter,
+                self._layout_result,
+                self._pixmaps,
+                self._failed_pages,
+                self._effective_pan_x(),
+            )
+        painter.end()
+        self._record_paint(perf_started)
 
-        for draw in self._layout_result.page_draws:
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        self.cancel_page_slide()
+        self.cancel_pan_slide()
+        super().resizeEvent(event)
+        self._refresh_status_tooltip()
+
+    def _paint_page_slide(self, painter: QPainter) -> None:
+        source = self._slide_source
+        target = self._slide_target
+        if source is None or target is None:
+            return
+        self._paint_layout(
+            painter,
+            source.layout_result,
+            source.pixmaps,
+            set(),
+            source.pan_x,
+            offset_x=-self._slide_offset_x * self._slide_progress,
+        )
+        self._paint_layout(
+            painter,
+            target.layout_result,
+            target.pixmaps,
+            set(),
+            target.pan_x,
+            offset_x=self._slide_offset_x * (1.0 - self._slide_progress),
+        )
+
+    def _paint_layout(
+        self,
+        painter: QPainter,
+        layout_result: ReaderLayoutResult,
+        pixmaps: dict[int, QPixmap],
+        failed_pages: set[int],
+        pan_x: float,
+        *,
+        offset_x: float = 0.0,
+    ) -> None:
+        painter.save()
+        painter.translate(offset_x, 0.0)
+        for draw in layout_result.page_draws:
             rect = QRectF(
-                draw.rect.x + self._pan_x,
+                draw.rect.x + pan_x,
                 draw.rect.y,
                 draw.rect.width,
                 draw.rect.height,
             )
-            pixmap = self._pixmaps.get(draw.page_index)
+            pixmap = pixmaps.get(draw.page_index)
             if pixmap is None or pixmap.isNull():
-                if draw.page_index in self._failed_pages:
+                if draw.page_index in failed_pages:
                     _draw_error_page(painter, rect)
                 else:
                     _draw_placeholder_page(painter, rect, self._spinner_phase)
             else:
                 painter.drawPixmap(rect, pixmap, QRectF(pixmap.rect()))
-        painter.end()
-        self._record_paint(perf_started)
+        painter.restore()
 
-    def resizeEvent(self, event: QResizeEvent) -> None:
-        super().resizeEvent(event)
-        self._refresh_status_tooltip()
+    def _set_slide_progress(self, value: object) -> None:
+        self._slide_progress = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _finish_page_slide(self) -> None:
+        self._slide_source = None
+        self._slide_target = None
+        self._slide_offset_x = 0.0
+        self._slide_progress = 0.0
+        self.update()
+
+    def _set_pan_slide_progress(self, value: object) -> None:
+        self._pan_slide_progress = max(0.0, min(1.0, float(value)))
+        self.update()
+
+    def _finish_pan_slide(self) -> None:
+        self._pan_slide_from = None
+        self._pan_slide_progress = 0.0
+        self.update()
+
+    def _effective_pan_x(self) -> float:
+        if self._pan_slide_from is None:
+            return self._pan_x
+        return self._pan_slide_from + (self._pan_x - self._pan_slide_from) * self._pan_slide_progress
 
     def _refresh_spinner_state(self) -> None:
         """Start or stop the spinner timer based on visible-page coverage.
@@ -263,6 +485,15 @@ class ReaderCanvas(QWidget):
             if (pixmap is None or pixmap.isNull()) and draw.page_index not in self._failed_pages:
                 return True
         return False
+
+    def _is_fully_rendered_layout(self) -> bool:
+        if self._layout_result is None or not self._layout_result.page_draws:
+            return False
+        for draw in self._layout_result.page_draws:
+            pixmap = self._pixmaps.get(draw.page_index)
+            if pixmap is None or pixmap.isNull() or draw.page_index in self._failed_pages:
+                return False
+        return True
 
     def _layout_draws_page(self, page_index: int) -> bool:
         return self._layout_result is not None and any(

@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
-from PySide6.QtWidgets import QApplication, QToolButton, QWidget
+from PySide6.QtWidgets import QApplication, QWidget
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.app.reader_document_runtime import ReaderDocumentRuntime
 from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
-from joyread.core.reader import ReaderDirection, ReaderProgress, ReaderSettings
+from joyread.core.reader import (
+    ReaderDirection,
+    ReaderDisplayMode,
+    ReaderProgress,
+    ReaderSettings,
+    ReaderTransitionMode,
+)
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
 from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
@@ -24,7 +31,7 @@ from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
-from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
+from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader, ReaderStepButton
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
 
@@ -63,6 +70,10 @@ class ReaderShellWidget(ReaderShellBase):
         self.setMouseTracking(True)
 
         self.canvas = ReaderCanvas(self)
+        self._rapid_navigation_active = False
+        self._rapid_navigation_timer = QTimer(self)
+        self._rapid_navigation_timer.setSingleShot(True)
+        self._rapid_navigation_timer.timeout.connect(self._end_rapid_navigation)
         # Sits above canvas/header/footer/arrows and below whichever floating
         # panel is currently open, so Qt's own hit-testing routes any click
         # that isn't on the panel here instead of through to the content or
@@ -139,6 +150,8 @@ class ReaderShellWidget(ReaderShellBase):
     def cancel(self) -> None:
         if hasattr(self, "_open_timer"):
             self._open_timer.stop()
+        self._rapid_navigation_timer.stop()
+        self._rapid_navigation_active = False
         self.canvas.clear_pages()
         self.viewmodel.cancel()
 
@@ -156,9 +169,10 @@ class ReaderShellWidget(ReaderShellBase):
         self.footer.previous_requested.connect(self._activate_left_inner)
         self.footer.next_requested.connect(self._activate_right_inner)
         self.footer.end_requested.connect(self._activate_right_outer)
+        self.footer.rapid_navigation_started.connect(self._begin_rapid_navigation)
         self.footer.seek_requested.connect(self.viewmodel.seek)
         self.footer.direction_changed.connect(self._set_reader_direction)
-        self.footer.transition_changed.connect(self.viewmodel.set_transition_mode)
+        self.footer.transition_changed.connect(self._set_transition_mode)
         self.footer.spread_shift_requested.connect(self.viewmodel.shift_to_next_index)
         self.footer.settings_requested.connect(self._toggle_settings_panel)
         self.header.topic_mode_requested.connect(self._show_topic_panel)
@@ -166,8 +180,10 @@ class ReaderShellWidget(ReaderShellBase):
         self.canvas.left_clicked.connect(self._hide_floating_panels_if_visible)
         self.canvas.right_clicked.connect(lambda: self._show_controls(reset_timer=True))
         self.canvas.wheel_scrolled.connect(self.viewmodel.handle_vertical_scroll)
-        self.left_arrow.clicked.connect(self.viewmodel.activate_left_side)
-        self.right_arrow.clicked.connect(self.viewmodel.activate_right_side)
+        self.left_arrow.clicked.connect(self._activate_left_side)
+        self.right_arrow.clicked.connect(self._activate_right_side)
+        self.left_arrow.rapid_navigation_started.connect(self._begin_rapid_navigation)
+        self.right_arrow.rapid_navigation_started.connect(self._begin_rapid_navigation)
         self.topic_panel.thumbnail_interest_changed.connect(self.viewmodel.set_topic_thumbnail_interest)
         self.topic_panel.thumbnail_interest_released.connect(self.viewmodel.release_topic_thumbnail_interest)
         self.topic_panel.thumbnail_selected.connect(self._seek_from_topic_panel)
@@ -353,15 +369,15 @@ class ReaderShellWidget(ReaderShellBase):
 
     def _activate_left_inner(self) -> None:
         if self.viewmodel.is_right_to_left:
-            self.viewmodel.go_next()
+            self._navigate_step(self.viewmodel.go_next, is_next=True)
         else:
-            self.viewmodel.go_previous()
+            self._navigate_step(self.viewmodel.go_previous, is_next=False)
 
     def _activate_right_inner(self) -> None:
         if self.viewmodel.is_right_to_left:
-            self.viewmodel.go_previous()
+            self._navigate_step(self.viewmodel.go_previous, is_next=False)
         else:
-            self.viewmodel.go_next()
+            self._navigate_step(self.viewmodel.go_next, is_next=True)
 
     def _activate_right_outer(self) -> None:
         if self.viewmodel.is_right_to_left:
@@ -373,7 +389,126 @@ class ReaderShellWidget(ReaderShellBase):
         self.progress_changed.emit(book_uuid, page_index, progress_percent)
 
     def _set_reader_direction(self, direction: ReaderDirection) -> None:
+        # Direction re-anchors the wide pan, so a glide in flight is heading
+        # for an offset the new direction no longer wants.
+        self.canvas.cancel_page_slide()
+        self.canvas.cancel_pan_slide()
         self.viewmodel.set_direction(direction)
+
+    def _set_transition_mode(self, mode: ReaderTransitionMode) -> None:
+        if mode != ReaderTransitionMode.SLIDE:
+            self.canvas.cancel_page_slide()
+            self.canvas.cancel_pan_slide()
+        self.viewmodel.set_transition_mode(mode)
+
+    def _activate_left_side(self) -> None:
+        self._navigate_step(
+            self.viewmodel.activate_left_side,
+            is_next=self.viewmodel.is_right_to_left,
+        )
+
+    def _activate_right_side(self) -> None:
+        self._navigate_step(
+            self.viewmodel.activate_right_side,
+            is_next=not self.viewmodel.is_right_to_left,
+        )
+
+    def _navigate_horizontal_key(self, side: str, *, rapid: bool) -> None:
+        is_next = (
+            side == "left"
+            if self.viewmodel.is_right_to_left
+            else side == "right"
+        )
+        self._navigate_step(
+            lambda: self.viewmodel.handle_horizontal_key(side),
+            is_next=is_next,
+            rapid=rapid,
+        )
+
+    def _navigate_step(
+        self,
+        action: Callable[[], None],
+        *,
+        is_next: bool,
+        rapid: bool = False,
+    ) -> None:
+        """Run one logical navigation step and animate only its ready endpoint.
+
+        A step is a page turn or, in wide-pan mode, a pan move within the
+        page. Steps arriving inside a rapid burst skip animation, and only a
+        step that actually moved may extend the burst's quiet period --
+        mashing a boundary must not keep the reader in rapid mode.
+        """
+
+        burst = (
+            rapid
+            or self._rapid_navigation_active
+            or self.canvas.is_page_slide_active
+            or self.canvas.is_pan_slide_active
+        )
+        if burst:
+            # The user is already ahead of whatever is still moving, so skip
+            # it straight to its endpoint. Arming the quiet period waits
+            # until we know this step actually went somewhere.
+            self.canvas.cancel_page_slide()
+            self.canvas.cancel_pan_slide()
+        source = None if burst else self._capture_page_slide_source()
+        previous_indices = self.viewmodel.current_display_indices
+        previous_pan = self.viewmodel.pan_x
+        action()
+        pages_changed = previous_indices != self.viewmodel.current_display_indices
+        # A page turn re-anchors the pan for the new spread, so only treat a
+        # pan move as its own step when the spread itself stayed put.
+        pan_changed = not pages_changed and previous_pan != self.viewmodel.pan_x
+        if not pages_changed and not pan_changed:
+            # Blocked navigation (a boundary, a still-loading spread). Mashing
+            # against it must not extend the quiet period, so leave any
+            # running timer to expire on the last step that actually moved.
+            return
+        if burst:
+            self._begin_rapid_navigation()
+            return
+        if pan_changed:
+            if self.viewmodel.settings.transition_mode == ReaderTransitionMode.SLIDE:
+                self.canvas.start_pan_slide(previous_pan)
+            return
+        if source is None:
+            return
+        self.canvas.start_page_slide(
+            source,
+            incoming_from_right=self._slide_incoming_from_right(is_next),
+        )
+
+    def _capture_page_slide_source(self):  # noqa: ANN202 - private canvas frame type.
+        layout = self.viewmodel.layout_result
+        if (
+            self._rapid_navigation_active
+            or self.viewmodel.settings.transition_mode != ReaderTransitionMode.SLIDE
+            or self.viewmodel.settings.direction == ReaderDirection.TOP_TO_BOTTOM
+            or layout is None
+            or layout.mode == ReaderDisplayMode.WIDE_PAN
+        ):
+            return None
+        return self.canvas.capture_page_slide_frame()
+
+    def _slide_incoming_from_right(self, is_next: bool) -> bool:
+        return is_next != self.viewmodel.is_right_to_left
+
+    def _begin_rapid_navigation(self) -> None:
+        """Enter (or extend) animation-suppressed navigation.
+
+        The quiet period is measured from this call, so callers reach here
+        only for input that actually moved the reader -- restarting it on a
+        blocked step would keep a burst alive that the user already ended.
+        """
+
+        self._rapid_navigation_active = True
+        self.canvas.cancel_page_slide()
+        self.canvas.cancel_pan_slide()
+        self._rapid_navigation_timer.start(Theme.reader_rapid_navigation_quiet_ms)
+
+    def _end_rapid_navigation(self) -> None:
+        self._rapid_navigation_active = False
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
@@ -411,11 +546,11 @@ class ReaderShellWidget(ReaderShellBase):
 
     def handle_key_press(self, event: QKeyEvent) -> bool:
         if event.key() == Qt.Key.Key_Left:
-            self.viewmodel.handle_horizontal_key("left")
+            self._navigate_horizontal_key("left", rapid=event.isAutoRepeat())
             event.accept()
             return True
         if event.key() == Qt.Key.Key_Right:
-            self.viewmodel.handle_horizontal_key("right")
+            self._navigate_horizontal_key("right", rapid=event.isAutoRepeat())
             event.accept()
             return True
         if event.key() == Qt.Key.Key_Escape:
@@ -519,8 +654,8 @@ def _reader_progress_for_book(
     return ReaderProgress(page_index=normalized_index, progress_percent=percent)
 
 
-def _side_button(resources, icon_name: str, parent: QWidget) -> QToolButton:  # noqa: ANN001
-    button = QToolButton(parent)
+def _side_button(resources, icon_name: str, parent: QWidget) -> ReaderStepButton:  # noqa: ANN001
+    button = ReaderStepButton(parent)
     button.setProperty("class", "ReaderSideButton")
     button.setIcon(QIcon(str(resources.icon_path(icon_name))))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
