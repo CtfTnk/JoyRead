@@ -22,6 +22,11 @@ from PySide6.QtWidgets import QMainWindow
 
 from joyread.app.launch.intent import LaunchAction, LaunchIntent, merge_open_intents
 from joyread.app.launch.ready_gate import LaunchReadyGate
+from joyread.core.operation_context import (
+    OperationContext,
+    bind_operation,
+    create_operation,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +59,7 @@ class LaunchCoordinator(QObject):
         self._ready = False
         self._buffered: list[LaunchIntent] = []
         self._initial_windows: tuple[QMainWindow, ...] = ()
+        self._settle_operation: OperationContext | None = None
 
     @property
     def ready(self) -> bool:
@@ -75,8 +81,22 @@ class LaunchCoordinator(QObject):
         if self._started:
             raise RuntimeError("LaunchCoordinator.start() may only be called once.")
         self._started = True
+        self._settle_operation = create_operation(
+            "launch.window_arbitration",
+            category="launch",
+        )
         if initial_intent is not None:
             self._buffered.append(initial_intent)
+        with bind_operation(self._settle_operation):
+            logger.info(
+                "Launch window arbitration started",
+                extra={
+                    "event": "launch.window_arbitration.started",
+                    "category": "launch",
+                    "status": "started",
+                    "count": len(self._buffered),
+                },
+            )
         self._gate.when_ready(self._settle)
 
     def submit(self, intent: LaunchIntent) -> tuple[QMainWindow, ...]:
@@ -84,8 +104,26 @@ class LaunchCoordinator(QObject):
 
         if not self._ready:
             self._buffered.append(intent)
+            logger.debug(
+                "Launch request buffered until the platform gate resolves",
+                extra={
+                    "event": "launch.request.buffered",
+                    "category": "launch",
+                    "status": "pending",
+                    "action": intent.action.value,
+                    "count": len(intent.paths),
+                },
+            )
             return ()
-        return self._dispatch(intent)
+        # Always a fresh operation, never a reuse of whatever happens to be
+        # ambient: a reentrant submit() (e.g. a document arriving while
+        # _settle_bound() is still pumping events to build the first window)
+        # must not alias its distinct request onto that outer operation's ID.
+        # create_operation() already links it as a child of the ambient
+        # operation when one exists, which is the correct relationship.
+        operation = create_operation("launch.request", category="launch")
+        with bind_operation(operation):
+            return self._dispatch(intent)
 
     def open_file(self, path: Path) -> None:
         """Adapt the single-path file-open callback used by ``FileOpenRouter``."""
@@ -95,6 +133,26 @@ class LaunchCoordinator(QObject):
     def _settle(self) -> None:
         if self._ready:
             return
+        operation, self._settle_operation = self._settle_operation, None
+        with bind_operation(operation):
+            try:
+                self._settle_bound()
+            except Exception as exc:
+                logger.error(
+                    "Launch window arbitration failed",
+                    exc_info=True,
+                    extra={
+                        "event": "launch.window_arbitration.failed",
+                        "category": "launch",
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+
+    def _settle_bound(self) -> None:
+        """Choose the first window while the launch operation is bound."""
+
         buffered, self._buffered = self._buffered, []
         merged = merge_open_intents(*buffered)
         # Mark ready before touching windows: constructing the first window
@@ -115,9 +173,57 @@ class LaunchCoordinator(QObject):
                 windows = (self._windows.show_library(),)
 
         self._initial_windows = windows
+        logger.info(
+            "Launch window arbitration finished",
+            extra={
+                "event": "launch.window_arbitration.finished",
+                "category": "launch",
+                "status": "finished",
+                "action": merged.action.value if merged is not None else LaunchAction.SHOW_LIBRARY.value,
+                "count": len(windows),
+            },
+        )
         self.settled.emit()
 
     def _dispatch(self, intent: LaunchIntent) -> tuple[QMainWindow, ...]:
-        if intent.action == LaunchAction.SHOW_LIBRARY:
-            return (self._windows.show_library(),)
-        return self._windows.open_files(intent.paths)
+        logger.info(
+            "Dispatching launch request",
+            extra={
+                "event": "launch.request.dispatch.started",
+                "category": "launch",
+                "status": "started",
+                "action": intent.action.value,
+                "count": len(intent.paths),
+            },
+        )
+        try:
+            windows = (
+                (self._windows.show_library(),)
+                if intent.action == LaunchAction.SHOW_LIBRARY
+                else self._windows.open_files(intent.paths)
+            )
+        except Exception as exc:
+            logger.error(
+                "Launch request dispatch failed",
+                exc_info=True,
+                extra={
+                    "event": "launch.request.dispatch.failed",
+                    "category": "launch",
+                    "status": "failed",
+                    "action": intent.action.value,
+                    "count": len(intent.paths),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        logger.info(
+            "Launch request dispatch finished",
+            extra={
+                "event": "launch.request.dispatch.finished",
+                "category": "launch",
+                "status": "finished",
+                "action": intent.action.value,
+                "count": len(windows),
+            },
+        )
+        return windows

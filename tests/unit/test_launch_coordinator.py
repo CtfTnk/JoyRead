@@ -164,3 +164,40 @@ def test_start_may_only_run_once(qtbot) -> None:
     else:  # pragma: no cover - guard against a silent regression
         raise AssertionError("LaunchCoordinator.start() must reject a second call.")
     coordinator.deleteLater()
+
+
+def test_reentrant_submit_gets_its_own_operation(qtbot, tmp_path: Path) -> None:
+    """A document arriving while the first window is still under construction
+    (window construction pumps events) must not alias its operation onto the
+    settle operation that is still ambient -- it needs its own identity,
+    parented to it.
+    """
+
+    from joyread.core.operation_context import current_operation
+
+    captured: dict[str, object] = {}
+    late_doc = _cbz(tmp_path, "late.cbz")
+
+    class _ReentrantSink:
+        def show_library(self) -> QMainWindow:
+            captured["outer"] = current_operation()
+            coordinator.submit(LaunchIntent.open_files((late_doc,)))
+            window = QMainWindow()
+            qtbot.addWidget(window)
+            return window
+
+        def open_files(self, paths) -> tuple[QMainWindow, ...]:  # noqa: ANN001
+            captured["inner"] = current_operation()
+            window = QMainWindow()
+            qtbot.addWidget(window)
+            return (window,)
+
+    coordinator = LaunchCoordinator(windows=_ReentrantSink(), gate=ImmediateLaunchGate())
+    coordinator.start()
+
+    outer = captured["outer"]
+    inner = captured["inner"]
+    assert outer is not None and inner is not None
+    assert inner.operation_id != outer.operation_id
+    assert inner.parent_operation_id == outer.operation_id
+    coordinator.deleteLater()

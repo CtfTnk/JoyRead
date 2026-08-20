@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+import logging
 from pathlib import PurePosixPath
 
 from joyread.core.archive.errors import (
@@ -32,6 +33,7 @@ IMAGE_EXTENSIONS = frozenset({".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", 
 # include this version so records created under a previous scanner policy are
 # never reused for a different page tree.
 SCANNER_SCHEMA_VERSION = 1
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -144,10 +146,21 @@ class ArchiveScanner:
                 raise
             except ArchiveResourceLimitError:
                 raise
-            except ArchiveError:
+            except ArchiveError as exc:
                 # A malformed nested archive is intentionally skipped, but a
                 # configured resource limit is a user-visible controlled
                 # failure and must never be silently converted to an omission.
+                logger.warning(
+                    "Skipping unreadable nested archive",
+                    extra={
+                        "event": "archive.nested.skipped",
+                        "category": "archive",
+                        "status": "skipped",
+                        "action": suffix.lstrip("."),
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                )
                 continue
             if tree_has_pages(nested_root):
                 logical_path = PurePosixPath(logical_name)

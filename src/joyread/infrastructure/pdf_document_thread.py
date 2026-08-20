@@ -28,6 +28,7 @@ from __future__ import annotations
 import atexit
 import logging
 from collections.abc import Callable
+from contextvars import Context, copy_context
 from threading import Event, RLock
 from typing import Any
 
@@ -49,19 +50,35 @@ class PdfThreadError(RuntimeError):
 class _PdfJob:
     """One unit of work plus the caller's completion handshake."""
 
-    __slots__ = ("_call", "_done", "_result", "_error")
+    __slots__ = ("_call", "_context", "_done", "_result", "_error", "_report_unobserved")
 
-    def __init__(self, call: Callable[[], Any]) -> None:
+    def __init__(self, call: Callable[[], Any], *, report_unobserved: bool = False) -> None:
         self._call = call
+        self._context: Context = copy_context()
         self._done = Event()
         self._result: Any = None
         self._error: BaseException | None = None
+        self._report_unobserved = report_unobserved
 
     def run(self) -> None:
+        self._context.run(self._run_in_context)
+
+    def _run_in_context(self) -> None:
         try:
             self._result = self._call()
         except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread.
             self._error = exc
+            if self._report_unobserved:
+                logger.error(
+                    "Asynchronous PDF-thread job failed",
+                    exc_info=(type(exc), exc, exc.__traceback__),
+                    extra={
+                        "event": "pdf.thread.post.failed",
+                        "category": "pdf",
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )
         finally:
             self._done.set()
 
@@ -160,6 +177,14 @@ class PdfDocumentThread:
                 return
             if not self._stopping:
                 self._stopping = True
+                logger.info(
+                    "PDF document thread shutdown started",
+                    extra={
+                        "event": "pdf.thread.shutdown.started",
+                        "category": "pdf",
+                        "status": "started",
+                    },
+                )
                 hooks = tuple(self._shutdown_hooks)
 
                 def finish_on_owner() -> None:
@@ -175,7 +200,7 @@ class PdfDocumentThread:
                         dispatcher.deleteLater()
                         thread.quit()
 
-                self._shutdown_job = _PdfJob(finish_on_owner)
+                self._shutdown_job = _PdfJob(finish_on_owner, report_unobserved=True)
                 # Emit while holding the lifecycle lock. Every accepted job is
                 # therefore queued before this finalizer, and later submissions
                 # observe _stopping and are rejected.
@@ -191,13 +216,27 @@ class PdfDocumentThread:
             logger.warning(
                 "PDF thread did not stop within %d ms; retaining it until its queued work drains",
                 self._shutdown_wait_ms,
+                extra={
+                    "event": "pdf.thread.shutdown.timed_out",
+                    "category": "pdf",
+                    "status": "timed_out",
+                    "duration_ms": float(self._shutdown_wait_ms),
+                },
             )
             return
         with self._lock:
             self._reap_stopped_locked()
+        logger.info(
+            "PDF document thread shutdown finished",
+            extra={
+                "event": "pdf.thread.shutdown.finished",
+                "category": "pdf",
+                "status": "finished",
+            },
+        )
 
     def _submit(self, work: Callable[[], Any], *, start: bool) -> _PdfJob | None:
-        job = _PdfJob(work)
+        job = _PdfJob(work, report_unobserved=not start)
         with self._lock:
             self._reap_stopped_locked()
             if self._stopping:
@@ -228,7 +267,14 @@ class PdfDocumentThread:
             # QThread is never torn down by interpreter shutdown.
             atexit.register(self.shutdown)
             self._atexit_registered = True
-        logger.info("PDF document thread started")
+        logger.info(
+            "PDF document thread started",
+            extra={
+                "event": "pdf.thread.started",
+                "category": "pdf",
+                "status": "finished",
+            },
+        )
         return dispatcher
 
     def _reap_stopped_locked(self) -> None:

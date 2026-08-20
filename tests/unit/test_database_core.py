@@ -12,6 +12,7 @@ from PIL import Image
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import create_app_context
+from joyread.core.operation_context import bind_operation, create_operation, current_operation
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
@@ -1430,3 +1431,21 @@ def test_app_settings_round_trips_hidden_space_fields(tmp_path: Path) -> None:
     assert loaded.hidden_space_password_salt == "c2FsdA=="
     assert loaded.hidden_space_password_hint == "dog name"
     assert loaded.show_hidden_collection is True
+
+
+def test_database_request_inherits_operation_context(tmp_path: Path) -> None:
+    database = DatabaseInterpreter(tmp_path / "context.sqlite3")
+    parent = create_operation("library.audit", category="maintenance")
+    try:
+        with bind_operation(parent):
+            operation_id, parent_id = database.execute(
+                lambda _connection: (
+                    current_operation().operation_id,
+                    current_operation().parent_operation_id,
+                )
+            )
+    finally:
+        database.close()
+
+    assert operation_id != parent.operation_id
+    assert parent_id == parent.operation_id

@@ -10,7 +10,6 @@ no policy of its own: what the first window should be lives in
 from __future__ import annotations
 
 import logging
-import os
 import platform
 import sys
 from collections.abc import Callable
@@ -56,7 +55,13 @@ from joyread.infrastructure.config.settings_store import (
     SettingsStore,
     create_environment_settings_store,
 )
-from joyread.infrastructure.logging.logging_service import configure_early_logging, configure_logging
+from joyread.infrastructure.logging import (
+    configure_early_logging,
+    configure_logging,
+    log_event,
+    shutdown_logging,
+    write_emergency_log,
+)
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.dialogs.storage_recovery_dialog import (
     StorageRecoveryDialog,
@@ -102,6 +107,7 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
     """
 
     environment = _prepare_startup_environment(argv, gate=ImmediateLaunchGate())
+    _configure_primary_logging(environment)
     runtime = _build_primary_runtime(environment)
     _manager, coordinator = _configure_window_management(
         runtime,
@@ -121,12 +127,15 @@ def _prepare_startup_environment(
 ) -> _StartupEnvironment:
     resolved_argv = list(sys.argv if argv is None else argv)
     configure_early_logging()
-    logger.info(
-        "JoyRead starting pid=%d platform=%s python=%s argv=%s",
-        os.getpid(),
-        platform.platform(),
-        platform.python_version(),
-        resolved_argv[1:],
+    log_event(
+        logger,
+        logging.INFO,
+        "process.starting",
+        "JoyRead process starting",
+        category="process",
+        status="started",
+        count=max(0, len(resolved_argv) - 1),
+        outcome=f"platform={platform.system()} python={platform.python_version()}",
     )
     # The gate has to exist before QApplication: on macOS it observes a
     # notification that Qt's own startup triggers.
@@ -165,13 +174,13 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
         settings_store=environment.settings_store,
     )
     context.paths.ensure_directories()
-    configure_logging(context.paths.paths.logs)
 
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
     _load_application_fonts(context.resources)
     app.setStyleSheet(context.resources.load_stylesheet())
     app.aboutToQuit.connect(_log_about_to_quit)
     app.aboutToQuit.connect(context.close)
+    app.aboutToQuit.connect(_shutdown_application_logging)
 
     return _ApplicationRuntime(
         app=app,
@@ -204,6 +213,20 @@ def _configure_window_management(
     broker: SingleInstanceBroker | None = None,
     enable_macos_reopen: bool,
 ) -> tuple[ApplicationWindowManager, LaunchCoordinator]:
+    # create_application() is re-entrant (tests and embedded callers invoke it
+    # repeatedly against one shared QApplication). Unlike SingleInstanceBroker
+    # and LaunchCoordinator, which each refuse a second start(), this
+    # composition root has no such guard -- so, matching the file_open_router
+    # handling just above, dispose whatever manager/coordinator a previous
+    # call left parented to `app` rather than orphaning it as a still-wired
+    # QObject that outlives its own caller.
+    previous_manager = getattr(runtime.app, "_joyread_window_manager", None)
+    if isinstance(previous_manager, ApplicationWindowManager):
+        previous_manager.deleteLater()
+    previous_coordinator = getattr(runtime.app, "_joyread_launch_coordinator", None)
+    if isinstance(previous_coordinator, LaunchCoordinator):
+        previous_coordinator.deleteLater()
+
     manager = ApplicationWindowManager(
         runtime.context,
         novel_reader_provider=_create_novel_reader_provider(),
@@ -267,7 +290,39 @@ def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryPromp
 
 
 def _log_about_to_quit() -> None:
-    logger.info("Qt aboutToQuit signal received")
+    log_event(
+        logger,
+        logging.INFO,
+        "process.qt_quit_requested",
+        "Qt aboutToQuit signal received",
+        category="process",
+        status="stopping",
+    )
+
+
+def _shutdown_application_logging() -> None:
+    log_event(
+        logger,
+        logging.INFO,
+        "process.stopped",
+        "JoyRead process lifecycle finished",
+        category="process",
+        status="finished",
+    )
+    shutdown_logging()
+
+
+def _configure_primary_logging(environment: _StartupEnvironment) -> None:
+    result = configure_logging(environment.settings_store.support_root / "Logs")
+    log_event(
+        logger,
+        logging.INFO,
+        "process.primary_logging_ready",
+        "Primary-process logging configured",
+        category="process",
+        status="finished",
+        outcome="file" if result.file_logging_enabled else "stderr_only",
+    )
 
 
 def run(argv: list[str] | None = None) -> int:
@@ -281,25 +336,70 @@ def run(argv: list[str] | None = None) -> int:
         role = broker.start(lambda: _resolve_secondary_intent(environment))
     except SingleInstanceError as exc:
         logger.error("Single-instance startup failed: %s", exc)
+        write_emergency_log(
+            environment.settings_store.support_root / "Logs",
+            "launch.single_instance.failed",
+            "JoyRead could not establish or contact the primary process",
+            error=exc,
+        )
         broker.dispose()
         _show_startup_error(str(exc))
+        shutdown_logging()
         return 2
     if role == InstanceRole.SECONDARY:
+        log_event(
+            logger,
+            logging.INFO,
+            "launch.secondary_forwarded",
+            "Secondary process forwarded its launch intent",
+            category="launch",
+            status="finished",
+        )
         broker.dispose()
+        shutdown_logging()
         return 0
 
+    _configure_primary_logging(environment)
+    log_event(
+        logger,
+        logging.INFO,
+        "launch.primary_acquired",
+        "Primary process acquired the single-instance role",
+        category="launch",
+        status="finished",
+    )
     setattr(environment.app, "_joyread_single_instance_broker", broker)
     environment.app.aboutToQuit.connect(broker.dispose)
     try:
         runtime = _build_primary_runtime(environment)
     except StorageRecoveryCancelled:
-        logger.info("JoyRead startup cancelled during storage recovery")
+        log_event(
+            logger,
+            logging.INFO,
+            "process.startup_cancelled",
+            "JoyRead startup cancelled during storage recovery",
+            category="process",
+            status="cancelled",
+            reason="storage_recovery",
+        )
         _dispose_file_open_router(environment.app)
         broker.dispose()
+        shutdown_logging()
         return 0
-    except Exception:
+    except Exception as exc:
+        log_event(
+            logger,
+            logging.CRITICAL,
+            "process.startup_failed",
+            "JoyRead primary runtime failed to initialize",
+            category="process",
+            status="failed",
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
         _dispose_file_open_router(environment.app)
         broker.dispose()
+        shutdown_logging()
         raise
 
     _configure_window_management(
@@ -307,6 +407,14 @@ def run(argv: list[str] | None = None) -> int:
         gate=environment.gate,
         broker=broker,
         enable_macos_reopen=True,
+    )
+    log_event(
+        logger,
+        logging.INFO,
+        "process.ready",
+        "JoyRead primary runtime is ready",
+        category="process",
+        status="finished",
     )
     return runtime.app.exec()
 

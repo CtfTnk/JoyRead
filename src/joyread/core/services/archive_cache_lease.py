@@ -5,10 +5,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from enum import StrEnum
+import logging
 from threading import RLock
 
 from joyread.core.diagnostics import cache_identity_kind, reader_perf_event
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
+
+
+logger = logging.getLogger(__name__)
 
 
 class ArchiveCacheScope(StrEnum):
@@ -42,6 +46,16 @@ class ArchiveCacheLease:
         acquire = getattr(self._cache, "acquire", None)
         if callable(acquire):
             acquire(self._key)
+        logger.debug(
+            "Archive cache lease acquired",
+            extra={
+                "event": "archive.cache_lease.acquired",
+                "category": "cache",
+                "status": "started",
+                "identity_kind": cache_identity_kind(self._key),
+                "scope": self._scope.value,
+            },
+        )
 
     @property
     def document_cache_key(self) -> str:
@@ -189,6 +203,15 @@ class ArchiveCacheLease:
             if self._scope == ArchiveCacheScope.PERSISTENT:
                 return self._key == target
             if not self._cache.promote(self._key, target):
+                logger.warning(
+                    "Archive cache lease promotion was rejected",
+                    extra={
+                        "event": "archive.cache_lease.promotion_rejected",
+                        "category": "cache",
+                        "status": "rejected",
+                        "identity_kind": cache_identity_kind(self._key),
+                    },
+                )
                 return False
             previous_kind = cache_identity_kind(self._key)
             self._key = target
@@ -197,6 +220,17 @@ class ArchiveCacheLease:
                 "archive.lease.promoted",
                 previous_identity_kind=previous_kind,
                 identity_kind=cache_identity_kind(target),
+            )
+            logger.info(
+                "Archive cache lease promoted",
+                extra={
+                    "event": "archive.cache_lease.promoted",
+                    "category": "cache",
+                    "status": "finished",
+                    "previous_identity_kind": previous_kind,
+                    "identity_kind": cache_identity_kind(target),
+                    "scope": self._scope.value,
+                },
             )
             return True
 
@@ -223,4 +257,14 @@ class ArchiveCacheLease:
                 "archive.lease.closed",
                 scope=self._scope.value,
                 identity_kind=cache_identity_kind(self._key),
+            )
+            logger.debug(
+                "Archive cache lease closed",
+                extra={
+                    "event": "archive.cache_lease.closed",
+                    "category": "cache",
+                    "status": "finished",
+                    "identity_kind": cache_identity_kind(self._key),
+                    "scope": self._scope.value,
+                },
             )

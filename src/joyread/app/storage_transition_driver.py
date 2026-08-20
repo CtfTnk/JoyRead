@@ -21,6 +21,7 @@ from time import monotonic
 from PySide6.QtCore import QObject, QTimer
 from PySide6.QtCore import Signal as QtSignal
 
+from joyread.core.operation_context import OperationContext, bind_operation, create_operation
 from joyread.app.storage_transition import (
     DRAIN_TIMEOUT_MS,
     FLUSH_TIMEOUT_MS,
@@ -28,6 +29,7 @@ from joyread.app.storage_transition import (
     evaluate_drain,
 )
 from joyread.app.tasking import TaskHandle, TaskStatus
+from joyread.infrastructure.logging import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,9 @@ class StorageTransitionController(QObject):
         self._drain_timeout_ms = drain_timeout_ms
         self._phase = _Phase.IDLE
         self._operation: Callable[[], object] | None = None
+        self._operation_context: OperationContext | None = None
+        self._operation_started_at = 0.0
+        self._terminal_status = "finished"
         self._started_at = 0.0
         self._timer = QTimer(self)
         self._timer.setInterval(max(1, int(poll_interval_ms)))
@@ -102,6 +107,18 @@ class StorageTransitionController(QObject):
         if self.busy:
             logger.warning("A storage transition is already running")
             return False
+        self._operation_context = create_operation("storage.transition", category="storage")
+        self._operation_started_at = monotonic()
+        self._terminal_status = "finished"
+        with bind_operation(self._operation_context):
+            log_event(
+                logger,
+                logging.INFO,
+                "storage.transition.started",
+                "Storage transition started",
+                category="storage",
+                status="started",
+            )
         self._operation = operation
         # Flush before anything is cancelled, and before the Readers close --
         # `ReaderViewModel.cancel()` cancels the progress handle, so closing
@@ -176,6 +193,18 @@ class StorageTransitionController(QObject):
         if progress.outcome is QuiesceOutcome.TIMED_OUT:
             self._stop()
             self._context.abandon_storage_transition()
+            with bind_operation(self._operation_context):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "storage.transition.abandoned",
+                    "Storage transition abandoned while draining background work",
+                    category="storage",
+                    status="timed_out",
+                    count=progress.pending_tasks,
+                    duration_ms=round((monotonic() - self._operation_started_at) * 1000.0, 3),
+                )
+            self._operation_context = None
             self.abandoned.emit(progress.pending_tasks)
             return
         self._stop()
@@ -195,6 +224,17 @@ class StorageTransitionController(QObject):
         run yet at the moment the worker would clear it.
         """
 
+        with bind_operation(self._operation_context):
+            log_event(
+                logger,
+                logging.INFO if self._terminal_status == "finished" else logging.WARNING,
+                "storage.transition.finished",
+                "Storage transition lifecycle finished",
+                category="storage",
+                status=self._terminal_status,
+                duration_ms=round((monotonic() - self._operation_started_at) * 1000.0, 3),
+            )
+        self._operation_context = None
         self._phase = _Phase.IDLE
 
     def _migrate(self) -> None:
@@ -204,6 +244,7 @@ class StorageTransitionController(QObject):
             return
         self._phase = _Phase.MIGRATING
         self._context.commit_storage_transition()
+        operation_context = self._operation_context
 
         def run() -> None:
             # Deliberately not on the task service: it is quiesced, which is
@@ -212,12 +253,33 @@ class StorageTransitionController(QObject):
             # phase stays MIGRATING until `acknowledge` says the rebuild is
             # done -- clearing it here would open a window where the first
             # transition owns the lease but a second one is accepted.
-            try:
-                transition = operation()
-            except Exception as error:  # noqa: BLE001 - reported to the user.
-                self.failed.emit(error)
-                return
-            self.finished.emit(transition)
+            with bind_operation(operation_context):
+                try:
+                    transition = operation()
+                except Exception as error:  # noqa: BLE001 - reported to the user.
+                    self._terminal_status = "failed"
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "storage.transition.disk.failed",
+                        "Storage transition disk phase failed",
+                        category="storage",
+                        status="failed",
+                        error_type=type(error).__name__,
+                        reason=str(error),
+                        exc_info=True,
+                    )
+                    self.failed.emit(error)
+                    return
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "storage.transition.disk.finished",
+                    "Storage transition disk phase finished",
+                    category="storage",
+                    status="finished",
+                )
+                self.finished.emit(transition)
 
         threading.Thread(
             target=run,

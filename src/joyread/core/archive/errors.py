@@ -6,6 +6,8 @@ from __future__ import annotations
 class ArchiveError(Exception):
     """Base class for controlled archive failures."""
 
+    task_failure_kind = "controlled"
+
 
 class ArchiveUnsupportedFormat(ArchiveError):
     """The file suffix is not a supported comic archive format."""
@@ -30,6 +32,8 @@ class ArchiveReadError(ArchiveError):
 class ArchivePasswordRequired(ArchiveError):
     """The archive is encrypted and no usable password was provided."""
 
+    task_failure_kind = "expected"
+
     def __init__(self, message: str, *, archive_path: str | None = None) -> None:
         super().__init__(message)
         self.archive_path = archive_path
@@ -37,6 +41,8 @@ class ArchivePasswordRequired(ArchiveError):
 
 class ArchivePasswordRejected(ArchiveError):
     """The provided archive password was rejected."""
+
+    task_failure_kind = "expected"
 
     def __init__(self, message: str, *, archive_path: str | None = None) -> None:
         super().__init__(message)
@@ -56,6 +62,8 @@ class ArchiveBulkUnsupported(ArchiveError):
     decision stays with the backend that knows its own command surface.
     """
 
+    task_failure_kind = "expected"
+
 
 class ArchiveCancelled(ArchiveError):
     """A caller cancelled the operation before it finished.
@@ -63,6 +71,8 @@ class ArchiveCancelled(ArchiveError):
     Distinct from a failure: nothing is wrong with the archive or the backend,
     so the work must not be retried through a different path.
     """
+
+    task_failure_kind = "cancelled"
 
 
 class ArchiveResourceLimitError(ArchiveError):

@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
 from typing import Generic, Protocol, TypeVar
 
+from joyread.core.operation_context import OperationContext
+
 
 T = TypeVar("T")
 I = TypeVar("I")
@@ -39,6 +41,7 @@ class TaskHandle(Generic[T]):
     status: TaskStatus = TaskStatus.PENDING
     result: T | None = None
     error: Exception | None = None
+    operation_context: OperationContext | None = None
     _signals: object | None = field(default=None, repr=False)
 
     def cancel(self) -> None:

@@ -10,8 +10,9 @@ from typing import TypeVar
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal as QtSignal
 
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
-from joyread.infrastructure.logging import describe_callback
+from joyread.infrastructure.logging import describe_callback, log_event
 
 
 T = TypeVar("T")
@@ -33,56 +34,137 @@ class _Runnable(QRunnable):
         callback: Callable[[], T],
         signals: _TaskSignals,
         on_discard: Callable[[T], None] | None = None,
+        failure_is_handled: bool = False,
     ) -> None:
         super().__init__()
         self._handle = handle
         self._callback = callback
         self._signals = signals
         self._on_discard = on_discard
+        self._failure_is_handled = failure_is_handled
 
     def run(self) -> None:
         callback_label = self._handle.callback_label or "<unknown>"
-        if self._handle.status == TaskStatus.CANCELLED:
-            _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
-            return
-        logger.debug("Task %s starting callback=%s", self._handle.task_id, callback_label)
-        start = time.perf_counter()
-        try:
-            result = self._callback()
-        except Exception as exc:  # pragma: no cover - callback-specific failures.
+        with bind_operation(self._handle.operation_context):
+            if self._handle.status == TaskStatus.CANCELLED:
+                self._log_cancelled(callback_label, duration_ms=0.0)
+                _safe_emit(
+                    self._signals.finished,
+                    context=f"task={self._handle.task_id} callback={callback_label}",
+                )
+                return
+            log_event(
+                logger,
+                logging.DEBUG,
+                "task.worker.started",
+                "Background task worker started",
+                category="task",
+                status="started",
+                task_id=self._handle.task_id,
+                callback=callback_label,
+            )
+            start = time.perf_counter()
+            try:
+                result = self._callback()
+            except Exception as exc:  # pragma: no cover - callback-specific failures.
+                elapsed_ms = (time.perf_counter() - start) * 1000.0
+                if self._handle.status != TaskStatus.CANCELLED:
+                    # A registered failure callback owns business-level severity
+                    # and presentation. Tasks without one have no other boundary,
+                    # so retain the traceback here instead of silently losing it.
+                    failure_kind = getattr(exc, "task_failure_kind", "unexpected")
+                    if not self._failure_is_handled:
+                        level = logging.ERROR
+                    elif failure_kind == "expected":
+                        level = logging.INFO
+                    elif failure_kind == "cancelled":
+                        level = logging.INFO
+                    elif failure_kind == "controlled":
+                        level = logging.WARNING
+                    else:
+                        level = logging.ERROR
+                    log_event(
+                        logger,
+                        level,
+                        "task.worker.failed",
+                        "Background task worker failed",
+                        category="task",
+                        status="cancelled" if failure_kind == "cancelled" else "failed",
+                        task_id=self._handle.task_id,
+                        callback=callback_label,
+                        duration_ms=round(elapsed_ms, 3),
+                        error_type=type(exc).__name__,
+                        reason=str(exc),
+                        # Expected/controlled failures are already described by
+                        # their typed error. Unexpected failures keep the worker
+                        # traceback even when a UI callback will present them.
+                        exc_info=failure_kind == "unexpected",
+                    )
+                    _safe_emit(
+                        self._signals.failed,
+                        exc,
+                        context=f"task={self._handle.task_id} callback={callback_label}",
+                    )
+                else:
+                    self._log_cancelled(callback_label, duration_ms=elapsed_ms)
+                _safe_emit(
+                    self._signals.finished,
+                    context=f"task={self._handle.task_id} callback={callback_label}",
+                )
+                return
             elapsed_ms = (time.perf_counter() - start) * 1000.0
             if self._handle.status != TaskStatus.CANCELLED:
-                logger.error(
-                    "Task %s failed callback=%s after %.0f ms: %s",
-                    self._handle.task_id,
-                    callback_label,
-                    elapsed_ms,
-                    exc,
-                    exc_info=True,
+                log_event(
+                    logger,
+                    logging.DEBUG,
+                    "task.worker.finished",
+                    "Background task worker finished",
+                    category="task",
+                    status="finished",
+                    task_id=self._handle.task_id,
+                    callback=callback_label,
+                    duration_ms=round(elapsed_ms, 3),
                 )
-                _safe_emit(self._signals.failed, exc, context=f"task={self._handle.task_id} callback={callback_label}")
-            _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
-            return
-        elapsed_ms = (time.perf_counter() - start) * 1000.0
-        if self._handle.status != TaskStatus.CANCELLED:
-            logger.debug(
-                "Task %s completed callback=%s in %.0f ms",
-                self._handle.task_id,
-                callback_label,
-                elapsed_ms,
+                _safe_emit(
+                    self._signals.completed,
+                    result,
+                    context=f"task={self._handle.task_id} callback={callback_label}",
+                )
+            elif self._on_discard is not None:
+                try:
+                    self._on_discard(result)
+                except Exception as exc:  # Cleanup must not strand TaskService state.
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "task.discard_cleanup.failed",
+                        "Discard cleanup failed",
+                        category="task",
+                        status="failed",
+                        task_id=self._handle.task_id,
+                        error_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                self._log_cancelled(callback_label, duration_ms=elapsed_ms)
+            else:
+                self._log_cancelled(callback_label, duration_ms=elapsed_ms)
+            _safe_emit(
+                self._signals.finished,
+                context=f"task={self._handle.task_id} callback={callback_label}",
             )
-            _safe_emit(self._signals.completed, result, context=f"task={self._handle.task_id} callback={callback_label}")
-        elif self._on_discard is not None:
-            try:
-                self._on_discard(result)
-            except Exception as exc:  # Cleanup must not strand TaskService state.
-                logger.warning(
-                    "Discard cleanup failed task=%s callback=%s: %s",
-                    self._handle.task_id,
-                    callback_label,
-                    exc,
-                )
-        _safe_emit(self._signals.finished, context=f"task={self._handle.task_id} callback={callback_label}")
+
+    def _log_cancelled(self, callback_label: str, *, duration_ms: float) -> None:
+        log_event(
+            logger,
+            logging.DEBUG,
+            "task.worker.cancelled",
+            "Background task worker cancelled",
+            category="task",
+            status="cancelled",
+            task_id=self._handle.task_id,
+            callback=callback_label,
+            duration_ms=round(duration_ms, 3),
+        )
 
 
 class TaskService:
@@ -157,44 +239,78 @@ class TaskService:
         signals: _TaskSignals | None = None,
     ) -> TaskHandle[T]:
         callback_label = describe_callback(callback)
-        handle: TaskHandle[T] = TaskHandle(task_id=f"{name}-{next(self._ids)}", callback_label=callback_label)
+        operation = create_operation(f"task.{name}", category="task")
+        handle: TaskHandle[T] = TaskHandle(
+            task_id=f"{name}-{next(self._ids)}",
+            callback_label=callback_label,
+            operation_context=operation,
+        )
         if self._shutting_down or self._quiesced:
             handle.status = TaskStatus.CANCELLED
             return handle
-        logger.debug("Task %s submitted callback=%s", handle.task_id, callback_label)
+        with bind_operation(operation):
+            log_event(
+                logger,
+                logging.DEBUG,
+                "task.submitted",
+                "Background task submitted",
+                category="task",
+                status="started",
+                task_id=handle.task_id,
+                callback=callback_label,
+                priority=int(priority),
+            )
         signals = signals or _TaskSignals()
         handle._signals = signals
         self._active_signals.add(signals)
         self._active_handles[handle.task_id] = handle  # type: ignore[assignment]
 
         def complete(result: object) -> None:
-            if handle.status == TaskStatus.CANCELLED:
-                return
-            handle.result = result  # type: ignore[assignment]
-            handle.status = TaskStatus.COMPLETED
-            if on_success is not None:
-                on_success(result)  # type: ignore[arg-type]
+            with bind_operation(handle.operation_context):
+                if handle.status == TaskStatus.CANCELLED:
+                    return
+                handle.result = result  # type: ignore[assignment]
+                handle.status = TaskStatus.COMPLETED
+                if on_success is not None:
+                    _invoke_ui_callback(handle, "success", on_success, result)
 
         def fail(error: object) -> None:
-            if handle.status == TaskStatus.CANCELLED:
-                return
-            handle.error = error if isinstance(error, Exception) else Exception(str(error))
-            handle.status = TaskStatus.FAILED
-            if on_failure is not None:
-                on_failure(handle.error)
+            with bind_operation(handle.operation_context):
+                if handle.status == TaskStatus.CANCELLED:
+                    return
+                handle.error = error if isinstance(error, Exception) else Exception(str(error))
+                handle.status = TaskStatus.FAILED
+                if on_failure is not None:
+                    _invoke_ui_callback(handle, "failure", on_failure, handle.error)
 
         def cleanup() -> None:
-            self._active_signals.discard(signals)
-            self._active_handles.pop(handle.task_id, None)
-            handle._signals = None
+            with bind_operation(handle.operation_context):
+                self._active_signals.discard(signals)
+                self._active_handles.pop(handle.task_id, None)
+                handle._signals = None
 
         signals.completed.connect(complete)
         signals.failed.connect(fail)
         signals.finished.connect(cleanup)
         if on_item is not None:
-            signals.item.connect(lambda item: on_item(item) if handle.status != TaskStatus.CANCELLED else None)
+            signals.item.connect(
+                lambda item: (
+                    _invoke_stream_callback(handle, on_item, item)
+                    if handle.status != TaskStatus.CANCELLED
+                    else None
+                )
+            )
         handle.status = TaskStatus.RUNNING
-        self._pool.start(_Runnable(handle, callback, signals, on_discard), int(priority))
+        self._pool.start(
+            _Runnable(
+                handle,
+                callback,
+                signals,
+                on_discard,
+                failure_is_handled=on_failure is not None,
+            ),
+            int(priority),
+        )
         return handle
 
     def quiesce(self) -> int:
@@ -251,13 +367,22 @@ class TaskService:
         self._shutting_down = True
         self.quiesce()
         self._pool.clear()
-        self._pool.waitForDone(max(0, int(timeout_ms)))
+        drained = self._pool.waitForDone(max(0, int(timeout_ms)))
+        pending = len(self._active_handles)
         for handle in list(self._active_handles.values()):
             handle.cancel()
             handle._signals = None
         self._active_handles.clear()
         self._active_signals.clear()
-        logger.info("TaskService shutdown complete")
+        log_event(
+            logger,
+            logging.INFO if drained else logging.WARNING,
+            "task.service.shutdown",
+            "TaskService shutdown finished" if drained else "TaskService shutdown timed out",
+            category="task",
+            status="finished" if drained else "timed_out",
+            count=pending,
+        )
 
     def submit_placeholder(self, name: str, callback: Callable[[], T] | None = None) -> TaskHandle[T]:
         handle: TaskHandle[T] = TaskHandle(
@@ -273,6 +398,17 @@ class TaskService:
         except Exception as exc:  # pragma: no cover - compatibility path.
             handle.error = exc
             handle.status = TaskStatus.FAILED
+            log_event(
+                logger,
+                logging.ERROR,
+                "task.placeholder.failed",
+                "Synchronous compatibility task failed",
+                category="task",
+                status="failed",
+                task_id=handle.task_id,
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )
         return handle
 
 
@@ -281,3 +417,53 @@ def _safe_emit(signal, *args: object, context: str = "") -> None:  # noqa: ANN00
         signal.emit(*args)
     except RuntimeError as exc:
         logger.warning("Dropping late task signal%s: %s", f" ({context})" if context else "", exc)
+
+
+def _invoke_ui_callback(
+    handle: TaskHandle[object],
+    callback_kind: str,
+    callback: Callable[[object], None],
+    value: object,
+) -> None:
+    try:
+        callback(value)
+    except Exception as exc:
+        if callback_kind != "failure":
+            handle.error = exc
+        handle.status = TaskStatus.FAILED
+        log_event(
+            logger,
+            logging.ERROR,
+            "task.ui_callback.failed",
+            "Task GUI callback failed",
+            category="task",
+            status="failed",
+            task_id=handle.task_id,
+            outcome=callback_kind,
+            error_type=type(exc).__name__,
+            exc_info=True,
+        )
+
+
+def _invoke_stream_callback(
+    handle: TaskHandle[object],
+    callback: Callable[[object], None],
+    item: object,
+) -> None:
+    with bind_operation(handle.operation_context):
+        try:
+            callback(item)
+        except Exception as exc:
+            handle.error = exc
+            handle.cancel()
+            log_event(
+                logger,
+                logging.ERROR,
+                "task.stream_callback.failed",
+                "Task stream-item GUI callback failed",
+                category="task",
+                status="failed",
+                task_id=handle.task_id,
+                error_type=type(exc).__name__,
+                exc_info=True,
+            )

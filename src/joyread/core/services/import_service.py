@@ -8,6 +8,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 import sqlite3
+from time import perf_counter
 from uuid import uuid4
 
 from joyread.core.archive import (
@@ -17,6 +18,7 @@ from joyread.core.archive import (
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.library_maintenance_service import LibraryMaintenanceCoordinator
@@ -248,24 +250,57 @@ class ImportService:
     ) -> ImportBatchResult:
         """Serialize a complete import batch against audit and storage moves."""
 
-        with self._maintenance_coordinator.hold("import"):
-            self._reclaim_abandoned_staging()
-            limits = self._archive_limits_for(
-                nested_archive_max_depth,
-                archive_global_file_max_depth,
+        operation = create_operation("import.batch", category="import")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Import batch started",
+                extra={
+                    "event": "import.batch.started",
+                    "category": "import",
+                    "status": "started",
+                    "batch_id": operation.operation_id,
+                    "count": len(items),
+                },
             )
-            return self._import_items_locked(
-                items,
-                manifest_path=manifest_path,
-                nested_archive_max_depth=nested_archive_max_depth,
-                archive_global_file_max_depth=archive_global_file_max_depth,
-                limits=limits,
-            )
+            try:
+                with self._maintenance_coordinator.hold("import"):
+                    self._reclaim_abandoned_staging()
+                    limits = self._archive_limits_for(
+                        nested_archive_max_depth,
+                        archive_global_file_max_depth,
+                    )
+                    return self._import_items_locked(
+                        items,
+                        batch_id=operation.operation_id,
+                        started_monotonic=started,
+                        manifest_path=manifest_path,
+                        nested_archive_max_depth=nested_archive_max_depth,
+                        archive_global_file_max_depth=archive_global_file_max_depth,
+                        limits=limits,
+                    )
+            except Exception as exc:
+                logger.error(
+                    "Import batch failed",
+                    exc_info=True,
+                    extra={
+                        "event": "import.batch.failed",
+                        "category": "import",
+                        "status": "failed",
+                        "batch_id": operation.operation_id,
+                        "count": len(items),
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
 
     def _import_items_locked(
         self,
         items: list[dict[str, object]],
         *,
+        batch_id: str,
+        started_monotonic: float,
         manifest_path: Path | None,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
@@ -281,17 +316,8 @@ class ImportService:
         "the import failed".
         """
 
-        batch_id = str(uuid4())
         started_at = _now()
         manifest_display = str(manifest_path) if manifest_path is not None else None
-        logger.info(
-            "Import batch %s starting: %d item(s) manifest=%s nested_depth=%s global_depth=%s",
-            batch_id,
-            len(items),
-            manifest_display,
-            nested_archive_max_depth,
-            archive_global_file_max_depth,
-        )
         self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -363,13 +389,21 @@ class ImportService:
             failed_count=sum(item.status == "failed" for item in results),
             items=tuple(results),
         )
-        logger.info(
-            "Import batch %s finished: imported=%d duplicate=%d skipped=%d failed=%d",
-            batch_id,
-            batch_result.imported_count,
-            batch_result.duplicate_count,
-            batch_result.skipped_count,
-            batch_result.failed_count,
+        logger.log(
+            logging.WARNING if batch_result.failed_count else logging.INFO,
+            "Import batch finished",
+            extra={
+                "event": "import.batch.finished",
+                "category": "import",
+                "status": "completed_with_errors" if batch_result.failed_count else "finished",
+                "batch_id": batch_id,
+                "count": len(items),
+                "imported_count": batch_result.imported_count,
+                "duplicate_count": batch_result.duplicate_count,
+                "skipped_count": batch_result.skipped_count,
+                "failed_count": batch_result.failed_count,
+                "duration_ms": round((perf_counter() - started_monotonic) * 1000.0, 3),
+            },
         )
         return batch_result
 

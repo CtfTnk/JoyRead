@@ -430,16 +430,29 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
         for row in connection.execute("SELECT version FROM schema_migrations").fetchall()
     }
     pending = [version for version, _sql in MIGRATIONS if version not in applied]
+    batch_started = time.perf_counter()
     logger.info(
-        "Migrations: %d already applied, %d pending=%s",
-        len(applied),
-        len(pending),
-        pending,
+        "Database migration check started",
+        extra={
+            "event": "database.migrations.started",
+            "category": "database",
+            "status": "started",
+            "count": len(pending),
+            "version": max(applied, default=0),
+        },
     )
     for version, migration in MIGRATIONS:
         if version in applied:
             continue
-        logger.info("Applying migration %d", version)
+        logger.info(
+            "Database migration started",
+            extra={
+                "event": "database.migration.started",
+                "category": "database",
+                "status": "started",
+                "version": version,
+            },
+        )
         start = time.perf_counter()
         try:
             if isinstance(migration, str):
@@ -455,11 +468,17 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
                 _apply_callable_migration(connection, version, migration)
         except Exception as exc:
             logger.error(
-                "Migration %d failed: %s\nStep:\n%s",
-                version,
-                exc,
-                migration if isinstance(migration, str) else migration.__name__,
+                "Database migration failed",
                 exc_info=True,
+                extra={
+                    "event": "database.migration.failed",
+                    "category": "database",
+                    "status": "failed",
+                    "version": version,
+                    "duration_ms": round((time.perf_counter() - start) * 1000.0, 3),
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
             )
             try:
                 connection.execute("ROLLBACK")
@@ -473,7 +492,27 @@ def apply_migrations(connection: sqlite3.Connection) -> None:
                 )
             raise
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        logger.info("Migration %d applied in %.0f ms", version, elapsed_ms)
+        logger.info(
+            "Database migration finished",
+            extra={
+                "event": "database.migration.finished",
+                "category": "database",
+                "status": "finished",
+                "version": version,
+                "duration_ms": round(elapsed_ms, 3),
+            },
+        )
+    logger.info(
+        "Database migration check finished",
+        extra={
+            "event": "database.migrations.finished",
+            "category": "database",
+            "status": "finished",
+            "count": len(pending),
+            "version": LATEST_SCHEMA_VERSION,
+            "duration_ms": round((time.perf_counter() - batch_started) * 1000.0, 3),
+        },
+    )
 
 
 def _apply_callable_migration(

@@ -28,6 +28,7 @@ from io import BytesIO
 from pathlib import Path
 from threading import Event, RLock
 from time import perf_counter
+from uuid import uuid4
 
 import shiboken6
 from PIL import Image, ImageChops
@@ -37,6 +38,7 @@ from PySide6.QtPdf import QPdfDocument, QPdfPageRenderer
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage, ReaderPageRequest
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import (
     PDF_EXTENSIONS,
@@ -202,6 +204,7 @@ class PdfImageSession:
         document: QPdfDocument,
         renderer: _AsyncPageRenderer,
         normalize_margins: bool = False,
+        document_id: str | None = None,
     ) -> None:
         self._path = path
         self._dimensions = dimensions
@@ -210,11 +213,16 @@ class PdfImageSession:
         self._closed = False
         self._document: QPdfDocument | None = document
         self._renderer: _AsyncPageRenderer | None = renderer
+        self._document_id = document_id or uuid4().hex
         self.current_index = 0
 
     @property
     def page_count(self) -> int:
         return len(self._dimensions)
+
+    @property
+    def document_id(self) -> str:
+        return self._document_id
 
     @property
     def index_range(self) -> range:
@@ -381,6 +389,16 @@ class PdfImageSession:
             if self._closed:
                 return
             self._closed = True
+        logger.info(
+            "PDF session close requested",
+            extra={
+                "event": "pdf.session.close.requested",
+                "category": "pdf",
+                "status": "started",
+                "document_id": self._document_id,
+                "page_count": self.page_count,
+            },
+        )
 
         def dispose() -> None:
             with self._state_lock:
@@ -389,8 +407,26 @@ class PdfImageSession:
             if renderer is not None:
                 renderer.dispose()
             if document is None:
+                logger.info(
+                    "PDF session close finished",
+                    extra={
+                        "event": "pdf.session.close.finished",
+                        "category": "pdf",
+                        "status": "finished",
+                        "document_id": self._document_id,
+                    },
+                )
                 return
             _dispose_document(document)
+            logger.info(
+                "PDF session close finished",
+                extra={
+                    "event": "pdf.session.close.finished",
+                    "category": "pdf",
+                    "status": "finished",
+                    "document_id": self._document_id,
+                },
+            )
 
         pdf_thread().post(dispose)
 
@@ -400,6 +436,51 @@ class PdfImageService:
         self._normalize_margins = normalize_margins
 
     def open(self, path: str | Path) -> PdfImageSession:
+        operation = create_operation("pdf.document.open", category="pdf")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "PDF document open started",
+                extra={
+                    "event": "pdf.document.open.started",
+                    "category": "pdf",
+                    "status": "started",
+                },
+            )
+            try:
+                session = self._open_bound(path)
+            except Exception as exc:
+                controlled = isinstance(exc, PdfError)
+                logger.log(
+                    logging.WARNING if controlled else logging.ERROR,
+                    "PDF document open failed",
+                    exc_info=None if controlled else True,
+                    extra={
+                        "event": "pdf.document.open.failed",
+                        "category": "pdf",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                )
+                raise
+            logger.info(
+                "PDF document open finished",
+                extra={
+                    "event": "pdf.document.open.finished",
+                    "category": "pdf",
+                    "status": "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "document_id": session.document_id,
+                    "page_count": session.page_count,
+                },
+            )
+            return session
+
+    def _open_bound(self, path: str | Path) -> PdfImageSession:
+        """Open a PDF while the public operation context is already bound."""
+
         source = Path(path)
         _validate_source(source)
         perf_enabled = reader_perf_enabled()
@@ -441,6 +522,7 @@ class PdfImageService:
                 document=document,
                 renderer=renderer,
                 normalize_margins=self._normalize_margins,
+                document_id=uuid4().hex,
             )
         except BaseException:
             # Nothing owns the document or renderer until the session exists,

@@ -81,9 +81,27 @@ class FileOpenRouter(QObject):
     def enqueue(self, path: str | Path) -> None:
         source = Path(path).expanduser()
         if source.suffix.lower() not in self._supported_extensions:
+            logger.warning(
+                "Operating-system file-open request was rejected",
+                extra={
+                    "event": "launch.file_open.rejected",
+                    "category": "launch",
+                    "status": "rejected",
+                    "reason": "unsupported_extension",
+                },
+            )
             return
         if self._open_handler is None:
             self._pending_paths.append(source)
+            logger.debug(
+                "Operating-system file-open request queued",
+                extra={
+                    "event": "launch.file_open.queued",
+                    "category": "launch",
+                    "status": "pending",
+                    "count": len(self._pending_paths),
+                },
+            )
             return
         self._open(source)
 
@@ -108,5 +126,13 @@ class FileOpenRouter(QObject):
         if handler is None:
             self._pending_paths.append(path)
             return
-        logger.info("Opening file from operating-system request path=%s", path)
+        logger.info(
+            "Opening file from operating-system request path=%s",
+            path,
+            extra={
+                "event": "launch.file_open.dispatched",
+                "category": "launch",
+                "status": "finished",
+            },
+        )
         handler(path)

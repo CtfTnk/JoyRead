@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from time import perf_counter
 
 from joyread.app.reader_document_runtime import ReaderDocumentHandle, ReaderDocumentRuntime
 from joyread.app.reader_page_pipeline import (
@@ -23,6 +24,7 @@ from joyread.core.archive import (
     ArchiveResourceLimitError,
 )
 from joyread.core.models.bookmark import Bookmark
+from joyread.core.operation_context import OperationContext, bind_operation, create_operation
 from joyread.core.reader import (
     ReaderDirection,
     ReaderDisplayMode,
@@ -148,6 +150,8 @@ class ReaderViewModel:
         # closed the reader) silently drops its result instead of stomping
         # the canvas with stale pixels from the previous document.
         self._task_generation = 0
+        self._open_operation: OperationContext | None = None
+        self._open_started_at = 0.0
         self._viewport_size = SizeF(1.0, 1.0)
         self._layout_result: ReaderLayoutResult | None = None
         self._pages: dict[int, PreparedReaderPage] = {}
@@ -280,12 +284,6 @@ class ReaderViewModel:
 
     def open_path(self, source_path: str | Path, password: str | None = None) -> None:
         path = Path(source_path)
-        logger.info(
-            "ReaderViewModel open_path book=%s path=%s with_password=%s",
-            self._book_uuid,
-            path,
-            password is not None,
-        )
         if self._source_path != path and password is None:
             self._archive_passwords.clear()
             self._skipped_archives.clear()
@@ -296,6 +294,22 @@ class ReaderViewModel:
             self._skipped_archives.discard(archive_path)
             self._pending_password_archive = None
         self.cancel(reset_passwords=False)
+        operation = create_operation("reader.document.open", category="reader")
+        self._open_operation = operation
+        self._open_started_at = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Reader document open started",
+                extra={
+                    "event": "reader.document.open.started",
+                    "category": "reader",
+                    "status": "started",
+                    "book_id": self._book_uuid,
+                    "document_id": str(path),
+                    "action": path.suffix.lower().lstrip("."),
+                    "outcome": "password_retry" if password is not None else "initial",
+                },
+            )
         self._source_path = path
         self.is_loading = True
         self.error_message = None
@@ -314,20 +328,29 @@ class ReaderViewModel:
             skipped_archives=set(self._skipped_archives),
             limits=self._archive_limits,
         )
-        self._page_pipeline.open_document(
-            open_work,
-            generation=generation,
-            on_opened=lambda document, generation=generation: self._handle_open_success(
-                generation,
-                document,
-            ),
-            on_failed=lambda error, generation=generation: self._handle_open_failure(
-                generation,
-                error,
-            ),
-        )
+        with bind_operation(operation):
+            self._page_pipeline.open_document(
+                open_work,
+                generation=generation,
+                on_opened=lambda document, generation=generation, operation=operation: self._handle_open_success(
+                    generation,
+                    document,
+                    operation,
+                ),
+                on_failed=lambda error, generation=generation, operation=operation: self._handle_open_failure(
+                    generation,
+                    error,
+                    operation,
+                ),
+            )
 
     def cancel(self, *, reset_passwords: bool = True) -> None:
+        self._finish_open_operation(
+            "reader.document.open.cancelled",
+            status="cancelled",
+            level=logging.INFO,
+            reason="reader_cancelled",
+        )
         logger.debug(
             "ReaderViewModel cancel book=%s reset_passwords=%s",
             self._book_uuid,
@@ -872,7 +895,12 @@ class ReaderViewModel:
             return None
         return companion_index
 
-    def _handle_open_success(self, generation: int, document: ReaderDocumentHandle) -> None:
+    def _handle_open_success(
+        self,
+        generation: int,
+        document: ReaderDocumentHandle,
+        operation: OperationContext | None = None,
+    ) -> None:
         if generation != self._task_generation:
             document.close()
             return
@@ -902,16 +930,56 @@ class ReaderViewModel:
         self._save_progress()
         self.refresh_bookmarks()
         self._emit_state()
+        self._finish_open_operation(
+            "reader.document.open.finished",
+            status="finished",
+            level=logging.INFO,
+            operation=operation,
+            document_id=getattr(document, "document_id", None),
+            count=document.page_count,
+        )
 
-    def _handle_open_failure(self, generation: int, error: Exception) -> None:
+    def _handle_open_failure(
+        self,
+        generation: int,
+        error: Exception,
+        operation: OperationContext | None = None,
+    ) -> None:
         if generation != self._task_generation:
             return
         if isinstance(error, ArchivePasswordRejected):
+            self._finish_open_operation(
+                "reader.document.open.input_required",
+                status="input_required",
+                level=logging.INFO,
+                operation=operation,
+                error_type=type(error).__name__,
+                reason="password_rejected",
+            )
             self._request_password_retry(error)
             return
         if isinstance(error, ArchivePasswordRequired):
+            self._finish_open_operation(
+                "reader.document.open.input_required",
+                status="input_required",
+                level=logging.INFO,
+                operation=operation,
+                error_type=type(error).__name__,
+                reason="password_required",
+            )
             self._request_password_retry(error)
             return
+        self._finish_open_operation(
+            "reader.document.open.failed",
+            status="failed",
+            level=logging.WARNING if isinstance(error, ArchiveError) else logging.ERROR,
+            operation=operation,
+            error_type=type(error).__name__,
+            reason=str(error),
+            exc_info=(type(error), error, error.__traceback__)
+            if not isinstance(error, ArchiveError)
+            else None,
+        )
         self.is_loading = False
         self._set_contents(())
         if isinstance(error, ArchiveError):
@@ -920,6 +988,35 @@ class ReaderViewModel:
             self.error_message = f"Could not open reader: {error}"
         self.error_changed.emit(self.error_message)
         self._emit_state()
+
+    def _finish_open_operation(
+        self,
+        event: str,
+        *,
+        status: str,
+        level: int,
+        operation: OperationContext | None = None,
+        **fields: object,
+    ) -> None:
+        resolved = operation or self._open_operation
+        if resolved is None or self._open_operation != resolved:
+            return
+        elapsed_ms = (perf_counter() - self._open_started_at) * 1000.0
+        with bind_operation(resolved):
+            logger.log(
+                level,
+                "Reader document open lifecycle finished",
+                exc_info=fields.pop("exc_info", None),
+                extra={
+                    "event": event,
+                    "category": "reader",
+                    "status": status,
+                    "book_id": self._book_uuid,
+                    "duration_ms": round(elapsed_ms, 3),
+                    **fields,
+                },
+            )
+        self._open_operation = None
 
     def _request_password_retry(self, error: ArchivePasswordRejected | ArchivePasswordRequired) -> None:
         archive_path = getattr(error, "archive_path", None) or str(self._source_path or "")
@@ -1159,8 +1256,36 @@ class ReaderViewModel:
         if generation != self._task_generation:
             return
         if isinstance(error, (ArchivePasswordRejected, ArchivePasswordRequired)):
+            logger.info(
+                "Reader page requires archive password input",
+                extra={
+                    "event": "reader.page.input_required",
+                    "category": "reader",
+                    "status": "input_required",
+                    "book_id": self._book_uuid,
+                    "page": page_index,
+                    "generation": generation,
+                    "error_type": type(error).__name__,
+                },
+            )
             self._request_password_retry(error)
             return
+        controlled = isinstance(error, ArchiveError)
+        logger.log(
+            logging.WARNING if controlled else logging.ERROR,
+            "Reader page preparation failed",
+            exc_info=(type(error), error, error.__traceback__) if not controlled else None,
+            extra={
+                "event": "reader.page.prepare.failed",
+                "category": "reader",
+                "status": "failed",
+                "book_id": self._book_uuid,
+                "page": page_index,
+                "generation": generation,
+                "error_type": type(error).__name__,
+                "reason": str(error),
+            },
+        )
         self._mark_page_unavailable(page_index, error)
 
     def _mark_page_unavailable(self, page_index: int, error: Exception | None = None) -> None:

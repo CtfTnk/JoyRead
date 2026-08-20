@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.limits import GIB, MEGAPIXEL
@@ -57,6 +58,7 @@ from joyread.infrastructure.config.settings_store import (
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
+from joyread.infrastructure.logging import log_event, operation_scope
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
@@ -138,18 +140,55 @@ class AppContext:
     storage_rebuild_required: bool = False
 
     def close(self) -> None:
-        logger.info("AppContext shutting down: cancelling tasks then closing database")
+        started = perf_counter()
+        failures: list[tuple[str, Exception]] = []
+        log_event(
+            logger,
+            logging.INFO,
+            "app_context.close.started",
+            "Application services shutdown started",
+            category="shutdown",
+            status="started",
+        )
+
+        def close_component(name: str, callback) -> None:  # noqa: ANN001
+            try:
+                callback()
+            except Exception as exc:  # Finish the remaining teardown stages.
+                failures.append((name, exc))
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "app_context.component_close.failed",
+                    "Application service failed during shutdown",
+                    category="shutdown",
+                    status="failed",
+                    component=name,
+                    error_type=type(exc).__name__,
+                    reason=str(exc),
+                    exc_info=True,
+                )
+
         if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.close()
-        self.task_service.shutdown()
+            close_component("archive_warmup", self.archive_warmup_coordinator.close)
+        close_component("task_service", self.task_service.shutdown)
         if self.thumbnail_service is not None:
-            self.thumbnail_service.close()
+            close_component("thumbnail_service", self.thumbnail_service.close)
         # Task shutdown stops accepting new work first. PDF shutdown then seals
         # its own queue behind any render already accepted and joins when that
         # queue drains, without destroying a still-running QThread on timeout.
-        shutdown_pdf_thread()
-        self.database_interpreter.close()
-        logger.info("AppContext shutdown complete")
+        close_component("pdf_thread", shutdown_pdf_thread)
+        close_component("database", self.database_interpreter.close)
+        log_event(
+            logger,
+            logging.WARNING if failures else logging.INFO,
+            "app_context.close.finished",
+            "Application services shutdown finished",
+            category="shutdown",
+            status="completed_with_errors" if failures else "finished",
+            duration_ms=round((perf_counter() - started) * 1000.0, 3),
+            failed_count=len(failures),
+        )
 
     def quiesce_for_storage_transition(self) -> int:
         """Stop storage-dependent producers, reversibly.
@@ -381,26 +420,38 @@ class AppContext:
         self.apply_archive_open_limits()
 
     def apply_archive_open_limits(self) -> None:
-        self.settings = self.settings_store.load()
-        limits = _archive_open_limits_from_settings(self.settings)
-        self.thumbnail_service.set_archive_open_limits(limits)
-        self.import_service.set_archive_open_limits(limits)
-        self.library_maintenance_service.set_archive_open_limits(limits)
-        self.import_service.set_verify_imported_file_integrity(
-            self.settings.verify_imported_file_integrity
-        )
-        if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.invalidate()
-        self.shelf_viewmodel.invalidate_detail_thumbnail_source()
+        with operation_scope(logger, "settings.archive_limits.apply", category="settings"):
+            self.settings = self.settings_store.load()
+            limits = _archive_open_limits_from_settings(self.settings)
+            self.thumbnail_service.set_archive_open_limits(limits)
+            self.import_service.set_archive_open_limits(limits)
+            self.library_maintenance_service.set_archive_open_limits(limits)
+            self.import_service.set_verify_imported_file_integrity(
+                self.settings.verify_imported_file_integrity
+            )
+            if self.archive_warmup_coordinator is not None:
+                self.archive_warmup_coordinator.invalidate()
+            self.shelf_viewmodel.invalidate_detail_thumbnail_source()
 
     def reload_storage_from_settings(self) -> None:
+        with operation_scope(logger, "storage.services.reload", category="storage"):
+            self._reload_storage_from_settings_bound()
+
+    def _reload_storage_from_settings_bound(self) -> None:
         # Rebuild every storage-rooted service in the right order: settings →
         # path service → archive pool → archive reading stack → database. A
         # piecemeal swap risks dangling references to the previous storage
         # root, so the whole subtree is reconstructed atomically here.
         self.thumbnail_service.close()
         self.settings = self.settings_store.load()
-        logger.info("Reloading storage from settings root=%s", self.settings.storage_location)
+        log_event(
+            logger,
+            logging.INFO,
+            "storage.services.rebuild",
+            "Rebuilding storage-rooted services",
+            category="storage",
+            status="started",
+        )
         self.paths = _create_path_service(self.config, self.settings_store, self.settings)
         self.paths.ensure_directories()
         # The cache directory follows the storage root, so changing storage
@@ -468,6 +519,12 @@ class AppContext:
         Settings page. ``CacheService.apply_cache_budgets`` covers the shared
         reader page cache, thumbnail cache, and disk extraction pool.
         """
+
+        with operation_scope(logger, "settings.cache.apply", category="settings"):
+            self._apply_cache_settings_bound()
+
+    def _apply_cache_settings_bound(self) -> None:
+        """Apply cache settings while the public operation is already bound."""
 
         previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
         self.settings = self.settings_store.load()
@@ -541,9 +598,14 @@ class AppContext:
         """User-triggered "Clear archive cache" button hook."""
 
         bytes_before = self.archive_extraction_pool.current_bytes
-        self.archive_extraction_pool.clear()
-        logger.info("Cleared archive extraction pool: freed %d bytes", bytes_before)
-        self._refresh_settings_pool_usage()
+        with operation_scope(
+            logger,
+            "cache.archive_pool.clear",
+            category="cache",
+            fields={"bytes": bytes_before},
+        ):
+            self.archive_extraction_pool.clear()
+            self._refresh_settings_pool_usage()
 
     def _refresh_settings_pool_usage(self) -> None:
         self.settings_viewmodel.refresh_archive_pool_usage()
@@ -579,12 +641,25 @@ def create_app_context(
     config: AppConfig | None = None,
     settings_store: SettingsStore | None = None,
 ) -> AppContext:
-    logger.info("Creating AppContext")
     config = config or AppConfig()
     settings_store = settings_store or create_environment_settings_store(
         config.app_name,
         config.app_author,
     )
+    with operation_scope(
+        logger,
+        "app_context.create",
+        category="startup",
+        fields={"worker_count": config.max_background_workers},
+    ):
+        return _create_app_context_bound(config, settings_store, recovery_prompt)
+
+
+def _create_app_context_bound(
+    config: AppConfig,
+    settings_store: SettingsStore,
+    recovery_prompt: RecoveryPrompt | None,
+) -> AppContext:
     # Resolve the storage root before anything is built: first-run init,
     # daily health check, and recovery all happen here so the rest of the
     # graph is wired against a known-usable library.
@@ -735,11 +810,15 @@ def create_app_context(
             context.settings_store.load().verify_imported_file_integrity
         )
     )
-    logger.info(
-        "AppContext ready (storage=%s, workers=%d, archive_cache_strategy=%s)",
-        settings.storage_location,
-        config.max_background_workers,
-        settings.archive_cache_strategy,
+    log_event(
+        logger,
+        logging.INFO,
+        "app_context.services.ready",
+        "Application service graph is ready",
+        category="startup",
+        status="finished",
+        worker_count=config.max_background_workers,
+        strategy=settings.archive_cache_strategy,
     )
     return context
 

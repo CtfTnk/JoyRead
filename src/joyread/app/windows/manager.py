@@ -6,6 +6,7 @@ from collections.abc import Iterable
 import logging
 from pathlib import Path
 from typing import Callable
+from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow
@@ -56,6 +57,7 @@ class ApplicationWindowManager(QObject):
         self._main_window: QMainWindow | None = None
         self._reader_windows: dict[str, QMainWindow] = {}
         self._reader_keys: dict[int, str] = {}
+        self._window_log_ids: dict[int, str] = {}
         self._live_windows: dict[int, QMainWindow] = {}
         self._ownership = WindowOwnership()
         self._activation = WindowActivationRegistry()
@@ -107,13 +109,32 @@ class ApplicationWindowManager(QObject):
         window = self._main_window
         if window is not None:
             activate_window(window)
+            logger.info(
+                "Existing Library window focused",
+                extra={
+                    "event": "window.focused",
+                    "category": "window",
+                    "status": "finished",
+                    "window_id": self._window_log_ids.get(id(window)),
+                    "window_kind": "library",
+                },
+            )
             return window
 
         window = self._main_window_factory(self.open_reader_from_library)
         self._main_window = window
         self._register_window(window, owner=None)
         present_new_window(window)
-        logger.info("Library window shown")
+        logger.info(
+            "Library window created",
+            extra={
+                "event": "window.created",
+                "category": "window",
+                "status": "finished",
+                "window_id": self._window_log_ids.get(id(window)),
+                "window_kind": "library",
+            },
+        )
         return window
 
     def open_files(self, paths: Iterable[str | Path]) -> tuple[QMainWindow, ...]:
@@ -155,7 +176,17 @@ class ApplicationWindowManager(QObject):
             self._reconcile_ownership(existing, owner=owner)
             self._seek_existing_reader(existing, request.start_page_index)
             activate_window(existing)
-            logger.info("Focused existing reader path=%s", source)
+            logger.info(
+                "Existing Reader window focused",
+                extra={
+                    "event": "window.focused",
+                    "category": "window",
+                    "status": "finished",
+                    "window_id": self._window_log_ids.get(id(existing)),
+                    "window_kind": "reader",
+                    "document_id": key,
+                },
+            )
             return existing
 
         normalized_request = StandaloneReaderRequest(
@@ -174,10 +205,17 @@ class ApplicationWindowManager(QObject):
             progress_changed.connect(self._handle_reader_progress_changed)
         present_new_window(window)
         logger.info(
-            "Standalone reader shown path=%s owned=%s active=%d",
-            source,
-            owner is not None,
-            len(self._reader_windows),
+            "Reader window created",
+            extra={
+                "event": "window.created",
+                "category": "window",
+                "status": "finished",
+                "window_id": self._window_log_ids.get(id(window)),
+                "window_kind": "reader",
+                "document_id": key,
+                "outcome": "library_owned" if owner is not None else "root",
+                "count": len(self._reader_windows),
+            },
         )
         return window
 
@@ -204,6 +242,7 @@ class ApplicationWindowManager(QObject):
     def _register_window(self, window: QMainWindow, *, owner: QMainWindow | None) -> None:
         window_id = id(window)
         self._live_windows[window_id] = window
+        self._window_log_ids[window_id] = uuid4().hex
         if owner is None:
             self._ownership.add_root(window_id)
         else:
@@ -241,6 +280,7 @@ class ApplicationWindowManager(QObject):
 
     def _release_window(self, window_id: int) -> None:
         window = self._live_windows.pop(window_id, None)
+        log_id = self._window_log_ids.pop(window_id, None)
         self._ownership.remove(window_id)
         self._activation.forget(window_id)
 
@@ -249,10 +289,30 @@ class ApplicationWindowManager(QObject):
             current = self._reader_windows.get(key)
             if current is not None and id(current) == window_id:
                 self._reader_windows.pop(key, None)
-                logger.debug("Reader window released active=%d", len(self._reader_windows))
+                logger.info(
+                    "Reader window released",
+                    extra={
+                        "event": "window.closed",
+                        "category": "window",
+                        "status": "finished",
+                        "window_id": log_id,
+                        "window_kind": "reader",
+                        "document_id": key,
+                        "count": len(self._reader_windows),
+                    },
+                )
         if self._main_window is not None and id(self._main_window) == window_id:
             self._main_window = None
-            logger.debug("Library window released")
+            logger.info(
+                "Library window released",
+                extra={
+                    "event": "window.closed",
+                    "category": "window",
+                    "status": "finished",
+                    "window_id": log_id,
+                    "window_kind": "library",
+                },
+            )
         if window is not None:
             window.removeEventFilter(self)
 

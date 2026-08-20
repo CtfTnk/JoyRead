@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from uuid import uuid4
 
 from joyread.app.reader_page_pipeline import (
@@ -21,6 +23,9 @@ from joyread.core.reader import ReaderSessionService
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.core.services.hash_service import HashService
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReaderDocumentHandle(ReaderDocumentSource):
@@ -46,12 +51,18 @@ class ReaderDocumentHandle(ReaderDocumentSource):
         # used to keep encrypted documents *out* of the pool entirely.
         self._needs_extraction_pool = bool(needs_extraction_pool)
         self._hash_service = hash_service
+        self._document_id = uuid4().hex
+        self._opened_at = perf_counter()
         self._closed = False
         self._lock = RLock()
 
     @property
     def page_count(self) -> int:
         return self._source.page_count
+
+    @property
+    def document_id(self) -> str:
+        return self._document_id
 
     @property
     def contents(self) -> tuple:
@@ -160,7 +171,44 @@ class ReaderDocumentHandle(ReaderDocumentSource):
             if self._closed:
                 return
             self._closed = True
-        self._source.close()
+        started = perf_counter()
+        logger.info(
+            "Reader document close started",
+            extra={
+                "event": "reader.document.close.started",
+                "category": "reader",
+                "status": "started",
+                "document_id": self._document_id,
+            },
+        )
+        try:
+            self._source.close()
+        except Exception as exc:
+            logger.error(
+                "Reader document close failed",
+                exc_info=True,
+                extra={
+                    "event": "reader.document.close.failed",
+                    "category": "reader",
+                    "status": "failed",
+                    "document_id": self._document_id,
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "lifetime_ms": round((perf_counter() - self._opened_at) * 1000.0, 3),
+                    "error_type": type(exc).__name__,
+                },
+            )
+            raise
+        logger.info(
+            "Reader document close finished",
+            extra={
+                "event": "reader.document.close.finished",
+                "category": "reader",
+                "status": "finished",
+                "document_id": self._document_id,
+                "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                "lifetime_ms": round((perf_counter() - self._opened_at) * 1000.0, 3),
+            },
+        )
 
 
 class ReaderDocumentRuntime:

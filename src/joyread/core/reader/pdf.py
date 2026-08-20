@@ -12,6 +12,8 @@ from joyread.core.file_types import PDF_EXTENSIONS
 class PdfError(Exception):
     """Base error for controlled PDF reader failures."""
 
+    task_failure_kind = "controlled"
+
 
 class PdfOpenError(PdfError):
     pass

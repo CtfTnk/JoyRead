@@ -25,6 +25,7 @@ from uuid import uuid4
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits, ArchiveValidationCode
 from joyread.core.file_types import ARCHIVE_EXTENSIONS
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionCache,
@@ -255,6 +256,52 @@ class LibraryMaintenanceService:
 
         operation_id = uuid4().hex
         started = perf_counter()
+        operation = create_operation(
+            "library.audit.scan",
+            category="maintenance",
+            operation_id=operation_id,
+        )
+        with bind_operation(operation):
+            logger.info(
+                "Library audit scan started",
+                extra={
+                    "event": "maintenance.audit.scan.started",
+                    "category": "maintenance",
+                    "status": "started",
+                },
+            )
+            try:
+                plan = self._scan_bound(operation_id)
+            except Exception as exc:
+                logger.error(
+                    "Library audit scan failed",
+                    exc_info=True,
+                    extra={
+                        "event": "maintenance.audit.scan.failed",
+                        "category": "maintenance",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.info(
+                "Library audit scan finished",
+                extra={
+                    "event": "maintenance.audit.scan.finished",
+                    "category": "maintenance",
+                    "status": "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "count": len(plan.items),
+                    "failed_count": plan.unavailable_count + plan.missing_count,
+                    "reclaimed_bytes": plan.reclaimable_bytes,
+                },
+            )
+            return plan
+
+    def _scan_bound(self, operation_id: str) -> LibraryAuditPlan:
+        """Run a scan while the public operation context is already bound."""
+
         with self._coordinator.hold("library-audit-scan"):
             limits = self._archive_limits
             rows = self._database.execute(_load_audit_rows, DatabasePriority.HIGH)
@@ -270,23 +317,60 @@ class LibraryMaintenanceService:
             orphan_cache_files=tuple(orphan_cache_files),
             reclaimable_bytes=reclaimable,
         )
-        logger.info(
-            "Library audit scan operation=%s files=%d changed=%d merged=%d missing=%d unavailable=%d "
-            "orphans=%d cache_orphans=%d elapsed_ms=%.0f",
-            operation_id,
-            len(plan.items),
-            plan.changed_count,
-            plan.merge_count,
-            plan.missing_count,
-            plan.unavailable_count,
-            len(plan.orphan_files),
-            len(plan.orphan_cache_files),
-            (perf_counter() - started) * 1000.0,
-        )
         return plan
 
     def apply(self, plan: LibraryAuditPlan) -> LibraryAuditReport:
         """Apply a user-approved plan, rechecking each mutable candidate first."""
+
+        started = perf_counter()
+        operation = create_operation(
+            "library.audit.apply",
+            category="maintenance",
+            operation_id=plan.operation_id,
+        )
+        with bind_operation(operation):
+            logger.info(
+                "Library audit apply started",
+                extra={
+                    "event": "maintenance.audit.apply.started",
+                    "category": "maintenance",
+                    "status": "started",
+                    "count": len(plan.items),
+                },
+            )
+            try:
+                report = self._apply_bound(plan)
+            except Exception as exc:
+                logger.error(
+                    "Library audit apply failed",
+                    exc_info=True,
+                    extra={
+                        "event": "maintenance.audit.apply.failed",
+                        "category": "maintenance",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.log(
+                logging.WARNING if report.errors else logging.INFO,
+                "Library audit apply finished",
+                extra={
+                    "event": "maintenance.audit.apply.finished",
+                    "category": "maintenance",
+                    "status": "completed_with_errors" if report.errors else "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "count": len(plan.items),
+                    "failed_count": len(report.errors),
+                    "skipped_count": len(report.skipped),
+                    "reclaimed_bytes": report.reclaimed_bytes,
+                },
+            )
+            return report
+
+    def _apply_bound(self, plan: LibraryAuditPlan) -> LibraryAuditReport:
+        """Apply a plan while the public operation context is already bound."""
 
         if plan.storage_root != self._paths.storage_root:
             raise ValueError("Library audit plan belongs to a different storage root.")
@@ -346,24 +430,54 @@ class LibraryMaintenanceService:
             skipped=tuple(skipped),
             errors=tuple(errors),
         )
-        logger.info(
-            "Library audit apply operation=%s changed=%d merged=%d missing=%d unavailable=%d repaired=%d "
-            "cleaned=%d cache_cleaned=%d skipped=%d errors=%d",
-            report.operation_id,
-            report.changed_count,
-            report.merged_count,
-            report.missing_count,
-            report.unavailable_count,
-            report.repaired_count,
-            report.cleaned_file_count,
-            report.cleaned_cache_count,
-            len(report.skipped),
-            len(report.errors),
-        )
         return report
 
     def recover_pending_journal(self) -> LibraryMaintenanceRecoveryReport:
         """Finish or discard deterministically recoverable interrupted renames."""
+
+        started = perf_counter()
+        operation = create_operation("library.audit.recovery", category="maintenance")
+        with bind_operation(operation):
+            logger.info(
+                "Library maintenance journal recovery started",
+                extra={
+                    "event": "maintenance.journal_recovery.started",
+                    "category": "maintenance",
+                    "status": "started",
+                },
+            )
+            try:
+                report = self._recover_pending_journal_bound()
+            except Exception as exc:
+                logger.error(
+                    "Library maintenance journal recovery failed",
+                    exc_info=True,
+                    extra={
+                        "event": "maintenance.journal_recovery.failed",
+                        "category": "maintenance",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.log(
+                logging.WARNING if report.conflicts else logging.INFO,
+                "Library maintenance journal recovery finished",
+                extra={
+                    "event": "maintenance.journal_recovery.finished",
+                    "category": "maintenance",
+                    "status": "completed_with_conflicts" if report.conflicts else "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "recovered_count": report.recovered_count,
+                    "discarded_count": report.discarded_count,
+                    "conflict_count": len(report.conflicts),
+                },
+            )
+            return report
+
+    def _recover_pending_journal_bound(self) -> LibraryMaintenanceRecoveryReport:
+        """Recover the journal while its public operation context is bound."""
 
         recovered = discarded = 0
         conflicts: list[str] = []
@@ -409,13 +523,6 @@ class LibraryMaintenanceService:
                     recovered += 1
                     continue
                 conflicts.append(journal_id)
-        if recovered or discarded or conflicts:
-            logger.warning(
-                "Library maintenance journal recovery recovered=%d discarded=%d conflicts=%d",
-                recovered,
-                discarded,
-                len(conflicts),
-            )
         return LibraryMaintenanceRecoveryReport(recovered, discarded, tuple(conflicts))
 
     def _scan_items(
@@ -531,7 +638,18 @@ class LibraryMaintenanceService:
 
         try:
             observed_hash = self._hash_service.compute(path, item.hash_algorithm)
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                "Library audit could not hash a managed file during apply",
+                extra={
+                    "event": "maintenance.audit.hash_failed",
+                    "category": "maintenance",
+                    "status": "failed",
+                    "file_id": item.file_id,
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
+            )
             self._set_file_state(item.file_id, "unavailable", "hash_failed")
             self._invalidate_artifacts(item.file_id, item.book_ids)
             return LibraryAuditAction.UNAVAILABLE
@@ -559,7 +677,18 @@ class LibraryMaintenanceService:
                 return None
             try:
                 target_hash = self._hash_service.compute(target, item.hash_algorithm)
-            except OSError:
+            except OSError as exc:
+                logger.warning(
+                    "Library audit could not hash an existing content target",
+                    extra={
+                        "event": "maintenance.audit.target_hash_failed",
+                        "category": "maintenance",
+                        "status": "failed",
+                        "file_id": item.file_id,
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                )
                 return None
             if target_hash != observed_hash:
                 return None
@@ -662,7 +791,17 @@ class LibraryMaintenanceService:
             return False
         try:
             path.unlink()
-        except OSError:
+        except OSError as exc:
+            logger.warning(
+                "Library audit could not remove an orphan file",
+                extra={
+                    "event": "maintenance.audit.cleanup_failed",
+                    "category": "maintenance",
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
+            )
             return False
         return True
 
@@ -692,7 +831,8 @@ class LibraryMaintenanceService:
             return orphans
         try:
             candidates = tuple(root.glob("*-generated-*.png"))
-        except OSError:
+        except OSError as exc:
+            logger.warning("Library audit could not enumerate generated covers: %s", exc)
             return orphans
         for path in candidates:
             if not self._is_regular_file(path, self._paths.paths.thumbnails):
@@ -722,7 +862,8 @@ class LibraryMaintenanceService:
         if zip_root.exists():
             try:
                 candidates = tuple(zip_root.iterdir())
-            except OSError:
+            except OSError as exc:
+                logger.warning("Library audit could not enumerate archive bundles: %s", exc)
                 candidates = ()
             for path in candidates:
                 if not self._is_regular_file(path, self._paths.paths.cache):
@@ -738,14 +879,16 @@ class LibraryMaintenanceService:
         if hidden_root.exists():
             try:
                 directories = tuple(hidden_root.iterdir())
-            except OSError:
+            except OSError as exc:
+                logger.warning("Library audit could not enumerate hidden archive cache: %s", exc)
                 directories = ()
             for directory in directories:
                 if not directory.name.startswith("m-") or directory.name in known_keys:
                     continue
                 try:
                     files = tuple(directory.rglob("*")) if directory.is_dir() and not directory.is_symlink() else ()
-                except OSError:
+                except OSError as exc:
+                    logger.warning("Library audit could not scan hidden archive cache directory: %s", exc)
                     files = ()
                 for path in files:
                     if not self._is_regular_file(path, self._paths.paths.cache):
@@ -766,7 +909,8 @@ class LibraryMaintenanceService:
             return []
         try:
             candidates = tuple(root.rglob("*"))
-        except OSError:
+        except OSError as exc:
+            logger.warning("Library audit could not scan managed files: %s", exc)
             return []
         orphans: list[LibraryAuditOrphan] = []
         for path in candidates:

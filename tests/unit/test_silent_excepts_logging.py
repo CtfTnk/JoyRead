@@ -94,7 +94,9 @@ def test_database_interpreter_logs_callback_exception(
         interpreter.close()
 
     assert any(
-        "vertical_fit_width" in record.getMessage() for record in caplog.records
+        isinstance(record.exc_info and record.exc_info[1], sqlite3.OperationalError)
+        and "vertical_fit_width" in str(record.exc_info[1])
+        for record in caplog.records
     ), "DB interpreter must log the exception before forwarding it on the future"
 
 
@@ -119,7 +121,7 @@ def test_task_service_logs_callback_exception(caplog: pytest.LogCaptureFixture) 
     def boom() -> None:
         raise RuntimeError("simulated task failure")
 
-    with caplog.at_level(logging.ERROR, logger="joyread.infrastructure.qt_task_service"):
+    with caplog.at_level(logging.WARNING, logger="joyread.infrastructure.qt_task_service"):
         handle = service.submit("logging-test", boom, on_failure=failures.append)
         from time import perf_counter, sleep
 
@@ -131,7 +133,11 @@ def test_task_service_logs_callback_exception(caplog: pytest.LogCaptureFixture) 
     assert failures, "on_failure callback should have fired"
     assert handle.task_id.startswith("logging-test")
     assert any(
-        "simulated task failure" in record.getMessage() for record in caplog.records
+        getattr(record, "event", None) == "task.worker.failed"
+        and record.levelno == logging.ERROR
+        and getattr(record, "reason", None) == "simulated task failure"
+        and record.exc_info is not None
+        for record in caplog.records
     )
 
     service.shutdown()

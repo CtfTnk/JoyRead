@@ -1,6 +1,7 @@
 import logging
 from threading import Event, get_ident
 
+from joyread.core.operation_context import bind_operation, create_operation, current_operation
 from joyread.app.tasking import TaskPriority, TaskStatus
 from joyread.infrastructure.qt_task_service import TaskService
 
@@ -62,10 +63,13 @@ def test_task_service_debug_logs_include_callback_name(qtbot, caplog) -> None:
         handle = service.submit("trace", work)
         qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
 
-    messages = [record.getMessage() for record in caplog.records]
-    assert any("Task trace-1 submitted callback=" in message and "work" in message for message in messages)
-    assert any("Task trace-1 starting callback=" in message and "work" in message for message in messages)
-    assert any("Task trace-1 completed callback=" in message and "work" in message for message in messages)
+    task_records = [record for record in caplog.records if getattr(record, "task_id", None) == "trace-1"]
+    assert [getattr(record, "event", None) for record in task_records] == [
+        "task.submitted",
+        "task.worker.started",
+        "task.worker.finished",
+    ]
+    assert all("work" in getattr(record, "callback", "") for record in task_records)
     service.shutdown(timeout_ms=10)
 
 
@@ -128,7 +132,7 @@ def test_task_service_shutdown_cancels_active_and_queued_work(qtbot) -> None:
     assert service.submit("late", lambda: "late").status == TaskStatus.CANCELLED
 
 
-def test_cancelled_task_ignores_late_success_callback(qtbot) -> None:
+def test_cancelled_task_ignores_late_success_callback(qtbot, caplog) -> None:
     service = TaskService(max_workers=1)
     started = Event()
     release = Event()
@@ -139,15 +143,19 @@ def test_cancelled_task_ignores_late_success_callback(qtbot) -> None:
         release.wait(timeout=1)
         return "done"
 
-    handle = service.submit("late", slow_task, on_success=results.append)
-    assert started.wait(timeout=1)
+    with caplog.at_level(logging.DEBUG, logger="joyread.infrastructure.qt_task_service"):
+        handle = service.submit("late", slow_task, on_success=results.append)
+        assert started.wait(timeout=1)
 
-    handle.cancel()
-    release.set()
-    qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
+        handle.cancel()
+        release.set()
+        qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
 
     assert handle.status == TaskStatus.CANCELLED
     assert results == []
+    assert any(
+        getattr(record, "event", None) == "task.worker.cancelled" for record in caplog.records
+    )
     service.shutdown(timeout_ms=10)
 
 
@@ -270,3 +278,64 @@ def test_resume_cannot_reopen_a_shutdown_pool(qtbot) -> None:  # noqa: ANN001, A
     service.resume()
 
     assert service.submit("after-resume", lambda: "work").status == TaskStatus.CANCELLED
+
+
+def test_task_operation_context_reaches_worker_and_gui_callback(qtbot) -> None:
+    service = TaskService(max_workers=1)
+    parent = create_operation("reader.document.open", category="reader")
+    seen: list[tuple[str | None, str | None]] = []
+
+    def capture() -> str:
+        operation = current_operation()
+        seen.append((operation.operation_id if operation else None, operation.parent_operation_id if operation else None))
+        return "done"
+
+    def publish(_result: str) -> None:
+        operation = current_operation()
+        seen.append((operation.operation_id if operation else None, operation.parent_operation_id if operation else None))
+
+    with bind_operation(parent):
+        handle = service.submit("context", capture, on_success=publish)
+    qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
+
+    assert handle.operation_context is not None
+    assert seen == [
+        (handle.operation_context.operation_id, parent.operation_id),
+        (handle.operation_context.operation_id, parent.operation_id),
+    ]
+    service.shutdown(timeout_ms=10)
+
+
+def test_task_service_contains_and_logs_success_callback_failure(qtbot, caplog) -> None:
+    service = TaskService(max_workers=1)
+
+    def fail_in_gui(_result: str) -> None:
+        raise RuntimeError("GUI callback failed")
+
+    with caplog.at_level(logging.ERROR, logger="joyread.infrastructure.qt_task_service"):
+        handle = service.submit("callback-error", lambda: "done", on_success=fail_in_gui)
+        qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
+
+    assert handle.status == TaskStatus.FAILED
+    assert isinstance(handle.error, RuntimeError)
+    assert any(getattr(record, "event", None) == "task.ui_callback.failed" for record in caplog.records)
+    service.shutdown(timeout_ms=10)
+
+
+def test_task_service_contains_and_logs_stream_callback_failure(qtbot, caplog) -> None:
+    service = TaskService(max_workers=1)
+
+    def produce(emit) -> None:  # noqa: ANN001
+        emit("item")
+
+    def fail_in_gui(_item: str) -> None:
+        raise RuntimeError("stream callback failed")
+
+    with caplog.at_level(logging.ERROR, logger="joyread.infrastructure.qt_task_service"):
+        handle = service.submit_stream("stream-error", produce, on_item=fail_in_gui)
+        qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
+
+    assert handle.status == TaskStatus.CANCELLED
+    assert isinstance(handle.error, RuntimeError)
+    assert any(getattr(record, "event", None) == "task.stream_callback.failed" for record in caplog.records)
+    service.shutdown(timeout_ms=10)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from pathlib import Path
 
@@ -7,6 +8,7 @@ from PySide6.QtCore import QThread
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.reader_page_pipeline import ReaderPageRequest
+from joyread.core.operation_context import bind_operation, create_operation, current_operation
 from joyread.infrastructure.pdf_document_thread import (
     PdfDocumentThread,
     PdfThreadError,
@@ -45,6 +47,17 @@ def test_every_call_uses_the_same_thread(qtbot) -> None:  # noqa: ANN001, ARG001
     try:
         threads = {worker.call(QThread.currentThread) for _ in range(5)}
         assert len(threads) == 1
+    finally:
+        worker.shutdown()
+
+
+def test_pdf_job_inherits_callers_operation_context(qtbot) -> None:  # noqa: ANN001, ARG001
+    worker = PdfDocumentThread()
+    operation = create_operation("reader.pdf.render", category="reader")
+    try:
+        with bind_operation(operation):
+            observed = worker.call(current_operation)
+        assert observed == operation
     finally:
         worker.shutdown()
 
@@ -94,6 +107,31 @@ def test_posted_work_runs_in_order_behind_earlier_jobs(qtbot) -> None:  # noqa: 
         worker.post(lambda: (order.append("third"), finished.set()))
         assert finished.wait(10)
         assert order == ["first", "second", "third"]
+    finally:
+        worker.shutdown()
+
+
+def test_posted_work_reports_an_unobserved_exception(
+    qtbot,  # noqa: ANN001, ARG001
+    caplog,
+) -> None:
+    worker = PdfDocumentThread()
+    try:
+        worker.call(lambda: None)
+
+        def fail() -> None:
+            raise RuntimeError("dispose failed")
+
+        with caplog.at_level(logging.ERROR, logger="joyread.infrastructure.pdf_document_thread"):
+            worker.post(fail)
+            # FIFO call proves the preceding fire-and-forget job has run.
+            worker.call(lambda: None)
+
+        record = next(
+            item for item in caplog.records if getattr(item, "event", None) == "pdf.thread.post.failed"
+        )
+        assert record.error_type == "RuntimeError"
+        assert record.exc_info is not None
     finally:
         worker.shutdown()
 

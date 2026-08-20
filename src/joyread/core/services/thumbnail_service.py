@@ -8,10 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 from threading import Event, RLock
+from time import perf_counter
 from typing import Protocol
 
 from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
+from joyread.core.diagnostics import cache_identity_kind
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderImageSession, ReaderSessionService
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfError
@@ -239,6 +241,15 @@ class ThumbnailService:
             self._session_generation += 1
             sessions = self._retire_all_sessions_locked()
         _close_sessions(sessions)
+        logger.info(
+            "Thumbnail source policy changed",
+            extra={
+                "event": "thumbnail.session.policy_changed",
+                "category": "thumbnail",
+                "status": "finished",
+                "count": len(sessions),
+            },
+        )
 
     def close(self) -> None:
         """Release cached document sessions and their archive cache leases."""
@@ -250,6 +261,15 @@ class ThumbnailService:
             self._session_generation += 1
             sessions = self._retire_all_sessions_locked()
         _close_sessions(sessions)
+        logger.info(
+            "Thumbnail service closed",
+            extra={
+                "event": "thumbnail.service.closed",
+                "category": "thumbnail",
+                "status": "finished",
+                "count": len(sessions),
+            },
+        )
 
     def issue_thumbnail_cache_client(self, client_id: str) -> ThumbnailCacheClient:
         """Lease the app-wide rendered-thumbnail cache for one viewport."""
@@ -635,6 +655,15 @@ class ThumbnailService:
                 entry = self._session_entries.get(registry_key)
                 if entry is not None and not entry.retired:
                     entry.ref_count += 1
+                    logger.debug(
+                        "Thumbnail source session reused",
+                        extra={
+                            "event": "thumbnail.session.reused",
+                            "category": "thumbnail",
+                            "identity_kind": cache_identity_kind(document_cache_key),
+                            "count": entry.ref_count,
+                        },
+                    )
                     return entry
                 event = self._opening_events.get(registry_key)
                 owner = event is None
@@ -649,12 +678,36 @@ class ThumbnailService:
                 continue
             break
 
+        started = perf_counter()
+        logger.debug(
+            "Thumbnail source session opening",
+            extra={
+                "event": "thumbnail.session.open.started",
+                "category": "thumbnail",
+                "status": "started",
+                "book_id": book.uuid,
+                "identity_kind": cache_identity_kind(document_cache_key),
+            },
+        )
         try:
             session = self._open_thumbnail_session(book, document_cache_key, limits)
-        except Exception:
+        except Exception as exc:
             with self._session_registry_lock:
                 self._opening_events.pop(registry_key, None)
                 event.set()
+            logger.error(
+                "Thumbnail source session failed to open",
+                exc_info=True,
+                extra={
+                    "event": "thumbnail.session.open.failed",
+                    "category": "thumbnail",
+                    "status": "failed",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "book_id": book.uuid,
+                    "identity_kind": cache_identity_kind(document_cache_key),
+                    "error_type": type(exc).__name__,
+                },
+            )
             raise
 
         with self._session_registry_lock:
@@ -670,7 +723,30 @@ class ThumbnailService:
             event.set()
         if not accepted:
             _close_sessions((session,))
+            logger.info(
+                "Thumbnail source session discarded after policy change",
+                extra={
+                    "event": "thumbnail.session.open.discarded",
+                    "category": "thumbnail",
+                    "status": "cancelled",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "book_id": book.uuid,
+                    "identity_kind": cache_identity_kind(document_cache_key),
+                },
+            )
             raise RuntimeError("Thumbnail source policy changed while opening")
+        logger.debug(
+            "Thumbnail source session opened",
+            extra={
+                "event": "thumbnail.session.open.finished",
+                "category": "thumbnail",
+                "status": "finished",
+                "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                "book_id": book.uuid,
+                "identity_kind": cache_identity_kind(document_cache_key),
+                "page_count": int(getattr(session, "page_count", 0)),
+            },
+        )
         return entry
 
     def _read_thumbnail_pages(
@@ -711,6 +787,16 @@ class ThumbnailService:
                     self._session_entries.pop(handle._registry_key, None)
                 entry.retired = True
                 session = self._close_entry_if_idle_locked(entry)
+            logger.debug(
+                "Thumbnail source lease released",
+                extra={
+                    "event": "thumbnail.session.lease_released",
+                    "category": "thumbnail",
+                    "status": "closing" if entry.ref_count == 0 else "active",
+                    "count": entry.ref_count,
+                    "active_reads": entry.active_reads,
+                },
+            )
         if session is not None:
             _close_sessions((session,))
 
@@ -854,4 +940,16 @@ def _close_sessions(sessions: Iterable[ReaderImageSession]) -> None:
     for session in sessions:
         close = getattr(session, "close", None)
         if callable(close):
-            close()
+            try:
+                close()
+            except Exception as exc:  # Cleanup must continue for sibling sessions.
+                logger.error(
+                    "Thumbnail source session failed to close",
+                    exc_info=True,
+                    extra={
+                        "event": "thumbnail.session.close.failed",
+                        "category": "thumbnail",
+                        "status": "failed",
+                        "error_type": type(exc).__name__,
+                    },
+                )

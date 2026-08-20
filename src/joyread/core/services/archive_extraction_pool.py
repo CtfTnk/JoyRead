@@ -559,8 +559,8 @@ class ArchiveExtractionPool(_UsageNotifier):
                 continue
             try:
                 candidate.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("Archive cache purge could not remove %s: %s", candidate, exc)
 
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool:
         """Atomically adopt an ephemeral bundle under a persistent identity."""
@@ -613,18 +613,18 @@ class ArchiveExtractionPool(_UsageNotifier):
                     logger.warning("Archive cache promotion merge failed: %s", exc)
                     try:
                         tmp_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.warning("Archive cache promotion temp cleanup failed: %s", cleanup_exc)
                     return False
                 if target.path != target_path:
                     try:
                         target.path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.warning("Archive cache promotion target cleanup failed: %s", cleanup_exc)
                 try:
                     source.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as cleanup_exc:
+                    logger.warning("Archive cache promotion source cleanup failed: %s", cleanup_exc)
             previous_source = self._index.pop(source_key, None)
             previous_target = self._index.pop(target_key, None)
             if previous_source is not None:
@@ -741,20 +741,36 @@ class ArchiveExtractionPool(_UsageNotifier):
             raise ValueError("max_bytes must be non-negative")
         self._ensure_reconciled()
         with self._lock:
+            previous_max = self._max_bytes
             self._max_bytes = int(max_bytes)
             self._evict_locked()
             self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            logger.info(
+                "Archive cache budget resized",
+                extra={
+                    "event": "archive.pool.resized",
+                    "category": "cache",
+                    "status": "pending" if self._strict_eviction_pending else "finished",
+                    "strategy": "zip_bundle",
+                    "previous_budget_bytes": previous_max,
+                    "budget_bytes": self._max_bytes,
+                    "current_bytes": self._current_bytes,
+                },
+            )
 
     def clear(self) -> None:
         """Drop every cached bundle and remove the on-disk files."""
 
         self._ensure_reconciled()
+        bytes_before = self.current_bytes
+        failures = 0
         with self._lock:
             for entry in list(self._index.values()):
                 try:
                     entry.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    failures += 1
+                    logger.warning("Archive cache clear could not remove %s: %s", entry.path, exc)
             self._index.clear()
             self._active.clear()
             self._building.clear()
@@ -765,8 +781,21 @@ class ArchiveExtractionPool(_UsageNotifier):
                 for path in self._directory.iterdir():
                     if not path.is_symlink() and path.is_file():
                         path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                failures += 1
+                logger.warning("Archive cache clear could not sweep its directory: %s", exc)
+        logger.log(
+            logging.WARNING if failures else logging.INFO,
+            "Archive cache clear finished",
+            extra={
+                "event": "archive.pool.clear.finished",
+                "category": "cache",
+                "status": "completed_with_errors" if failures else "finished",
+                "strategy": "zip_bundle",
+                "reclaimed_bytes": bytes_before,
+                "failed_count": failures,
+            },
+        )
 
     def _ensure_reconciled(self) -> None:
         """Lazily index the cache directory on first use.
@@ -786,7 +815,8 @@ class ArchiveExtractionPool(_UsageNotifier):
             marker = self._directory / self._SCHEMA_MARKER
             try:
                 marker_version = marker.read_text(encoding="ascii").strip() if marker.exists() else ""
-            except OSError:
+            except OSError as exc:
+                logger.warning("Archive cache schema marker could not be read: %s", exc)
                 marker_version = ""
             if marker_version != self._SCHEMA_VERSION:
                 # Cache storage keys and manifests changed in v3 to encode
@@ -796,12 +826,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                         continue
                     try:
                         path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Archive cache schema cleanup failed: %s", exc)
                 try:
                     marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.warning("Archive cache schema marker write failed: %s", exc)
             scanned: list[tuple[str, _PoolEntry]] = []
             try:
                 entries = list(self._directory.iterdir())
@@ -820,8 +850,8 @@ class ArchiveExtractionPool(_UsageNotifier):
                     # they were never indexed, so remove them on startup.
                     try:
                         path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Archive cache orphan temp cleanup failed: %s", exc)
                     continue
                 if path.suffix != self._ZIP_SUFFIX:
                     # Pre-existing files from the legacy per-page layout (or
@@ -830,16 +860,16 @@ class ArchiveExtractionPool(_UsageNotifier):
                     # view.
                     try:
                         path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Archive cache stray-file cleanup failed: %s", exc)
                     continue
                 if path.name.startswith("e-"):
                     # Ephemeral leases are process-lifetime working data. A
                     # surviving file means the process ended before close().
                     try:
                         path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Archive cache ephemeral cleanup failed: %s", exc)
                     continue
                 manifest_payload: bytes | None = None
                 try:
@@ -850,11 +880,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                                 manifest_payload = archive.read(self._MANIFEST_ENTRY)
                             except KeyError:
                                 pass
-                except (BadZipFile, OSError):
+                except (BadZipFile, OSError) as exc:
+                    logger.warning("Archive cache reconcile dropped a corrupt bundle: %s", exc)
                     try:
                         path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.warning("Archive cache corrupt-bundle cleanup failed: %s", cleanup_exc)
                     continue
                 book_key = (
                     path.name[: -len(".partial.zip")]
@@ -870,8 +901,11 @@ class ArchiveExtractionPool(_UsageNotifier):
                         try:
                             os.replace(path, final_path)
                             path = final_path
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            logger.warning(
+                                "Archive cache publish recovery could not rename a ready bundle: %s",
+                                exc,
+                            )
                 try:
                     stat = path.stat()
                 except OSError:
@@ -951,8 +985,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         finally:
             try:
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as exc:
+                logger.warning("Archive cache manifest temp cleanup failed: %s", exc)
 
     @classmethod
     def _merge_bundles_locked(
@@ -984,8 +1018,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         self._current_bytes -= entry.size
         try:
             entry.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("Archive cache eviction could not remove %s: %s", entry.path, exc)
 
     def _move_active_locked(self, source_key: str, target_key: str) -> None:
         count = self._active.pop(source_key, 0)
@@ -1450,8 +1484,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
             logger.warning("Hidden image cache write failed for %s: %s", final_path, exc)
             try:
                 tmp_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            except OSError as cleanup_exc:
+                logger.warning("Hidden image cache temp cleanup failed: %s", cleanup_exc)
             return None
         return (book_key, entry_key), _PoolEntry(final_path, stat.st_size, stat.st_mtime)
 
@@ -1464,28 +1498,69 @@ class HiddenImageExtractionPool(_UsageNotifier):
             raise ValueError("max_bytes must be non-negative")
         self._ensure_reconciled()
         with self._lock:
+            previous_max = self._max_bytes
             self._max_bytes = int(max_bytes)
             self._evict_locked()
             self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            logger.info(
+                "Hidden image cache budget resized",
+                extra={
+                    "event": "archive.pool.resized",
+                    "category": "cache",
+                    "status": "pending" if self._strict_eviction_pending else "finished",
+                    "strategy": "hidden_images",
+                    "previous_budget_bytes": previous_max,
+                    "budget_bytes": self._max_bytes,
+                    "current_bytes": self._current_bytes,
+                },
+            )
 
     def clear(self) -> None:
         self._ensure_reconciled()
+        bytes_before = self.current_bytes
+        failures = 0
         with self._lock:
             for entry in list(self._index.values()):
                 try:
                     entry.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    failures += 1
+                    logger.warning("Hidden image cache clear could not remove %s: %s", entry.path, exc)
             self._index.clear()
             self._active.clear()
             self._building.clear()
             self._current_bytes = 0
             self._strict_eviction_pending = False
         if self._directory is not None:
-            try:
-                shutil.rmtree(self._directory, ignore_errors=True)
-            except OSError:
-                pass
+            # onerror keeps rmtree walking past a failing entry instead of
+            # aborting the whole removal at the first one (the previous
+            # ignore_errors=True did this too, but silently -- this keeps the
+            # best-effort behavior and adds visibility into what survived).
+            # It also fires for a missing top-level directory (FileNotFoundError
+            # from the initial lstat), so no separate try/except is needed.
+            directory_failures = 0
+
+            def _on_rmtree_error(_func, path, excinfo) -> None:
+                nonlocal directory_failures
+                if isinstance(excinfo[1], FileNotFoundError):
+                    return
+                directory_failures += 1
+                logger.warning("Hidden image cache clear could not remove %s: %s", path, excinfo[1])
+
+            shutil.rmtree(self._directory, onerror=_on_rmtree_error)
+            failures += directory_failures
+        logger.log(
+            logging.WARNING if failures else logging.INFO,
+            "Hidden image cache clear finished",
+            extra={
+                "event": "archive.pool.clear.finished",
+                "category": "cache",
+                "status": "completed_with_errors" if failures else "finished",
+                "strategy": "hidden_images",
+                "reclaimed_bytes": bytes_before,
+                "failed_count": failures,
+            },
+        )
 
     def _ensure_reconciled(self) -> None:
         with self._lock:
@@ -1496,7 +1571,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 return
             try:
                 self._directory.mkdir(parents=True, exist_ok=True)
-            except OSError:
+            except OSError as exc:
+                logger.warning("Hidden image cache could not create its directory: %s", exc)
                 return
             marker = self._directory / self._SCHEMA_MARKER
             try:
@@ -1508,7 +1584,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 # ephemeral identity kinds.
                 try:
                     children = tuple(self._directory.iterdir())
-                except OSError:
+                except OSError as exc:
+                    logger.warning("Hidden image cache schema cleanup could not list directory: %s", exc)
                     children = ()
                 for child in children:
                     if child == marker or child.is_symlink():
@@ -1518,16 +1595,17 @@ class HiddenImageExtractionPool(_UsageNotifier):
                             shutil.rmtree(child)
                         elif child.is_file():
                             child.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Hidden image cache schema cleanup failed: %s", exc)
                 try:
                     marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.warning("Hidden image cache schema marker write failed: %s", exc)
             scanned: list[tuple[tuple[str, str], _PoolEntry]] = []
             try:
                 book_dirs = list(self._directory.iterdir())
-            except OSError:
+            except OSError as exc:
+                logger.warning("Hidden image cache reconcile could not list directory: %s", exc)
                 return
             for book_dir in book_dirs:
                 if book_dir.name == self._SCHEMA_MARKER:
@@ -1535,14 +1613,14 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 if not book_dir.is_dir():
                     try:
                         book_dir.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Hidden image cache stray-file cleanup failed: %s", exc)
                     continue
                 if book_dir.name.startswith("e-"):
                     try:
                         shutil.rmtree(book_dir)
-                    except OSError:
-                        pass
+                    except OSError as exc:
+                        logger.warning("Hidden image cache ephemeral cleanup failed: %s", exc)
                     continue
                 try:
                     entries = list(book_dir.iterdir())
@@ -1552,8 +1630,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
                     if path.name.endswith(".tmp") or path.suffix != self._PAGE_SUFFIX:
                         try:
                             path.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            logger.warning("Hidden image cache invalid-entry cleanup failed: %s", exc)
                         continue
                     try:
                         stat = path.stat()
@@ -1583,8 +1661,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
         self._current_bytes -= entry.size
         try:
             entry.path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("Hidden image cache eviction could not remove %s: %s", entry.path, exc)
         manifest_key = (key[0], self._entry_key_for(self._MANIFEST_ENTRY))
         if key != manifest_key:
             manifest = self._index.pop(manifest_key, None)
@@ -1592,8 +1670,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 self._current_bytes -= manifest.size
                 try:
                     manifest.path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    logger.warning("Hidden image cache manifest eviction failed: %s", exc)
 
     def _forget_book_locked(self, book_key: str) -> None:
         """Evict one document as a unit, including its ready manifest."""
@@ -1608,8 +1686,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
             return
         try:
             shutil.rmtree(book_dir)
-        except OSError:
-            pass
+        except OSError as exc:
+            logger.warning("Hidden image cache book eviction failed: %s", exc)
 
     def _move_active_locked(self, source_key: str, target_key: str) -> None:
         count = self._active.pop(source_key, 0)

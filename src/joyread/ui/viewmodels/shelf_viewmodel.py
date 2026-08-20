@@ -956,7 +956,16 @@ class ShelfViewModel:
         self.book_cover_updated.emit(book_uuid, path)
 
     def _handle_book_cover_failure(self, error: Exception) -> None:
-        logger.warning("set_book_cover_path failed: %s", error, exc_info=True)
+        # Reconstructed from the error object rather than exc_info=True: this
+        # handler runs both from a synchronous except block (a live exception)
+        # and from a queued TaskService on_failure callback (no exception
+        # active on this thread, where exc_info=True would silently log
+        # nothing). error.__traceback__ survives either path.
+        logger.warning(
+            "set_book_cover_path failed: %s",
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
         self.load_books()
         self.book_cover_failed.emit(str(error))
 
@@ -1295,7 +1304,7 @@ class ShelfViewModel:
         def failed(error: Exception) -> None:
             # Degraded exactly as the synchronous path degrades: the shelf
             # still renders, just without tag data.
-            logger.warning("Async shelf tag refresh failed: %s", error, exc_info=True)
+            logger.warning("Async shelf tag refresh failed: %s", error)
 
         self._task_service.submit("shelf-tags", load, on_success=publish, on_failure=failed)
 
@@ -1305,7 +1314,15 @@ class ShelfViewModel:
         self._emit_state()
 
     def _handle_book_tags_failure(self, book_uuid: str, error: Exception) -> None:
-        logger.warning("set_book_tag_ids failed book=%s: %s", book_uuid, error, exc_info=True)
+        # See _handle_book_cover_failure: reconstructed exc_info so the sync
+        # caller keeps its traceback and the queued on_failure caller doesn't
+        # silently lose it under exc_info=True.
+        logger.warning(
+            "set_book_tag_ids failed book=%s: %s",
+            book_uuid,
+            error,
+            exc_info=(type(error), error, error.__traceback__),
+        )
         self._refresh_book_tag_index()
         self.book_tags_failed.emit(str(error))
 

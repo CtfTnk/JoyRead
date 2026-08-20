@@ -12,6 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore, RLock
 from time import perf_counter
+from uuid import uuid4
 
 from PIL import Image, UnidentifiedImageError
 
@@ -144,6 +145,7 @@ class ArchiveImageSession:
         self._active_reads = 0
         self._lease_finalized = False
         self._close_started = 0.0
+        self._session_id = uuid4().hex
         self._uses_expensive_cache = any(access_is_expensive(record) for record in self._pages)
         # An encrypted document warms like a solid one -- but only when there
         # is a bulk extractor to warm it *with*.
@@ -435,6 +437,19 @@ class ArchiveImageSession:
         result = ArchiveConversionResult(
             ArchiveConversionStatus.FAILED, "incomplete", len(records)
         )
+        caught_error: Exception | None = None
+        logger.info(
+            "Archive cache conversion started",
+            extra={
+                "event": "archive.conversion.started",
+                "category": "archive",
+                "status": "started",
+                "document_id": self._session_id,
+                "page_count": len(records),
+                "declared_bytes": self._declared_page_bytes()[0],
+                "identity_kind": self._cache_identity_kind(),
+            },
+        )
         try:
             reader_perf_event(
                 "archive.convert.started",
@@ -472,8 +487,12 @@ class ArchiveImageSession:
             result = ArchiveConversionResult(
                 ArchiveConversionStatus.UNSUPPORTED, "backend_cannot_represent", len(records)
             )
+        except Exception as exc:
+            caught_error = exc
+            raise
         finally:
             self._finish_registered_read()
+            duration_ms = round((perf_counter() - started) * 1000.0, 3)
             reader_perf_event(
                 "archive.convert.completed"
                 if result.is_published
@@ -482,7 +501,41 @@ class ArchiveImageSession:
                 reason=result.reason,
                 pages=len(records),
                 written_bytes=budget.used,
-                elapsed_ms=round((perf_counter() - started) * 1000.0, 3),
+                elapsed_ms=duration_ms,
+            )
+            cancelled = isinstance(caught_error, ArchiveCancelled)
+            successful = result.is_published or result.status in {
+                ArchiveConversionStatus.ALREADY_PUBLISHED,
+                ArchiveConversionStatus.UNSUPPORTED,
+            }
+            logger.log(
+                logging.INFO if successful or cancelled else logging.WARNING,
+                "Archive cache conversion finished",
+                extra={
+                    "event": (
+                        "archive.conversion.cancelled"
+                        if cancelled
+                        else "archive.conversion.finished"
+                    ),
+                    "category": "archive",
+                    "status": (
+                        "cancelled"
+                        if cancelled
+                        else "finished" if successful else "failed"
+                    ),
+                    "document_id": self._session_id,
+                    "page_count": len(records),
+                    "bytes": budget.used,
+                    "duration_ms": duration_ms,
+                    "outcome": result.status.value,
+                    "reason": (
+                        str(caught_error) if caught_error is not None else result.reason
+                    ),
+                    "error_type": (
+                        type(caught_error).__name__ if caught_error is not None else None
+                    ),
+                    "identity_kind": self._cache_identity_kind(),
+                },
             )
         return result
 
@@ -903,15 +956,22 @@ class ArchiveImageSession:
             deferred=active_reads > 0,
             identity_kind=self._cache_identity_kind(),
         )
+        logger.info(
+            "Archive session close requested",
+            extra={
+                "event": "archive.session.close.requested",
+                "category": "archive",
+                "status": "draining" if active_reads else "started",
+                "document_id": self._session_id,
+                "active_reads": active_reads,
+                "identity_kind": self._cache_identity_kind(),
+                "page_count": self.page_count,
+            },
+        )
         if lease is not None:
             lease.close()
         if finalized:
-            reader_perf_event(
-                "archive.session.closed",
-                active_reads=0,
-                identity_kind=self._cache_identity_kind(),
-                drain_ms=round((perf_counter() - self._close_started) * 1000.0, 3),
-            )
+            self._log_close_finished()
 
     def _finish_registered_read(self) -> tuple[int, bool]:
         lease: ArchiveCacheLease | None = None
@@ -924,13 +984,28 @@ class ArchiveImageSession:
         if lease is not None:
             lease.close()
         if finalized:
-            reader_perf_event(
-                "archive.session.closed",
-                active_reads=0,
-                identity_kind=self._cache_identity_kind(),
-                drain_ms=round((perf_counter() - self._close_started) * 1000.0, 3),
-            )
+            self._log_close_finished()
         return active_reads, finalized
+
+    def _log_close_finished(self) -> None:
+        drain_ms = round((perf_counter() - self._close_started) * 1000.0, 3)
+        reader_perf_event(
+            "archive.session.closed",
+            active_reads=0,
+            identity_kind=self._cache_identity_kind(),
+            drain_ms=drain_ms,
+        )
+        logger.info(
+            "Archive session close finished",
+            extra={
+                "event": "archive.session.close.finished",
+                "category": "archive",
+                "status": "finished",
+                "document_id": self._session_id,
+                "duration_ms": drain_ms,
+                "identity_kind": self._cache_identity_kind(),
+            },
+        )
 
     def _finalize_close_locked(self) -> tuple[bool, ArchiveCacheLease | None]:
         if self._lease_finalized:

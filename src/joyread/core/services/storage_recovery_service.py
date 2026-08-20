@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 import logging
 from pathlib import Path
+from time import perf_counter
 
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.services.storage_migration_service import StorageMigrationService
 from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
@@ -51,6 +53,8 @@ class StorageRecoveryPromptResult:
 class StorageRecoveryCancelled(Exception):
     """Raised when the user closes startup recovery instead of choosing a library."""
 
+    task_failure_kind = "cancelled"
+
 
 # Called when the configured storage is unavailable. Receives the configured
 # location and the current validation/recovery message. Returns Initialize,
@@ -84,6 +88,58 @@ class StorageRecoveryService:
         existing library, or quit. When it is ``None`` (tests, headless runs),
         recovery falls back automatically.
         """
+
+        operation = create_operation("storage.recovery", category="storage")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Storage startup resolution started",
+                extra={
+                    "event": "storage.recovery.started",
+                    "category": "storage",
+                    "status": "started",
+                },
+            )
+            try:
+                result = self._prepare_bound(prompt)
+            except StorageRecoveryCancelled:
+                logger.info(
+                    "Storage startup resolution cancelled",
+                    extra={
+                        "event": "storage.recovery.cancelled",
+                        "category": "storage",
+                        "status": "cancelled",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    },
+                )
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Storage startup resolution failed",
+                    exc_info=True,
+                    extra={
+                        "event": "storage.recovery.failed",
+                        "category": "storage",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.info(
+                "Storage startup resolution finished",
+                extra={
+                    "event": "storage.recovery.finished",
+                    "category": "storage",
+                    "status": "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "outcome": "recovered" if result.notice else "configured",
+                },
+            )
+            return result
+
+    def _prepare_bound(self, prompt: RecoveryPrompt | None) -> StorageStartupResult:
+        """Resolve startup storage while the public operation is bound."""
 
         first_run = not self._settings_store.settings_path.exists()
         settings = self._settings_store.load()

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
@@ -15,10 +17,27 @@ from joyread.app.launch.coordinator import LaunchCoordinator
 from joyread.app.launch.intent import LaunchIntent
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
+from joyread.infrastructure.logging.logging_service import shutdown_logging
 from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
+
+
+@pytest.fixture(autouse=True)
+def _shutdown_logging_runtime_after_each_test():
+    """create_application() starts the async logging runtime's writer thread.
+
+    Nothing in this test file calls app.exec(), so Qt's aboutToQuit -- the
+    only production trigger for shutdown_logging() -- never fires. Without
+    this, a test that calls create_application() leaves a live writer thread
+    and a replaced root logger behind for every later test in the process.
+    shutdown_logging() is a no-op when the runtime was never started, so this
+    is harmless for tests that don't touch logging at all.
+    """
+
+    yield
+    shutdown_logging(timeout_seconds=2.0)
 
 
 class _ManualLaunchGate:
@@ -78,9 +97,14 @@ class _RecordingDatabase:
         self._calls.append("database")
 
 
-def test_app_context_closes_tasks_before_database() -> None:
-    calls: list[str] = []
-    context = AppContext(
+class _FailingTaskService(_RecordingTaskService):
+    def shutdown(self) -> None:
+        self._calls.append("task")
+        raise RuntimeError("task shutdown failed")
+
+
+def _close_test_context(calls: list[str], task_service=None) -> AppContext:  # noqa: ANN001
+    return AppContext(
         config=None,  # type: ignore[arg-type]
         settings=None,  # type: ignore[arg-type]
         settings_store=None,  # type: ignore[arg-type]
@@ -94,7 +118,7 @@ def test_app_context_closes_tasks_before_database() -> None:
         reader_session_service=None,  # type: ignore[arg-type]
         pdf_image_service=None,  # type: ignore[arg-type]
         library_service=None,  # type: ignore[arg-type]
-        task_service=_RecordingTaskService(calls),  # type: ignore[arg-type]
+        task_service=task_service or _RecordingTaskService(calls),  # type: ignore[arg-type]
         cache_service=None,  # type: ignore[arg-type]
         hash_service=None,  # type: ignore[arg-type]
         tag_service=None,  # type: ignore[arg-type]
@@ -113,9 +137,37 @@ def test_app_context_closes_tasks_before_database() -> None:
         tag_management_viewmodel=None,  # type: ignore[arg-type]
     )
 
+
+def test_app_context_closes_tasks_before_database() -> None:
+    calls: list[str] = []
+    context = _close_test_context(calls)
+
     context.close()
 
     assert calls == ["task", "database"]
+
+
+def test_app_context_logs_component_failure_and_finishes_remaining_shutdown(
+    caplog,
+) -> None:
+    calls: list[str] = []
+    context = _close_test_context(calls, _FailingTaskService(calls))
+
+    with caplog.at_level(logging.INFO, logger="joyread.app.app_context"):
+        context.close()
+
+    assert calls == ["task", "database"]
+    assert any(
+        getattr(record, "event", None) == "app_context.component_close.failed"
+        and getattr(record, "component", None) == "task_service"
+        for record in caplog.records
+    )
+    terminal = next(
+        record
+        for record in caplog.records
+        if getattr(record, "event", None) == "app_context.close.finished"
+    )
+    assert terminal.status == "completed_with_errors"
 
 
 def test_direct_external_open_uses_reader_window_without_file_dialog(qtbot, tmp_path: Path, monkeypatch) -> None:

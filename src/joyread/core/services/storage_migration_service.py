@@ -16,8 +16,10 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
+from time import perf_counter
 from uuid import uuid4
 
+from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.services.storage_validation_service import StorageValidationService
 from joyread.infrastructure.config.settings_store import SettingsStore
 from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
@@ -28,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 class StorageMigrationError(Exception):
     """Raised when a Move/Reset cannot complete; old storage stays in use."""
+
+    task_failure_kind = "controlled"
 
 
 @dataclass(frozen=True)
@@ -55,6 +59,50 @@ class StorageMigrationService:
         consistent. On any failure the staging copy is removed, settings are
         left unchanged, and the old root is preserved.
         """
+
+        operation = create_operation("storage.move", category="storage")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Library move started",
+                extra={
+                    "event": "storage.move.started",
+                    "category": "storage",
+                    "status": "started",
+                },
+            )
+            try:
+                result = self._move_to_parent_bound(old_root, target_parent)
+            except StorageMigrationError as exc:
+                logger.warning(
+                    "Library move failed",
+                    extra={
+                        "event": "storage.move.failed",
+                        "category": "storage",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                )
+                raise
+            logger.info(
+                "Library move finished",
+                extra={
+                    "event": "storage.move.finished",
+                    "category": "storage",
+                    "status": "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                },
+            )
+            return result
+
+    def _move_to_parent_bound(
+        self,
+        old_root: Path,
+        target_parent: Path,
+    ) -> StorageMigrationResult:
+        """Perform a move while its public operation context is bound."""
 
         old_root = old_root.expanduser().resolve()
         parent = target_parent.expanduser().resolve()
@@ -99,6 +147,16 @@ class StorageMigrationService:
             raise
         except OSError as exc:
             _safe_rmtree(staging)
+            logger.error(
+                "Library move filesystem operation failed",
+                exc_info=True,
+                extra={
+                    "event": "storage.move.filesystem_failed",
+                    "category": "storage",
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                },
+            )
             raise StorageMigrationError(f"Could not move the library: {exc}") from exc
 
         # Record the destination as known-good in the same write that adopts
@@ -126,11 +184,44 @@ class StorageMigrationService:
         subsequent storage reload, not here.
         """
 
-        root = root.expanduser().resolve()
-        logger.info("Reset library at %s", root)
-        if root.exists():
-            shutil.rmtree(root)
-        root.mkdir(parents=True, exist_ok=True)
+        operation = create_operation("storage.reset", category="storage")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Library reset started",
+                extra={
+                    "event": "storage.reset.started",
+                    "category": "storage",
+                    "status": "started",
+                },
+            )
+            try:
+                root = root.expanduser().resolve()
+                if root.exists():
+                    shutil.rmtree(root)
+                root.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                logger.error(
+                    "Library reset failed",
+                    exc_info=True,
+                    extra={
+                        "event": "storage.reset.failed",
+                        "category": "storage",
+                        "status": "failed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.info(
+                "Library reset finished",
+                extra={
+                    "event": "storage.reset.finished",
+                    "category": "storage",
+                    "status": "finished",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                },
+            )
 
 
 def _safe_rmtree(path: Path) -> None:

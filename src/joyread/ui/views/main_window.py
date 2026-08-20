@@ -19,6 +19,7 @@ from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneRea
 from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
+from joyread.infrastructure.logging import log_event
 from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import BOOK_EXTENSIONS
@@ -708,7 +709,7 @@ class MainWindow(QMainWindow):
     def _handle_library_maintenance_failure(self, error: Exception) -> None:
         self._library_maintenance_task_active = False
         self._library_maintenance_plan_pending = False
-        logger.warning("Library maintenance task failed: %s", error, exc_info=True)
+        logger.warning("Library maintenance task failed: %s", error)
         self.dialog_overlay.show_info(
             t("dialog.library_audit_title"),
             t("dialog.library_audit_failed_msg", message=str(error)),
@@ -1114,11 +1115,30 @@ class MainWindow(QMainWindow):
             self._context.resume_after_storage_transition()
             self._storage_transition.acknowledge()
         if transition.error is not None:
+            log_event(
+                logger,
+                logging.WARNING,
+                "storage.transition.result_failed",
+                "Storage transition returned a controlled failure",
+                category="storage",
+                status="failed",
+                error_type=type(transition.error).__name__,
+                reason=str(transition.error),
+            )
             self.dialog_overlay.show_info(t("dialog.storage_title"), str(transition.error))
             return
         result = transition.result
         if result is not None and not getattr(result, "ok", True):
             message = getattr(result, "message", "") or t("dialog.storage_invalid_default")
+            log_event(
+                logger,
+                logging.WARNING,
+                "storage.transition.result_rejected",
+                "Storage transition result was rejected",
+                category="storage",
+                status="failed",
+                reason=message,
+            )
             self.dialog_overlay.show_info(
                 t("dialog.storage_title"),
                 t("dialog.storage_invalid_location", message=message),
@@ -1137,12 +1157,39 @@ class MainWindow(QMainWindow):
     def _handle_storage_location_failed(self, error: Exception) -> None:
         # The disk phase raised past the commit point, so the services closed
         # for it have to be rebuilt before anything is allowed to run again.
+        rebuild_error: Exception | None = None
         try:
             self._context.reload_storage_from_settings()
+        except Exception as caught:
+            rebuild_error = caught
+            log_event(
+                logger,
+                logging.ERROR,
+                "storage.transition.rebuild_failed",
+                "Storage services failed to rebuild after a transition error",
+                category="storage",
+                status="failed",
+                error_type=type(caught).__name__,
+                reason=str(caught),
+                exc_info=True,
+            )
         finally:
             self._context.storage_rebuild_required = False
             self._context.resume_after_storage_transition()
             self._storage_transition.acknowledge()
+        if rebuild_error is not None:
+            self.dialog_overlay.show_info(t("dialog.storage_title"), str(rebuild_error))
+            return
+        log_event(
+            logger,
+            logging.WARNING,
+            "storage.transition.failure_presented",
+            "Storage transition failure was presented to the user",
+            category="storage",
+            status="failed",
+            error_type=type(error).__name__,
+            reason=str(error),
+        )
         self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
 
     def _handle_navigation(self, key: str) -> None:
@@ -1378,7 +1425,7 @@ class MainWindow(QMainWindow):
             else self.cover_editor_overlay.set_source(source.frame, source.source_token)
         )
         if not updated:
-            logger.warning("Cover editor rejected prepared frame book=%s source=%s", book_uuid, source.source_token)
+            logger.warning("Cover editor rejected prepared frame book=%s", book_uuid)
             self.dialog_overlay.show_info(
                 t("dialog.cover_editor_title"),
                 t("dialog.cover_editor_load_source_image_failed"),

@@ -18,6 +18,7 @@ from joyread.app.launch.intent import (
     decode_launch_intent,
     encode_launch_intent,
 )
+from joyread.core.operation_context import OperationContext, bind_operation, create_operation
 
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class SingleInstanceBroker(QObject):
         self._lock: QLockFile | None = None
         self._server: QLocalServer | None = None
         self._buffers: dict[int, tuple[QLocalSocket, bytearray]] = {}
-        self._pending_intents: list[LaunchIntent] = []
+        self._pending_intents: list[tuple[LaunchIntent, OperationContext]] = []
         self._intent_handler: IntentHandler | None = None
         self._role: InstanceRole | None = None
         self._disposed = False
@@ -88,6 +89,46 @@ class SingleInstanceBroker(QObject):
         deciding what to say.
         """
 
+        operation = create_operation("launch.instance_arbitration", category="launch")
+        started = monotonic()
+        with bind_operation(operation):
+            logger.info(
+                "Single-instance arbitration started",
+                extra={
+                    "event": "launch.instance_arbitration.started",
+                    "category": "launch",
+                    "status": "started",
+                },
+            )
+            try:
+                role = self._start(secondary_intent)
+            except Exception as exc:
+                logger.error(
+                    "Single-instance arbitration failed",
+                    exc_info=True,
+                    extra={
+                        "event": "launch.instance_arbitration.failed",
+                        "category": "launch",
+                        "status": "failed",
+                        "duration_ms": round((monotonic() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                        "reason": str(exc),
+                    },
+                )
+                raise
+            logger.info(
+                "Single-instance arbitration finished",
+                extra={
+                    "event": "launch.instance_arbitration.finished",
+                    "category": "launch",
+                    "status": "finished",
+                    "duration_ms": round((monotonic() - started) * 1000.0, 3),
+                    "outcome": role.value,
+                },
+            )
+            return role
+
+    def _start(self, secondary_intent: SecondaryIntentFactory) -> InstanceRole:
         if self._role is not None:
             raise RuntimeError("SingleInstanceBroker.start() may only be called once.")
         try:
@@ -101,7 +142,6 @@ class SingleInstanceBroker(QObject):
         if lock.tryLock(0):
             self._start_primary_server()
             self._role = InstanceRole.PRIMARY
-            logger.info("Single-instance primary ready server=%s", self._server_name)
             return self._role
 
         if lock.error() != QLockFile.LockError.LockFailedError:
@@ -111,14 +151,13 @@ class SingleInstanceBroker(QObject):
 
         self._forward_to_primary(secondary_intent())
         self._role = InstanceRole.SECONDARY
-        logger.info("Launch request forwarded to primary server=%s", self._server_name)
         return self._role
 
     def set_intent_handler(self, handler: IntentHandler) -> None:
         self._intent_handler = handler
         pending, self._pending_intents = self._pending_intents, []
-        for intent in pending:
-            self._deliver_intent(intent)
+        for intent, operation in pending:
+            self._deliver_intent(intent, operation)
 
     def dispose(self) -> None:
         if self._disposed:
@@ -139,6 +178,15 @@ class SingleInstanceBroker(QObject):
         if self._lock is not None and self._lock.isLocked():
             self._lock.unlock()
         self._lock = None
+        logger.info(
+            "Single-instance broker disposed",
+            extra={
+                "event": "launch.instance_broker.closed",
+                "category": "launch",
+                "status": "finished",
+                "outcome": self._role.value if self._role is not None else "unstarted",
+            },
+        )
 
     def _start_primary_server(self) -> None:
         # Holding the profile lock makes stale socket removal race-free: no
@@ -207,7 +255,16 @@ class SingleInstanceBroker(QObject):
         buffer = entry[1]
         buffer.extend(bytes(socket.readAll()))
         if len(buffer) > MAX_LAUNCH_MESSAGE_BYTES + len(_MESSAGE_DELIMITER):
-            logger.warning("Dropping oversized local launch request")
+            logger.warning(
+                "Dropping oversized local launch request",
+                extra={
+                    "event": "launch.intent.rejected",
+                    "category": "launch",
+                    "status": "rejected",
+                    "reason": "message_too_large",
+                    "bytes": len(buffer),
+                },
+            )
             socket.abort()
             self._forget_socket(socket)
             return
@@ -221,7 +278,16 @@ class SingleInstanceBroker(QObject):
         self._read_socket(socket)
         entry = self._buffers.get(id(socket))
         if entry is not None and entry[1]:
-            logger.warning("Dropping incomplete local launch request")
+            logger.warning(
+                "Dropping incomplete local launch request",
+                extra={
+                    "event": "launch.intent.rejected",
+                    "category": "launch",
+                    "status": "rejected",
+                    "reason": "incomplete_message",
+                    "bytes": len(entry[1]),
+                },
+            )
         self._forget_socket(socket)
 
     def _forget_socket(self, socket: QLocalSocket) -> None:
@@ -232,26 +298,83 @@ class SingleInstanceBroker(QObject):
         try:
             intent = decode_launch_intent(raw)
         except ValueError as exc:
-            logger.warning("Ignoring invalid local launch request: %s", exc)
+            logger.warning(
+                "Ignoring invalid local launch request: %s",
+                exc,
+                extra={
+                    "event": "launch.intent.rejected",
+                    "category": "launch",
+                    "status": "rejected",
+                    "reason": str(exc),
+                    "bytes": len(raw),
+                },
+            )
             return
-        handler = self._intent_handler
-        if handler is None:
-            self._pending_intents.append(intent)
-            return
-        self._deliver_intent(intent)
+        operation = create_operation("launch.intent", category="launch")
+        with bind_operation(operation):
+            logger.info(
+                "Launch intent received from a secondary process",
+                extra={
+                    "event": "launch.intent.received",
+                    "category": "launch",
+                    "status": "started",
+                    "action": intent.action.value,
+                    "count": len(intent.paths),
+                },
+            )
+            handler = self._intent_handler
+            if handler is None:
+                self._pending_intents.append((intent, operation))
+                logger.debug(
+                    "Launch intent queued until the window manager is ready",
+                    extra={
+                        "event": "launch.intent.queued",
+                        "category": "launch",
+                        "status": "pending",
+                        "action": intent.action.value,
+                        "count": len(intent.paths),
+                    },
+                )
+                return
+            self._deliver_intent(intent, operation)
 
-    def _deliver_intent(self, intent: LaunchIntent) -> None:
+    def _deliver_intent(
+        self,
+        intent: LaunchIntent,
+        operation: OperationContext | None = None,
+    ) -> None:
         handler = self._intent_handler
         if handler is None:
-            self._pending_intents.append(intent)
+            self._pending_intents.append(
+                (intent, operation or create_operation("launch.intent", category="launch"))
+            )
             return
-        try:
-            handler(intent)
-        except Exception:
-            # Local launch intents must not be able to unwind through Qt's
-            # readyRead signal. Keep the primary alive for later requests.
-            logger.exception(
-                "Launch intent handler failed action=%s paths=%d",
-                intent.action,
-                len(intent.paths),
+        with bind_operation(operation):
+            try:
+                handler(intent)
+            except Exception as exc:
+                # Local launch intents must not be able to unwind through Qt's
+                # readyRead signal. Keep the primary alive for later requests.
+                logger.error(
+                    "Launch intent handler failed",
+                    exc_info=True,
+                    extra={
+                        "event": "launch.intent.failed",
+                        "category": "launch",
+                        "status": "failed",
+                        "action": intent.action.value,
+                        "count": len(intent.paths),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                return
+            logger.info(
+                "Launch intent delivered",
+                extra={
+                    "event": "launch.intent.finished",
+                    "category": "launch",
+                    "status": "finished",
+                    "action": intent.action.value,
+                    "count": len(intent.paths),
+                },
             )

@@ -8,10 +8,12 @@ from dataclasses import dataclass, field
 import logging
 from pathlib import Path
 from threading import Event
+from time import perf_counter
 from uuid import uuid4
 
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
 from joyread.core.archive import ArchiveOpenLimits
+from joyread.core.diagnostics import cache_identity_kind
 from joyread.core.reader import ReaderSessionService
 
 
@@ -36,6 +38,7 @@ class _WarmupState:
     #: evidence of whether a worker exists and whether it has gone.
     started: Event = field(default_factory=Event)
     exited: Event = field(default_factory=Event)
+    started_monotonic: float | None = None
 
 
 class ArchiveWarmupCoordinator:
@@ -86,12 +89,42 @@ class ArchiveWarmupCoordinator:
             )
             self._states[key] = state
             self._queue.append(key)
+            logger.info(
+                "Archive cache warmup requested",
+                extra={
+                    "event": "archive.warmup.requested",
+                    "category": "cache",
+                    "status": "queued",
+                    "identity_kind": cache_identity_kind(cache_key),
+                    "queue_depth": len(self._queue),
+                },
+            )
+        else:
+            logger.debug(
+                "Archive cache warmup joined existing request",
+                extra={
+                    "event": "archive.warmup.joined",
+                    "category": "cache",
+                    "identity_kind": cache_identity_kind(cache_key),
+                    "count": len(state.callbacks) + 1,
+                },
+            )
         state.callbacks[client_id] = on_ready
         self._start_next()
 
     def release(self, client_id: str) -> None:
         for state in self._states.values():
-            state.callbacks.pop(client_id, None)
+            removed = state.callbacks.pop(client_id, None)
+            if removed is not None:
+                logger.debug(
+                    "Archive cache warmup consumer released",
+                    extra={
+                        "event": "archive.warmup.consumer_released",
+                        "category": "cache",
+                        "count": len(state.callbacks),
+                        "identity_kind": cache_identity_kind(state.document_cache_key),
+                    },
+                )
 
     def invalidate(self) -> None:
         """Retire warmups created under an older archive-limits snapshot."""
@@ -102,10 +135,30 @@ class ArchiveWarmupCoordinator:
             if key != active_key:
                 self._states.pop(key, None)
         self._queue.clear()
+        logger.info(
+            "Archive cache warmups invalidated",
+            extra={
+                "event": "archive.warmup.invalidated",
+                "category": "cache",
+                "status": "cancel_requested",
+                "count": len(self._states),
+            },
+        )
 
     def close(self) -> None:
+        affected = sum(bool(state.callbacks) for state in self._states.values())
         for state in self._states.values():
             state.callbacks.clear()
+        if affected:
+            logger.info(
+                "Archive cache warmups closing",
+                extra={
+                    "event": "archive.warmup.close_requested",
+                    "category": "cache",
+                    "status": "cancel_requested",
+                    "count": affected,
+                },
+            )
 
     def reset(self) -> None:
         """Forget every warmup, including one whose task never reported back.
@@ -133,6 +186,14 @@ class ArchiveWarmupCoordinator:
             self._retired = active
         else:
             self._retired = None
+        logger.debug(
+            "Archive cache warmup state reset",
+            extra={
+                "event": "archive.warmup.reset",
+                "category": "cache",
+                "status": "retired" if self._retired is not None else "finished",
+            },
+        )
 
     def replace_session_service(self, session_service: ReaderSessionService) -> None:
         # A rebuilt session service means the old warmups are pointed at
@@ -194,17 +255,54 @@ class ArchiveWarmupCoordinator:
         if self._active_key == key:
             self._active_key = None
         callbacks = tuple(state.callbacks.values()) if state is not None and notify else ()
+        if state is not None and notify:
+            logger.info(
+                "Archive cache warmup finished",
+                extra={
+                    "event": "archive.warmup.finished",
+                    "category": "cache",
+                    "status": "finished",
+                    "duration_ms": _warmup_duration_ms(state),
+                    "identity_kind": cache_identity_kind(state.document_cache_key),
+                    "count": len(callbacks),
+                },
+            )
         for callback in callbacks:
             callback()
         self._start_next()
 
     def _fail(self, key: str, error: Exception) -> None:
-        logger.warning("Archive cache warmup failed for %s: %s", key, error)
+        state = self._states.get(key)
+        logger.warning(
+            "Archive cache warmup failed: %s",
+            error,
+            extra={
+                "event": "archive.warmup.failed",
+                "category": "cache",
+                "status": "failed",
+                "duration_ms": _warmup_duration_ms(state) if state is not None else None,
+                "identity_kind": (
+                    cache_identity_kind(state.document_cache_key) if state is not None else None
+                ),
+                "error_type": type(error).__name__,
+                "reason": str(error),
+            },
+        )
         self._finish(key, notify=False)
 
     def _run_warmup(self, key: str, state: _WarmupState) -> None:
         """Call the session service, tolerating an older keyword signature."""
 
+        state.started_monotonic = perf_counter()
+        logger.info(
+            "Archive cache warmup started",
+            extra={
+                "event": "archive.warmup.started",
+                "category": "cache",
+                "status": "started",
+                "identity_kind": cache_identity_kind(state.document_cache_key),
+            },
+        )
         cancelled = lambda: not self._is_wanted(key, state)  # noqa: E731
         try:
             self._session_service.warm_disk_cache(
@@ -261,3 +359,9 @@ def _core_depth_limit(value: object) -> int | None:
 
 def _legacy_depth_limit(value: int | None) -> int:
     return -1 if value is None else value
+
+
+def _warmup_duration_ms(state: _WarmupState) -> float | None:
+    if state.started_monotonic is None:
+        return None
+    return round((perf_counter() - state.started_monotonic) * 1000.0, 3)

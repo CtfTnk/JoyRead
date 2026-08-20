@@ -12,6 +12,7 @@ from typing import Any
 
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
+from joyread.infrastructure.logging import operation_scope
 
 try:
     from platformdirs import user_config_path, user_data_path
@@ -123,6 +124,15 @@ class SettingsStore:
         return self.config_dir / self._FILENAME
 
     def load(self) -> AppSettings:
+        with operation_scope(
+            logger,
+            "settings.load",
+            category="settings",
+            level=logging.DEBUG,
+        ):
+            return self._load()
+
+    def _load(self) -> AppSettings:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         if not self.settings_path.exists():
             # Fresh install: write the defaults to disk so the file is present
@@ -218,6 +228,15 @@ class SettingsStore:
         return settings
 
     def save(self, settings: AppSettings) -> None:
+        with operation_scope(
+            logger,
+            "settings.save",
+            category="settings",
+            level=logging.DEBUG,
+        ):
+            self._save(settings)
+
+    def _save(self, settings: AppSettings) -> None:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         logger.debug("Saving settings to %s", self.settings_path)
         payload = asdict(settings)
@@ -227,11 +246,18 @@ class SettingsStore:
         )
 
     def update(self, **changes: Any) -> AppSettings:
-        logger.debug("Updating settings keys=%s", sorted(changes))
-        current = self.load()
-        next_settings = AppSettings(**{**asdict(current), **changes})
-        self.save(next_settings)
-        return next_settings
+        keys = sorted(changes)
+        with operation_scope(
+            logger,
+            "settings.update",
+            category="settings",
+            level=logging.INFO,
+            fields={"count": len(keys), "keys": keys},
+        ):
+            current = self.load()
+            next_settings = AppSettings(**{**asdict(current), **changes})
+            self.save(next_settings)
+            return next_settings
 
     def default_settings(self) -> AppSettings:
         return AppSettings(storage_location=str(self._default_storage_root))

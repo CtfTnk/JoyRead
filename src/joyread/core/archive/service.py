@@ -10,11 +10,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 from typing import Sequence
 from uuid import uuid4
 from zipfile import BadZipFile
 
 from joyread.core.file_types import ARCHIVE_EXTENSIONS
+from joyread.core.diagnostics import cache_identity_kind
+from joyread.core.operation_context import bind_operation, create_operation
 
 
 logger = logging.getLogger(__name__)
@@ -172,6 +175,69 @@ class ArchiveImageService:
         global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits | None = None,
     ) -> ArchiveProbeResult:
+        operation = create_operation("archive.probe", category="archive")
+        started = perf_counter()
+        suffix = Path(archive_path).suffix.lower()
+        with bind_operation(operation):
+            logger.debug(
+                "Archive probe started",
+                extra={
+                    "event": "archive.probe.started",
+                    "category": "archive",
+                    "status": "started",
+                    "action": suffix.lstrip("."),
+                    "document_id": str(archive_path),
+                },
+            )
+            try:
+                result = self._probe_archive_bound(
+                    archive_path,
+                    password_provider=password_provider,
+                    password_policy=password_policy,
+                    max_depth=max_depth,
+                    max_nested_depth=max_nested_depth,
+                    global_file_max_depth=global_file_max_depth,
+                    limits=limits,
+                )
+            except Exception as exc:
+                logger.error(
+                    "Archive probe failed unexpectedly",
+                    exc_info=True,
+                    extra={
+                        "event": "archive.probe.failed",
+                        "category": "archive",
+                        "status": "failed",
+                        "action": suffix.lstrip("."),
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.log(
+                logging.DEBUG if result.is_valid else logging.WARNING,
+                "Archive probe finished",
+                extra={
+                    "event": "archive.probe.finished",
+                    "category": "archive",
+                    "status": "finished" if result.is_valid else "rejected",
+                    "action": suffix.lstrip("."),
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "error_code": result.code.value,
+                    "error_type": result.error_type,
+                },
+            )
+            return result
+
+    def _probe_archive_bound(
+        self,
+        archive_path: str | Path,
+        password_provider: PasswordProvider | None = None,
+        password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
+        max_depth: int | None = None,
+        max_nested_depth: int | None = None,
+        global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
+    ) -> ArchiveProbeResult:
         """Perform a lightweight, non-interactive supported-content probe.
 
         Password-related arguments remain accepted for source compatibility,
@@ -310,6 +376,105 @@ class ArchiveImageService:
         allow_persistent_cache: bool = False,
         cache_lease: ArchiveCacheLease | None = None,
     ) -> ArchiveImageSession:
+        operation = create_operation("archive.open", category="archive")
+        started = perf_counter()
+        suffix = Path(archive_path).suffix.lower()
+        with bind_operation(operation):
+            logger.info(
+                "Archive open started",
+                extra={
+                    "event": "archive.open.started",
+                    "category": "archive",
+                    "status": "started",
+                    "action": suffix.lstrip("."),
+                    "document_id": str(archive_path),
+                    "identity_kind": (
+                        cache_identity_kind(cache_lease.document_cache_key)
+                        if cache_lease is not None
+                        else "direct"
+                    ),
+                },
+            )
+            try:
+                session = self._open_bound(
+                    archive_path,
+                    password_provider=password_provider,
+                    password_policy=password_policy,
+                    max_depth=max_depth,
+                    max_nested_depth=max_nested_depth,
+                    global_file_max_depth=global_file_max_depth,
+                    limits=limits,
+                    document_cache_key=document_cache_key,
+                    allow_persistent_cache=allow_persistent_cache,
+                    cache_lease=cache_lease,
+                )
+            except (ArchivePasswordRequired, ArchivePasswordRejected) as exc:
+                logger.info(
+                    "Archive open requires password input",
+                    extra={
+                        "event": "archive.open.input_required",
+                        "category": "archive",
+                        "status": "input_required",
+                        "action": suffix.lstrip("."),
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            except ArchiveError as exc:
+                logger.warning(
+                    "Archive open failed with a controlled archive error",
+                    extra={
+                        "event": "archive.open.failed",
+                        "category": "archive",
+                        "status": "failed",
+                        "action": suffix.lstrip("."),
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                        "error_code": getattr(exc, "limit", None),
+                    },
+                )
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Archive open failed unexpectedly",
+                    exc_info=True,
+                    extra={
+                        "event": "archive.open.failed",
+                        "category": "archive",
+                        "status": "failed",
+                        "action": suffix.lstrip("."),
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.info(
+                "Archive open finished",
+                extra={
+                    "event": "archive.open.finished",
+                    "category": "archive",
+                    "status": "finished",
+                    "action": suffix.lstrip("."),
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "count": session.page_count,
+                },
+            )
+            return session
+
+    def _open_bound(
+        self,
+        archive_path: str | Path,
+        password_provider: PasswordProvider | None = None,
+        password_policy: ArchivePasswordPolicy = ArchivePasswordPolicy.ALLOW,
+        max_depth: int | None = None,
+        max_nested_depth: int | None = None,
+        global_file_max_depth: int | None = None,
+        limits: ArchiveOpenLimits | None = None,
+        document_cache_key: str | None = None,
+        allow_persistent_cache: bool = False,
+        cache_lease: ArchiveCacheLease | None = None,
+    ) -> ArchiveImageSession:
         if cache_lease is not None and (document_cache_key is not None or allow_persistent_cache):
             raise ValueError(
                 "Pass cache_lease or legacy document_cache_key/allow_persistent_cache, not both."
@@ -369,7 +534,6 @@ class ArchiveImageService:
                 "No supported image pages found within the configured archive depth limits: "
                 f"{path}"
             )
-        logger.info("Archive opened: %s pages=%d", path.name, len(pages))
         cache_signature = (
             f"archive-pages:scanner-v{SCANNER_SCHEMA_VERSION}:"
             f"{effective_limits.cache_signature()}"

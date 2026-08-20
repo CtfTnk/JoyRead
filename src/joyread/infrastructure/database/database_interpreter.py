@@ -14,8 +14,9 @@ import sqlite3
 from threading import Event, Thread
 from typing import Callable, Generic, TypeVar
 
+from joyread.core.operation_context import OperationContext, bind_operation, create_operation
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
-from joyread.infrastructure.logging import describe_callback
+from joyread.infrastructure.logging import describe_callback, log_event
 
 
 T = TypeVar("T")
@@ -42,6 +43,7 @@ class _QueuedDatabaseRequest(Generic[T]):
     callback: Callable[[sqlite3.Connection], T] | None = field(compare=False)
     future: Future[T] | None = field(compare=False)
     callback_label: str = field(default="<stop>", compare=False)
+    operation_context: OperationContext | None = field(default=None, compare=False)
 
 
 class DatabaseInterpreter:
@@ -86,6 +88,7 @@ class DatabaseInterpreter:
             callback=callback,
             future=future,
             callback_label=describe_callback(callback),
+            operation_context=create_operation("database.request", category="database"),
         )
         self._queue.put(request)  # type: ignore[arg-type]
         logger.debug(
@@ -130,7 +133,16 @@ class DatabaseInterpreter:
         )
         if self._thread.is_alive():
             self._thread.join(timeout=5)
-        logger.info("DatabaseInterpreter closed")
+        timed_out = self._thread.is_alive()
+        log_event(
+            logger,
+            logging.WARNING if timed_out else logging.INFO,
+            "database.interpreter.closed",
+            "DatabaseInterpreter close timed out" if timed_out else "DatabaseInterpreter closed",
+            category="database",
+            status="timed_out" if timed_out else "finished",
+            count=self._queue.qsize(),
+        )
 
     def _run(self) -> None:
         connection = open_sqlite_connection(self.database_path)
@@ -142,63 +154,77 @@ class DatabaseInterpreter:
                 if request.callback is None:
                     self._queue.task_done()
                     break
-                if request.future is not None and request.future.cancelled():
-                    # The caller abandoned this read before the queue reached
-                    # it (typically a viewmodel that was torn down between
-                    # submit and execute). Running the callback now would
-                    # just waste a connection-bound SQL roundtrip, so skip.
-                    logger.debug(
-                        "DB request skipped seq=%d priority=%s callback=%s (future cancelled)",
-                        request.sequence,
-                        DatabasePriority(request.priority).name,
-                        request.callback_label,
-                    )
-                    self._queue.task_done()
-                    continue
-                start = time.perf_counter()
-                logger.debug(
-                    "DB request starting seq=%d priority=%s callback=%s",
-                    request.sequence,
-                    DatabasePriority(request.priority).name,
-                    request.callback_label,
-                )
-                try:
-                    result = request.callback(connection)
-                except Exception as exc:
-                    # Surface the failure before stashing on the future so the
-                    # error path is visible even when the caller never reads
-                    # ``future.result()``. Previously this was the silent
-                    # site that hid the schema-drift OperationalError.
-                    logger.error(
-                        "DB request failed seq=%d priority=%s callback=%s: %s",
-                        request.sequence,
-                        DatabasePriority(request.priority).name,
-                        request.callback_label,
-                        exc,
-                        exc_info=True,
-                    )
-                    if request.future is not None:
-                        request.future.set_exception(exc)
-                else:
-                    if request.future is not None:
-                        request.future.set_result(result)
-                    logger.debug(
-                        "DB request completed seq=%d priority=%s callback=%s",
-                        request.sequence,
-                        DatabasePriority(request.priority).name,
-                        request.callback_label,
-                    )
-                finally:
-                    elapsed_ms = (time.perf_counter() - start) * 1000.0
-                    if elapsed_ms >= _SLOW_QUERY_MS:
-                        logger.warning(
-                            "Slow DB request seq=%d priority=%s callback=%s elapsed_ms=%.0f",
+                with bind_operation(request.operation_context):
+                    if request.future is not None and request.future.cancelled():
+                        # The caller abandoned this read before the queue reached
+                        # it (typically a viewmodel that was torn down between
+                        # submit and execute). Running the callback now would
+                        # just waste a connection-bound SQL roundtrip, so skip.
+                        logger.debug(
+                            "DB request skipped seq=%d priority=%s callback=%s (future cancelled)",
                             request.sequence,
                             DatabasePriority(request.priority).name,
                             request.callback_label,
-                            elapsed_ms,
                         )
-                    self._queue.task_done()
+                        self._queue.task_done()
+                        continue
+                    start = time.perf_counter()
+                    logger.debug(
+                        "DB request starting seq=%d priority=%s callback=%s",
+                        request.sequence,
+                        DatabasePriority(request.priority).name,
+                        request.callback_label,
+                    )
+                    try:
+                        result = request.callback(connection)
+                    except Exception as exc:
+                        # Surface the failure before stashing on the future so the
+                        # error path is visible even when the caller never reads
+                        # ``future.result()``. duration_ms lives here rather than
+                        # in a separate slow-query notice, so a request never gets
+                        # a "finished" record after it already got a "failed" one.
+                        elapsed_ms = (time.perf_counter() - start) * 1000.0
+                        log_event(
+                            logger,
+                            logging.ERROR,
+                            "database.request.failed",
+                            "Database request failed",
+                            category="database",
+                            status="failed",
+                            priority=DatabasePriority(request.priority).name,
+                            callback=request.callback_label,
+                            error_type=type(exc).__name__,
+                            reason=str(exc),
+                            duration_ms=round(elapsed_ms, 3),
+                            exc_info=True,
+                        )
+                        if request.future is not None:
+                            request.future.set_exception(exc)
+                    else:
+                        if request.future is not None:
+                            request.future.set_result(result)
+                        elapsed_ms = (time.perf_counter() - start) * 1000.0
+                        if elapsed_ms >= _SLOW_QUERY_MS:
+                            log_event(
+                                logger,
+                                logging.WARNING,
+                                "database.request.slow",
+                                "Database request exceeded the slow-query threshold",
+                                category="database",
+                                status="finished",
+                                priority=DatabasePriority(request.priority).name,
+                                callback=request.callback_label,
+                                duration_ms=round(elapsed_ms, 3),
+                            )
+                        else:
+                            logger.debug(
+                                "DB request completed seq=%d priority=%s callback=%s",
+                                request.sequence,
+                                DatabasePriority(request.priority).name,
+                                request.callback_label,
+                            )
+                    finally:
+                        self._queue.task_done()
         finally:
             connection.close()
             logger.debug("DatabaseInterpreter thread exited")
