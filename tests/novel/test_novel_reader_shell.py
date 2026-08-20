@@ -12,7 +12,9 @@ import pytest
 # test_epub_parser.py for why this is not in the directory conftest.
 pytest.importorskip("lxml", reason="joyread[epub] extra not installed")
 
-from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtCore import QPoint, QPointF, Qt  # noqa: E402
+from PySide6.QtGui import QWheelEvent  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from joyread.app.app_context import create_app_context  # noqa: E402
 from joyread.core.models.book import Book  # noqa: E402
@@ -225,10 +227,85 @@ def test_novel_reader_custom_panel_closes_on_outside_click(qtbot, tmp_path: Path
 
     window.shell._toggle_custom_panel()
     assert window.custom_panel.isVisible()
+    assert window.panel_scrim.isVisible()
 
-    qtbot.mouseClick(window.content_area, Qt.MouseButton.LeftButton, pos=QPoint(20, 20))
+    outside_panel = QPoint(20, 200)
+    header_control = QPoint(20, 20)
+    footer_control = QPoint(20, Theme.reader_height - 20)
+    # childAt() follows Qt's actual child z-order. The old ordering put the
+    # header/footer controls above the scrim, so these assertions would have
+    # resolved to those controls instead.
+    assert window.shell.childAt(outside_panel) is window.panel_scrim
+    assert window.shell.childAt(header_control) is window.panel_scrim
+    assert window.shell.childAt(footer_control) is window.panel_scrim
+
+    qtbot.mouseClick(window.panel_scrim, Qt.MouseButton.LeftButton, pos=outside_panel)
 
     assert window.custom_panel.isHidden()
+    assert window.panel_scrim.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_panel_scrim_click_on_header_moves_window_instead_of_closing(
+    qtbot, tmp_path: Path
+) -> None:
+    """A press landing in the header's drag region is window-drag intent,
+    not a dismiss click, even though the scrim sits above the header too."""
+
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_custom_panel()
+    assert window.custom_panel.isVisible()
+
+    header_drag_region = QPoint(window.width() // 2, 20)
+    assert window.header.childAt(header_drag_region) is None
+    assert window.shell.childAt(header_drag_region) is window.panel_scrim
+
+    qtbot.mouseClick(window.panel_scrim, Qt.MouseButton.LeftButton, pos=header_drag_region)
+
+    assert window.custom_panel.isVisible()
+    assert window.panel_scrim.isVisible()
+
+    window.close()
+    context.close()
+
+
+def test_novel_reader_panel_scrim_swallows_wheel_events(qtbot, tmp_path: Path) -> None:
+    """Scrolling behind an open panel must not scroll the chapter content."""
+
+    source = write_tiny_epub(tmp_path / "novel.epub")
+    context = create_app_context()
+    window = NovelReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_custom_panel()
+    assert window.custom_panel.isVisible()
+
+    scrollbar = window.content_area.verticalScrollBar()
+    before = scrollbar.value()
+
+    event = QWheelEvent(
+        QPointF(20, 20),
+        QPointF(20, 20),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(window.panel_scrim, event)
+
+    assert scrollbar.value() == before
 
     window.close()
     context.close()

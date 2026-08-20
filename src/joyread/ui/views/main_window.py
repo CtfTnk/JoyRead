@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
             context.resources,
             root,
             tag_viewmodel=context.tag_management_viewmodel,
+            drag_handle=self.title_bar,
         )
         self.settings_view.close_requested.connect(self._hide_settings_page)
         self.settings_view.tag_operation_completed.connect(self._handle_tag_operation_result)
@@ -137,9 +138,9 @@ class MainWindow(QMainWindow):
         self._resize_grip.setObjectName("ResizeGrip")
         self._resize_grip.raise_()
 
-        self.cover_editor_overlay = CoverEditorOverlay(context.resources, root)
+        self.cover_editor_overlay = CoverEditorOverlay(context.resources, root, drag_handle=self.title_bar)
         self.cover_editor_overlay.hide()
-        self.dialog_overlay = JoyReadDialogOverlay(root, context.resources)
+        self.dialog_overlay = JoyReadDialogOverlay(root, context.resources, drag_handle=self.title_bar)
         self.dialog_overlay.hide()
         self.setCentralWidget(root)
         self._position_cover_editor_overlay()

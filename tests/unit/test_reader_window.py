@@ -10,7 +10,7 @@ import shiboken6
 from PIL import Image
 from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QFrame, QLabel, QScrollArea
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
 from joyread.app.windows.manager import ApplicationWindowManager
@@ -465,6 +465,174 @@ def test_reader_settings_panel_closes_on_outside_click_and_ignores_auto_hide(qtb
     context.close()
 
 
+def test_reader_panel_scrim_tracks_topic_and_settings_panel_visibility(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    assert window.panel_scrim.isHidden()
+
+    window.shell._toggle_settings_panel()
+    assert window.settings_panel.isVisible()
+    assert window.panel_scrim.isVisible()
+
+    window.shell._hide_settings_panel()
+    assert window.settings_panel.isHidden()
+    assert window.panel_scrim.isHidden()
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+    assert window.topic_panel.isVisible()
+    assert window.panel_scrim.isVisible()
+
+    window.close()
+    context.close()
+
+
+def test_reader_panel_scrim_click_closes_the_open_panel(qtbot, tmp_path: Path) -> None:
+    """A real click anywhere behind an open panel -- e.g. a header/footer
+    control the panel visually overlaps -- now lands on the scrim first via
+    ordinary Qt hit-testing, instead of reaching the control underneath."""
+
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_settings_panel()
+    assert window.settings_panel.isVisible()
+
+    outside_panel = QPoint(20, 200)
+    header_control = QPoint(20, 20)
+    footer_control = QPoint(20, Theme.reader_height - 20)
+    # childAt() follows Qt's actual child z-order. The old ordering put the
+    # header/footer controls above the scrim, so these assertions would have
+    # resolved to those controls instead.
+    assert window.shell.childAt(outside_panel) is window.panel_scrim
+    assert window.shell.childAt(header_control) is window.panel_scrim
+    assert window.shell.childAt(footer_control) is window.panel_scrim
+
+    qtbot.mouseClick(window.panel_scrim, Qt.MouseButton.LeftButton, pos=outside_panel)
+
+    assert window.settings_panel.isHidden()
+    assert window.panel_scrim.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_reader_panel_scrim_click_on_header_moves_window_instead_of_closing(
+    qtbot, tmp_path: Path
+) -> None:
+    """A press landing in the header's drag region is window-drag intent,
+    not a dismiss click, even though the scrim sits above the header too."""
+
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_settings_panel()
+    assert window.settings_panel.isVisible()
+
+    header_drag_region = QPoint(window.width() // 2, 20)
+    assert window.header.childAt(header_drag_region) is None
+    assert window.shell.childAt(header_drag_region) is window.panel_scrim
+
+    qtbot.mouseClick(window.panel_scrim, Qt.MouseButton.LeftButton, pos=header_drag_region)
+
+    assert window.settings_panel.isVisible()
+    assert window.panel_scrim.isVisible()
+
+    window.close()
+    context.close()
+
+
+def test_reader_panel_scrim_click_on_header_control_dismisses_instead_of_dragging(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._toggle_settings_panel()
+    header_control = window.header.bookmark_button
+    control_position = header_control.mapTo(window.shell, header_control.rect().center())
+    assert window.header.childAt(control_position) is header_control
+    assert window.shell.childAt(control_position) is window.panel_scrim
+
+    qtbot.mouseClick(window.panel_scrim, Qt.MouseButton.LeftButton, pos=control_position)
+
+    assert window.settings_panel.isHidden()
+    assert window.panel_scrim.isHidden()
+
+    window.close()
+    context.close()
+
+
+def test_reader_panel_scrim_swallows_wheel_events(qtbot, tmp_path: Path) -> None:
+    """Scrolling behind an open panel must not scroll the page content."""
+
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    qtbot.addWidget(window)
+    window.resize(Theme.reader_width, Theme.reader_height)
+    window.show()
+
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+    assert window.topic_panel.isVisible()
+
+    scrolls: list[float] = []
+    window.shell.viewmodel.handle_vertical_scroll = lambda delta: scrolls.append(delta)  # type: ignore[method-assign]
+
+    from PySide6.QtGui import QWheelEvent
+
+    event = QWheelEvent(
+        QPointF(20, 20),
+        QPointF(20, 20),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(window.panel_scrim, event)
+
+    assert scrolls == []
+
+    window.close()
+    context.close()
+
+
 def test_reader_auto_hide_uses_direct_visibility_without_graphics_effects(qtbot, tmp_path: Path) -> None:
     source = tmp_path / "reader.cbz"
     image = tmp_path / "001.png"
@@ -493,6 +661,7 @@ def test_reader_auto_hide_uses_direct_visibility_without_graphics_effects(qtbot,
     assert window.header.isHidden()
     assert window.left_arrow.isHidden()
     assert window.right_arrow.isHidden()
+    assert window.shell.childAt(QPoint(20, Theme.reader_height - 20)) is window.panel_scrim
 
     window.close()
     context.close()

@@ -163,6 +163,28 @@ def test_cover_editor_crop_pan_is_normalized_across_preview_resolutions(qtbot) -
     assert low_state.pan_y == high_state.pan_y == -0.25
 
 
+def test_cover_editor_click_on_drag_handle_starts_a_window_drag(qtbot) -> None:
+    """A press on the configured drag handle (e.g. the title bar, which the
+    overlay covers) is still swallowed like any other blank click and must
+    not raise, even though there's no real window manager under the test
+    platform."""
+
+    apply_theme()
+    handle = QWidget()
+    qtbot.addWidget(handle)
+    handle.resize(Theme.window_width, 40)
+    handle.show()
+    overlay = CoverEditorOverlay(ResourceLoader(), drag_handle=handle)
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    overlay.show()
+
+    qtbot.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    QApplication.processEvents()
+
+    assert overlay.isVisible()
+
+
 def test_cover_editor_thumbnail_picker_uses_detail_grid_flow(qtbot) -> None:
     apply_theme()
     overlay = CoverEditorOverlay(ResourceLoader())
@@ -1113,6 +1135,98 @@ def test_shelf_detail_panel_closes_on_blank_shelf_click(qtbot) -> None:
     assert viewmodel.detail_book_uuid is None
     assert view.detail_panel.isHidden()
     assert viewmodel.selected_book_ids == set()
+
+
+def test_shelf_detail_panel_scrim_tracks_panel_visibility(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    QApplication.processEvents()
+
+    assert view._detail_panel_scrim.isHidden()
+
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    assert view.detail_panel.isVisible()
+    assert view._detail_panel_scrim.isVisible()
+
+    viewmodel.hide_detail()
+    QApplication.processEvents()
+
+    assert view.detail_panel.isHidden()
+    assert view._detail_panel_scrim.isHidden()
+
+
+def test_shelf_detail_panel_scrim_click_closes_the_panel(qtbot) -> None:
+    """A real click anywhere behind the detail panel -- e.g. on a book card
+    it visually overlaps -- now lands on the scrim first via ordinary Qt
+    hit-testing, instead of reaching the card underneath."""
+
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    QApplication.processEvents()
+
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    assert view.detail_panel.isVisible()
+
+    qtbot.mouseClick(view._detail_panel_scrim, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    QApplication.processEvents()
+
+    assert viewmodel.detail_book_uuid is None
+    assert view.detail_panel.isHidden()
+    assert view._detail_panel_scrim.isHidden()
+
+
+def test_shelf_detail_panel_scrim_swallows_wheel_events(qtbot) -> None:
+    """Scrolling behind an open detail panel must not scroll the grid."""
+
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 841)
+    view.show()
+    QApplication.processEvents()
+
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+
+    scrollbar = view.grid.verticalScrollBar()
+    before = scrollbar.value()
+
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QWheelEvent
+
+    event = QWheelEvent(
+        QPointF(5, 5),
+        QPointF(5, 5),
+        QPoint(0, 0),
+        QPoint(0, -120),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+    QApplication.sendEvent(view._detail_panel_scrim, event)
+    QApplication.processEvents()
+
+    assert scrollbar.value() == before
 
 
 def test_blank_grid_area_emits_clear_selection_signal(qtbot) -> None:

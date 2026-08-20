@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import (
     QColor,
     QCloseEvent,
@@ -34,7 +34,8 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 from joyread.novel.ui.novel_reader_viewmodel import NovelChapterPayload, NovelReaderViewModel
 from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContentsItem
-from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
+from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
+from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.novel.ui.novel_content_area import NovelContentArea
@@ -99,8 +100,15 @@ class NovelReaderShellWidget(ReaderShellBase):
         # Aliased so chrome code that talks to ``canvas`` in the manga
         # shell can be ported with minimal renaming.
         self.canvas = self.content_area
+        # Sits above content/header/footer/arrows and below whichever
+        # floating panel is currently open, so Qt's own hit-testing routes
+        # any click that isn't on the panel here instead of through to the
+        # content or controls behind it.
+        self.panel_scrim = FloatingPanelScrim(self)
+        self.panel_scrim.hide()
         self.header = ReaderHeader(context.resources, self, show_custom_button=True)
         self.header.set_back_visible(show_back_button)
+        self.panel_scrim.set_drag_handle(self.header)
         self._sync_title_control_mode()
         context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
@@ -122,7 +130,7 @@ class NovelReaderShellWidget(ReaderShellBase):
         self.custom_panel.hide()
         self.topic_panel = ReaderTopicPanel(context.resources, self)
         self.topic_panel.hide()
-        self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
+        self.dialog_overlay = JoyReadDialogOverlay(self, context.resources, drag_handle=self.header)
         self.dialog_overlay.hide()
 
         resolved_title = title or (book.title if book is not None else self._source_path.stem)
@@ -234,17 +242,6 @@ class NovelReaderShellWidget(ReaderShellBase):
             on_after_show=lambda: self._raise_panels_if_visible(),
         )
         self.header.installEventFilter(self)
-        self.panel_filter = PanelOutsideClickFilter(self)
-        self.panel_filter.register(
-            self.custom_panel,
-            safe_click_predicate=self._is_custom_safe_click,
-            on_outside_click=self._hide_custom_panel,
-        )
-        self.panel_filter.register(
-            self.topic_panel,
-            safe_click_predicate=self._is_topic_safe_click,
-            on_outside_click=self._hide_topic_panel,
-        )
         self.auto_hide.start()
 
     # --- Edge-reveal mouse handling ------------------------------------
@@ -324,8 +321,9 @@ class NovelReaderShellWidget(ReaderShellBase):
         self._hide_topic_panel()
         self._position_custom_panel()
         self.custom_panel.show()
-        self.custom_panel.raise_()
-        self.panel_filter.activate(self.custom_panel)
+        self.panel_scrim.set_dismiss_callback(self._hide_custom_panel)
+        self.panel_scrim.show()
+        self._raise_panels_if_visible()
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
@@ -347,15 +345,16 @@ class NovelReaderShellWidget(ReaderShellBase):
             self.viewmodel.refresh_bookmarks()
         self._position_topic_panel()
         self.topic_panel.show()
-        self.topic_panel.raise_()
-        self.panel_filter.activate(self.topic_panel)
+        self.panel_scrim.set_dismiss_callback(self._hide_topic_panel)
+        self.panel_scrim.show()
+        self._raise_panels_if_visible()
         self._start_hide_timer_if_allowed()
 
     def _hide_custom_panel(self) -> None:
         if self.custom_panel.isHidden():
             return
         self.custom_panel.hide()
-        self.panel_filter.deactivate(self.custom_panel)
+        self.panel_scrim.hide()
         self._start_hide_timer_if_allowed()
 
     def _hide_floating_panels_if_visible(self) -> None:
@@ -365,6 +364,11 @@ class NovelReaderShellWidget(ReaderShellBase):
             self._hide_topic_panel()
 
     def _raise_panels_if_visible(self) -> None:
+        # AutoHideController raises revealed chrome controls. Re-raise the
+        # scrim first, then the active floating panel, so the scrim keeps
+        # receiving every click outside that panel.
+        if self.panel_scrim.isVisible():
+            self.panel_scrim.raise_()
         if self.custom_panel.isVisible():
             self.custom_panel.raise_()
         if self.topic_panel.isVisible():
@@ -376,41 +380,6 @@ class NovelReaderShellWidget(ReaderShellBase):
         self.custom_panel.setFixedHeight(self.height())
         x = max(0, self.width() - self.custom_panel.width())
         self.custom_panel.move(x, 0)
-
-    def _is_custom_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
-        # ``windowType()`` returns the WindowType after masking; bitwise
-        # AND against the Popup flag is buggy because every Window has
-        # overlapping bits, so the AND read True for every click.
-        #
-        # Geometric guard: see ReaderShellWidget._is_settings_safe_click.
-        if QRect(self.custom_panel.mapToGlobal(QPoint(0, 0)), self.custom_panel.size()).contains(global_position):
-            return True
-        targets = {self.custom_panel, self.header.custom_button}
-        while widget is not None:
-            if widget in targets:
-                return True
-            if widget.window().windowType() == Qt.WindowType.Popup:
-                return True
-            widget = widget.parentWidget()
-        return False
-
-    def _is_topic_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
-        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(global_position):
-            return True
-        targets = {
-            self.topic_panel,
-            self.header.topic_button_group,
-            self.header.detail_button,
-            self.header.bookmark_button,
-            self.header.thumbnail_button,
-        }
-        while widget is not None:
-            if widget in targets:
-                return True
-            if widget.window().windowType() == Qt.WindowType.Popup:
-                return True
-            widget = widget.parentWidget()
-        return False
 
     # --- Custom panel sink ----------------------------------------------
     def _handle_enable_custom_changed(self, enabled: bool) -> None:
@@ -475,7 +444,16 @@ class NovelReaderShellWidget(ReaderShellBase):
 
     # --- Auto-hide helpers ----------------------------------------------
     def _control_interaction_active(self) -> bool:
-        if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
+        if (
+            self.dialog_overlay.isVisible()
+            or self.footer.is_slider_active()
+            or self.panel_scrim.isVisible()
+        ):
+            # panel_scrim now sits above header/footer/arrows whenever a
+            # floating panel is open, so widgetAt() below would otherwise
+            # never resolve to those widgets even while the cursor is
+            # sitting right over them -- treat any open panel as active so
+            # auto-hide doesn't pull the chrome out from under it.
             return True
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:
@@ -506,6 +484,7 @@ class NovelReaderShellWidget(ReaderShellBase):
             max(0, self.width() - 2 * inset),
             self.height(),
         )
+        self.panel_scrim.setGeometry(rect)
         self.header.setGeometry(0, 0, self.width(), Theme.reader_banner_height)
         self.footer.setGeometry(
             0,
@@ -558,7 +537,6 @@ class NovelReaderShellWidget(ReaderShellBase):
             getattr(self.viewmodel, "book_uuid", None),
         )
         self.cancel()
-        self.panel_filter.deactivate_all()
         super().closeEvent(event)
 
 

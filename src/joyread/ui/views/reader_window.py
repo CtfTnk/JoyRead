@@ -64,6 +64,7 @@ class ReaderWindow(QMainWindow):
         self.settings_panel = self.shell.settings_panel
         self.topic_panel = self.shell.topic_panel
         self.dialog_overlay = self.shell.dialog_overlay
+        self.panel_scrim = self.shell.panel_scrim
         self.viewmodel = self.shell.viewmodel
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

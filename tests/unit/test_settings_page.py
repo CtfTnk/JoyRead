@@ -716,10 +716,33 @@ def test_main_window_opens_centered_floating_settings_overlay_and_restores_sideb
 
     window._handle_navigation("settings")
     QApplication.processEvents()
-    qtbot.mouseClick(window.settings_view, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    # Click below the title bar -- a press there is a blank-area dismiss
+    # click, not window-drag intent (see the companion drag-handle test).
+    qtbot.mouseClick(window.settings_view, Qt.MouseButton.LeftButton, pos=QPoint(5, Theme.toolbar_height + 20))
     QApplication.processEvents()
 
     assert window.settings_view.isHidden()
+
+
+def test_main_window_settings_overlay_click_on_title_bar_moves_window_instead_of_closing(qtbot) -> None:
+    """A press landing in the title bar's drag region is window-drag intent,
+    not a dismiss click, even though the settings overlay covers it too."""
+
+    apply_theme()
+    window = MainWindow(create_app_context())
+    qtbot.addWidget(window)
+    window.resize(Theme.window_width, Theme.window_height)
+    window.show()
+    QApplication.processEvents()
+
+    window._handle_navigation("settings")
+    QApplication.processEvents()
+    assert window.settings_view.isVisible()
+
+    qtbot.mouseClick(window.settings_view, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    QApplication.processEvents()
+
+    assert window.settings_view.isVisible()
 
 
 def test_stylesheet_resolves_settings_tokens() -> None:

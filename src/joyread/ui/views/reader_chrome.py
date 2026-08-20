@@ -1,19 +1,18 @@
-"""Shared chrome controllers for the manga and novel reader shells.
+"""Shared chrome controller for the manga and novel reader shells.
 
-Both reader shells need identical auto-hide of the header/footer/paddles
-and identical app-level outside-click closing of popup panels. The two
-controllers here encapsulate those behaviours so the shells stay focused
-on their content-specific wiring.
+Both reader shells need identical auto-hide of the header/footer/paddles.
+This controller encapsulates that behaviour so the shells stay focused on
+their content-specific wiring. Outside-click closing of popup panels is
+handled by :class:`~joyread.ui.views.floating_panel_scrim.FloatingPanelScrim`
+instead of anything in this module.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QTimer
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtCore import QEvent, QObject, QTimer
+from PySide6.QtWidgets import QWidget
 
 
 class AutoHideController(QObject):
@@ -118,121 +117,6 @@ class AutoHideController(QObject):
         return False
 
 
-@dataclass
-class _PanelEntry:
-    #: Receives the widget under the click and the click's own global
-    #: position. The position is passed rather than read from ``QCursor``
-    #: because a predicate that samples the cursor answers "where is the
-    #: pointer now", which is not the same question once the event has been
-    #: queued behind anything.
-    safe_click_predicate: Callable[[QWidget | None, QPoint], bool]
-    on_outside_click: Callable[[], None]
-    active: bool = False
-
-
-class PanelOutsideClickFilter(QObject):
-    """App-level mouse-press filter that hides popup panels on outside clicks.
-
-    Panels register their "safe click" predicate (a click on the panel or
-    its trigger button should not dismiss it). The QApplication-level event
-    filter is only installed while at least one registered panel is active,
-    so the filter has zero cost while all popups are closed.
-    """
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._registrations: dict[QWidget, _PanelEntry] = {}
-        self._installed = False
-
-    def register(
-        self,
-        panel: QWidget,
-        *,
-        safe_click_predicate: Callable[[QWidget | None, QPoint], bool],
-        on_outside_click: Callable[[], None],
-    ) -> None:
-        self._registrations[panel] = _PanelEntry(
-            safe_click_predicate=safe_click_predicate,
-            on_outside_click=on_outside_click,
-        )
-
-    def activate(self, panel: QWidget) -> None:
-        entry = self._registrations.get(panel)
-        if entry is None or entry.active:
-            return
-        entry.active = True
-        self._ensure_installed()
-
-    def deactivate(self, panel: QWidget) -> None:
-        entry = self._registrations.get(panel)
-        if entry is None or not entry.active:
-            return
-        entry.active = False
-        self._remove_if_unused()
-
-    def deactivate_all(self) -> None:
-        for entry in self._registrations.values():
-            entry.active = False
-        self._remove_if_unused()
-
-    def is_active(self, panel: QWidget) -> bool:
-        entry = self._registrations.get(panel)
-        return bool(entry and entry.active)
-
-    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802 - Qt API.
-        if event.type() != QEvent.Type.MouseButtonPress:
-            return False
-        if not isinstance(event, QMouseEvent):
-            return False
-        # Classify by where the click happened, not by who received it and not
-        # by where the pointer is now. `watched` can be an ancestor or a
-        # grabbing widget rather than the thing actually clicked, and
-        # `QCursor.pos()` has already moved on if the event waited. Selecting a
-        # thumbnail inside a panel could therefore be read as a click outside
-        # it, dismissing the panel the user was navigating with.
-        global_position = event.globalPosition().toPoint()
-        widget = QApplication.widgetAt(global_position)
-        if widget is None and isinstance(watched, QWidget):
-            widget = watched
-        # Snapshot before iteration: an on_outside_click callback hides its
-        # panel, which calls deactivate() and mutates the dict.
-        for panel, entry in tuple(self._registrations.items()):
-            if not entry.active or panel.isHidden():
-                continue
-            if not entry.safe_click_predicate(widget, global_position):
-                entry.on_outside_click()
-        return False
-
-    def _ensure_installed(self) -> None:
-        if self._installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
-            self._installed = True
-
-    def _remove_if_unused(self) -> None:
-        if any(entry.active for entry in self._registrations.values()):
-            return
-        if not self._installed:
-            return
-        app = QApplication.instance()
-        if app is not None:
-            app.removeEventFilter(self)
-        self._installed = False
-
-
-def walk_ancestors(widget: QWidget | None) -> "list[QWidget]":
-    """Return the widget and each parentWidget(), useful for safe-click checks."""
-    chain: list[QWidget] = []
-    while widget is not None:
-        chain.append(widget)
-        widget = widget.parentWidget()
-    return chain
-
-
 __all__ = [
     "AutoHideController",
-    "PanelOutsideClickFilter",
-    "walk_ancestors",
 ]

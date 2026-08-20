@@ -510,7 +510,7 @@ def test_dialog_overlay_centers_panel_and_tracks_resize(qtbot) -> None:
     assert overlay.panel.geometry().center() == overlay.rect().center()
 
 
-def test_dialog_overlay_only_closes_from_buttons(qtbot) -> None:
+def test_dialog_overlay_closes_from_buttons_or_escape_not_outside_click(qtbot) -> None:
     apply_theme()
     root = QWidget()
     qtbot.addWidget(root)
@@ -521,18 +521,125 @@ def test_dialog_overlay_only_closes_from_buttons(qtbot) -> None:
     overlay.show_info("Title", "content")
     QApplication.processEvents()
 
-    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
-    QApplication.processEvents()
-    assert overlay.isVisible()
-
+    # A blank click inside the modal overlay is still swallowed without
+    # closing it -- only Escape and the dialog's own buttons do.
     qtbot.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
     QApplication.processEvents()
     assert overlay.isVisible()
 
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+    assert overlay.isHidden()
+
+    overlay.show_info("Title", "content")
+    QApplication.processEvents()
     button = overlay.panel.findChildren(DialogTextButton)[0]
     qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
     QApplication.processEvents()
     assert overlay.isHidden()
+
+
+def test_dialog_overlay_click_on_drag_handle_stays_open_and_does_not_crash(qtbot) -> None:
+    """A press landing on the configured drag handle (e.g. the title bar,
+    which the overlay covers) is swallowed like any other blank click and
+    attempts a window move instead -- it must not close the dialog or raise
+    even though there's no real window manager under the test platform."""
+
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    handle = QWidget(root)
+    handle.setGeometry(0, 0, root.width(), 40)
+    handle.show()
+    overlay = JoyReadDialogOverlay(root, drag_handle=handle)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+    overlay.show_info("Title", "content")
+    QApplication.processEvents()
+
+    qtbot.mouseClick(overlay, Qt.MouseButton.LeftButton, pos=QPoint(5, 5))
+    QApplication.processEvents()
+
+    assert overlay.isVisible()
+
+
+def test_escape_rejects_a_confirm_dialog_without_confirming(qtbot) -> None:
+    """Escape must map only to Cancel, never to the confirm/destructive
+    action -- the safety property that makes enabling it fine even for
+    destructive confirm dialogs."""
+
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    result: list[str] = []
+    overlay.show_confirm(
+        "Title",
+        "content",
+        on_confirm=lambda: result.append("confirm"),
+        on_cancel=lambda: result.append("cancel"),
+        destructive=True,
+    )
+    QApplication.processEvents()
+
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert result == ["cancel"]
+
+
+def test_escape_closes_the_tag_filter_dialog(qtbot) -> None:
+    """The tag window: show_tag_filter has no Cancel button today, so
+    Escape must still hide it (with no confirm side effect) rather than
+    leaving the user stuck with only the confirm/reset actions."""
+
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    tag = Tag("t1", "Fiction")
+    confirmed: list[tuple[str, ...]] = []
+    overlay.show_tag_filter("Tags", [tag], (), lambda ids: confirmed.append(ids))
+    QApplication.processEvents()
+    assert overlay.isVisible()
+
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == []
+
+
+def test_escape_closes_the_tag_allocation_dialog(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    tag = Tag("t1", "Fiction")
+    confirmed: list[tuple[str, ...]] = []
+    overlay.show_tag_allocation("Tags", [tag], (), lambda ids: confirmed.append(ids))
+    QApplication.processEvents()
+    assert overlay.isVisible()
+
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    QApplication.processEvents()
+
+    assert overlay.isHidden()
+    assert confirmed == []
 
 
 def test_dialog_confirm_cancel_callbacks_close_overlay(qtbot) -> None:

@@ -22,7 +22,8 @@ Subclasses must provide, by the time these methods can run:
 ``dialog_overlay``     the overlay used for input dialogs
 ``header``             the reader header, with ``clear_topic_active_mode()``
                        and ``set_title_control_mode()``
-``panel_filter``       a :class:`~joyread.ui.views.reader_chrome.PanelOutsideClickFilter`
+``panel_scrim``        a :class:`~joyread.ui.views.floating_panel_scrim.FloatingPanelScrim`
+                       shared by every floating panel in the shell
 ``topic_panel``        the contents/bookmarks/thumbnails panel
 ``viewmodel``          exposing ``seek()`` and ``rename_bookmark()``
 ``handle_key_press``   returning ``True`` when it consumed the event
@@ -78,7 +79,7 @@ class ReaderShellBase(QWidget):
             return
         self.topic_panel.hide()
         self.header.clear_topic_active_mode()
-        self.panel_filter.deactivate(self.topic_panel)
+        self.panel_scrim.hide()
         self._start_hide_timer_if_allowed()
 
     def _seek_from_topic_panel(self, page_index: int) -> None:

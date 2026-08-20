@@ -12,6 +12,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
+from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.settings_page import SettingsPageWidget
 
 
@@ -40,12 +41,14 @@ class SettingsView(QWidget):
         parent: QWidget | None = None,
         *,
         tag_viewmodel: TagManagementViewModel | None = None,
+        drag_handle: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         logger.info("SettingsView init")
         self.setObjectName("SettingsOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._drag_handle = drag_handle
 
         self.page = SettingsPageWidget(viewmodel, resources, self, tag_viewmodel=tag_viewmodel)
         self.page.storage_move_requested.connect(self.storage_move_requested.emit)
@@ -78,6 +81,9 @@ class SettingsView(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and not self.page.geometry().contains(event.position().toPoint()):
+            if start_window_drag_if_on_drag_handle(event, self._drag_handle):
+                event.accept()
+                return
             self.close_requested.emit()
             event.accept()
             return

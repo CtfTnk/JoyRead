@@ -33,6 +33,7 @@ from joyread.core.services.thumbnail_service import CoverCropState
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_detail import DetailThumbnailGrid
 from joyread.ui.widgets.settings_page import SettingsSpinButtonSmall
@@ -47,10 +48,17 @@ class CoverEditorOverlay(QWidget):
     thumbnail_selected = QtSignal(int)
     save_requested = QtSignal(object)
 
-    def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        resources: ResourceLoader,
+        parent: QWidget | None = None,
+        *,
+        drag_handle: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("CoverEditorOverlay")
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._drag_handle = drag_handle
 
         self._stack = QStackedWidget(self)
         self._stack.setFixedSize(Theme.cover_editor_width, Theme.cover_editor_height)
@@ -97,6 +105,7 @@ class CoverEditorOverlay(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         event.accept()
+        start_window_drag_if_on_drag_handle(event, self._drag_handle)
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)

@@ -63,6 +63,7 @@ class NovelReaderWindow(QMainWindow):
         self.custom_panel = self.shell.custom_panel
         self.topic_panel = self.shell.topic_panel
         self.dialog_overlay = self.shell.dialog_overlay
+        self.panel_scrim = self.shell.panel_scrim
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.shell.handle_key_press(event):

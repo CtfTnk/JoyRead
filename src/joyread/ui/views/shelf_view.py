@@ -12,6 +12,7 @@ from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, ViewMode
+from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListWidget
 from joyread.ui.widgets.book_detail import BookDetailPanel
@@ -109,6 +110,12 @@ class ShelfView(QWidget):
             self.stack.addWidget(widget)
         layout.addWidget(self.stack, stretch=1)
 
+        # Sits above the toolbar/grid/list and below detail_panel, so Qt's
+        # own hit-testing routes any click that isn't on the panel here
+        # instead of through to whatever's visually behind it.
+        self._detail_panel_scrim = FloatingPanelScrim(self)
+        self._detail_panel_scrim.hide()
+
         self.detail_panel = BookDetailPanel(resources, self)
         self.detail_panel.hide()
         self.detail_panel.read_requested.connect(self._viewmodel.open_book)
@@ -125,6 +132,7 @@ class ShelfView(QWidget):
         self.detail_panel.language_menu_requested.connect(self._show_language_menu)
         self.detail_panel.tag_filter_requested.connect(self.detail_tag_filter_requested.emit)
         self.detail_panel.tag_allocation_requested.connect(self.detail_tag_allocation_requested.emit)
+        self._detail_panel_scrim.set_dismiss_callback(self._handle_blank_clicked)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
@@ -273,6 +281,7 @@ class ShelfView(QWidget):
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
+        self._detail_panel_scrim.setGeometry(self.rect())
         self._position_detail_panel()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -307,13 +316,16 @@ class ShelfView(QWidget):
         book = self._book_by_uuid(book_uuid) if book_uuid is not None else None
         if book is None:
             self.detail_panel.hide()
+            self._detail_panel_scrim.hide()
             return
         self.detail_panel.set_book(
             book,
             self._viewmodel.cover_paths.get(book.uuid),
             self._viewmodel.tags_for_book(book.uuid),
         )
+        self._detail_panel_scrim.setGeometry(self.rect())
         self._position_detail_panel()
+        self._detail_panel_scrim.show()
         self.detail_panel.show()
         self.detail_panel.raise_()
         if not self._is_popup_interaction_active():

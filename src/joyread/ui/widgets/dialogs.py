@@ -25,6 +25,7 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
+from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
@@ -847,18 +848,27 @@ class JoyReadDialogPanel(QFrame):
 
 
 class JoyReadDialogOverlay(QWidget):
-    """Window-local modal layer that closes only through dialog buttons."""
+    """Window-local modal layer. Closes through dialog buttons or Escape.
+
+    Escape always maps to whatever the Cancel button already does (hide, or
+    hide plus an ``on_cancel``/``on_reject`` callback if one was wired) --
+    never to the confirm/destructive action -- so enabling it is strictly
+    safer, not riskier, even for destructive confirm dialogs.
+    """
 
     def __init__(
         self,
         parent: QWidget | None = None,
         resources: ResourceLoader | None = None,
+        *,
+        drag_handle: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("JoyReadDialogOverlay")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._resources = resources
+        self._drag_handle = drag_handle
         self._on_accept: Callable[[], None] | None = None
         self._on_reject: Callable[[], None] | None = None
         self._on_skip: Callable[[], None] | None = None
@@ -1099,12 +1109,15 @@ class JoyReadDialogOverlay(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         # The popup is intentionally modal inside the app window: blank clicks
-        # are swallowed but do not dismiss it.
+        # are swallowed but do not dismiss it. A click on the title bar's
+        # drag handle still moves the window instead.
         event.accept()
+        start_window_drag_if_on_drag_handle(event, self._drag_handle)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
             event.accept()
+            self._reject()
             return
         super().keyPressEvent(event)
 

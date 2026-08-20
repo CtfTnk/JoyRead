@@ -739,7 +739,9 @@ class DetailThumbnailGrid(QWidget):
         self._columns = 0
         self._is_complete = False
         self._pressed_index: int | None = None
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        # Each DetailThumbnailWidget sets its own hand cursor; a cursor here
+        # too would extend it into the grid's own padding and inter-item
+        # gaps, which aren't clickable.
         self._margins = (
             Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_horizontal,
             Theme.detail_thumbnail_frame_padding + Theme.detail_thumbnail_row_padding_vertical,

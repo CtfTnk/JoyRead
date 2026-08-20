@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import QApplication, QToolButton, QWidget
 
@@ -19,7 +19,8 @@ from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
 from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
-from joyread.ui.views.reader_chrome import AutoHideController, PanelOutsideClickFilter
+from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
+from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
@@ -62,8 +63,15 @@ class ReaderShellWidget(ReaderShellBase):
         self.setMouseTracking(True)
 
         self.canvas = ReaderCanvas(self)
+        # Sits above canvas/header/footer/arrows and below whichever floating
+        # panel is currently open, so Qt's own hit-testing routes any click
+        # that isn't on the panel here instead of through to the content or
+        # controls behind it.
+        self.panel_scrim = FloatingPanelScrim(self)
+        self.panel_scrim.hide()
         self.header = ReaderHeader(context.resources, self)
         self.header.set_back_visible(show_back_button)
+        self.panel_scrim.set_drag_handle(self.header)
         self._sync_title_control_mode()
         context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
@@ -73,7 +81,7 @@ class ReaderShellWidget(ReaderShellBase):
         self.settings_panel.hide()
         self.topic_panel = ReaderTopicPanel(context.resources, self)
         self.topic_panel.hide()
-        self.dialog_overlay = JoyReadDialogOverlay(self, context.resources)
+        self.dialog_overlay = JoyReadDialogOverlay(self, context.resources, drag_handle=self.header)
         self.dialog_overlay.hide()
 
         app_settings = context.reload_settings()
@@ -206,17 +214,6 @@ class ReaderShellWidget(ReaderShellBase):
         # so install the shell on it directly. Other control widgets only
         # need the auto-hide controller's filter for reveal-on-hover.
         self.header.installEventFilter(self)
-        self.panel_filter = PanelOutsideClickFilter(self)
-        self.panel_filter.register(
-            self.settings_panel,
-            safe_click_predicate=self._is_settings_safe_click,
-            on_outside_click=self._hide_settings_panel,
-        )
-        self.panel_filter.register(
-            self.topic_panel,
-            safe_click_predicate=self._is_topic_safe_click,
-            on_outside_click=self._hide_topic_panel,
-        )
         self.auto_hide.start()
 
     def _sync_state(self) -> None:
@@ -279,8 +276,9 @@ class ReaderShellWidget(ReaderShellBase):
         self._hide_topic_panel()
         self._position_settings_panel()
         self.settings_panel.show()
-        self.settings_panel.raise_()
-        self.panel_filter.activate(self.settings_panel)
+        self.panel_scrim.set_dismiss_callback(self._hide_settings_panel)
+        self.panel_scrim.show()
+        self._raise_settings_panel_if_visible()
         self._start_hide_timer_if_allowed()
 
     def _show_topic_panel(self, mode: ReaderTopicMode) -> None:
@@ -297,8 +295,9 @@ class ReaderShellWidget(ReaderShellBase):
             self.viewmodel.refresh_bookmarks()
         self._position_topic_panel()
         self.topic_panel.show()
-        self.topic_panel.raise_()
-        self.panel_filter.activate(self.topic_panel)
+        self.panel_scrim.set_dismiss_callback(self._hide_topic_panel)
+        self.panel_scrim.show()
+        self._raise_settings_panel_if_visible()
         self._start_hide_timer_if_allowed()
 
     def _handle_contents_changed(self, items) -> None:  # noqa: ANN001 - signal carries immutable TOC items.
@@ -320,7 +319,16 @@ class ReaderShellWidget(ReaderShellBase):
             self._show_controls((self.right_arrow,), reset_timer=True)
 
     def _control_interaction_active(self) -> bool:
-        if self.dialog_overlay.isVisible() or self.footer.is_slider_active():
+        if (
+            self.dialog_overlay.isVisible()
+            or self.footer.is_slider_active()
+            or self.panel_scrim.isVisible()
+        ):
+            # panel_scrim now sits above header/footer/arrows whenever a
+            # floating panel is open, so widgetAt() below would otherwise
+            # never resolve to those widgets even while the cursor is
+            # sitting right over them -- treat any open panel as active so
+            # auto-hide doesn't pull the chrome out from under it.
             return True
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:
@@ -371,6 +379,7 @@ class ReaderShellWidget(ReaderShellBase):
         super().resizeEvent(event)
         rect = self.rect()
         self.canvas.setGeometry(rect)
+        self.panel_scrim.setGeometry(rect)
         self.header.setGeometry(0, 0, self.width(), Theme.reader_banner_height)
         self.footer.setGeometry(
             0,
@@ -429,7 +438,6 @@ class ReaderShellWidget(ReaderShellBase):
             getattr(self.viewmodel, "book_uuid", None),
         )
         self.cancel()
-        self.panel_filter.deactivate_all()
         super().closeEvent(event)
 
     def _position_settings_panel(self) -> None:
@@ -450,10 +458,15 @@ class ReaderShellWidget(ReaderShellBase):
         if self.settings_panel.isHidden():
             return
         self.settings_panel.hide()
-        self.panel_filter.deactivate(self.settings_panel)
+        self.panel_scrim.hide()
         self._start_hide_timer_if_allowed()
 
     def _raise_settings_panel_if_visible(self) -> None:
+        # AutoHideController raises revealed chrome controls. Re-raise the
+        # scrim first, then the active floating panel, so the scrim keeps
+        # receiving every click outside that panel.
+        if self.panel_scrim.isVisible():
+            self.panel_scrim.raise_()
         if self.settings_panel.isVisible():
             self.settings_panel.raise_()
         if self.topic_panel.isVisible():
@@ -461,41 +474,6 @@ class ReaderShellWidget(ReaderShellBase):
         if self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
 
-    def _is_settings_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
-        # See ``NovelReaderShellWidget._is_custom_safe_click`` for why
-        # ``windowType()`` is used instead of a bitwise AND against the
-        # Popup flag.
-        #
-        # Geometric guard: a click on a blank panel area (no child widget)
-        # propagates up to the shell. The filter fires again with watched=shell,
-        # so the ancestor-chain walk misses the panel. Check cursor position
-        # first to catch that propagated re-delivery.
-        if QRect(self.settings_panel.mapToGlobal(QPoint(0, 0)), self.settings_panel.size()).contains(global_position):
-            return True
-        while widget is not None:
-            if widget in {self.settings_panel, self.footer.settings_button}:
-                return True
-            if widget.window().windowType() == Qt.WindowType.Popup:
-                return True
-            widget = widget.parentWidget()
-        return False
-
-    def _is_topic_safe_click(self, widget: QWidget | None, global_position: QPoint) -> bool:
-        if QRect(self.topic_panel.mapToGlobal(QPoint(0, 0)), self.topic_panel.size()).contains(global_position):
-            return True
-        while widget is not None:
-            if widget in {
-                self.topic_panel,
-                self.header.topic_button_group,
-                self.header.detail_button,
-                self.header.bookmark_button,
-                self.header.thumbnail_button,
-            }:
-                return True
-            if widget.window().windowType() == Qt.WindowType.Popup:
-                return True
-            widget = widget.parentWidget()
-        return False
 
 def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
     if book is None:

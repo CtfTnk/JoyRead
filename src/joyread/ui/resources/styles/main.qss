@@ -1169,11 +1169,19 @@ QFrame[class="BookListRow"][selected="true"] {
     border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED__;
 }
 
-/* Floating book detail panel */
+/* Floating book detail panel. Bottom edge is deliberately flush -- no
+   border, no radius -- so the panel reads as a sheet that continues past
+   the window's bottom edge rather than a self-contained rounded card. */
 QFrame#BookDetailPanel {
     background: __DETAIL_PANEL_BACKGROUND__;
-    border: __DETAIL_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
-    border-radius: __DETAIL_PANEL_RADIUS__;
+    border-top: __DETAIL_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-left: __DETAIL_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-right: __DETAIL_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-bottom: none;
+    border-top-left-radius: __DETAIL_PANEL_RADIUS__;
+    border-top-right-radius: __DETAIL_PANEL_RADIUS__;
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
 }
 
 QScrollArea#BookDetailScrollArea,
