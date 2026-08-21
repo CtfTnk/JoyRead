@@ -6,6 +6,7 @@ import pytest
 
 from joyread.core.models.tag import MAX_TAG_NAME_LENGTH, Tag, normalize_tag_name
 from joyread.core.repositories.tag_repository import (
+    TagCapacityError,
     TagNameConflictError,
     TagNotFoundError,
     TagRepository,
@@ -26,6 +27,9 @@ class _FakeTagRepository:
     def list_tags(self) -> list[Tag]:
         return sorted(self._tags.values(), key=lambda t: t.name.casefold())
 
+    def count_tags(self) -> int:
+        return len(self._tags)
+
     def get_tag(self, tag_id: str) -> Tag | None:
         return self._tags.get(tag_id)
 
@@ -36,20 +40,29 @@ class _FakeTagRepository:
                 return tag
         return None
 
-    def create(self, display_name: str) -> Tag:
+    def create(self, display_name: str, *, max_count: int | None = None) -> Tag:
         normalized = normalize_tag_name(display_name)
         existing = self.get_tag_by_normalized(normalized.casefold())
         if existing is not None:
             raise TagNameConflictError(f"A tag named '{existing.name}' already exists.")
+        if max_count is not None and self.count_tags() >= max_count:
+            raise TagCapacityError(max_count)
         tag = Tag(tag_id=self._new_id(), name=normalized)
         self._tags[tag.tag_id] = tag
         return tag
 
-    def find_or_create(self, display_name: str) -> Tag:
+    def find_or_create(
+        self,
+        display_name: str,
+        *,
+        max_count: int | None = None,
+    ) -> Tag | None:
         normalized = normalize_tag_name(display_name)
         existing = self.get_tag_by_normalized(normalized.casefold())
         if existing is not None:
             return existing
+        if max_count is not None and self.count_tags() >= max_count:
+            return None
         return self.create(display_name)
 
     def rename(self, tag_id: str, new_display_name: str) -> Tag:

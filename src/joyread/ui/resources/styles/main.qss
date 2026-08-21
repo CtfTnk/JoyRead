@@ -532,10 +532,7 @@ QScrollArea#JoyReadDialogContentScrollArea,
 QWidget#JoyReadDialogContentViewport,
 QScrollArea#DialogCollectionInnerScrollArea,
 QWidget#DialogCollectionInnerViewport,
-QWidget#DialogCollectionRowContent,
-QScrollArea#DialogTagFilterInnerScrollArea,
-QWidget#DialogTagFilterInnerViewport,
-QWidget#DialogTagFilterListHost {
+QWidget#DialogCollectionRowContent {
     background: transparent;
     border: none;
 }
@@ -586,8 +583,7 @@ QLabel#DialogDetailPrompt {
     font-weight: 400;
 }
 
-QFrame#DialogCollectionScrollPanel,
-QFrame#DialogTagFilterScrollPanel {
+QFrame#DialogCollectionScrollPanel {
     background: __WINDOW_COLOR__;
     border: __DIALOG_COLLECTION_SCROLL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
     border-radius: __DIALOG_COLLECTION_SCROLL_RADIUS__;
@@ -648,7 +644,8 @@ QScrollArea#JoyReadDialogContentScrollArea QScrollBar::sub-page:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar:vertical {
     background: transparent;
     border: none;
@@ -657,7 +654,8 @@ QScrollArea#CoverThumbnailScrollArea QScrollBar:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar::handle:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::handle:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical {
     background: __SHELF_SCROLLBAR_HANDLE__;
     border: none;
@@ -666,15 +664,18 @@ QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical {
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::handle:vertical:hover,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#TagBrowserScrollArea QScrollBar::handle:vertical:hover,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::handle:vertical:hover,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::handle:vertical:hover {
     background: __SHELF_SCROLLBAR_HANDLE_HOVER__;
 }
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-line:vertical,
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-line:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-line:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar::add-line:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::add-line:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::sub-line:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::add-line:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-line:vertical {
     background: transparent;
@@ -684,8 +685,10 @@ QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-line:vertical {
 
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::add-page:vertical,
 QScrollArea#DialogCollectionInnerScrollArea QScrollBar::sub-page:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::add-page:vertical,
-QScrollArea#DialogTagFilterInnerScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar::add-page:vertical,
+QScrollArea#TagBrowserScrollArea QScrollBar::sub-page:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::add-page:vertical,
+QScrollArea#TagBrowserTrayScrollArea QScrollBar::sub-page:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::add-page:vertical,
 QScrollArea#CoverThumbnailScrollArea QScrollBar::sub-page:vertical {
     background: transparent;
@@ -1359,11 +1362,90 @@ QFrame#TagManager {
     border-radius: __TAG_MANAGER_RADIUS__;
 }
 
-QScrollArea#TagListScrollArea,
-QWidget#TagListViewport,
 QWidget#TagListHost {
     background: transparent;
     border: none;
+}
+
+/* Tag browser (design "Tag Window" 1a): shared by both tag dialogs and the
+   Settings tag manager. Only the search row and the pool paint a surface;
+   every host inside them stays transparent so the pool reads as one card. */
+QWidget#TagBrowser,
+QWidget#TagBrowserTray,
+QWidget#TagBrowserTrayHost,
+QWidget#TagBrowserTrayViewport,
+QScrollArea#TagBrowserTrayScrollArea,
+QWidget#TagBrowserGroupsHost,
+QWidget#TagBrowserScrollViewport,
+QScrollArea#TagBrowserScrollArea,
+QWidget#TagBrowserGroup,
+QWidget#TagBrowserRail {
+    background: transparent;
+    border: none;
+}
+
+QFrame#TagBrowserSearchRow {
+    background: __WINDOW_COLOR__;
+    border: __TAG_BROWSER_POOL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_BROWSER_SEARCH_RADIUS__;
+}
+
+QLineEdit#TagBrowserSearchField {
+    background: transparent;
+    border: none;
+    padding: 0;
+    color: __TEXT_COLOR__;
+    font-size: __TAG_BROWSER_SEARCH_FONT_SIZE__;
+    font-weight: 500;
+}
+
+QFrame#TagBrowserPool {
+    background: __WINDOW_COLOR__;
+    border: __TAG_BROWSER_POOL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border-radius: __TAG_BROWSER_POOL_RADIUS__;
+}
+
+QLabel[class="TagBrowserSectionLabel"] {
+    background: transparent;
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __TAG_BROWSER_SECTION_FONT_SIZE__;
+    font-weight: 700;
+}
+
+QFrame#TagBrowserSectionRule {
+    background: __BUTTON_INNER_EDGE__;
+    border: none;
+}
+
+QLabel#TagBrowserRailLetter {
+    background: transparent;
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __TAG_BROWSER_RAIL_FONT_SIZE__;
+    font-weight: 700;
+    border-radius: __TAG_BROWSER_RAIL_RADIUS__;
+}
+
+QLabel#TagBrowserRailLetter:hover {
+    background: __SELECTED_COLOR__;
+    color: __TEXT_COLOR__;
+}
+
+QLabel#TagBrowserEmptyHint,
+QLabel#TagBrowserTrayEmptyHint {
+    background: transparent;
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __DIALOG_FONT_SIZE__;
+}
+
+/* A tray chip reads as selected by definition, and its trailing glyph is an
+   affordance -- the whole chip stays the click target. */
+QFrame[class="TagChip"][removable="true"] {
+    background: __SELECTED_COLOR__;
+    border-color: __BUTTON_EDGE__;
+}
+
+QFrame[class="TagChip"] QLabel[class="TagChipRemoveGlyph"] {
+    background: transparent;
 }
 
 QFrame[class="TagChip"] {

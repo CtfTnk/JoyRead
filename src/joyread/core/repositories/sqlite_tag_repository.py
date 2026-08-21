@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from joyread.core.models.tag import Tag, normalize_tag_name
 from joyread.core.repositories.tag_repository import (
+    TagCapacityError,
     TagNameConflictError,
     TagNotFoundError,
     TagRepository,
@@ -28,6 +29,9 @@ class SqliteTagRepository(TagRepository):
         logger.debug("list_tags returned count=%d", len(tags))
         return tags
 
+    def count_tags(self) -> int:
+        return self._database.execute(_count_tags, DatabasePriority.HIGH)
+
     def get_tag(self, tag_id: str) -> Tag | None:
         return self._database.execute(
             lambda connection: _get_tag(connection, tag_id),
@@ -41,7 +45,7 @@ class SqliteTagRepository(TagRepository):
             DatabasePriority.HIGH,
         )
 
-    def create(self, display_name: str) -> Tag:
+    def create(self, display_name: str, *, max_count: int | None = None) -> Tag:
         normalized_display = normalize_tag_name(display_name)
         normalized_key = normalized_display.casefold()
 
@@ -51,6 +55,8 @@ class SqliteTagRepository(TagRepository):
                 raise TagNameConflictError(
                     f"A tag named '{existing.name}' already exists."
                 )
+            if max_count is not None and _count_tags(connection) >= max_count:
+                raise TagCapacityError(max_count)
             tag_id = str(uuid4())
             now = _now()
             connection.execute(
@@ -65,7 +71,12 @@ class SqliteTagRepository(TagRepository):
 
         return self._database.execute(write, DatabasePriority.NORMAL)
 
-    def find_or_create(self, display_name: str) -> Tag:
+    def find_or_create(
+        self,
+        display_name: str,
+        *,
+        max_count: int | None = None,
+    ) -> Tag | None:
         normalized_display = normalize_tag_name(display_name)
         normalized_key = normalized_display.casefold()
 
@@ -73,6 +84,8 @@ class SqliteTagRepository(TagRepository):
             existing = _get_tag_by_normalized(connection, normalized_key)
             if existing is not None:
                 return existing
+            if max_count is not None and _count_tags(connection) >= max_count:
+                return None
             tag_id = str(uuid4())
             now = _now()
             connection.execute(
@@ -257,6 +270,11 @@ def _list_tags(connection: sqlite3.Connection) -> list[Tag]:
         """
     ).fetchall()
     return [Tag(tag_id=row["tag_id"], name=row["name"]) for row in rows]
+
+
+def _count_tags(connection: sqlite3.Connection) -> int:
+    row = connection.execute("SELECT COUNT(*) AS count FROM tags").fetchone()
+    return int(row["count"]) if row is not None else 0
 
 
 def _get_tag(connection: sqlite3.Connection, tag_id: str) -> Tag | None:

@@ -87,7 +87,15 @@
     "delete_tag_title": "タグを削除",
     "delete_tags_title": "タグを削除",
     "delete_tag_msg": "タグ「{name}」を削除しますか？\n\nこれにより、すべての関連書籍からタグが削除されます。書籍は削除されません。この操作は元に戻せません。",
-    "delete_tags_msg": "{count} 個のタグを削除しますか？\n\nこれにより、すべての関連書籍からこれらのタグが削除されます。書籍は削除されません。この操作は元に戻せません。"
+    "delete_tags_msg": "{count} 個のタグを削除しますか？\n\nこれにより、すべての関連書籍からこれらのタグが削除されます。書籍は削除されません。この操作は元に戻せません。",
+    "search_placeholder": "タグを検索して Enter キー",
+    "tray_header": "この本のタグ",
+    "tray_count": "{count} / {total}",
+    "tray_empty_hint": "まだありません。下からタグを選んでください。",
+    "no_search_match": "該当するタグはありません。",
+    "selection_none": "未選択",
+    "selection_one": "1 個のタグを選択中",
+    "selection_many": "{count} 個のタグを選択中"
   },
   "state": {
     "no_books_title": "書籍がありません",

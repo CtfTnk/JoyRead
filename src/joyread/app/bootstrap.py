@@ -15,6 +15,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from dataclasses import dataclass
+from threading import Thread
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QFontDatabase, QIcon
@@ -46,6 +47,7 @@ from joyread.app.windows.manager import (
 from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.core.file_types import EPUB_ACCESS_ENABLED
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
+from joyread.core.tag_indexing import warm_romanizers
 from joyread.core.services.storage_recovery_service import (
     StorageRecoveryCancelled,
     StorageRecoveryPromptResult,
@@ -178,6 +180,7 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
     _load_application_fonts(context.resources)
     app.setStyleSheet(context.resources.load_stylesheet())
+    _warm_tag_romanizers()
     app.aboutToQuit.connect(_log_about_to_quit)
     app.aboutToQuit.connect(context.close)
     app.aboutToQuit.connect(_shutdown_application_logging)
@@ -496,3 +499,20 @@ def _load_application_fonts(resources: ResourceLoader) -> None:
     for path in resources.font_paths():
         if path.exists():
             QFontDatabase.addApplicationFont(str(path))
+
+
+def _warm_tag_romanizers() -> None:
+    """Build the CJK reading dictionaries off the UI thread.
+
+    Measured at ~110ms. Left lazy, that lands on the UI thread the first time
+    a library with Japanese or Chinese tags opens a tag surface, which is a
+    visible stall on a dialog the user just asked for. A plain daemon thread
+    is enough: the work touches no Qt object and nothing waits on it, so a
+    quit mid-warm simply abandons it.
+    """
+
+    Thread(
+        target=warm_romanizers,
+        name="joyread-tag-romanizer-warmup",
+        daemon=True,
+    ).start()

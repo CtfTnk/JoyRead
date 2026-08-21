@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QScrollArea,
     QSizePolicy,
+    QSpacerItem,
     QVBoxLayout,
     QWidget,
 )
@@ -27,7 +28,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
 from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.elided_label import ElidedLabel
-from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
+from joyread.ui.widgets.tag_browser import TagBrowserWidget
 
 
 logger = logging.getLogger(__name__)
@@ -510,7 +511,15 @@ class DialogCollectionSelectContent(QWidget):
 
 
 class DialogTagFilterContent(QWidget):
-    """Figma tag-filter content with a fixed 260px tag list panel."""
+    """Tag filter / assign body: the shared tag browser at dialog width.
+
+    Owns the selection rules -- the filter dialog toggles freely while the
+    assign dialog treats Shift as "replace the set" -- and hands the result
+    back to the browser to repaint. The browser stays presentation-only so
+    the Settings tag manager can reuse it without inheriting these rules.
+    """
+
+    selection_changed = QtSignal(int)
 
     def __init__(
         self,
@@ -520,12 +529,15 @@ class DialogTagFilterContent(QWidget):
         *,
         allocation_mode: bool = False,
         empty_hint: str | None = None,
+        resources: ResourceLoader | None = None,
+        han_language: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogTagFilterContent")
         self._tags = tuple(tags)
         self._selected_tag_ids = set(selected_tag_ids)
         self._allocation_mode = allocation_mode
+        self._empty_hint = empty_hint
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         layout = QVBoxLayout(self)
@@ -536,75 +548,48 @@ class DialogTagFilterContent(QWidget):
             Theme.dialog_content_outer_padding,
         )
         layout.setSpacing(0)
-        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
-        input_area = QWidget()
-        input_area.setObjectName("DialogInputArea")
-        input_layout = QVBoxLayout(input_area)
-        input_layout.setContentsMargins(
-            Theme.dialog_input_area_padding,
-            Theme.dialog_input_area_padding,
-            Theme.dialog_input_area_padding,
-            Theme.dialog_input_area_padding,
+        self._browser = TagBrowserWidget(
+            resources,
+            show_tray=True,
+            han_language=han_language,
         )
-        input_layout.setSpacing(0)
-        input_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._browser.tag_clicked.connect(self._handle_tag_clicked)
+        self._browser.tag_remove_clicked.connect(self._handle_tag_remove_clicked)
+        self._browser.blank_clicked.connect(self._handle_blank_clicked)
+        self._browser.set_tags(self._tags, self._selected_tag_ids)
+        layout.addWidget(self._browser)
 
-        panel = QFrame()
-        panel.setObjectName("DialogTagFilterScrollPanel")
-        panel.setFixedSize(Theme.dialog_collection_scroll_width, Theme.dialog_tag_filter_panel_height)
-        panel.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(
-            Theme.dialog_collection_scroll_layout_margin,
-            Theme.dialog_collection_scroll_layout_margin,
-            Theme.dialog_collection_scroll_layout_margin,
-            Theme.dialog_collection_scroll_layout_margin,
-        )
-        panel_layout.setSpacing(0)
+    @property
+    def preferred_dialog_width(self) -> int:
+        """Ask the panel for the wide layout (screen 1a is 680 across)."""
 
-        self._row_scroll = QScrollArea()
-        self._row_scroll.setObjectName("DialogTagFilterInnerScrollArea")
-        self._row_scroll.setWidgetResizable(True)
-        self._row_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._row_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._row_scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._row_scroll.viewport().setObjectName("DialogTagFilterInnerViewport")
-        self._row_scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        return Theme.dialog_max_width
 
-        scroll_height = max(0, Theme.dialog_tag_filter_panel_height - (Theme.dialog_collection_scroll_layout_margin * 2))
-        self._chip_flow = TagChipFlowWidget(object_name="DialogTagFilterListHost")
-        self._chip_flow.setMinimumHeight(scroll_height)
-        self._chip_flow.tag_clicked.connect(self._handle_tag_clicked)
-        self._chip_flow.blank_clicked.connect(self._handle_blank_clicked)
-        self._chip_flow.set_tags(self._tags, self._selected_tag_ids, include_add_chip=False)
-        if self._tags:
-            self._row_scroll.setWidget(self._chip_flow)
-        else:
-            hint = QLabel(empty_hint or "")
-            hint.setObjectName("DialogTagEmptyHint")
-            hint.setProperty("class", "JoyReadDialogContent")
-            hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hint.setWordWrap(True)
-            hint.setMinimumHeight(scroll_height)
-            self._row_scroll.setWidget(hint)
-        self._row_scroll.setFixedHeight(scroll_height)
-        panel_layout.addWidget(self._row_scroll)
-        input_layout.addWidget(panel, alignment=Qt.AlignmentFlag.AlignHCenter)
-        layout.addWidget(input_area)
-        self.setFixedHeight(Theme.dialog_content_max_height)
+    @property
+    def browser(self) -> TagBrowserWidget:
+        return self._browser
 
     @property
     def selected_tag_ids(self) -> tuple[str, ...]:
         return tuple(tag.tag_id for tag in self._tags if tag.tag_id in self._selected_tag_ids)
 
+    @property
+    def selection_label(self) -> str:
+        count = len(self._selected_tag_ids)
+        if count == 0:
+            return t("tags.selection_none")
+        if count == 1:
+            return t("tags.selection_one")
+        return t("tags.selection_many", count=str(count))
+
     def clear_selection(self) -> None:
         self._selected_tag_ids = set()
-        self._chip_flow.clear_selection()
+        self._browser.set_selected_tag_ids(())
+        self.selection_changed.emit(0)
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
-        self._row_scroll.verticalScrollBar().setValue(0)
 
     def _handle_tag_clicked(self, tag_id: str, additive: bool) -> None:
         if self._allocation_mode:
@@ -616,7 +601,15 @@ class DialogTagFilterContent(QWidget):
                 self._selected_tag_ids.add(tag_id)
         else:
             self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
-        self._chip_flow.set_selected_tag_ids(self._selected_tag_ids)
+        self._browser.set_selected_tag_ids(self._selected_tag_ids)
+        self.selection_changed.emit(len(self._selected_tag_ids))
+
+    def _handle_tag_remove_clicked(self, tag_id: str) -> None:
+        # A tray chip is an explicit remove affordance. It must never inherit
+        # the pool's single-select/Shift-select rules.
+        self._selected_tag_ids.discard(tag_id)
+        self._browser.set_selected_tag_ids(self._selected_tag_ids)
+        self.selection_changed.emit(len(self._selected_tag_ids))
 
     def _handle_blank_clicked(self, additive: bool) -> None:
         if self._allocation_mode and additive:
@@ -637,6 +630,7 @@ class JoyReadDialogPanel(QFrame):
         self.setFixedWidth(Theme.dialog_width)
         self.setMinimumHeight(0)
         self._preferred_height = 0
+        self._panel_width = Theme.dialog_width
 
         root_layout = QVBoxLayout(self)
         # Figma panel has 10px visual padding and a 2px stroke. Subtract the
@@ -651,15 +645,26 @@ class JoyReadDialogPanel(QFrame):
 
         self._title_area = QWidget()
         self._title_area.setObjectName("JoyReadDialogTitleArea")
-        title_layout = QHBoxLayout(self._title_area)
-        title_layout.setContentsMargins(0, 0, 0, 0)
-        title_layout.setSpacing(0)
-        title_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._title_layout = QHBoxLayout(self._title_area)
+        self._title_layout.setContentsMargins(0, 0, 0, 0)
+        self._title_layout.setSpacing(0)
 
         self._title_label = QLabel("Title")
         self._title_label.setProperty("class", "JoyReadDialogTitle")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title_layout.addWidget(self._title_label)
+        # A leading stretch centres the title for every ordinary dialog. The
+        # wide tag layout drops it so the title sits left of its count, the
+        # way screen 1a draws it; ``_set_title`` owns that switch.
+        self._title_leading_stretch = QSpacerItem(
+            0, 0, QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum
+        )
+        self._title_layout.addSpacerItem(self._title_leading_stretch)
+        self._title_layout.addWidget(self._title_label)
+        self._title_layout.addStretch(1)
+        self._title_count = QLabel("")
+        self._title_count.setProperty("class", "JoyReadDialogTitleCount")
+        self._title_count.hide()
+        self._title_layout.addWidget(self._title_count)
         root_layout.addWidget(self._title_area)
 
         self._content_area = QWidget()
@@ -696,7 +701,24 @@ class JoyReadDialogPanel(QFrame):
         root_layout.addWidget(self._option_area)
 
     def sizeHint(self) -> QSize:
-        return QSize(Theme.dialog_width, self._preferred_height or self.layout().sizeHint().height())
+        return QSize(self._panel_width, self._preferred_height or self.layout().sizeHint().height())
+
+    def _resolve_panel_width(self) -> int:
+        """Width for the current content, clamped to the ceiling and the host.
+
+        Content opts in by exposing ``preferred_dialog_width``; anything that
+        does not stays at the default 400. The clamp against the overlay
+        matters because ``window_min_width`` is 700 and a 680 panel plus its
+        margins does not fit there -- without it the dialog is cut off at the
+        window edge rather than merely tight.
+        """
+
+        requested = getattr(self._content_widget, "preferred_dialog_width", Theme.dialog_width)
+        width = min(int(requested), Theme.dialog_max_width)
+        host = self.parentWidget()
+        if host is not None and host.width() > 0:
+            width = min(width, host.width() - (Theme.dialog_layout_margin * 2))
+        return max(Theme.dialog_width, width)
 
     @property
     def title_text(self) -> str:
@@ -748,7 +770,8 @@ class JoyReadDialogPanel(QFrame):
         *,
         include_cancel: bool = False,
     ) -> None:
-        self._set_title(title)
+        self._set_title(title, count=content.selection_label)
+        content.selection_changed.connect(lambda _count: self.set_title_count(content.selection_label))
         self._set_content_widget(content)
         buttons: list[tuple[str, Callable[[], None]]] = []
         if include_cancel:
@@ -764,8 +787,24 @@ class JoyReadDialogPanel(QFrame):
     def refresh_size(self) -> None:
         self._refresh_size()
 
-    def _set_title(self, title: str, *, destructive: bool = False) -> None:
+    def set_title_count(self, text: str) -> None:
+        """Show the selection count beside the title (wide tag layout only)."""
+
+        self._title_count.setText(text)
+        self._title_count.setVisible(bool(text))
+
+    def _set_title(self, title: str, *, destructive: bool = False, count: str | None = None) -> None:
         self._title_label.setText(title)
+        # Centre the title unless a count shares the row, in which case the
+        # leading stretch collapses so the pair reads left-title/right-count.
+        self._title_leading_stretch.changeSize(
+            0,
+            0,
+            QSizePolicy.Policy.Minimum if count is not None else QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
+        self._title_layout.invalidate()
+        self.set_title_count(count or "")
         # ``destructive`` property pairs with the QSS rule
         # ``QLabel[class="JoyReadDialogTitle"][destructive="true"]`` so the
         # title goes red whenever a Reset/Erase-style dialog reuses this
@@ -805,8 +844,10 @@ class JoyReadDialogPanel(QFrame):
             return
         self._content_scroll.verticalScrollBar().setValue(0)
         self._content_scroll.horizontalScrollBar().setValue(0)
+        self._panel_width = self._resolve_panel_width()
+        self.setFixedWidth(self._panel_width)
         available_width = (
-            Theme.dialog_width
+            self._panel_width
             - (Theme.dialog_layout_margin * 2)
             - (Theme.dialog_content_outer_padding * 2)
         )
@@ -820,7 +861,15 @@ class JoyReadDialogPanel(QFrame):
             self._content_widget.layout().activate()
         self._content_widget.adjustSize()
         content_height = self._content_widget.sizeHint().height()
-        viewport_height = min(max(0, content_height), Theme.dialog_content_max_height)
+        # Wide content carries a taller body than a message dialog ever
+        # needs, so the viewport ceiling scales with the width the content
+        # asked for rather than pinning every dialog to the 215px default.
+        max_height = (
+            Theme.dialog_wide_content_max_height
+            if self._panel_width > Theme.dialog_width
+            else Theme.dialog_content_max_height
+        )
+        viewport_height = min(max(0, content_height), max_height)
         self._content_scroll.setFixedHeight(viewport_height)
         self.layout().activate()
         self._preferred_height = self._calculate_panel_height()
@@ -1079,7 +1128,7 @@ class JoyReadDialogOverlay(QWidget):
         selected_tag_ids: tuple[str, ...],
         on_confirm: Callable[[tuple[str, ...]], None],
     ) -> None:
-        content = DialogTagFilterContent(tags, selected_tag_ids)
+        content = DialogTagFilterContent(tags, selected_tag_ids, resources=self._resources)
         self._before_accept = None
         self._on_accept = lambda: on_confirm(content.selected_tag_ids)
         self._on_reject = None
@@ -1099,6 +1148,7 @@ class JoyReadDialogOverlay(QWidget):
             selected_tag_ids,
             allocation_mode=True,
             empty_hint=t("dialog.no_tags_hint"),
+            resources=self._resources,
         )
         self._before_accept = None
         self._on_accept = lambda: on_confirm(content.selected_tag_ids)

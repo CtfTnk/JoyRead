@@ -116,6 +116,71 @@ def test_dialog_panel_matches_figma_frame_and_button_geometry(qtbot) -> None:
     assert abs(button_group_center - option_area.rect().center().x()) <= 1
 
 
+def test_ordinary_dialog_keeps_the_default_width(qtbot) -> None:
+    """Only content that asks for it gets the wide layout."""
+
+    apply_theme()
+    panel = JoyReadDialogPanel()
+    qtbot.addWidget(panel)
+    panel.set_confirm("Title", "content", "Cancel", "Confirm")
+    panel.show()
+    QApplication.processEvents()
+
+    assert panel.width() == Theme.dialog_width
+
+
+def test_tag_dialog_widens_to_the_ceiling(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    QApplication.processEvents()
+
+    assert overlay.panel.width() == Theme.dialog_max_width
+    assert overlay.panel.width() > Theme.dialog_width
+
+
+def test_wide_dialog_fits_a_minimum_width_window(qtbot) -> None:
+    """680 plus margins is the tight case at ``window_min_width`` (700)."""
+
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_min_width, Theme.window_min_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    QApplication.processEvents()
+
+    assert overlay.panel.width() <= overlay.width()
+    assert overlay.panel.geometry().right() <= overlay.rect().right()
+
+
+def test_wide_dialog_shrinks_rather_than_overflowing_a_narrow_host(qtbot) -> None:
+    """A host narrower than the 680 ceiling must shrink the panel.
+
+    The reader shell hosts this overlay too and is not bound by the main
+    window's 700 minimum, so the clamp has to actually engage -- without it
+    the panel is simply cut off at the host edge.
+    """
+
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(520, Theme.window_min_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    QApplication.processEvents()
+
+    assert overlay.panel.width() < Theme.dialog_max_width
+    assert overlay.panel.width() <= root.width()
+    assert overlay.panel.geometry().right() <= overlay.rect().right()
+
+
 def test_dialog_content_grows_to_max_viewport_then_scrolls(qtbot) -> None:
     apply_theme()
     panel = JoyReadDialogPanel()
@@ -344,12 +409,12 @@ def test_tag_filter_dialog_allows_empty_tag_panel_and_confirm_off_state(qtbot) -
 
     content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
     buttons = overlay.panel.findChildren(DialogTextButton)
-    scroll_panel = overlay.panel.findChild(QWidget, "DialogTagFilterScrollPanel")
+    pool = overlay.panel.findChild(QWidget, "TagBrowserPool")
 
     assert content is not None
-    assert scroll_panel is not None
-    assert scroll_panel.width() == Theme.dialog_collection_scroll_width
-    assert scroll_panel.height() == Theme.dialog_tag_filter_panel_height
+    assert pool is not None
+    # The pool is a fixed height so the panel never resizes as the tray fills.
+    assert pool.height() == Theme.tag_browser_pool_height
     assert [button.text for button in buttons] == ["Reset", "Confirm"]
 
     qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
@@ -371,7 +436,13 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     QApplication.processEvents()
 
     content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
-    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    # Pool chips only: the selection tray mirrors each selected tag with a
+    # second, removable chip for the same tag id.
+    chips = [
+        chip
+        for chip in overlay.panel.findChildren(TagChipWidget)
+        if not chip.is_add_chip and not chip.is_removable
+    ]
     buttons = overlay.panel.findChildren(DialogTextButton)
 
     assert content is not None
@@ -391,6 +462,35 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     assert confirmed == [()]
 
 
+def test_tag_filter_tray_remove_preserves_the_other_selected_tags(qtbot) -> None:
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
+
+    overlay.show_tag_filter(
+        "Tag Filter",
+        tags,
+        ("tag-action", "tag-comedy"),
+        lambda _ids: None,
+    )
+    QApplication.processEvents()
+
+    content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
+    tray_chips = {
+        chip.tag_id: chip
+        for chip in overlay.panel.findChildren(TagChipWidget)
+        if chip.is_removable
+    }
+    assert content is not None
+
+    qtbot.mouseClick(tray_chips["tag-action"], Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert content.selected_tag_ids == ("tag-comedy",)
+
+
 def test_tag_allocation_dialog_uses_replace_set_selection_rules(qtbot) -> None:
     apply_theme()
     overlay = JoyReadDialogOverlay()
@@ -403,9 +503,17 @@ def test_tag_allocation_dialog_uses_replace_set_selection_rules(qtbot) -> None:
     QApplication.processEvents()
 
     content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
-    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    # Pool chips only: the selection tray mirrors each selected tag with a
+    # second, removable chip for the same tag id.
+    chips = [
+        chip
+        for chip in overlay.panel.findChildren(TagChipWidget)
+        if not chip.is_add_chip and not chip.is_removable
+    ]
     buttons = overlay.panel.findChildren(DialogTextButton)
-    flow = overlay.panel.findChild(QWidget, "DialogTagFilterListHost")
+    # Shift-clicking empty space clears the set; that now lands on the
+    # browser itself rather than the old flat chip host.
+    flow = overlay.panel.findChild(QWidget, "TagBrowser")
 
     assert content is not None
     assert flow is not None
@@ -452,12 +560,15 @@ def test_tag_filter_buttons_follow_active_locale(qtbot) -> None:
 
     try:
         locale_service.load_language("Chinese")
-        overlay.show_tag_allocation("分配标签", [Tag("tag-action", "Action")], (), lambda _ids: None)
+        overlay.show_tag_allocation("分配标签", [Tag("tag-renai", "恋愛")], (), lambda _ids: None)
         QApplication.processEvents()
 
         buttons = overlay.panel.findChildren(DialogTextButton)
+        content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
 
         assert [button.text for button in buttons] == ["取消", "重置", "确认"]
+        assert content is not None
+        assert content.browser.rail_letters == ("L",)
     finally:
         locale_service.load_language("English")
 
@@ -471,7 +582,13 @@ def test_tag_allocation_cancel_discards_selection_and_no_tag_hint(qtbot) -> None
 
     overlay.show_tag_allocation("Assign Tags", [Tag("tag-action", "Action")], (), confirmed.append)
     QApplication.processEvents()
-    chips = [chip for chip in overlay.panel.findChildren(TagChipWidget) if not chip.is_add_chip]
+    # Pool chips only: the selection tray mirrors each selected tag with a
+    # second, removable chip for the same tag id.
+    chips = [
+        chip
+        for chip in overlay.panel.findChildren(TagChipWidget)
+        if not chip.is_add_chip and not chip.is_removable
+    ]
     buttons = overlay.panel.findChildren(DialogTextButton)
 
     qtbot.mouseClick(chips[0], Qt.MouseButton.LeftButton)
@@ -484,7 +601,7 @@ def test_tag_allocation_cancel_discards_selection_and_no_tag_hint(qtbot) -> None
 
     overlay.show_tag_allocation("Assign Tags", [], (), confirmed.append)
     QApplication.processEvents()
-    hint = overlay.panel.findChild(QLabel, "DialogTagEmptyHint")
+    hint = overlay.panel.findChild(QLabel, "TagBrowserEmptyHint")
 
     assert hint is not None
     assert hint.text() == "No tags yet. Add or edit tags in Settings > Tags."
@@ -1065,7 +1182,7 @@ def test_detail_plus_opens_allocation_and_confirm_updates_detail_tags(qtbot, mon
         dialog_chips = [
             chip
             for chip in window.dialog_overlay.panel.findChildren(TagChipWidget)
-            if not chip.is_add_chip
+            if not chip.is_add_chip and not chip.is_removable
         ]
         buttons = window.dialog_overlay.panel.findChildren(DialogTextButton)
         assert window.dialog_overlay.isVisible()

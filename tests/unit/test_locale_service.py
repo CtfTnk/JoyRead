@@ -22,9 +22,11 @@ def test_lazy_translation_uses_english_fallback_before_app_context() -> None:
 def test_load_language_switches_to_bundled_chinese_and_japanese() -> None:
     locale_service.init(ResourceLoader().locale_dir(), None, "Chinese")
     assert locale_service.t("sidebar.all") == "全部"
+    assert locale_service.active_language_code() == "zh"
 
     locale_service.load_language("Japanese")
     assert locale_service.t("sidebar.all") == "すべて"
+    assert locale_service.active_language_code() == "ja"
 
 
 def test_missing_active_key_falls_back_to_english(tmp_path) -> None:

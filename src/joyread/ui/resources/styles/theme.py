@@ -89,7 +89,12 @@ class Theme:
     detail_attribute_padding_horizontal = 6
     detail_attribute_gap = 10
     detail_attribute_border_width = 1
-    detail_attribute_visual_padding = 4
+    # Figma's 4px inset leaves the label 17px inside the 25px pill, but Noto
+    # Sans SC's line box at 14px is 20px tall, so descenders (g, j, p, q, y)
+    # were shorn flat. The frame keeps its Figma height; the inset gives the
+    # missing rows back to the text. See test_text_is_not_clipped.py, which
+    # fails if a future font or size re-opens the gap.
+    detail_attribute_visual_padding = 2
     detail_attribute_layout_margin = detail_attribute_visual_padding - detail_attribute_border_width
     detail_attribute_radius = 6
     detail_control_padding = 6
@@ -212,8 +217,14 @@ class Theme:
     sidebar_section_height = 34
     sidebar_section_padding_left = 15
     sidebar_section_padding_right = 10
-    sidebar_section_padding_top = 10
-    sidebar_section_padding_bottom = 5
+    # 10/5 left the 16px section label only 19px of the 34px banner, three
+    # rows short of Noto Sans SC's 24px line box, so every banner descender
+    # was clipped -- in the sidebar, Settings, the reader panel, and the novel
+    # panel, which all share SectionBanner. Same trade as the detail pill:
+    # keep the banner height, return the padding to the text. The ratio stays
+    # top-heavy so the baseline barely moves.
+    sidebar_section_padding_top = 7
+    sidebar_section_padding_bottom = 3
     sidebar_section_arrow_size = 20
     sidebar_item_padding_left = 15
     sidebar_item_padding_right = 10
@@ -321,7 +332,6 @@ class Theme:
     settings_switch_knob_radius = 6
 
     # Tags management page (Figma node 688:3630).
-    tag_manager_height = 360
     tag_manager_padding = 10
     tag_manager_gap = 10
     tag_manager_radius = 8
@@ -342,6 +352,52 @@ class Theme:
     tag_disabled_opacity = 0.6
     color_tag_manager_background = "#f3f3f3"
 
+    # Tag browser, design "Tag Window" screen 1a. Shared by the tag filter
+    # and assign dialogs and by the Settings tag manager. Chip metrics above
+    # already match the design, so they are reused rather than redeclared.
+    tag_browser_width = 680
+    tag_browser_gap = 6
+    tag_browser_search_height = 28
+    tag_browser_search_radius = 8
+    tag_browser_search_padding_horizontal = 8
+    tag_browser_search_gap = 6
+    tag_browser_search_font_size = 14
+    tag_browser_search_icon_size = 16
+    tag_browser_clear_icon_size = 14
+    tag_browser_remove_icon_size = 12
+    tag_browser_search_icon_opacity = 0.38
+    tag_browser_clear_icon_opacity = 0.35
+    tag_browser_remove_icon_opacity = 0.45
+    # The pool is a fixed height: the tray grows to three chip rows and then
+    # scrolls, so the panel never changes size and the group list below it
+    # gives up the space instead.
+    tag_browser_pool_height = 380
+    tag_browser_pool_padding = 9
+    tag_browser_pool_radius = 6
+    tag_browser_pool_border_width = 1
+    tag_browser_pool_gap = 8
+    tag_browser_tray_max_height = 86
+    tag_browser_tray_gap = 5
+    tag_browser_section_font_size = 11
+    tag_browser_section_letter_spacing = 0.08
+    tag_browser_section_gap = 8
+    tag_browser_group_gap = 6
+    tag_browser_group_bottom_padding = 12
+    tag_browser_body_gap = 6
+    tag_browser_rail_width = 16
+    tag_browser_rail_row_height = 9
+    tag_browser_rail_font_size = 9
+    tag_browser_rail_radius = 3
+    tag_browser_scroll_padding = 6
+    tag_browser_empty_height = 200
+    tag_browser_height = tag_browser_search_height + tag_browser_gap + tag_browser_pool_height
+
+    # Derived so the Settings frame cannot drift out of step with the browser
+    # it now holds: padding + browser + gap + the rename/delete control bar.
+    tag_manager_height = (
+        (tag_manager_padding * 2) + tag_browser_height + tag_manager_gap + tag_control_bar_height
+    )
+
     # General popup dialog from Figma node 483:1989.
     dialog_width = 400
     dialog_height = 220
@@ -353,6 +409,18 @@ class Theme:
     dialog_content_padding = 6
     dialog_content_outer_padding = 2
     dialog_content_max_height = 215
+    # Ceiling for a dialog that asks to be wider than the default 400. The tag
+    # browser (screen 1a) is the widest content the panel carries, so its
+    # layout defines the maximum. Content that asks for nothing stays at
+    # ``dialog_width``; the panel additionally clamps to its overlay, because
+    # 680 plus padding does not fit a ``window_min_width`` window.
+    dialog_max_width = tag_browser_width
+    dialog_wide_content_max_height = (
+        tag_browser_search_height
+        + tag_browser_gap
+        + tag_browser_pool_height
+        + (dialog_content_outer_padding * 2)
+    )
     dialog_content_scrollbar_margin = dialog_radius
     dialog_message_clip_guard = 2
     dialog_input_area_padding = 10
@@ -687,6 +755,13 @@ class Theme:
             "__TAG_CHIP_RADIUS__": f"{cls.tag_chip_radius}px",
             "__TAG_CHIP_FONT_SIZE__": f"{cls.tag_chip_font_size}px",
             "__TAG_BUTTON_RADIUS__": f"{cls.tag_control_button_radius}px",
+            "__TAG_BROWSER_SEARCH_RADIUS__": f"{cls.tag_browser_search_radius}px",
+            "__TAG_BROWSER_SEARCH_FONT_SIZE__": f"{cls.tag_browser_search_font_size}px",
+            "__TAG_BROWSER_POOL_RADIUS__": f"{cls.tag_browser_pool_radius}px",
+            "__TAG_BROWSER_POOL_BORDER_WIDTH__": f"{cls.tag_browser_pool_border_width}px",
+            "__TAG_BROWSER_SECTION_FONT_SIZE__": f"{cls.tag_browser_section_font_size}px",
+            "__TAG_BROWSER_RAIL_FONT_SIZE__": f"{cls.tag_browser_rail_font_size}px",
+            "__TAG_BROWSER_RAIL_RADIUS__": f"{cls.tag_browser_rail_radius}px",
         }
 
     @staticmethod

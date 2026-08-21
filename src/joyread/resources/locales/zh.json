@@ -87,7 +87,15 @@
     "delete_tag_title": "删除标签",
     "delete_tags_title": "删除标签",
     "delete_tag_msg": "删除标签「{name}」？\n\n这将从所有关联书籍中移除该标签。书籍不会被删除。此操作无法撤销。",
-    "delete_tags_msg": "删除 {count} 个标签？\n\n这将从所有关联书籍中移除这些标签。书籍不会被删除。此操作无法撤销。"
+    "delete_tags_msg": "删除 {count} 个标签？\n\n这将从所有关联书籍中移除这些标签。书籍不会被删除。此操作无法撤销。",
+    "search_placeholder": "搜索标签后按 Enter 键",
+    "tray_header": "本书标签",
+    "tray_count": "{count} / {total}",
+    "tray_empty_hint": "尚未选择，请从下方选取标签。",
+    "no_search_match": "没有匹配的标签。",
+    "selection_none": "未选择",
+    "selection_one": "已选择 1 个标签",
+    "selection_many": "已选择 {count} 个标签"
   },
   "state": {
     "no_books_title": "暂无书籍",

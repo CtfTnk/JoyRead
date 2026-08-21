@@ -16,8 +16,23 @@ class TagNameConflictError(Exception):
     under case-insensitive equality."""
 
 
+class TagCapacityError(ValueError):
+    """Raised when creating a new tag would exceed the library tag cap."""
+
+    def __init__(self, max_count: int) -> None:
+        self.max_count = max_count
+        super().__init__(
+            f"This library already has the maximum of {max_count} tags. "
+            "Delete a tag before creating another."
+        )
+
+
 class TagRepository(Protocol):
     def list_tags(self) -> list[Tag]:
+        ...
+
+    def count_tags(self) -> int:
+        """Return the number of tags without materialising tag rows."""
         ...
 
     def get_tag(self, tag_id: str) -> Tag | None:
@@ -26,14 +41,21 @@ class TagRepository(Protocol):
     def get_tag_by_normalized(self, normalized: str) -> Tag | None:
         ...
 
-    def create(self, display_name: str) -> Tag:
+    def create(self, display_name: str, *, max_count: int | None = None) -> Tag:
         """Create a tag. Raises ``TagNameConflictError`` if the normalized
-        name already exists."""
+        name already exists, or ``TagCapacityError`` when an optional cap is
+        reached. The cap check and insert must be atomic."""
         ...
 
-    def find_or_create(self, display_name: str) -> Tag:
+    def find_or_create(
+        self,
+        display_name: str,
+        *,
+        max_count: int | None = None,
+    ) -> Tag | None:
         """Return an existing tag matching ``display_name`` case-insensitively,
-        or create a new one. Used by the JSON import flow."""
+        or create a new one. Return ``None`` only when a new tag would exceed
+        ``max_count``. Used by the JSON import flow."""
         ...
 
     def rename(self, tag_id: str, new_display_name: str) -> Tag:

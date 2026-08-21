@@ -207,6 +207,30 @@ Distributed under the MIT license; full text as reproduced in the pyzipper
 section above, with copyright held by the platformdirs developers.
 
 
+pykakasi
+--------
+
+Copyright (c) 2010-2024 Hiroshi Miura and contributors
+
+Distributed under the GNU General Public License version 3 or later. JoyRead
+is itself licensed GPL-3.0-only, so bundling this library adds no obligation
+beyond the ones JoyRead already carries. Full licence text:
+<https://www.gnu.org/licenses/gpl-3.0.html>. Source:
+<https://codeberg.org/miurahr/pykakasi>.
+
+pykakasi bundles kanji reading dictionaries derived from KAKASI, Copyright
+(c) 1992-1999 Hironobu Takahashi et al., also under the GPL.
+
+
+pypinyin
+--------
+
+Copyright (c) 2016 mozillazg, 闲耘
+
+Distributed under the MIT license; full text as reproduced in the pyzipper
+section above, with copyright held by mozillazg and 闲耘.
+
+
 PyObjC
 ------
 

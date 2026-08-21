@@ -87,7 +87,15 @@
     "delete_tag_title": "Delete Tag",
     "delete_tags_title": "Delete Tags",
     "delete_tag_msg": "Delete tag '{name}'?\n\nThis removes the tag from every linked book. Books are not deleted. This cannot be undone.",
-    "delete_tags_msg": "Delete {count} tags?\n\nThis removes these tags from every linked book. Books are not deleted. This cannot be undone."
+    "delete_tags_msg": "Delete {count} tags?\n\nThis removes these tags from every linked book. Books are not deleted. This cannot be undone.",
+    "search_placeholder": "Search tags, then press Enter",
+    "tray_header": "ON THIS BOOK",
+    "tray_count": "{count} / {total}",
+    "tray_empty_hint": "Nothing yet — pick tags below.",
+    "no_search_match": "No tags match that search.",
+    "selection_none": "None selected",
+    "selection_one": "1 tag selected",
+    "selection_many": "{count} tags selected"
   },
   "state": {
     "no_books_title": "No books yet",

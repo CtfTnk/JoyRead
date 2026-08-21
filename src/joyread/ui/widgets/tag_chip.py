@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QFontMetrics, QKeyEvent, QMouseEvent
+from PySide6.QtGui import QFontMetrics, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
 
 from joyread.ui.resources.styles.theme import Theme
@@ -29,17 +29,24 @@ class TagChipWidget(QFrame):
         parent: QWidget | None = None,
         *,
         is_add_chip: bool = False,
+        remove_pixmap: QPixmap | None = None,
     ) -> None:
         super().__init__(parent)
         self._tag_id = tag_id
         self._name = name
         self._is_add_chip = is_add_chip
+        # A trailing glyph marks the chip as removable in the tag browser's
+        # selection tray. The whole chip stays the click target -- the glyph
+        # is an affordance, not a separate button.
+        self._remove_pixmap = None if is_add_chip else remove_pixmap
         self._pressed_inside = False
         self._selected = False
         self.setProperty("class", "TagChip")
         self.setProperty("selected", "false")
         if is_add_chip:
             self.setProperty("addChip", "true")
+        if self._remove_pixmap is not None:
+            self.setProperty("removable", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -78,6 +85,16 @@ class TagChipWidget(QFrame):
         self._label.setFont(font)
         layout.addWidget(self._label, stretch=1)
 
+        if self._remove_pixmap is not None:
+            layout.setSpacing(Theme.tag_browser_tray_gap)
+            glyph = QLabel()
+            glyph.setProperty("class", "TagChipRemoveGlyph")
+            glyph.setPixmap(self._remove_pixmap)
+            glyph.setFixedSize(
+                Theme.tag_browser_remove_icon_size, Theme.tag_browser_remove_icon_size
+            )
+            layout.addWidget(glyph)
+
     @classmethod
     def as_add_chip(cls, parent: QWidget | None = None) -> "TagChipWidget":
         return cls(tag_id="", name="+", parent=parent, is_add_chip=True)
@@ -89,6 +106,16 @@ class TagChipWidget(QFrame):
     @property
     def is_add_chip(self) -> bool:
         return self._is_add_chip
+
+    @property
+    def is_removable(self) -> bool:
+        """True for a selection-tray chip, which mirrors a chip in the pool.
+
+        Both are real chips for the same tag, so anything counting chips has
+        to say which set it means.
+        """
+
+        return self._remove_pixmap is not None
 
     @property
     def selected(self) -> bool:
@@ -120,6 +147,8 @@ class TagChipWidget(QFrame):
         padding = 2 * Theme.tag_chip_padding_horizontal
         border = 2 * Theme.tag_chip_border_width
         desired = text_width + padding + border
+        if self._remove_pixmap is not None:
+            desired += Theme.tag_browser_remove_icon_size + Theme.tag_browser_tray_gap
         clamped = max(Theme.tag_chip_min_width, min(Theme.tag_chip_max_width, desired))
         return QSize(clamped, Theme.tag_chip_height)
 

@@ -18,6 +18,11 @@ dependencies = [
     "platformdirs>=4.2",
     "rarfile>=4.2",
     "natsort>=8.4",
+    # Romanize Japanese/Chinese tag names so they index onto the same A-Z rail
+    # as Latin ones (joyread.core.tag_indexing). pykakasi 2.x is required for
+    # its ``convert()`` API; 1.x used a different ``getConverter()`` entry.
+    "pykakasi>=2.2",
+    "pypinyin>=0.53",
     "pyobjc-core>=12.2.1,<13; sys_platform == 'darwin'",
     "pyobjc-framework-Cocoa>=12.2.1,<13; sys_platform == 'darwin'",
 ]

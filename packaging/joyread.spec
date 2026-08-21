@@ -9,7 +9,7 @@ import runpy
 import sys
 import tomllib
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 
 ROOT = Path(SPECPATH).parent
@@ -132,6 +132,17 @@ datas = [
 hiddenimports = collect_submodules("py7zr")
 if sys.platform == "darwin":
     hiddenimports.extend(["objc", "Foundation", "AppKit"])
+
+# Tag indexing romanizes CJK tag names so they sort onto the same A-Z rail as
+# Latin ones. Both libraries carry dictionary *data*, not just code, and both
+# are imported lazily inside joyread.core.tag_indexing -- PyInstaller's static
+# analysis cannot see through either, so a build without these lines starts
+# fine and then drops every CJK tag into "#" (or fails to import) only once a
+# tag surface is opened.
+datas += collect_data_files("pykakasi")
+datas += collect_data_files("pypinyin")
+hiddenimports.extend(collect_submodules("pykakasi"))
+hiddenimports.extend(collect_submodules("pypinyin"))
 
 # The novel reader enters the app through one function-level import in
 # bootstrap, which PyInstaller's static analysis follows regardless of the

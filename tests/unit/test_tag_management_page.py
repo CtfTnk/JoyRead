@@ -7,7 +7,7 @@ from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import QApplication, QFrame
 
 from joyread.core.models.tag import Tag
-from joyread.core.repositories.tag_repository import TagNameConflictError
+from joyread.core.repositories.tag_repository import TagCapacityError, TagNameConflictError
 from joyread.core.services.tag_service import TagService
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -36,6 +36,9 @@ class _FakeRepository:
     def list_tags(self) -> list[Tag]:
         return sorted(self._tags.values(), key=lambda t: t.name.casefold())
 
+    def count_tags(self) -> int:
+        return len(self._tags)
+
     def get_tag(self, tag_id: str) -> Tag | None:
         return self._tags.get(tag_id)
 
@@ -45,22 +48,31 @@ class _FakeRepository:
                 return tag
         return None
 
-    def create(self, display_name: str) -> Tag:
+    def create(self, display_name: str, *, max_count: int | None = None) -> Tag:
         from joyread.core.models.tag import normalize_tag_name
         name = normalize_tag_name(display_name)
         if self.get_tag_by_normalized(name.casefold()):
             raise TagNameConflictError(f"A tag named '{name}' already exists.")
+        if max_count is not None and self.count_tags() >= max_count:
+            raise TagCapacityError(max_count)
         self._next += 1
         tag = Tag(tag_id=f"tag-{self._next}", name=name)
         self._tags[tag.tag_id] = tag
         return tag
 
-    def find_or_create(self, display_name: str) -> Tag:
+    def find_or_create(
+        self,
+        display_name: str,
+        *,
+        max_count: int | None = None,
+    ) -> Tag | None:
         from joyread.core.models.tag import normalize_tag_name
         name = normalize_tag_name(display_name)
         existing = self.get_tag_by_normalized(name.casefold())
         if existing is not None:
             return existing
+        if max_count is not None and self.count_tags() >= max_count:
+            return None
         return self.create(display_name)
 
     def rename(self, tag_id: str, new_display_name: str) -> Tag:
@@ -161,6 +173,27 @@ def test_tag_management_page_refresh_labels_updates_controls(qtbot) -> None:
     assert page.confirm_button.text() == "確認"
     assert page.line_edit.placeholderText() == "タグ名"
     locale_service.load_language("English")
+
+
+def test_tag_management_browser_rebuckets_when_the_locale_changes(qtbot) -> None:
+    _apply_theme()
+    try:
+        locale_service.load_language("Chinese")
+        vm = _viewmodel_with_tags("恋愛")
+        page = TagManagementPage(vm)
+        qtbot.addWidget(page)
+        page.show()
+        QApplication.processEvents()
+
+        assert page.browser.rail_letters == ("L",)
+
+        locale_service.load_language("Japanese")
+        page.refresh_labels()
+
+        assert page.browser.rail_letters == ("R",)
+        assert page.browser.search_field.placeholderText() == "タグを検索して Enter キー"
+    finally:
+        locale_service.load_language("English")
 
 
 def test_rename_disabled_when_multiple_selected(qtbot) -> None:

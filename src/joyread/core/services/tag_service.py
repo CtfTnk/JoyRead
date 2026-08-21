@@ -11,7 +11,12 @@ from __future__ import annotations
 
 import logging
 
-from joyread.core.models.tag import MAX_TAG_NAME_LENGTH, Tag, normalize_tag_name
+from joyread.core.models.tag import (
+    MAX_TAG_COUNT,
+    MAX_TAG_NAME_LENGTH,
+    Tag,
+    normalize_tag_name,
+)
 from joyread.core.repositories.tag_repository import (
     TagNameConflictError,
     TagNotFoundError,
@@ -46,7 +51,9 @@ class TagService:
 
     def create(self, raw_name: str) -> Tag:
         # ``normalize_tag_name`` raises ``ValueError`` on empty / overlong.
-        return self._repository.create(raw_name)
+        # The repository owns the count + insert operation so concurrent UI
+        # and import requests cannot both pass a service-level pre-check.
+        return self._repository.create(raw_name, max_count=MAX_TAG_COUNT)
 
     def rename(self, tag_id: str, raw_name: str) -> Tag:
         return self._repository.rename(tag_id, raw_name)
@@ -62,7 +69,22 @@ class TagService:
         except ValueError as exc:
             logger.warning("find_or_create rejected raw=%r reason=%s", raw_name, exc)
             return None
-        return self._repository.find_or_create(raw_name)
+        # Existing lookup, count, and optional insert run as one repository
+        # callback. Reusing an existing tag remains allowed at the cap.
+        tag = self._repository.find_or_create(raw_name, max_count=MAX_TAG_COUNT)
+        if tag is None:
+            logger.warning(
+                "find_or_create refused raw=%r: library already holds the %d-tag maximum",
+                raw_name,
+                MAX_TAG_COUNT,
+            )
+        return tag
+
+    @property
+    def at_capacity(self) -> bool:
+        """True once the library holds ``MAX_TAG_COUNT`` tags."""
+
+        return self._repository.count_tags() >= MAX_TAG_COUNT
 
     def link_book(self, tag_id: str, book_id: str) -> None:
         self._repository.link_book(tag_id, book_id)

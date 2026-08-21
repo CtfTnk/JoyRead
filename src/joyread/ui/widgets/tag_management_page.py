@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLineEdit,
-    QScrollArea,
     QSizePolicy,
     QStackedLayout,
     QVBoxLayout,
@@ -23,10 +22,9 @@ from joyread.ui.viewmodels.tag_management_viewmodel import (
     TagManagementViewModel,
     TagOperationResult,
 )
-from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.settings_page import SettingsPushButton
+from joyread.ui.widgets.tag_browser import TagBrowserWidget
 from joyread.ui.widgets.tag_chip import TagChipWidget
-from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
 
 class _TagInputLineEdit(QLineEdit):
@@ -75,20 +73,14 @@ class TagManagementPage(QWidget):
         )
         manager_layout.setSpacing(Theme.tag_manager_gap)
 
-        self._scroll_area = QScrollArea(self._manager_frame)
-        self._scroll_area.setObjectName("TagListScrollArea")
-        self._scroll_area.setWidgetResizable(True)
-        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll_area.viewport().setObjectName("TagListViewport")
-        self._scroll_area.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        manager_layout.addWidget(self._scroll_area, stretch=1)
-
-        self._chip_flow = TagChipFlowWidget(object_name="TagListHost")
-        self._chip_flow.tag_clicked.connect(self._handle_chip_clicked)
-        self._chip_flow.add_clicked.connect(self._viewmodel.begin_create)
-        self._scroll_area.setWidget(self._chip_flow)
-        self._scroll_handle = AutoHideScrollHandle(self._scroll_area, parent=self)
+        # The same searchable, A-Z grouped browser the tag dialogs use. The
+        # selection tray is off here: Settings selects tags to rename or
+        # delete, and a tray of "what is on this book" has no book.
+        self._browser = TagBrowserWidget(show_tray=False, include_add_chip=True)
+        self._browser.tag_clicked.connect(self._handle_chip_clicked)
+        self._browser.add_clicked.connect(self._viewmodel.begin_create)
+        self._browser.blank_clicked.connect(self._handle_blank_clicked)
+        manager_layout.addWidget(self._browser, stretch=1)
 
         # Control bar — QStackedLayout with [0] button row, [1] input row.
         self._control_stack_host = QWidget()
@@ -146,7 +138,11 @@ class TagManagementPage(QWidget):
 
     @property
     def chip_widgets(self) -> tuple[TagChipWidget, ...]:
-        return self._chip_flow.chip_widgets
+        return self._browser.chip_widgets
+
+    @property
+    def browser(self) -> TagBrowserWidget:
+        return self._browser
 
     @property
     def rename_button(self) -> SettingsPushButton:
@@ -166,6 +162,7 @@ class TagManagementPage(QWidget):
 
     def refresh_labels(self) -> None:
         """Re-apply translated control labels after a runtime language change."""
+        self._browser.refresh_labels()
         self._rename_button.setText(t("tags.btn_rename"))
         self._delete_button.setText(t("tags.btn_delete"))
         self._confirm_button.setText(t("tags.btn_confirm"))
@@ -181,7 +178,7 @@ class TagManagementPage(QWidget):
     def _render(self) -> None:
         if self._disposed:
             return
-        self._chip_flow.set_tags(
+        self._browser.set_tags(
             self._viewmodel.tags,
             self._viewmodel.selected_tag_ids,
             include_add_chip=True,
@@ -201,6 +198,11 @@ class TagManagementPage(QWidget):
 
     def _handle_chip_clicked(self, tag_id: str, additive: bool) -> None:
         self._viewmodel.toggle_select(tag_id, additive=additive)
+
+    def _handle_blank_clicked(self, _additive: bool) -> None:
+        # Empty space inside the browser clears the selection, matching the
+        # manager background's own behaviour in ``mousePressEvent``.
+        self._viewmodel.clear_selection()
 
     def _handle_rename_clicked(self) -> None:
         self._viewmodel.begin_rename()

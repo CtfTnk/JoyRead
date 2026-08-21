@@ -71,6 +71,7 @@ class LocaleService:
     def __init__(self, bundled_dir: Path, user_dir: Path | None = None) -> None:
         self._bundled_dir = bundled_dir
         self._user_dir = user_dir
+        self._language_code = "en"
         self._translations: dict[str, str] = {}
         self._fallback: dict[str, str] = {}
         # Always load English as the fallback so missing keys degrade
@@ -82,8 +83,15 @@ class LocaleService:
         lang_code = LANGUAGE_TO_CODE.get(language, "en")
         new_translations: dict[str, str] = {}
         self._load_into(new_translations, lang_code)
+        self._language_code = lang_code
         self._translations = new_translations
         logger.info("Locale switched to language=%s code=%s keys=%d", language, lang_code, len(new_translations))
+
+    @property
+    def language_code(self) -> str:
+        """Locale code currently used for translations and locale-sensitive UI."""
+
+        return self._language_code
 
     def t(self, key: str, **kwargs: str) -> str:
         """Return the translated string for *key*, falling back to English then the key itself."""
@@ -196,6 +204,12 @@ def init(bundled_dir: Path, user_dir: Path | None, language: str) -> None:
 def load_language(language: str) -> None:
     """Switch the active language."""
     _get_service().load(language)
+
+
+def active_language_code() -> str:
+    """Return the active locale file code (for example ``en`` or ``zh``)."""
+
+    return _get_service().language_code
 
 
 def t(key: str, **kwargs: str) -> str:
