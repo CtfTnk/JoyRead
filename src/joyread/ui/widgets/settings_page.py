@@ -164,6 +164,8 @@ class SettingsPageWidget(QFrame):
     def _items_for_current_section(self) -> list[QWidget]:
         if self._viewmodel.current_section == SettingsSectionKey.GENERAL:
             return self._general_items()
+        if self._viewmodel.current_section == SettingsSectionKey.ARCHIVE:
+            return self._archive_cache_items()
         if self._viewmodel.current_section == SettingsSectionKey.PRIVACY:
             return self._privacy_items()
         if self._viewmodel.current_section == SettingsSectionKey.TAGS:
@@ -330,6 +332,38 @@ class SettingsPageWidget(QFrame):
         )
         import_folder_depth_item.value_changed.connect(self._viewmodel.set_import_folder_max_depth)
 
+        library_banner = SectionBanner(t("settings.banner_library"), self._resources)
+        verify_library = SettingsButtonItem(
+            t("settings.verify_library_and_clean_cache"),
+            t("settings.btn_verify"),
+        )
+        verify_library.clicked.connect(self._viewmodel.request_library_maintenance)
+
+
+        return [
+            general_banner,
+            language,
+            import_switch,
+            verify_import_switch,
+            window_switch,
+            inspect_title_switch,
+            import_banner,
+            import_folder_depth_item,
+            library_banner,
+            verify_library,
+        ]
+
+    def _archive_cache_items(self) -> list[QWidget]:
+        """Resource budgets: how far into an archive to go, and how much to keep.
+
+        Split out of ``_general_items`` because General had accumulated five
+        banner groups against one each for Tags and Privacy. The two archive
+        depth limits moved here from the Import group: the reader reads them
+        too (``reader_shell``, ``reader_viewmodel``), so they were never
+        import-specific despite the label they sat under.
+        """
+
+        archive_banner = SectionBanner(t("settings.banner_archive"), self._resources)
         nested_archive_depth_item = SettingsNumericItem(
             t("settings.nested_archive_depth"),
             self._viewmodel.nested_archive_max_depth,
@@ -350,11 +384,11 @@ class SettingsPageWidget(QFrame):
         )
         archive_global_depth_item.value_changed.connect(self._viewmodel.set_archive_global_file_max_depth)
 
-        archive_banner = SectionBanner(t("settings.banner_archive"), self._resources)
 
         archive_size_switch = SettingsSwitchItem(
             t("settings.archive_max_source_size_enabled"),
             self._viewmodel.archive_max_source_size_enabled,
+            gate=True,
         )
         archive_size_switch.toggled.connect(self._viewmodel.set_archive_max_source_size_enabled)
 
@@ -372,6 +406,7 @@ class SettingsPageWidget(QFrame):
         guardrails_switch = SettingsSwitchItem(
             t("settings.archive_resource_guardrails"),
             self._viewmodel.archive_resource_guardrails_enabled,
+            gate=True,
         )
         guardrails_switch.toggled.connect(self._viewmodel.set_archive_resource_guardrails_enabled)
 
@@ -473,25 +508,11 @@ class SettingsPageWidget(QFrame):
         )
         archive_pool_usage.clear_requested.connect(self._viewmodel.request_clear_archive_pool)
 
-        library_banner = SectionBanner(t("settings.banner_library"), self._resources)
-        verify_library = SettingsButtonItem(
-            t("settings.verify_library_and_clean_cache"),
-            t("settings.btn_verify"),
-        )
-        verify_library.clicked.connect(self._viewmodel.request_library_maintenance)
 
         return [
-            general_banner,
-            language,
-            import_switch,
-            verify_import_switch,
-            window_switch,
-            inspect_title_switch,
-            import_banner,
-            import_folder_depth_item,
+            archive_banner,
             nested_archive_depth_item,
             archive_global_depth_item,
-            archive_banner,
             archive_size_switch,
             archive_size_item,
             guardrails_switch,
@@ -505,15 +526,15 @@ class SettingsPageWidget(QFrame):
             archive_pool_item,
             archive_strategy_item,
             archive_pool_usage,
-            library_banner,
-            verify_library,
         ]
+
 
 
 class SettingsSidebarWidget(QFrame):
     # Maps section key to the locale key used for the label.
     _SECTION_LOCALE_KEYS: dict[SettingsSectionKey, str] = {
         SettingsSectionKey.GENERAL: "settings.section_general",
+        SettingsSectionKey.ARCHIVE: "settings.section_archive",
         SettingsSectionKey.TAGS: "settings.section_tags",
         SettingsSectionKey.PRIVACY: "settings.section_privacy",
         SettingsSectionKey.ABOUT: "settings.section_about",
@@ -673,9 +694,25 @@ class SettingsContentPanel(QScrollArea):
 
 
 class SettingsOptionItem(QFrame):
-    def __init__(self, name: str, option: QWidget, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        option: QWidget,
+        parent: QWidget | None = None,
+        *,
+        gate: bool = False,
+    ) -> None:
+        """``gate=True`` marks a row that switches the rows beneath it on or off.
+
+        QSS bolds the label so the hierarchy is visible: the guardrail toggles
+        read as headings for the limits they control rather than as one more
+        setting in the list.
+        """
+
         super().__init__(parent)
         self.setProperty("class", "SettingsItem")
+        if gate:
+            self.setProperty("gate", "true")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(Theme.settings_item_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
@@ -719,12 +756,19 @@ class SettingsDropdownItem(SettingsOptionItem):
 class SettingsSwitchItem(SettingsOptionItem):
     toggled = QtSignal(bool)
 
-    def __init__(self, name: str, checked: bool, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        name: str,
+        checked: bool,
+        parent: QWidget | None = None,
+        *,
+        gate: bool = False,
+    ) -> None:
         self.switch = SettingsSwitchControl(checked)
         # Pass the switch directly (no wrapper) so its right edge lines up
         # with the buttons / dropdowns / spinners in the column — the Figma
         # right-aligns every option control to the same gutter.
-        super().__init__(name, self.switch, parent)
+        super().__init__(name, self.switch, parent, gate=gate)
         self.switch.toggled.connect(self.toggled.emit)
 
 

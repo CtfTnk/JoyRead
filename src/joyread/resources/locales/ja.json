@@ -11,6 +11,7 @@
   },
   "settings": {
     "section_general": "一般",
+    "section_archive": "アーカイブとキャッシュ",
     "section_tags": "タグ",
     "section_privacy": "プライバシー",
     "section_about": "このアプリについて",
@@ -55,6 +56,7 @@
     "btn_move": "移動",
     "select_existing_library": "既存のライブラリを選択",
     "btn_select": "選択",
+    "btn_verify": "検証",
     "reset_library": "ライブラリのリセット",
     "btn_clear": "クリア"
   },

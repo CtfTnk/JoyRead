@@ -1,6 +1,7 @@
 import json
 
 from PySide6.QtCore import QPoint, Qt
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.app.app_context import create_app_context
@@ -183,18 +184,19 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     sidebar_item_positions = {
         item.findChild(QLabel).text(): item.mapTo(sidebar, QPoint(0, 0)).y() for item in sidebar_items
     }
-    assert sidebar_item_positions["Tags"] - sidebar_item_positions["General"] == (
-        Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
-    )
-    assert sidebar_item_positions["Privacy"] - sidebar_item_positions["Tags"] == (
-        Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
-    )
+    step = Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
+    # Walk the whole upper group rather than naming pairs, so inserting a
+    # section cannot leave a stale assertion passing on the wrong neighbours.
+    upper_order = ["General", "Archive & Cache", "Tags", "Privacy"]
+    for earlier, later in zip(upper_order, upper_order[1:]):
+        assert sidebar_item_positions[later] - sidebar_item_positions[earlier] == step
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Five General rows (Storage moved to Privacy), three Import depth rows,
-    # seven Archive rows, five Cache rows, and the Library maintenance action.
-    assert len(setting_items) == 21
+    # Five General rows (Storage moved to Privacy), the one genuinely
+    # import-only depth row, and the Library maintenance action. Archive, Cache,
+    # and the two shared archive depth rows are in their own scope now.
+    assert len(setting_items) == 7
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 11
+    assert len(spin_buttons) == 1
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
 
@@ -215,7 +217,9 @@ def test_general_tab_renders_inspection_title_control_switch(qtbot) -> None:
 
     assert "Use Native Title Control" not in labels
     assert "Inspect Windows/Linux Title Control" in labels
-    assert len(switches) == 6
+    # Four: import-on-open, verify-integrity, individual window, inspect title.
+    # The archive size and guardrail switches live in the Archive & Cache scope.
+    assert len(switches) == 4
 
     inspect_item = next(
         item
@@ -976,3 +980,124 @@ def test_encrypted_cache_switch_persists_and_defaults_on(qtbot, tmp_path) -> Non
 
     assert store.load().purge_encrypted_cache_on_close is False
     assert SettingsViewModel(store.load(), store).purge_encrypted_cache_on_close is False
+
+
+def _item_labels(page) -> list[str]:
+    return [
+        label.text()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    ]
+
+
+def test_archive_scope_holds_the_archive_and_cache_groups(qtbot) -> None:
+    """General had grown five banner groups against one each for Tags and
+    Privacy. Archive and Cache are the two that are resource tuning rather than
+    preferences, so they get their own scope."""
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    QApplication.processEvents()
+
+    banners = [
+        label.text()
+        for label in page.findChildren(QLabel, "SidebarSectionLabel")
+    ]
+    assert "Archive" in banners
+    assert "Cache" in banners
+
+    setting_items = [
+        item for item in page.findChildren(QFrame) if item.property("class") == "SettingsItem"
+    ]
+    # Two shared depth rows, seven Archive rows, five Cache rows.
+    assert len(setting_items) == 14
+
+
+def test_the_shared_archive_depths_left_the_import_group(qtbot) -> None:
+    """`nested_archive_max_depth` and `archive_global_file_max_depth` are read
+    by the reader as well as by import (`reader_shell`, `reader_viewmodel`), so
+    the Import banner was never their real scope."""
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    general = _item_labels(page)
+    assert "Nested archive depth" not in general
+    assert "Archive global file depth" not in general
+    # The one genuinely import-only setting stays behind.
+    assert "Import folder depth" in general
+
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    QApplication.processEvents()
+
+    archive = _item_labels(page)
+    assert "Nested archive depth" in archive
+    assert "Archive global file depth" in archive
+    assert "Import folder depth" not in archive
+
+
+def test_every_sidebar_section_renders_something(qtbot) -> None:
+    """A section whose dispatch branch is missing falls through to an empty
+    list and renders a blank pane -- which looks like a layout bug, not a
+    missing branch, and raises nothing."""
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+
+    for section in viewmodel.sections:
+        if section.key == SettingsSectionKey.ABOUT:
+            continue  # About has no content of its own yet.
+        viewmodel.set_section(section.key)
+        QApplication.processEvents()
+        assert page._items_for_current_section(), f"{section.key} dispatched to nothing"
+
+
+def test_the_archive_scope_is_labelled_and_ordered_after_general(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    QApplication.processEvents()
+
+    labels = [
+        item.findChild(QLabel).text() for item in page.findChildren(SettingsSidebarItem)
+    ]
+
+    assert labels == ["General", "Archive & Cache", "Tags", "Privacy", "About"]
+
+
+def test_the_gate_switches_are_bold_and_nothing_else_is(qtbot) -> None:
+    """"Limit archive size" and "Resource guardrails" switch the rows beneath
+    them on or off, so they are drawn as headings for the group they gate
+    rather than as peers of it.
+
+    Asserts the resolved font weight, not the QSS text: a selector that stops
+    matching leaves the stylesheet valid and the rows quietly un-bolded.
+    """
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    QApplication.processEvents()
+
+    weights = {
+        label.text(): label.font().weight()
+        for label in page.findChildren(QLabel)
+        if label.property("class") == "SettingsItemNameText"
+    }
+    bold = {name for name, weight in weights.items() if weight >= QFont.Weight.Bold}
+
+    assert bold == {"Limit archive size", "Resource guardrails"}
+    # The rows they gate stay at the normal weight, or the hierarchy says nothing.
+    assert weights["Maximum archive size"] < QFont.Weight.Bold
+    assert weights["Maximum extracted item"] < QFont.Weight.Bold

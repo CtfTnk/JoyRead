@@ -78,3 +78,42 @@ def test_book_language_display_name_follows_active_app_locale() -> None:
     assert locale_service.book_language_display_name("ja", "Japanese") == "日语"
     assert locale_service.book_language_display_name("und", "Unknown") == "未知"
     assert locale_service.book_language_display_name("fr", "French") == "French"
+
+
+def test_every_referenced_locale_key_exists(tmp_path) -> None:
+    """A missing key renders as the key itself, elided.
+
+    `settings.btn_verify` shipped absent and drew the Library maintenance
+    button as "set...ify" -- unreadable, but not an error, so nothing caught it
+    until the panel was rendered and looked at. This walks every ``t("a.b")``
+    in the source instead.
+    """
+
+    import json
+    import re
+    from pathlib import Path
+
+    from joyread.infrastructure.resources.resource_loader import ResourceLoader
+
+    catalogue = json.loads(
+        (ResourceLoader().locale_dir() / "en.json").read_text(encoding="utf-8")
+    )
+
+    def flatten(node: dict, prefix: str = "") -> dict[str, str]:
+        flat: dict[str, str] = {}
+        for key, value in node.items():
+            if isinstance(value, dict):
+                flat.update(flatten(value, f"{prefix}{key}."))
+            else:
+                flat[f"{prefix}{key}"] = value
+        return flat
+
+    known = set(flatten(catalogue))
+    source_root = ResourceLoader().package_root
+    missing: dict[str, set[str]] = {}
+    for path in source_root.rglob("*.py"):
+        for key in re.findall(r'\bt\(\s*"([a-z0-9_]+\.[a-z0-9_]+)"', path.read_text(encoding="utf-8")):
+            if key not in known:
+                missing.setdefault(key, set()).add(path.name)
+
+    assert not missing, f"locale keys referenced but not defined: {sorted(missing)}"

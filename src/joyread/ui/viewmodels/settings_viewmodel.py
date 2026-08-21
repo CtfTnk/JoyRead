@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 class SettingsSectionKey(StrEnum):
     GENERAL = "general"
+    # Resource-budget tuning: archive traversal limits and cache sizes. Split
+    # out of GENERAL, which had become the default home for anything that did
+    # not obviously belong to Tags or Privacy.
+    ARCHIVE = "archive"
     TAGS = "tags"
     PRIVACY = "privacy"
     ABOUT = "about"
@@ -103,6 +107,7 @@ class SettingsViewModel:
         self._archive_pool_bytes_provider: Callable[[], int] | None = None
         self.sections = (
             SettingsSection(SettingsSectionKey.GENERAL, locale_service.t("settings.section_general")),
+            SettingsSection(SettingsSectionKey.ARCHIVE, locale_service.t("settings.section_archive")),
             SettingsSection(SettingsSectionKey.TAGS, locale_service.t("settings.section_tags")),
             SettingsSection(SettingsSectionKey.PRIVACY, locale_service.t("settings.section_privacy")),
             SettingsSection(SettingsSectionKey.ABOUT, locale_service.t("settings.section_about"), lower_group=True),

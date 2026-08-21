@@ -11,6 +11,7 @@
   },
   "settings": {
     "section_general": "通用",
+    "section_archive": "归档与缓存",
     "section_tags": "标签",
     "section_privacy": "隐私",
     "section_about": "关于",
@@ -55,6 +56,7 @@
     "btn_move": "移动",
     "select_existing_library": "选择已有书库",
     "btn_select": "选择",
+    "btn_verify": "校验",
     "reset_library": "重置书库",
     "btn_clear": "清除"
   },

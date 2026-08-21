@@ -11,6 +11,7 @@
   },
   "settings": {
     "section_general": "General",
+    "section_archive": "Archive & Cache",
     "section_tags": "Tags",
     "section_privacy": "Privacy",
     "section_about": "About",
@@ -55,6 +56,7 @@
     "btn_move": "Move",
     "select_existing_library": "Select Existing Library",
     "btn_select": "Select",
+    "btn_verify": "Verify",
     "reset_library": "Reset Library",
     "btn_clear": "Clear"
   },
