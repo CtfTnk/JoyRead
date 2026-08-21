@@ -7,7 +7,15 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal
-from PySide6.QtGui import QCloseEvent, QCursor, QIcon
+from PySide6.QtGui import (
+    QCloseEvent,
+    QCursor,
+    QDragEnterEvent,
+    QDragLeaveEvent,
+    QDragMoveEvent,
+    QDropEvent,
+    QIcon,
+)
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext, StorageTransition
@@ -34,6 +42,7 @@ from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.widgets.cover_editor import CoverEditorOverlay
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
+from joyread.ui.widgets.drop_zone_overlay import DropZoneOverlay, payload_from_mime_urls
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
@@ -142,9 +151,15 @@ class MainWindow(QMainWindow):
         self.cover_editor_overlay.hide()
         self.dialog_overlay = JoyReadDialogOverlay(root, context.resources, drag_handle=self.title_bar)
         self.dialog_overlay.hide()
+        self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
+        self.drop_zone_overlay.set_content_area(view_panel)
+        self.drop_zone_overlay.read_requested.connect(self.open_reader_for_file)
+        self.drop_zone_overlay.import_requested.connect(self._import_dropped_paths)
         self.setCentralWidget(root)
+        self.setAcceptDrops(True)
         self._position_cover_editor_overlay()
         self._position_dialog_overlay()
+        self._position_drop_zone_overlay()
 
         self.chrome.set_action_menu(self.shelf_view.create_action_menu())
         self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
@@ -386,6 +401,100 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
         self.open_reader_for_file(file_path, import_mode=import_mode)
+
+    # ------------------------------------------------------------------
+    # Drag and drop
+    # ------------------------------------------------------------------
+
+    def _drops_blocked(self) -> bool:
+        """Whether anything is covering the library right now.
+
+        A drop landing behind one of these acts on a window the user cannot
+        currently see -- and in the hidden-space lock's case would reach past
+        the thing guarding it. Every surface that covers the content area
+        belongs here, not just the modal ones: the settings page and an
+        embedded reader are equally opaque from the user's side.
+        """
+
+        if self.cover_editor_overlay.isVisible() or self.dialog_overlay.isVisible():
+            return True
+        if self.settings_view.isVisible():
+            return True
+        if self._embedded_reader is not None:
+            return True
+        lock = self._lock_overlay
+        return lock is not None and lock.isVisible()
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
+        mime = event.mimeData()
+        if self._drops_blocked() or not mime.hasUrls():
+            event.ignore()
+            return
+        payload = payload_from_mime_urls(mime.urls())
+        if not payload.can_import:
+            # Nothing here can be read or imported. Refusing outright lets the
+            # OS show a no-drop cursor, which is more honest than raising a UI
+            # that could not act on the release.
+            event.ignore()
+            return
+        logger.info(
+            "Drag entered files=%d folders=%d readable=%s",
+            len(payload.files),
+            len(payload.folders),
+            payload.can_read,
+        )
+        self.drop_zone_overlay.begin(payload)
+        self.drop_zone_overlay.update_hover(self._to_overlay(event.position().toPoint()))
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
+        if not self.drop_zone_overlay.payload.can_import:
+            event.ignore()
+            return
+        self.drop_zone_overlay.update_hover(self._to_overlay(event.position().toPoint()))
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event: QDragLeaveEvent) -> None:  # noqa: N802
+        event.accept()
+        self.drop_zone_overlay.end()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # noqa: N802
+        # Re-checked rather than trusted from dragEnter: a background import
+        # finishing mid-drag raises its summary dialog over the overlay, and
+        # releasing then would commit behind the dialog the user is reading.
+        if self._drops_blocked():
+            event.ignore()
+            self.drop_zone_overlay.end()
+            return
+        committed = self.drop_zone_overlay.handle_drop(
+            self._to_overlay(event.position().toPoint())
+        )
+        if committed:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def _to_overlay(self, point: QPoint) -> QPoint:
+        """Map a point from this window into the overlay's coordinates."""
+
+        return self.drop_zone_overlay.mapFrom(self, point)
+
+    def _import_dropped_paths(self, paths: tuple[Path, ...]) -> None:
+        if not paths:
+            return
+        settings = self._settings_for_import()
+        logger.info("Import from drop count=%d", len(paths))
+        self._context.task_service.submit(
+            "import-dropped",
+            lambda: self._context.import_service.import_paths(
+                list(paths),
+                max_depth=settings.import_folder_max_depth,
+                nested_archive_max_depth=settings.nested_archive_max_depth,
+                archive_global_file_max_depth=settings.archive_global_file_max_depth,
+            ),
+            on_success=self._handle_import_finished,
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
+        )
 
     def _show_import_menu(self) -> None:
         menu = FigmaMenu(self.shelf_view, width=240)
@@ -1630,6 +1739,16 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.setGeometry(0, 0, root.width(), root.height())
         self._raise_dialog_overlay_if_visible()
 
+    def _position_drop_zone_overlay(self) -> None:
+        if not hasattr(self, "drop_zone_overlay"):
+            return
+        # Keeps a visible overlay tracking a mid-drag window resize. The
+        # authoritative sync happens in ``begin()``, because this fires before
+        # the layout has actually moved the panel.
+        self.drop_zone_overlay.sync_geometry()
+        if self.drop_zone_overlay.isVisible():
+            self.drop_zone_overlay.raise_()
+
     def _position_cover_editor_overlay(self) -> None:
         if not hasattr(self, "cover_editor_overlay"):
             return
@@ -1696,6 +1815,7 @@ class MainWindow(QMainWindow):
         self._position_settings_overlay()
         self._position_cover_editor_overlay()
         self._position_dialog_overlay()
+        self._position_drop_zone_overlay()
         self._position_lock_overlay()
         if self._embedded_reader is not None and self.centralWidget() is not None:
             self._embedded_reader.setGeometry(self.centralWidget().rect())

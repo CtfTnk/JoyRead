@@ -244,7 +244,17 @@
     "file_choose_library_parent_title": "JoyRead-Library の親フォルダを選択",
     "file_select_existing_library_title": "既存の JoyRead ライブラリを選択",
     "file_import_cover_image_title": "カバー画像をインポート",
-    "file_filter_images": "画像 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)"
+    "file_filter_images": "画像 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
+    "drop_read_title": "読む",
+    "drop_read_subtitle": "ライブラリに追加せずに開きます",
+    "drop_read_blocked_multiple": "直接読むにはファイルを1つだけドロップしてください",
+    "drop_read_blocked_folder": "読むにはフォルダーではなくファイルをドロップしてください",
+    "drop_import_title": "インポート",
+    "drop_import_subtitle": "ライブラリに追加して整理します",
+    "drop_count_one": "1 件",
+    "drop_count_many": "{count} 件",
+    "drop_confirm_importing_one": "1 件をインポート中",
+    "drop_confirm_importing_many": "{count} 件をインポート中"
   },
   "detail": {
     "author_prefix": "著者：",

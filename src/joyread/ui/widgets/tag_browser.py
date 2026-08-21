@@ -14,7 +14,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QIcon, QMouseEvent, QPainter, QPixmap
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -33,25 +33,8 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.flow_layout import FlowLayout
+from joyread.ui.widgets.icon_paint import faded_pixmap as _faded_pixmap
 from joyread.ui.widgets.tag_chip import TagChipWidget
-
-
-def _faded_pixmap(path: str, size: int, opacity: float) -> QPixmap:
-    """Render an SVG once at *size* with *opacity* baked in.
-
-    Baking the alpha into a shared pixmap keeps the per-chip cost to a label
-    paint -- a QGraphicsOpacityEffect per tray chip would not.
-    """
-
-    source = QIcon(path).pixmap(QSize(size, size))
-    faded = QPixmap(source.size())
-    faded.setDevicePixelRatio(source.devicePixelRatio())
-    faded.fill(Qt.GlobalColor.transparent)
-    painter = QPainter(faded)
-    painter.setOpacity(opacity)
-    painter.drawPixmap(0, 0, source)
-    painter.end()
-    return faded
 
 
 class _SectionHeader(QWidget):

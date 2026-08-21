@@ -244,7 +244,17 @@
     "file_choose_library_parent_title": "选择 JoyRead-Library 的父文件夹",
     "file_select_existing_library_title": "选择已有 JoyRead 书库",
     "file_import_cover_image_title": "导入封面图片",
-    "file_filter_images": "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)"
+    "file_filter_images": "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
+    "drop_read_title": "阅读",
+    "drop_read_subtitle": "直接打开，不加入书库",
+    "drop_read_blocked_multiple": "仅拖入一个文件才能直接阅读",
+    "drop_read_blocked_folder": "请拖入文件而非文件夹以阅读",
+    "drop_import_title": "导入",
+    "drop_import_subtitle": "加入书库并妥善整理",
+    "drop_count_one": "1 项",
+    "drop_count_many": "{count} 项",
+    "drop_confirm_importing_one": "正在导入 1 项",
+    "drop_confirm_importing_many": "正在导入 {count} 项"
   },
   "detail": {
     "author_prefix": "作者：",

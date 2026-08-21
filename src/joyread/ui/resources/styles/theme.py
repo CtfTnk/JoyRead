@@ -612,6 +612,62 @@ class Theme:
     color_reader_topic_item_hover_rgba = (238, 238, 238, 204)
     missing_book_opacity = 0.6
 
+    # Drag-and-drop overlay (design: "Main Window Drag Drop", screen 1a).
+    # Painted rather than styled: dashed rounded borders, translucent fills over
+    # a blurred snapshot, and a hover scale are all outside what QSS expresses.
+    drop_zone_gap = 16
+    drop_zone_padding_horizontal = 20
+    drop_zone_padding_top = 16
+    drop_zone_padding_bottom = 20
+    drop_zone_radius = 14
+    drop_zone_border_width = 2
+    drop_zone_icon_diameter = 72
+    drop_zone_icon_glyph_size = 32
+    drop_zone_icon_hover_scale = 1.08
+    drop_zone_title_font_size = 22
+    drop_zone_subtitle_font_size = 13
+    drop_zone_subtitle_max_width = 280
+    drop_zone_content_gap = 14
+
+    drop_pill_height = 32
+    drop_pill_radius = 16
+    drop_pill_padding_horizontal = 16
+    drop_pill_font_size = 13
+    drop_pill_margin_top = 22
+
+    drop_confirm_icon_diameter = 64
+    drop_confirm_glyph_size = 28
+    drop_confirm_font_size = 16
+    drop_confirm_gap = 12
+    # How long the checkmark holds before the overlay clears itself.
+    drop_confirm_hold_ms = 1400
+
+    drop_scrim_fade_ms = 160
+    drop_zone_transition_ms = 140
+    # Qt has no backdrop-filter. The overlay blurs one snapshot of what is
+    # underneath instead of the live widget; these are the design's CSS radii.
+    drop_scrim_blur_radius = 3.0
+    drop_scrim_blur_radius_confirming = 4.0
+
+    color_drop_scrim_rgba = (20, 20, 20, 102)
+    color_drop_scrim_confirming_rgba = (20, 20, 20, 140)
+    color_drop_zone_fill_rgba = (255, 255, 255, 15)
+    color_drop_zone_fill_hover_rgba = (255, 255, 255, 41)
+    color_drop_zone_border_rgba = (255, 255, 255, 102)
+    color_drop_zone_border_hover_rgba = (255, 255, 255, 255)
+    color_drop_zone_border_disabled_rgba = (255, 255, 255, 46)
+    color_drop_zone_icon_fill_rgba = (255, 255, 255, 31)
+    color_drop_zone_icon_fill_disabled_rgba = (255, 255, 255, 15)
+    color_drop_zone_icon_border_rgba = (255, 255, 255, 77)
+    color_drop_zone_icon_border_disabled_rgba = (255, 255, 255, 38)
+    color_drop_zone_title_rgba = (255, 255, 255, 255)
+    color_drop_zone_title_disabled_rgba = (255, 255, 255, 102)
+    color_drop_zone_subtitle_rgba = (255, 255, 255, 179)
+    color_drop_zone_subtitle_disabled_rgba = (255, 255, 255, 115)
+    color_drop_confirm_fill_rgba = (255, 255, 255, 36)
+    color_drop_confirm_border_rgba = (255, 255, 255, 89)
+    drop_zone_disabled_glyph_opacity = 0.4
+
     # General spacing scale
     spacing_xs = 4
     spacing_sm = 8

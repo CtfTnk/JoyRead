@@ -244,7 +244,17 @@
     "file_choose_library_parent_title": "Choose a parent folder for JoyRead-Library",
     "file_select_existing_library_title": "Select an existing JoyRead library",
     "file_import_cover_image_title": "Import Cover Image",
-    "file_filter_images": "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)"
+    "file_filter_images": "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
+    "drop_read_title": "Read",
+    "drop_read_subtitle": "Open without adding to your library",
+    "drop_read_blocked_multiple": "Drop a single file to read it directly",
+    "drop_read_blocked_folder": "Drop a file, not a folder, to read it",
+    "drop_import_title": "Import",
+    "drop_import_subtitle": "Add to your library and keep it organised",
+    "drop_count_one": "1 item",
+    "drop_count_many": "{count} items",
+    "drop_confirm_importing_one": "Importing 1 item",
+    "drop_confirm_importing_many": "Importing {count} items"
   },
   "detail": {
     "author_prefix": "Author: ",

@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
 import json
+import os
 from pathlib import Path
 import sqlite3
 from time import perf_counter
@@ -234,6 +235,73 @@ class ImportService:
         folder = Path(path).expanduser()
         files = _supported_files_within_depth(folder, max_depth=max_depth)
         logger.info("Import folder requested path=%s depth=%d matched=%d", folder, max_depth, len(files))
+        return self.import_files(
+            files,
+            nested_archive_max_depth=nested_archive_max_depth,
+            archive_global_file_max_depth=archive_global_file_max_depth,
+        )
+
+    def import_paths(
+        self,
+        paths: list[str | Path],
+        *,
+        max_depth: int = 1,
+        nested_archive_max_depth: int | None = None,
+        archive_global_file_max_depth: int | None = None,
+    ) -> ImportBatchResult:
+        """Import a mixed selection of files and folders as one batch.
+
+        Serves drag-and-drop, where the user hands over whatever they had
+        selected in Finder. Folders are expanded with the same depth rule
+        :meth:`import_folder` uses, then everything runs through a single
+        :meth:`import_items` call -- one batch id, one result, one summary for
+        the user. Importing each dropped item separately would work, but would
+        report a separate outcome for each, which is not what one gesture means.
+        """
+
+        files: list[Path] = []
+        seen: set[str] = set()
+
+        def _add(candidate: Path) -> None:
+            # Folders may overlap each other, or repeat a file dropped by name.
+            # Resolve before comparing: the same file reached through a
+            # symlinked folder and through its real path spells differently,
+            # and on macOS so do /tmp and /private/tmp. Comparing raw strings
+            # imports it twice and reports a duplicate against the user's own
+            # single drop. The unresolved path is what gets imported, so a
+            # symlinked source is still recorded the way the user named it.
+            key = os.path.normcase(str(candidate.resolve(strict=False)))
+            if key not in seen:
+                seen.add(key)
+                files.append(candidate)
+
+        folder_count = 0
+        skipped_unsupported = 0
+        for value in paths:
+            path = Path(value).expanduser()
+            if path.is_dir():
+                folder_count += 1
+                for found in _supported_files_within_depth(path, max_depth=max_depth):
+                    _add(found)
+                continue
+            # Same suffix rule the folder walk applies. Without it this method
+            # disagrees with ``import_folder`` about what a book is: a stray
+            # .txt would be reported as a failed import here and skipped
+            # silently there, for the same file in the same batch.
+            if path.suffix.lower() not in BOOK_EXTENSIONS:
+                skipped_unsupported += 1
+                continue
+            _add(path)
+
+        logger.info(
+            "Import paths requested requested=%d folders=%d resolved=%d "
+            "unsupported=%d depth=%d",
+            len(paths),
+            folder_count,
+            len(files),
+            skipped_unsupported,
+            max_depth,
+        )
         return self.import_files(
             files,
             nested_archive_max_depth=nested_archive_max_depth,
