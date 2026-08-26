@@ -302,11 +302,17 @@ def test_a_render_does_not_hold_the_gil_for_another_python_thread(
         )
         gaps = [b - a for a, b in zip(ticks, ticks[1:])]
         # A held GIL would show as one gap approximately equal to the render
-        # duration; a released one shows gaps close to the 2ms sleep. 20ms is
-        # comfortably between the two and well under a real stall.
-        assert max(gaps) < 0.020, (
-            f"a background render blocked this thread for {max(gaps) * 1000:.1f}ms "
-            "-- the GIL was held across the render"
+        # duration, so the gap is measured *against that render* rather than
+        # against a fixed millisecond budget. An absolute threshold ends up
+        # measuring how loaded the machine is instead: 20ms was comfortable on
+        # a developer box (gaps land near 4ms, ~5% of the render) and failed on
+        # a shared CI runner at 20.2ms, where nothing about the GIL differed.
+        # Half the render separates real contention (~100%) from scheduler
+        # jitter (a few percent to ~25%) on any hardware.
+        longest_gap = max(gaps)
+        assert longest_gap < (render_ms / 1000.0) * 0.5, (
+            f"a background render blocked this thread for {longest_gap * 1000:.1f}ms "
+            f"of a {render_ms:.1f}ms render -- the GIL was held across the render"
         )
     finally:
         session.close()
