@@ -93,6 +93,12 @@ test_set/
 /reports/
 /artifacts/
 
+# 7-Zip ships its HTML help pages beside the binary. Nothing in JoyRead reads
+# them and joyread.spec never bundles them -- it copies the binary plus
+# License.txt, readme.txt, and History.txt only -- so they would be dead weight
+# repeated once per vendored platform.
+src/joyread/resources/extractors/7zip/*/MANUAL/
+
 # Internal working files. These are the canonical copies in the private
 # CtfTnk/JoyRead-internal repository, kept here so local tooling can read them
 # and ignored so they can never reach the public repository. Nothing in this
