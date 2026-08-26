@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+from joyread.core.models.import_policy import (
+    DEFAULT_CANONICAL_IMPORT_POLICY,
+    normalize_canonical_import_policy,
+)
 from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 from joyread.infrastructure.logging import operation_scope
 
@@ -49,6 +53,9 @@ class AppSettings:
     thumbnail_cache_mb: int = 64
     archive_extraction_pool_gb: int = 5
     archive_cache_strategy: str = ArchiveCacheStrategy.ZIP_BUNDLE.value
+    # Repackaging on import. See core/models/import_policy.py for what the
+    # middle value covers and why nesting counts as expensive on its own.
+    canonical_import_policy: str = DEFAULT_CANONICAL_IMPORT_POLICY.value
     import_folder_max_depth: int = 1
     nested_archive_max_depth: int = 2
     archive_global_file_max_depth: int = 100
@@ -165,6 +172,9 @@ class SettingsStore:
             ),
             archive_extraction_pool_gb=_coerce_archive_pool_gb(raw),
             archive_cache_strategy=normalize_archive_cache_strategy(raw.get("archive_cache_strategy")).value,
+            canonical_import_policy=normalize_canonical_import_policy(
+                raw.get("canonical_import_policy")
+            ).value,
             import_folder_max_depth=_coerce_int_in_range(
                 raw.get("import_folder_max_depth"),
                 default=1,

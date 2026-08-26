@@ -32,11 +32,22 @@ from joyread.core.services.archive_extraction_pool import (
     archive_cache_storage_key,
 )
 from joyread.core.services.hash_service import HashService
+from joyread.core.models.storage_layout import (
+    STORAGE_KIND_VERBATIM,
+    is_content_addressed,
+    storage_target,
+)
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
 
 
 logger = logging.getLogger(__name__)
+
+#: Key inside ``library_maintenance_journal.payload_json``. Deliberately still
+#: the pre-split name: that JSON is written before a rename and read back on the
+#: next run, so renaming the key would make a journal written by an older build
+#: unreadable exactly when it is needed to finish an interrupted move.
+_JOURNAL_HASH_KEY = "content_hash"
 
 #: Files the operating system's file manager writes into any folder a user
 #: browses. They are not library content and never will be, so an audit that
@@ -91,6 +102,9 @@ class LibraryAuditItem:
     recorded_hash: str
     observed_hash: str | None
     recorded_state: str
+    #: ``verbatim`` or ``canonical``. Decides whether this row's file may be
+    #: relocated or merged -- see core/models/storage_layout.py.
+    storage_kind: str
     action: LibraryAuditAction
     public_book_ids: tuple[str, ...]
     private_book_ids: tuple[str, ...]
@@ -505,7 +519,7 @@ class LibraryMaintenanceService:
                 if target_exists and not source_exists:
                     try:
                         payload = json.loads(str(row["payload_json"]))
-                        expected_hash = str(payload["content_hash"])
+                        expected_hash = str(payload[_JOURNAL_HASH_KEY])
                         algorithm = str(row["hash_algorithm"])
                         if self._hash_service.compute(target, algorithm) != expected_hash:
                             conflicts.append(journal_id)
@@ -530,9 +544,14 @@ class LibraryMaintenanceService:
         rows: tuple[dict[str, Any], ...],
         limits: ArchiveOpenLimits,
     ) -> list[LibraryAuditItem]:
+        # Merge candidates, and only candidates: a canonical row's bytes do not
+        # identify its book, so nothing may ever merge *into* one. Excluding
+        # them here is half the rule -- the row being audited must also be
+        # content-addressed, which is checked at the point of use.
         known_hashes = {
-            (str(row["hash_algorithm"]), str(row["content_hash"])): str(row["file_id"])
+            (str(row["hash_algorithm"]), str(row["stored_hash"])): str(row["file_id"])
             for row in rows
+            if is_content_addressed(str(row["storage_kind"]))
         }
         items: list[LibraryAuditItem] = []
         for row in rows:
@@ -547,8 +566,9 @@ class LibraryMaintenanceService:
                 storage_relative_path=storage_relative,
                 file_format=str(row["file_format"]),
                 hash_algorithm=str(row["hash_algorithm"]),
-                recorded_hash=str(row["content_hash"]),
+                recorded_hash=str(row["stored_hash"]),
                 recorded_state=str(row["state"]),
+                storage_kind=str(row["storage_kind"]),
                 public_book_ids=public_ids,
                 private_book_ids=private_ids,
             )
@@ -593,8 +613,18 @@ class LibraryMaintenanceService:
                     )
                 )
                 continue
-            if observed_hash != str(row["content_hash"]):
-                duplicate_file_id = known_hashes.get((str(row["hash_algorithm"]), observed_hash))
+            if observed_hash != str(row["stored_hash"]):
+                # Both sides must be content-addressed. Identical bytes stop
+                # implying an identical book once import repackages: two
+                # canonical artifacts can match while describing different
+                # sources, and merging deletes one row -- taking with it the
+                # ``source_hash`` that was the only record that source had ever
+                # been imported.
+                duplicate_file_id = (
+                    known_hashes.get((str(row["hash_algorithm"]), observed_hash))
+                    if is_content_addressed(str(row["storage_kind"]))
+                    else None
+                )
                 action = (
                     LibraryAuditAction.MERGE
                     if duplicate_file_id is not None and duplicate_file_id != file_id
@@ -664,14 +694,36 @@ class LibraryMaintenanceService:
             self._set_file_state(item.file_id, "healthy", None)
             return LibraryAuditAction.REPAIRED
 
-        duplicate = self._find_file_by_hash(item.hash_algorithm, observed_hash, item.file_id)
+        # Merging deletes one of the two rows, so it may only happen when the
+        # rows are genuinely interchangeable. Two *canonical* rows can hash the
+        # same while describing different sources -- deterministic repackaging
+        # maps a .cbr and a .7z of the same pages onto identical bytes -- and
+        # merging those would discard a distinct source identity, letting that
+        # source re-import later as a book the library already has.
+        duplicate = (
+            self._find_file_by_hash(item.hash_algorithm, observed_hash, item.file_id)
+            if is_content_addressed(item.storage_kind)
+            else None
+        )
         if duplicate is not None:
             affected = self._merge_duplicate_file(item.file_id, str(duplicate["file_id"]))
             self._unlink_regular_file(path, self._paths.paths.books)
             self._invalidate_artifacts(item.file_id, affected)
             return LibraryAuditAction.MERGE
 
-        target = self._content_addressed_target(path, observed_hash)
+        target = self._storage_target(item, path, observed_hash)
+        if target == path:
+            # A canonical artifact's path is derived from its row, not its
+            # bytes, so changed bytes do not move it. Only the recorded hash
+            # needs to catch up -- and the relocation branch below must not run,
+            # because it finishes by unlinking the file it moved *from*, which
+            # here is the file we just accepted.
+            affected = self._update_changed_file(
+                item.file_id, observed_hash, item.storage_relative_path, journal_id=None
+            )
+            self._invalidate_artifacts(item.file_id, affected)
+            return LibraryAuditAction.CHANGED
+
         if target.exists():
             if not self._is_regular_file(target, self._paths.paths.books):
                 return None
@@ -746,9 +798,23 @@ class LibraryMaintenanceService:
             return False, type(exc).__name__, "Managed file could not be probed."
         return False, "unsupported_format", "Managed file has an unsupported format."
 
-    def _content_addressed_target(self, source: Path, content_hash: str) -> Path:
-        suffix = source.suffix.lower()
-        return self._paths.paths.books / content_hash[:2] / f"{content_hash}{suffix}"
+    def _storage_target(
+        self, item: "LibraryAuditItem", source: Path, stored_hash: str
+    ) -> Path:
+        """Where *item*'s artifact belongs, asking the same function import does.
+
+        Import and maintenance disagreeing here would show up as maintenance
+        "repairing" a perfectly healthy book by moving it somewhere import would
+        never look for it again.
+        """
+
+        return storage_target(
+            self._paths.paths.books,
+            storage_kind=item.storage_kind,
+            stored_hash=stored_hash,
+            file_id=item.file_id,
+            suffix=source.suffix.lower(),
+        )
 
     def _storage_path(self, value: str) -> Path | None:
         raw = str(value or "")
@@ -948,15 +1014,26 @@ class LibraryMaintenanceService:
             DatabasePriority.NORMAL,
         )
 
-    def _find_file_by_hash(self, algorithm: str, content_hash: str, excluding_file_id: str):
+    def _find_file_by_hash(self, algorithm: str, stored_hash: str, excluding_file_id: str):
+        """A row this file could be merged into, if there is a safe one.
+
+        ``storage_kind`` is part of the predicate, not a check the caller can
+        add afterwards: a canonical artifact's bytes do not identify its book,
+        so a row holding one is never a valid merge target however well its
+        hash matches.
+        """
+
         return self._database.execute(
             lambda connection: connection.execute(
                 """
                 SELECT file_id, storage_path
                 FROM book_files
-                WHERE hash_algorithm = ? AND content_hash = ? AND file_id != ?
+                WHERE hash_algorithm = ?
+                  AND stored_hash = ?
+                  AND file_id != ?
+                  AND storage_kind = ?
                 """,
-                (algorithm, content_hash, excluding_file_id),
+                (algorithm, stored_hash, excluding_file_id, STORAGE_KIND_VERBATIM),
             ).fetchone(),
             DatabasePriority.HIGH,
         )
@@ -967,9 +1044,9 @@ class LibraryMaintenanceService:
         file_id: str,
         source_relative: str,
         target_relative: str,
-        content_hash: str,
+        stored_hash: str,
     ) -> None:
-        payload = json.dumps({"content_hash": content_hash}, sort_keys=True)
+        payload = json.dumps({_JOURNAL_HASH_KEY: stored_hash}, sort_keys=True)
         self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -995,15 +1072,15 @@ class LibraryMaintenanceService:
         self,
         journal_id: str,
         file_id: str,
-        content_hash: str,
+        stored_hash: str,
         storage_relative: str,
     ) -> tuple[str, ...]:
-        return self._update_changed_file(file_id, content_hash, storage_relative, journal_id=journal_id)
+        return self._update_changed_file(file_id, stored_hash, storage_relative, journal_id=journal_id)
 
     def _update_changed_file(
         self,
         file_id: str,
-        content_hash: str,
+        stored_hash: str,
         storage_relative: str,
         *,
         journal_id: str | None,
@@ -1017,11 +1094,11 @@ class LibraryMaintenanceService:
                 connection.execute(
                     """
                     UPDATE book_files
-                    SET storage_path = ?, content_hash = ?, state = 'healthy',
+                    SET storage_path = ?, stored_hash = ?, state = 'healthy',
                         integrity_error_code = NULL, updated_at = ?
                     WHERE file_id = ?
                     """,
-                    (storage_relative, content_hash, now, file_id),
+                    (storage_relative, stored_hash, now, file_id),
                 )
                 _reset_navigation_for_file(connection, public_ids, private_ids)
                 if journal_id is not None:
@@ -1085,8 +1162,8 @@ def _load_audit_rows(connection) -> tuple[dict[str, Any], ...]:  # noqa: ANN001 
     file_rows = connection.execute(
         """
         SELECT
-            file_id, storage_path, file_format, hash_algorithm, content_hash,
-            state, integrity_error_code
+            file_id, storage_path, file_format, hash_algorithm, stored_hash,
+            storage_kind, state, integrity_error_code
         FROM book_files
         ORDER BY file_id
         """
@@ -1103,7 +1180,8 @@ def _load_audit_rows(connection) -> tuple[dict[str, Any], ...]:  # noqa: ANN001 
             "storage_path": str(row["storage_path"]),
             "file_format": str(row["file_format"]),
             "hash_algorithm": str(row["hash_algorithm"]),
-            "content_hash": str(row["content_hash"]),
+            "stored_hash": str(row["stored_hash"]),
+            "storage_kind": str(row["storage_kind"]),
             "state": str(row["state"]),
             "integrity_error_code": row["integrity_error_code"],
             "public_book_ids": tuple(public_by_file.get(str(row["file_id"]), ())),

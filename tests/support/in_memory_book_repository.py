@@ -65,7 +65,7 @@ class InMemoryBookRepository:
                     storage_path=book.file_path,
                     original_file_name=book.original_file_name or Path(book.file_path).name,
                     hash_algorithm="sha256",
-                    content_hash="",
+                    stored_hash="",
                     is_missing=book.is_missing,
                 )
             )

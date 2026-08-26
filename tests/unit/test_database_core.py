@@ -233,7 +233,8 @@ def test_migration_v12_rebuilds_book_files_without_losing_foreign_key_links(tmp_
             row["name"] for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
         }
         row = connection.execute(
-            "SELECT original_file_name, content_hash, state, integrity_error_code FROM book_files WHERE file_id = 'file-1'"
+            "SELECT original_file_name, source_hash, stored_hash, storage_kind, state,"
+            " integrity_error_code FROM book_files WHERE file_id = 'file-1'"
         ).fetchone()
         public_file_id = connection.execute(
             "SELECT file_id FROM books WHERE book_id = 'book-1'"
@@ -248,7 +249,12 @@ def test_migration_v12_rebuilds_book_files_without_losing_foreign_key_links(tmp_
 
         assert {"file_size", "mtime_ns"}.isdisjoint(columns)
         assert {"state", "integrity_error_code", "original_file_name"} <= columns
-        assert tuple(row) == ("legacy.cbz", "legacy-hash", "healthy", None)
+        # Migration 13 splits one hash into two. Every pre-existing file was
+        # stored byte-for-byte, so both sides carry the value the single column
+        # held and nothing about an existing library changes meaning.
+        assert tuple(row) == (
+            "legacy.cbz", "legacy-hash", "legacy-hash", "verbatim", "healthy", None
+        )
         assert public_file_id == private_file_id == "file-1"
         assert violations == []
         assert journal_table is not None
@@ -533,7 +539,7 @@ def test_migration_normalizes_absolute_managed_paths(tmp_path: Path) -> None:
     cover_inside = root / "Thumbnails" / "covers" / "c.png"
 
     def seed(connection: sqlite3.Connection) -> None:
-        for file_id, content_hash, storage_path in (
+        for file_id, stored_hash, storage_path in (
             ("f1", "h1", str(inside)),
             ("f2", "h2", str(outside)),
         ):
@@ -541,10 +547,11 @@ def test_migration_normalizes_absolute_managed_paths(tmp_path: Path) -> None:
                 """
                 INSERT INTO book_files(
                     file_id, original_path, original_file_name, storage_path, file_format,
-                    hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
-                ) VALUES(?, 'orig', 'inside.cbz', ?, 'CBZ', 'sha256', ?, 'healthy', NULL, 't', 't')
+                    hash_algorithm, source_hash, stored_hash, storage_kind,
+                    state, integrity_error_code, created_at, updated_at
+                ) VALUES(?, 'orig', 'inside.cbz', ?, 'CBZ', 'sha256', ?, ?, 'verbatim', 'healthy', NULL, 't', 't')
                 """,
-                (file_id, storage_path, content_hash),
+                (file_id, storage_path, stored_hash, stored_hash),
             )
         connection.execute(
             """
@@ -737,18 +744,28 @@ def test_import_skips_encrypted_archives_without_adding_books(tmp_path: Path) ->
     database.close()
 
 
-def test_import_probes_only_top_level_and_allows_nested_encrypted_archives(tmp_path: Path) -> None:
+def test_import_refuses_an_archive_whose_nested_child_is_encrypted(tmp_path: Path) -> None:
+    """Import walks every container now, where it used to probe only the top.
+
+    The old shallow probe accepted this file and the encryption surfaced much
+    later, as a book that opened to a wall of unreadable pages. Refusing at the
+    gate is the whole point of ``inspect_for_import``.
+
+    It is reported as *skipped*, not failed: an encrypted archive is not a
+    broken one, and telling the user their file is damaged would be wrong.
+    """
+
     source = tmp_path / "outer.cbz"
     _write_cbz_with_nested_encrypted_archive(source)
     service, database, _paths = _import_service(tmp_path)
 
     result = service.import_files([source])
 
-    assert result.imported_count == 1
-    assert result.skipped_count == 0
+    assert result.imported_count == 0
     assert result.failed_count == 0
-    assert result.items[0].status == "imported"
-    assert [book.title for book in SqliteBookRepository(database).list_books()] == ["outer"]
+    assert result.skipped_count == 1
+    assert result.items[0].status == "skipped"
+    assert SqliteBookRepository(database).list_books() == []
     database.close()
 
 
@@ -1449,3 +1466,67 @@ def test_database_request_inherits_operation_context(tmp_path: Path) -> None:
 
     assert operation_id != parent.operation_id
     assert parent_id == parent.operation_id
+
+
+def test_uniqueness_moves_onto_the_source_hash(tmp_path: Path) -> None:
+    """Duplicate detection keys on what the user handed us, not what we stored.
+
+    Constraining the stored hash instead would reject two genuinely different
+    books that happened to repackage into identical bytes, and would *fail* to
+    reject the same source imported twice once canonical conversion makes its
+    output differ from the original.
+    """
+
+    connection = open_sqlite_connection(tmp_path / "unique.sqlite3")
+    try:
+        apply_migrations(connection)
+
+        def insert(file_id: str, source: str, stored: str) -> None:
+            connection.execute(
+                """
+                INSERT INTO book_files(
+                    file_id, original_path, original_file_name, storage_path, file_format,
+                    hash_algorithm, source_hash, stored_hash, storage_kind, state,
+                    created_at, updated_at
+                ) VALUES (?, '/source', 'book.cbz', ?, 'CBZ', 'sha256', ?, ?, 'verbatim',
+                          'healthy', '2026-01-01T00:00:00', '2026-01-01T00:00:00')
+                """,
+                (file_id, f"Books/{file_id}.cbz", source, stored),
+            )
+
+        # Two different sources may legitimately produce the same stored bytes.
+        insert("file-1", "source-1", "same-stored")
+        insert("file-2", "source-2", "same-stored")
+
+        with pytest.raises(sqlite3.IntegrityError):
+            insert("file-3", "source-1", "other-stored")
+    finally:
+        connection.close()
+
+
+def test_storage_kind_only_accepts_the_two_kinds_of_import(tmp_path: Path) -> None:
+    """The column decides whether the stored bytes are the user's own file.
+
+    An unconstrained string would let a typo silently mark a repackaged book as
+    verbatim, and export would then hand the user bytes that are not what they
+    imported.
+    """
+
+    connection = open_sqlite_connection(tmp_path / "kind.sqlite3")
+    try:
+        apply_migrations(connection)
+
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                """
+                INSERT INTO book_files(
+                    file_id, original_path, original_file_name, storage_path, file_format,
+                    hash_algorithm, source_hash, stored_hash, storage_kind, state,
+                    created_at, updated_at
+                ) VALUES ('file-1', '/source', 'book.cbz', 'Books/aa/book.cbz', 'CBZ',
+                          'sha256', 'h', 'h', 'converted', 'healthy',
+                          '2026-01-01T00:00:00', '2026-01-01T00:00:00')
+                """
+            )
+    finally:
+        connection.close()

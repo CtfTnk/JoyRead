@@ -12,6 +12,7 @@ from PIL import Image
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.models.import_policy import CanonicalImportPolicy
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.library_maintenance_service import (
@@ -313,7 +314,7 @@ def test_recover_pending_rename_journal_finishes_database_update(maintenance_sta
     # recorded value so the test mirrors a real interrupted audit rename.
     recorded_hash = database.execute(
         lambda connection: connection.execute(
-            "SELECT content_hash FROM book_files WHERE file_id = ?", (book.file_id,)
+            "SELECT stored_hash FROM book_files WHERE file_id = ?", (book.file_id,)
         ).fetchone()[0]
     )
     database.execute(
@@ -354,7 +355,7 @@ def test_recover_pending_rename_journal_keeps_conflict_when_target_bytes_changed
     journal_id = "rename-conflict"
     recorded_hash = database.execute(
         lambda connection: connection.execute(
-            "SELECT content_hash FROM book_files WHERE file_id = ?", (book.file_id,)
+            "SELECT stored_hash FROM book_files WHERE file_id = ?", (book.file_id,)
         ).fetchone()[0]
     )
 
@@ -445,3 +446,133 @@ def test_platform_metadata_is_matched_case_insensitively() -> None:
     assert is_platform_metadata("desktop.ini") is True
     assert is_platform_metadata("Managed.cbz") is False
     assert is_platform_metadata("my.DS_Store.cbz") is False
+
+
+def test_audit_never_merges_two_canonical_rows_that_hash_the_same(
+    maintenance_stack, tmp_path: Path
+) -> None:
+    """Identical bytes stop implying an identical book once import repackages.
+
+    Deterministic conversion maps two genuinely different sources -- a ``.cbr``
+    and a ``.7z`` of the same pages -- onto byte-identical output. Merging those
+    deletes one row, and with it the ``source_hash`` that was the only record
+    that the second source had ever been imported: the user could re-import it
+    and get a book the library already holds.
+    """
+
+    _paths, database, _cache, importer, maintenance, repository, _invalidated = maintenance_stack
+    source_a = tmp_path / "source" / "A.cbz"
+    source_b = tmp_path / "source" / "B.cbz"
+    _write_cbz(source_a, "#224466")
+    _write_cbz(source_b, "#cc4422")
+    first = _import_book(importer, repository, source_a)
+    second = _import_book(importer, repository, source_b)
+
+    # Stand in for what canonical import will produce: distinct sources, and
+    # bytes on disk that will hash alike once the audit reads them.
+    database.execute(
+        lambda connection: connection.execute(
+            "UPDATE book_files SET storage_kind = 'canonical'"
+        )
+    )
+    Path(first.file_path).write_bytes(Path(second.file_path).read_bytes())
+
+    plan = maintenance.scan()
+    item = next(item for item in plan.items if item.file_id == first.file_id)
+
+    assert item.action is not LibraryAuditAction.MERGE
+    assert item.duplicate_file_id is None
+
+    maintenance.apply(plan)
+    survivors = database.execute(
+        lambda connection: connection.execute(
+            "SELECT COUNT(*) FROM book_files"
+        ).fetchone()[0]
+    )
+    assert survivors == 2
+    assert repository.get_book(second.uuid) is not None
+
+
+def test_audit_updates_a_changed_canonical_file_without_deleting_it(
+    maintenance_stack, tmp_path: Path
+) -> None:
+    """A canonical artifact is addressed by its row, so changed bytes do not
+    move it -- only the recorded hash has to catch up.
+
+    The relocation branch that handles verbatim files ends by unlinking the file
+    it moved *from*. For a canonical row source and destination are the same
+    path, so taking that branch would delete the book.
+    """
+
+    _paths, database, _cache, importer, maintenance, repository, _invalidated = maintenance_stack
+    source = tmp_path / "source" / "Canonical.cbz"
+    _write_cbz(source, "#224466")
+    importer.set_canonical_import_policy(CanonicalImportPolicy.ALWAYS)
+    book = _import_book(importer, repository, source)
+
+    stored = Path(book.file_path)
+    assert stored.stem == book.file_id  # a real canonical row, addressed by id
+    _write_cbz(stored, "#cc4422")
+    expected_hash = HashService().compute(stored, "sha256")
+
+    report = maintenance.apply(maintenance.scan())
+
+    assert report.changed_count == 1
+    assert stored.exists()
+    row = database.execute(
+        lambda connection: connection.execute(
+            "SELECT storage_path, stored_hash FROM book_files WHERE file_id = ?",
+            (book.file_id,),
+        ).fetchone()
+    )
+    assert row["stored_hash"] == expected_hash
+    assert Path(row["storage_path"]).name == stored.name
+
+
+def test_audit_never_merges_a_changed_verbatim_file_into_a_canonical_row(
+    maintenance_stack, tmp_path: Path
+) -> None:
+    """The candidate's kind matters as much as the item's.
+
+    Guarding only the row being audited leaves the other half open: a changed
+    *verbatim* row is content-addressed and therefore mergeable, and if the row
+    it matches is *canonical* the merge still deletes one of them and takes a
+    distinct ``source_hash`` with it. Both the scan-time hash map and the
+    apply-time lookup have to exclude non-content-addressed candidates.
+    """
+
+    _paths, database, _cache, importer, maintenance, repository, _invalidated = maintenance_stack
+    verbatim_source = tmp_path / "source" / "Verbatim.cbz"
+    canonical_source = tmp_path / "source" / "Canonical.cbz"
+    _write_cbz(verbatim_source, "#224466")
+    _write_cbz(canonical_source, "#cc4422")
+
+    verbatim = _import_book(importer, repository, verbatim_source)
+    importer.set_canonical_import_policy(CanonicalImportPolicy.ALWAYS)
+    canonical = _import_book(importer, repository, canonical_source)
+
+    kinds = database.execute(
+        lambda connection: {
+            str(row["file_id"]): str(row["storage_kind"])
+            for row in connection.execute(
+                "SELECT file_id, storage_kind FROM book_files"
+            ).fetchall()
+        }
+    )
+    assert kinds[verbatim.file_id] == "verbatim"
+    assert kinds[canonical.file_id] == "canonical"
+
+    # The verbatim file is edited to hold the canonical artifact's bytes.
+    Path(verbatim.file_path).write_bytes(Path(canonical.file_path).read_bytes())
+
+    plan = maintenance.scan()
+    item = next(item for item in plan.items if item.file_id == verbatim.file_id)
+
+    assert item.action is not LibraryAuditAction.MERGE
+    assert item.duplicate_file_id is None
+
+    maintenance.apply(plan)
+    survivors = database.execute(
+        lambda connection: connection.execute("SELECT COUNT(*) FROM book_files").fetchone()[0]
+    )
+    assert survivors == 2

@@ -203,8 +203,8 @@ def _seed_book_row(database: Path) -> None:
         """
         INSERT INTO book_files
           (file_id, original_path, original_file_name, storage_path, file_format,
-           hash_algorithm, content_hash, state, created_at, updated_at)
-        VALUES ('f1','/orig/x.cbz','x.cbz','Books/ab/x.cbz','cbz','sha256','h','healthy',
+           hash_algorithm, source_hash, stored_hash, storage_kind, state, created_at, updated_at)
+        VALUES ('f1','/orig/x.cbz','x.cbz','Books/ab/x.cbz','cbz','sha256','h','h','verbatim','healthy',
                 '2026-01-01','2026-01-01')
         """
     )

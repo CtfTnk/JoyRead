@@ -31,6 +31,7 @@
     "individual_read_window": "独立した読書ウィンドウ",
     "inspect_title_control": "Windows/Linux タイトルコントロールを検査",
     "import_folder_depth": "インポートフォルダーの深さ",
+    "canonical_import_policy": "インポート時にアーカイブを変換",
     "nested_archive_depth": "ネストされたアーカイブの深さ",
     "archive_global_file_depth": "アーカイブ全体のファイル深度",
     "archive_max_source_size_enabled": "アーカイブサイズを制限",
@@ -58,7 +59,10 @@
     "btn_select": "選択",
     "btn_verify": "検証",
     "reset_library": "ライブラリのリセット",
-    "btn_clear": "クリア"
+    "btn_clear": "クリア",
+    "canonical_import_never": "変換しない",
+    "canonical_import_expensive": "低速・入れ子形式のみ",
+    "canonical_import_always": "常に変換"
   },
   "menu": {
     "read": "読む",
@@ -256,7 +260,15 @@
     "drop_count_one": "1 件",
     "drop_count_many": "{count} 件",
     "drop_confirm_importing_one": "1 件をインポート中",
-    "drop_confirm_importing_many": "{count} 件をインポート中"
+    "drop_confirm_importing_many": "{count} 件をインポート中",
+    "import_progress_title": "インポート中",
+    "import_progress_preparing": "準備中…",
+    "import_progress_item": "{total} 件中 {index} 件目",
+    "import_progress_staging": "コピー中…",
+    "import_progress_inspecting": "内容を確認中…",
+    "import_progress_converting": "{total} ページ中 {done} ページを変換中",
+    "import_progress_recording": "ライブラリに追加中…",
+    "import_progress_extracting": "ページを展開中…"
   },
   "detail": {
     "author_prefix": "著者：",

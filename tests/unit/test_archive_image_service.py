@@ -475,7 +475,7 @@ def test_archive_source_size_limit_rejects_before_scanning_and_validates_cleanly
         ArchiveImageService().open(archive_path, limits=limits)
 
     assert error.value.limit == "source_bytes"
-    validation = ArchiveImageService().validate_archive(archive_path, limits=limits)
+    validation = ArchiveImageService().probe_archive(archive_path, limits=limits)
     assert validation.code == ArchiveValidationCode.RESOURCE_LIMIT_EXCEEDED
     assert validation.error_type == ArchiveResourceLimitError.__name__
 
@@ -938,21 +938,21 @@ def test_encrypted_zip_without_password_is_controlled(tmp_path: Path) -> None:
 
 
 def test_probe_reports_encrypted_archive_without_prompting(tmp_path: Path) -> None:
+    """Encryption is an answer the probe returns, never something it asks about.
+
+    The probe has no password parameters at all now, so "did not prompt" is a
+    property of the signature rather than of the implementation.
+    """
+
     archive_path = tmp_path / "encrypted.cbz"
     _write_encrypted_cbz(archive_path)
-    provider_calls = []
 
-    result = ArchiveImageService().probe_archive(
-        archive_path,
-        password_policy=ArchivePasswordPolicy.FORBID,
-        password_provider=lambda request: provider_calls.append(request) or "secret",
-    )
+    result = ArchiveImageService().probe_archive(archive_path)
 
     assert result.is_valid is False
     assert result.code == ArchiveValidationCode.PASSWORD_REQUIRED
     assert result.error_type == "ArchivePasswordRequired"
     assert "Password-protected archive" in result.message
-    assert provider_calls == []
 
 
 def test_probe_does_not_recurse_into_nested_encrypted_archives(tmp_path: Path) -> None:
@@ -965,10 +965,9 @@ def test_probe_does_not_recurse_into_nested_encrypted_archives(tmp_path: Path) -
         },
     )
 
-    probe = ArchiveImageService().probe_archive(
-        archive_path,
-        password_policy=ArchivePasswordPolicy.FORBID,
-    )
+    # The shallow probe cannot see the nested encryption -- that is exactly
+    # why importing needs ``inspect_for_import`` instead.
+    probe = ArchiveImageService().probe_archive(archive_path)
     requests = []
     session = ArchiveImageService().open(
         archive_path,
@@ -1194,7 +1193,14 @@ def test_probe_leaves_undecodable_image_errors_for_page_reads(tmp_path: Path) ->
         service.open(archive_path).get_page(0)
 
 
-def test_probe_does_not_use_password_to_verify_encrypted_archive(tmp_path: Path) -> None:
+def test_probe_reports_encryption_and_cannot_be_given_a_password(tmp_path: Path) -> None:
+    """The probe answers "is this encrypted", it never tries to get past it.
+
+    Previously it accepted a ``password_provider`` and documented that it
+    ignored it. A parameter that cannot affect the result is a trap, so the
+    guarantee is now in the signature: there is nothing to pass.
+    """
+
     archive_path = tmp_path / "encrypted.cbz"
     with pyzipper.AESZipFile(
         archive_path,
@@ -1212,9 +1218,10 @@ def test_probe_does_not_use_password_to_verify_encrypted_archive(tmp_path: Path)
     assert required.code == ArchiveValidationCode.PASSWORD_REQUIRED
     assert required.error_type == "ArchivePasswordRequired"
 
-    accepted = service.probe_archive(archive_path, password_provider=lambda _request: "secret")
-    assert accepted.code == ArchiveValidationCode.PASSWORD_REQUIRED
-    assert accepted.error_type == "ArchivePasswordRequired"
+    with pytest.raises(TypeError):
+        service.probe_archive(archive_path, password_provider=lambda _request: "secret")
+
+    # open() is the access path, and it still takes one.
     assert service.open(archive_path, password_provider=lambda _request: "secret").page_count == 1
 
 
@@ -1269,7 +1276,7 @@ def test_rar_missing_backend_is_controlled(tmp_path: Path, monkeypatch: pytest.M
     with pytest.raises(ArchiveDependencyMissing):
         ArchiveImageService().open(archive_path)
 
-    result = ArchiveImageService().validate_archive(archive_path)
+    result = ArchiveImageService().probe_archive(archive_path)
     assert result.code == ArchiveValidationCode.DEPENDENCY_MISSING
     assert result.error_type == "ArchiveDependencyMissing"
     assert "Tried:" in result.message

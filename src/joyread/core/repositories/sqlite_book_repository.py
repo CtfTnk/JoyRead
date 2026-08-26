@@ -165,7 +165,7 @@ class SqliteBookRepository(BookRepository):
                     book_files.original_path,
                     book_files.original_file_name,
                     book_files.hash_algorithm,
-                    book_files.content_hash,
+                    book_files.stored_hash,
                     book_files.state
                 FROM books
                 JOIN book_files ON book_files.file_id = books.file_id
@@ -1067,7 +1067,7 @@ def _export_record_from_row(
         storage_path=_resolve_managed(resolver, row["storage_path"]),
         original_file_name=_original_file_name_from_row(row),
         hash_algorithm=row["hash_algorithm"],
-        content_hash=row["content_hash"],
+        stored_hash=row["stored_hash"],
         is_missing=row["state"] != "healthy",
     )
 

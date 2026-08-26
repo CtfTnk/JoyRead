@@ -30,7 +30,11 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.logging import log_event
 from joyread.core.models.tag import Tag
 from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
-from joyread.core.services.import_service import BOOK_EXTENSIONS
+from joyread.core.services.import_service import (
+    BOOK_EXTENSIONS,
+    ImportProgress,
+    ImportStage,
+)
 from joyread.core.services.library_maintenance_service import LibraryAuditPlan, LibraryAuditReport
 from joyread.app.tasking import TaskPriority
 from joyread.core.models.collection import Collection
@@ -484,16 +488,15 @@ class MainWindow(QMainWindow):
             return
         settings = self._settings_for_import()
         logger.info("Import from drop count=%d", len(paths))
-        self._context.task_service.submit(
+        self._submit_import(
             "import-dropped",
-            lambda: self._context.import_service.import_paths(
+            lambda emit: self._context.import_service.import_paths(
                 list(paths),
                 max_depth=settings.import_folder_max_depth,
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                progress=emit,
             ),
-            on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _show_import_menu(self) -> None:
@@ -515,15 +518,14 @@ class MainWindow(QMainWindow):
             return
         settings = self._settings_for_import()
         logger.info("Import files selected count=%d", len(file_paths))
-        self._context.task_service.submit(
+        self._submit_import(
             "import-files",
-            lambda: self._context.import_service.import_files(
+            lambda emit: self._context.import_service.import_files(
                 [Path(path) for path in file_paths],
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                progress=emit,
             ),
-            on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _select_import_folder(self) -> None:
@@ -536,16 +538,15 @@ class MainWindow(QMainWindow):
             return
         settings = self._settings_for_import()
         logger.info("Import folder selected path=%s depth=%d", directory, settings.import_folder_max_depth)
-        self._context.task_service.submit(
+        self._submit_import(
             "import-folder",
-            lambda: self._context.import_service.import_folder(
+            lambda emit: self._context.import_service.import_folder(
                 directory,
                 max_depth=settings.import_folder_max_depth,
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                progress=emit,
             ),
-            on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
 
     def _show_reader_window(
@@ -707,16 +708,40 @@ class MainWindow(QMainWindow):
             return
         settings = self._settings_for_import()
         logger.info("Import manifest selected path=%s", manifest_path)
-        self._context.task_service.submit(
+        self._submit_import(
             "import-manifest",
-            lambda: self._context.import_service.import_manifest(
+            lambda emit: self._context.import_service.import_manifest(
                 manifest_path,
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                progress=emit,
             ),
-            on_success=self._handle_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error)),
         )
+
+    def _submit_import(self, name: str, run) -> None:  # noqa: ANN001
+        """Run an import off the UI thread with a live progress dialog.
+
+        ``submit_stream`` rather than ``submit`` because the interesting part of
+        an import is now what it is *doing*: converting an archive re-reads and
+        rewrites every page, so a silent wait is much longer than it used to be.
+        """
+
+        self.dialog_overlay.show_progress(
+            t("dialog.import_progress_title"), t("dialog.import_progress_preparing")
+        )
+        self._context.task_service.submit_stream(
+            name,
+            run,
+            on_item=self._handle_import_progress,
+            on_success=self._handle_import_finished,
+            on_failure=self._handle_import_failed,
+        )
+
+    def _handle_import_progress(self, event) -> None:  # noqa: ANN001
+        self.dialog_overlay.update_progress(_import_progress_message(event))
+
+    def _handle_import_failed(self, error: Exception) -> None:
+        self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error))
 
     def _handle_import_finished(self, result) -> None:  # noqa: ANN001
         logger.info(
@@ -1848,3 +1873,34 @@ def _format_byte_count(value: int) -> str:
     if unit_index == 0:
         return f"{amount} {units[unit_index]}"
     return f"{displayed:.1f} {units[unit_index]}"
+
+
+#: Locale key per ordinal stage. ``CONVERTING`` is absent on purpose: it is the
+#: one stage with a real denominator, so it gets its own message with a count
+#: rather than a generic label.
+_IMPORT_STAGE_KEYS: dict[ImportStage, str] = {
+    ImportStage.STAGING: "dialog.import_progress_staging",
+    ImportStage.INSPECTING: "dialog.import_progress_inspecting",
+    ImportStage.EXTRACTING: "dialog.import_progress_extracting",
+    ImportStage.RECORDING: "dialog.import_progress_recording",
+}
+
+
+def _import_progress_message(event: ImportProgress) -> str:
+    """Three lines: where in the batch, which book, and what is happening."""
+
+    name = Path(event.source_path).name or event.source_path
+    position = t(
+        "dialog.import_progress_item",
+        index=str(event.item_index + 1),
+        total=str(event.item_count),
+    )
+    if event.stage is ImportStage.CONVERTING and event.unit_total > 0:
+        detail = t(
+            "dialog.import_progress_converting",
+            done=str(event.unit_done),
+            total=str(event.unit_total),
+        )
+    else:
+        detail = t(_IMPORT_STAGE_KEYS.get(event.stage, "dialog.import_progress_preparing"))
+    return f"{position}\n{name}\n{detail}"

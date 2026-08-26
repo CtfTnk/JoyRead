@@ -5,17 +5,38 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
+from enum import StrEnum
 import json
 import os
 from pathlib import Path
 import sqlite3
 from time import perf_counter
+from typing import Callable
 from uuid import uuid4
 
 from joyread.core.archive import (
     ArchiveImageService,
     ArchiveOpenLimits,
     ArchiveValidationCode,
+)
+from joyread.core.archive.canonical import (
+    CanonicalWriteCancelled,
+    CanonicalWriter,
+    CbzWriter,
+)
+from joyread.core.archive.errors import ArchiveCancelled, ArchiveError
+from joyread.core.archive.inspection import ArchiveImportInspection, ImportRejection
+from joyread.core.archive.metadata import read_archive_metadata, select_sidecars
+from joyread.core.models.archive_metadata import BookMetadata
+from joyread.core.models.import_policy import (
+    DEFAULT_CANONICAL_IMPORT_POLICY,
+    CanonicalImportPolicy,
+    should_convert,
+)
+from joyread.core.models.storage_layout import (
+    STORAGE_KIND_CANONICAL,
+    STORAGE_KIND_VERBATIM,
+    storage_target,
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
@@ -33,6 +54,82 @@ BOOK_EXTENSIONS = SUPPORTED_READER_EXTENSIONS
 logger = logging.getLogger(__name__)
 
 
+class ImportStage(StrEnum):
+    """Where an item is in the pipeline.
+
+    Only ``CONVERTING`` has an honest denominator -- the page count is known
+    once inspection finishes. The others stay ordinal rather than reporting a
+    fabricated percentage over work whose size nobody has measured yet.
+
+    ``EXTRACTING`` is separate from ``CONVERTING`` because it really is a
+    separate wait: a container is pulled out of the source in one pass before
+    any of its pages can be written, and a nested book alternates between the
+    two once per container.
+    """
+
+    STAGING = "staging"
+    INSPECTING = "inspecting"
+    EXTRACTING = "extracting"
+    CONVERTING = "converting"
+    RECORDING = "recording"
+
+
+@dataclass(frozen=True)
+class ImportProgress:
+    """One progress tick for one item of a batch."""
+
+    stage: ImportStage
+    source_path: str
+    item_index: int
+    item_count: int
+    #: Pages written and pages expected. Both zero outside ``CONVERTING``.
+    unit_done: int = 0
+    unit_total: int = 0
+
+
+class _ItemProgress:
+    """Binds a batch's callback to one item so stages need not repeat identity.
+
+    A plain class rather than a closure: this outlives the loop iteration that
+    made it, and a closure would keep that whole frame -- ``items``, every
+    interim result -- alive with it.
+    """
+
+    __slots__ = ("_callback", "_source", "_index", "_count")
+
+    def __init__(
+        self,
+        callback: "Callable[[ImportProgress], None] | None",
+        source: str,
+        index: int,
+        count: int,
+    ) -> None:
+        self._callback = callback
+        self._source = source
+        self._index = index
+        self._count = count
+
+    def stage(self, stage: ImportStage) -> None:
+        self._emit(stage, 0, 0)
+
+    def converting(self, done: int, total: int) -> None:
+        self._emit(ImportStage.CONVERTING, done, total)
+
+    def _emit(self, stage: ImportStage, done: int, total: int) -> None:
+        if self._callback is None:
+            return
+        self._callback(
+            ImportProgress(
+                stage=stage,
+                source_path=self._source,
+                item_index=self._index,
+                item_count=self._count,
+                unit_done=done,
+                unit_total=total,
+            )
+        )
+
+
 @dataclass(frozen=True)
 class ImportItemResult:
     source_path: str
@@ -40,6 +137,11 @@ class ImportItemResult:
     book_id: str | None = None
     file_id: str | None = None
     message: str | None = None
+    #: Tags that were dropped rather than linked, almost always because the
+    #: library is at its tag capacity. The import still succeeded, so the status
+    #: stays ``imported`` -- but "succeeded, minus some of your metadata" is not
+    #: something a log line alone should carry.
+    tags_rejected: int = 0
 
 
 @dataclass(frozen=True)
@@ -76,6 +178,19 @@ class _ValidationFailure:
     archive_validation_code: ArchiveValidationCode | None = None
 
 
+@dataclass(frozen=True)
+class _StagedArtifact:
+    """The file that will be stored, and what the row should say about it."""
+
+    path: Path
+    stored_hash: str
+    storage_kind: str
+    #: User-facing result text. Conversion is visible in the import list because
+    #: it changed what the library holds, and a silent change is worse than a
+    #: noisy one.
+    message: str
+
+
 class ImportService:
     """Orchestrates the multi-step process of importing books into the library.
 
@@ -107,6 +222,8 @@ class ImportService:
         archive_limits: ArchiveOpenLimits | None = None,
         verify_imported_file_integrity: bool = True,
         maintenance_coordinator: LibraryMaintenanceCoordinator | None = None,
+        canonical_import_policy: CanonicalImportPolicy = DEFAULT_CANONICAL_IMPORT_POLICY,
+        canonical_writer: CanonicalWriter | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -118,6 +235,8 @@ class ImportService:
         self._archive_limits = archive_limits or ArchiveOpenLimits()
         self._verify_imported_file_integrity = bool(verify_imported_file_integrity)
         self._maintenance_coordinator = maintenance_coordinator or LibraryMaintenanceCoordinator()
+        self._canonical_import_policy = canonical_import_policy
+        self._canonical_writer = canonical_writer or CbzWriter()
 
     def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
         """Use new limits for later validation without disrupting active jobs."""
@@ -127,12 +246,19 @@ class ImportService:
     def set_verify_imported_file_integrity(self, enabled: bool) -> None:
         self._verify_imported_file_integrity = bool(enabled)
 
+    def set_canonical_import_policy(self, policy: CanonicalImportPolicy) -> None:
+        """Change the policy without disrupting an import already running."""
+
+        self._canonical_import_policy = policy
+
     def import_manifest(
         self,
         manifest_path: str | Path,
         *,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         """Import every entry in a JSON manifest file.
 
@@ -156,6 +282,8 @@ class ImportService:
             manifest_path=path,
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
+            progress=progress,
+            is_cancelled=is_cancelled,
         )
 
     def import_files(
@@ -164,6 +292,8 @@ class ImportService:
         *,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         """Import a list of explicit source paths chosen by the user.
 
@@ -183,6 +313,8 @@ class ImportService:
             manifest_path=None,
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
+            progress=progress,
+            is_cancelled=is_cancelled,
         )
 
     def preflight_file(
@@ -231,12 +363,16 @@ class ImportService:
         max_depth: int = 1,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         folder = Path(path).expanduser()
         files = _supported_files_within_depth(folder, max_depth=max_depth)
         logger.info("Import folder requested path=%s depth=%d matched=%d", folder, max_depth, len(files))
         return self.import_files(
             files,
+            progress=progress,
+            is_cancelled=is_cancelled,
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
         )
@@ -248,6 +384,8 @@ class ImportService:
         max_depth: int = 1,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         """Import a mixed selection of files and folders as one batch.
 
@@ -306,6 +444,8 @@ class ImportService:
             files,
             nested_archive_max_depth=nested_archive_max_depth,
             archive_global_file_max_depth=archive_global_file_max_depth,
+            progress=progress,
+            is_cancelled=is_cancelled,
         )
 
     def import_items(
@@ -315,6 +455,8 @@ class ImportService:
         manifest_path: Path | None,
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         """Serialize a complete import batch against audit and storage moves."""
 
@@ -346,6 +488,8 @@ class ImportService:
                         nested_archive_max_depth=nested_archive_max_depth,
                         archive_global_file_max_depth=archive_global_file_max_depth,
                         limits=limits,
+                        progress=progress,
+                        is_cancelled=is_cancelled,
                     )
             except Exception as exc:
                 logger.error(
@@ -373,6 +517,8 @@ class ImportService:
         nested_archive_max_depth: int | None = None,
         archive_global_file_max_depth: int | None = None,
         limits: ArchiveOpenLimits,
+        progress: Callable[[ImportProgress], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         """Core import loop: validate, hash, copy, insert per item.
 
@@ -399,9 +545,17 @@ class ImportService:
 
         results: list[ImportItemResult] = []
         manifest_dir = manifest_path.parent if manifest_path is not None else None
-        for item in items:
+        for index, item in enumerate(items):
             source_value = str(item.get("source_path") or "")
             external_id = item.get("external_id")
+            if is_cancelled is not None and is_cancelled():
+                # Stop between items rather than recording the rest as failures.
+                # Everything already imported stays imported: a cancelled batch
+                # is a shorter batch, not a rolled-back one.
+                logger.info(
+                    "Import batch cancelled before item %d of %d", index + 1, len(items)
+                )
+                break
             try:
                 result = self._import_one(
                     batch_id=batch_id,
@@ -409,7 +563,26 @@ class ImportService:
                     source_display=source_value,
                     external_id=str(external_id) if external_id is not None else None,
                     limits=limits,
+                    report=_ItemProgress(
+                        progress, source_value, index, len(items)
+                    ),
+                    is_cancelled=is_cancelled,
                 )
+            except CanonicalWriteCancelled:
+                # Cancelling mid-conversion is a choice, not a defect, so the
+                # item is skipped rather than failed -- and the batch stops
+                # instead of carrying on into work the user just called off.
+                logger.info("Import cancelled during conversion of %s", source_value)
+                results.append(
+                    self._record_item(
+                        batch_id,
+                        source_value,
+                        str(external_id) if external_id is not None else None,
+                        status="skipped",
+                        message="Import cancelled.",
+                    )
+                )
+                break
             except Exception as exc:
                 logger.warning("Import item %s failed: %s", source_value, exc, exc_info=True)
                 result = self._record_item(
@@ -433,7 +606,16 @@ class ImportService:
                 and result.book_id is not None
                 and result.status in {"imported", "duplicate"}
             ):
-                self._apply_manifest_tags(result.book_id, item.get("tags"))
+                rejected = self._apply_tags(result.book_id, item.get("tags"))
+                if rejected:
+                    # Added, not assigned: the archive's own sidecar may already
+                    # have had tags rejected during the import, and reporting
+                    # only the manifest's would under-count what was dropped.
+                    # The row is already written, so this rides on the returned
+                    # result rather than the persisted message.
+                    result = replace(
+                        result, tags_rejected=result.tags_rejected + rejected
+                    )
             results.append(result)
 
         completed_at = _now()
@@ -475,12 +657,24 @@ class ImportService:
         )
         return batch_result
 
-    def _apply_manifest_tags(self, book_id: str, raw_tags: object) -> None:
+    def _apply_tags(self, book_id: str, raw_tags: object) -> int:
+        """Link tag names to a book, whatever named them.
+
+        Two sources feed this: a manifest's ``tags`` list, and the tags an
+        archive's own metadata sidecar carried. They get identical treatment
+        on purpose -- a tag is a tag, and the capacity limit, the
+        normalisation, and the rejection logging should not depend on how it
+        arrived.
+
+        Returns how many were dropped, so a caller can report an import that
+        succeeded with less metadata than the archive offered.
+        """
+
         if not isinstance(raw_tags, list):
-            return
+            return 0
         tag_service = self._tag_service
         if tag_service is None:
-            return
+            return 0
         created_or_reused = 0
         rejected = 0
         for entry in raw_tags:
@@ -514,6 +708,7 @@ class ImportService:
                 book_id,
                 created_or_reused,
             )
+        return rejected
 
     def _import_one(
         self,
@@ -523,6 +718,8 @@ class ImportService:
         source_display: str,
         external_id: str | None,
         limits: ArchiveOpenLimits,
+        report: _ItemProgress | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportItemResult:
         failure = self._validate_source_candidate(source_path)
         if failure is not None:
@@ -558,9 +755,11 @@ class ImportService:
             if duplicate is not None:
                 return self._duplicate_result(batch_id, source_display, external_id, duplicate)
 
+        if report is not None:
+            report.stage(ImportStage.STAGING)
         staging_path = self._staging_path(source_path)
         try:
-            content_hash = self._hash_service.copy_with_hash(
+            staged_hash = self._hash_service.copy_with_hash(
                 source_path,
                 staging_path,
                 self._hash_algorithm,
@@ -569,7 +768,7 @@ class ImportService:
             staging_path.unlink(missing_ok=True)
             raise
 
-        if source_hash is not None and source_hash != content_hash:
+        if source_hash is not None and source_hash != staged_hash:
             staging_path.unlink(missing_ok=True)
             return self._record_item(
                 batch_id,
@@ -579,12 +778,14 @@ class ImportService:
                 message="Source file changed while it was being imported.",
             )
 
-        duplicate = self._find_duplicate(content_hash)
+        duplicate = self._find_duplicate(staged_hash)
         if duplicate is not None:
             staging_path.unlink(missing_ok=True)
             return self._duplicate_result(batch_id, source_display, external_id, duplicate)
 
-        staged_failure = self._validate_staged_file(staging_path, limits)
+        if report is not None:
+            report.stage(ImportStage.INSPECTING)
+        staged_failure, inspection = self._validate_staged_file(staging_path, limits)
         if staged_failure is not None:
             staging_path.unlink(missing_ok=True)
             return self._record_item(
@@ -595,16 +796,38 @@ class ImportService:
                 message=staged_failure.message,
             )
 
+        metadata = (
+            read_archive_metadata(inspection.metadata_entries)
+            if inspection is not None
+            else BookMetadata()
+        )
+        file_id = str(uuid4())
         try:
-            storage_path, created_target = self._publish_staging(staging_path, content_hash)
+            artifact = self._stage_artifact(
+                staging_path,
+                staged_hash,
+                inspection=inspection,
+                limits=limits,
+                is_cancelled=is_cancelled,
+                report=report,
+            )
         except Exception:
             staging_path.unlink(missing_ok=True)
             raise
-        file_id = str(uuid4())
+
+        try:
+            storage_path, created_target = self._publish_staging(
+                artifact.path, file_id, artifact.stored_hash, artifact.storage_kind
+            )
+        except Exception:
+            artifact.path.unlink(missing_ok=True)
+            raise
+        if report is not None:
+            report.stage(ImportStage.RECORDING)
         book_id = str(uuid4())
         now = _now()
-        file_format = source_path.suffix.lstrip(".").upper()
-        book_type = _book_type_for_suffix(source_path.suffix.lower())
+        file_format = artifact.path.suffix.lstrip(".").upper()
+        book_type = _book_type_for_suffix(artifact.path.suffix.lower())
         # Persist the managed file location relative to the storage root so the
         # whole library folder can be moved or re-pointed without rewriting rows.
         relative_storage_path = self._paths.resolver.to_storage_relative(storage_path)
@@ -619,8 +842,18 @@ class ImportService:
                     storage_path=relative_storage_path,
                     file_format=file_format,
                     hash_algorithm=self._hash_algorithm,
-                    content_hash=content_hash,
-                    title=source_path.stem,
+                    # Two hashes because they answer different questions. The
+                    # source hash identifies what the user handed over, so it
+                    # keeps naming the same book after conversion repackages it;
+                    # the stored hash is the artifact's own integrity baseline.
+                    # A verbatim import makes them equal, which is why the split
+                    # is invisible until something actually repackages.
+                    source_hash=staged_hash,
+                    stored_hash=artifact.stored_hash,
+                    storage_kind=artifact.storage_kind,
+                    title=metadata.preferred_title or source_path.stem,
+                    author=metadata.author,
+                    language_tag=metadata.language_tag,
                     book_type=book_type,
                     now=now,
                 ),
@@ -630,6 +863,7 @@ class ImportService:
             if created_target:
                 storage_path.unlink(missing_ok=True)
             raise
+        rejected = self._apply_tags(book_id, list(metadata.tags)) if metadata.tags else 0
         return self._record_item(
             batch_id,
             source_display,
@@ -637,7 +871,8 @@ class ImportService:
             status="imported",
             book_id=book_id,
             file_id=file_id,
-            message="Imported.",
+            message=artifact.message,
+            tags_rejected=rejected,
         )
 
     def _validate_source_candidate(self, source_path: Path) -> _ValidationFailure | None:
@@ -686,33 +921,139 @@ class ImportService:
         self,
         staging_path: Path,
         limits: ArchiveOpenLimits,
-    ) -> _ValidationFailure | None:
+    ) -> tuple[_ValidationFailure | None, ArchiveImportInspection | None]:
+        """Decide whether the library may keep the staged file.
+
+        Archives go through ``inspect_for_import`` rather than ``probe_archive``:
+        the probe only ever saw the top level, so an encrypted or unreadable
+        *nested* archive used to be accepted and then surfaced as a broken book
+        when the reader reached it. The walk also returns the metadata sidecars,
+        which is why the inspection is returned rather than reduced to a verdict
+        -- re-opening the archive to fetch them would mean materializing every
+        nested container a second time.
+        """
+
         suffix = staging_path.suffix.lower()
         if suffix in ARCHIVE_EXTENSIONS:
-            probe = self._archive_service.probe_archive(staging_path, limits=limits)
-            if probe.code != ArchiveValidationCode.OK:
-                status = (
-                    "skipped"
-                    if probe.code == ArchiveValidationCode.PASSWORD_REQUIRED
-                    else "failed"
-                )
-                message = (
-                    f"Skipped encrypted archive: {staging_path.name}"
-                    if probe.code == ArchiveValidationCode.PASSWORD_REQUIRED
-                    else probe.message
-                )
-                return _ValidationFailure(
-                    status,
-                    message,
-                    archive_validation_code=probe.code,
-                )
-        elif suffix in PDF_EXTENSIONS:
+            inspection = self._archive_service.inspect_for_import(staging_path, limits=limits)
+            if inspection.accepted:
+                return None, inspection
+            return _import_rejection_failure(inspection, staging_path), None
+        if suffix in PDF_EXTENSIONS:
             if self._pdf_service is None:
-                return _ValidationFailure("failed", "PDF support is unavailable in this runtime.")
+                return (
+                    _ValidationFailure("failed", "PDF support is unavailable in this runtime."),
+                    None,
+                )
             probe = self._pdf_service.probe_pdf(staging_path)
             if not probe.is_valid:
-                return _ValidationFailure("failed", probe.message)
-        return None
+                return _ValidationFailure("failed", probe.message), None
+        return None, None
+
+    def _stage_artifact(
+        self,
+        staging_path: Path,
+        staged_hash: str,
+        *,
+        inspection: ArchiveImportInspection | None,
+        limits: ArchiveOpenLimits,
+        is_cancelled: Callable[[], bool] | None,
+        report: _ItemProgress | None,
+    ) -> _StagedArtifact:
+        """Produce the file that will actually be stored, converting if asked.
+
+        The original is never kept alongside a conversion: the user still has
+        their own copy where they put it, and storing both would make one book
+        two rows with two different identities.
+        """
+
+        suffix = staging_path.suffix.lower()
+        convert = inspection is not None and should_convert(
+            self._canonical_import_policy,
+            suffix=suffix,
+            has_nested_archives=inspection.nested_archive_count > 0,
+        )
+        if not convert:
+            # The copy already hashed every byte on its way through; re-reading
+            # the file to learn what it just told us would double import I/O.
+            return _StagedArtifact(
+                staging_path, staged_hash, STORAGE_KIND_VERBATIM, "Imported."
+            )
+
+        canonical_path = staging_path.with_name(
+            f"{staging_path.stem}.canonical{self._canonical_writer.suffix}"
+        )
+        if report is not None and inspection is not None:
+            # Announce conversion before it starts, not on the first written
+            # page. Bulk extraction pulls the whole container out before the
+            # writer gets page one, so on a large solid archive the dialog
+            # otherwise sits on "Checking contents..." through nearly all of the
+            # work and flips to "Converting" once it is essentially done.
+            report.converting(0, inspection.image_count)
+        try:
+            self._archive_service.convert_to_canonical(
+                staging_path,
+                canonical_path,
+                limits=limits,
+                writer=self._canonical_writer,
+                # From the inspection that already ran at the gate. Letting the
+                # converter find these itself means a second full walk of every
+                # nested container, which is the expensive part of an import.
+                sidecars=select_sidecars(inspection.metadata_entries),
+                is_cancelled=is_cancelled,
+                on_page=(report.converting if report is not None else None),
+                on_extract=(
+                    (lambda: report.stage(ImportStage.EXTRACTING))
+                    if report is not None
+                    else None
+                ),
+            )
+        except CanonicalWriteCancelled:
+            canonical_path.unlink(missing_ok=True)
+            raise
+        except ArchiveCancelled as exc:
+            # ``ArchiveCancelled`` subclasses ``ArchiveError``, so without this
+            # it lands in the recovery branch below: a user who cancelled would
+            # get the book imported verbatim and reported as a success. It is
+            # the same event as ``CanonicalWriteCancelled`` -- the backend
+            # noticed first -- so it is reported as that one.
+            canonical_path.unlink(missing_ok=True)
+            raise CanonicalWriteCancelled() from exc
+        except (ArchiveError, OSError) as exc:
+            # The archive already passed the import gate, so its bytes are
+            # keepable as they are. Losing the conversion costs the user some
+            # read speed; losing the import would cost them the book.
+            logger.warning(
+                "Canonical conversion failed; storing the source as-is",
+                extra={
+                    "event": "import.canonical.failed",
+                    "category": "import",
+                    "status": "recovered",
+                    "error_type": type(exc).__name__,
+                    "reason": str(exc),
+                },
+            )
+            canonical_path.unlink(missing_ok=True)
+            return _StagedArtifact(
+                staging_path,
+                staged_hash,
+                STORAGE_KIND_VERBATIM,
+                "Imported without conversion.",
+            )
+
+        try:
+            stored_hash = self._hash_service.compute(canonical_path, self._hash_algorithm)
+        except Exception:
+            # Hash the artifact before dropping the source, and clean up the
+            # artifact if that fails. Otherwise a failed hash strands a full
+            # copy of the book in staging with nothing referencing it, and the
+            # source it was built from is already gone.
+            canonical_path.unlink(missing_ok=True)
+            raise
+        staging_path.unlink(missing_ok=True)
+        return _StagedArtifact(
+            canonical_path, stored_hash, STORAGE_KIND_CANONICAL, "Imported and converted."
+        )
 
     def _staging_path(self, source_path: Path) -> Path:
         suffix = source_path.suffix.lower()
@@ -748,14 +1089,31 @@ class ImportService:
                 continue
             logger.info("Reclaimed abandoned import staging file (%d bytes)", size)
 
-    def _publish_staging(self, staging_path: Path, content_hash: str) -> tuple[Path, bool]:
-        suffix = staging_path.suffix.lower()
-        target_dir = self._paths.paths.books / content_hash[:2]
-        target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / f"{content_hash}{suffix}"
+    def _publish_staging(
+        self,
+        staging_path: Path,
+        file_id: str,
+        stored_hash: str,
+        storage_kind: str,
+    ) -> tuple[Path, bool]:
+        """Move the staged artifact to the one path its row owns.
+
+        ``storage_target`` decides that path, and library maintenance asks the
+        same function -- they have to agree or maintenance will "repair" a
+        healthy book by relocating it somewhere import would never look.
+        """
+
+        target = storage_target(
+            self._paths.paths.books,
+            storage_kind=storage_kind,
+            stored_hash=stored_hash,
+            file_id=file_id,
+            suffix=staging_path.suffix.lower(),
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
         if target.exists():
             existing_hash = self._hash_service.compute(target, self._hash_algorithm)
-            if existing_hash != content_hash:
+            if existing_hash != stored_hash:
                 raise RuntimeError("Managed library target conflicts with a different file.")
             staging_path.unlink(missing_ok=True)
             return target, False
@@ -780,7 +1138,15 @@ class ImportService:
             message="Book already exists in JoyRead.",
         )
 
-    def _find_duplicate(self, content_hash: str) -> sqlite3.Row | None:
+    def _find_duplicate(self, source_hash: str) -> sqlite3.Row | None:
+        """Match on what the user handed over, never on what we stored.
+
+        These are the same string today. Once canonical import repackages an
+        archive they diverge, and matching on the stored artifact would let the
+        same source import twice -- a rebuilt CBZ does not hash like the CBR it
+        came from.
+        """
+
         return self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -791,9 +1157,9 @@ class ImportService:
                 FROM book_files
                 LEFT JOIN books ON books.file_id = book_files.file_id
                 LEFT JOIN private_books ON private_books.file_id = book_files.file_id
-                WHERE book_files.hash_algorithm = ? AND book_files.content_hash = ?
+                WHERE book_files.hash_algorithm = ? AND book_files.source_hash = ?
                 """,
-                (self._hash_algorithm, content_hash),
+                (self._hash_algorithm, source_hash),
             ).fetchone(),
             DatabasePriority.HIGH,
         )
@@ -808,6 +1174,7 @@ class ImportService:
         book_id: str | None = None,
         file_id: str | None = None,
         message: str | None = None,
+        tags_rejected: int = 0,
     ) -> ImportItemResult:
         now = _now()
         self._database.execute(
@@ -829,7 +1196,36 @@ class ImportService:
             book_id=book_id,
             file_id=file_id,
             message=message,
+            tags_rejected=tags_rejected,
         )
+
+
+#: Rejections a user can act on by supplying a different file, versus ones they
+#: can act on by changing a setting. Both fail the import; only the wording and
+#: the reported status differ.
+_ENCRYPTED_REJECTIONS = frozenset(
+    {ImportRejection.ENCRYPTED_ROOT, ImportRejection.ENCRYPTED_NESTED}
+)
+
+
+def _import_rejection_failure(
+    inspection: ArchiveImportInspection,
+    staging_path: Path,
+) -> _ValidationFailure:
+    """Turn a refused inspection into the item status the batch reports.
+
+    Encryption stays ``skipped`` rather than ``failed``: it is the one rejection
+    that is not a defect in the file, and a batch that reports it as a failure
+    tells the user something is broken when nothing is.
+    """
+
+    if inspection.rejection in _ENCRYPTED_REJECTIONS:
+        return _ValidationFailure(
+            "skipped",
+            f"Skipped encrypted archive: {staging_path.name}",
+            archive_validation_code=ArchiveValidationCode.PASSWORD_REQUIRED,
+        )
+    return _ValidationFailure("failed", inspection.message)
 
 
 def _insert_imported_book(
@@ -842,10 +1238,14 @@ def _insert_imported_book(
     storage_path: str,
     file_format: str,
     hash_algorithm: str,
-    content_hash: str,
+    source_hash: str,
+    stored_hash: str,
+    storage_kind: str,
     title: str,
     book_type: str,
     now: str,
+    author: str | None = None,
+    language_tag: str = "und",
 ) -> None:
     connection.execute("BEGIN")
     try:
@@ -853,9 +1253,10 @@ def _insert_imported_book(
             """
             INSERT INTO book_files(
                 file_id, original_path, original_file_name, storage_path, file_format,
-                hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
+                hash_algorithm, source_hash, stored_hash, storage_kind,
+                state, integrity_error_code, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'healthy', NULL, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'healthy', NULL, ?, ?)
             """,
             (
                 file_id,
@@ -864,7 +1265,9 @@ def _insert_imported_book(
                 storage_path,
                 file_format,
                 hash_algorithm,
-                content_hash,
+                source_hash,
+                stored_hash,
+                storage_kind,
                 now,
                 now,
             ),
@@ -875,9 +1278,21 @@ def _insert_imported_book(
                 book_id, file_id, title, author, language_tag, book_type,
                 cover_path, is_favourite, created_at, updated_at
             )
-            VALUES (?, ?, ?, 'Unknown', 'und', ?, NULL, 0, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, 0, ?, ?)
             """,
-            (book_id, file_id, title, book_type, now, now),
+            (
+                book_id,
+                file_id,
+                title,
+                # ``Unknown`` and ``und`` are the schema's own defaults for
+                # "nobody told us", so an absent sidecar field lands exactly
+                # where an import with no sidecar at all would.
+                author or "Unknown",
+                language_tag,
+                book_type,
+                now,
+                now,
+            ),
         )
     except Exception:
         connection.execute("ROLLBACK")

@@ -99,6 +99,83 @@ def _migrate_book_files_v12(connection: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_book_files_v13(connection: sqlite3.Connection) -> None:
+    """Split ``content_hash`` into a source identity and a stored-artifact hash.
+
+    One column served four jobs -- duplicate detection, the content-addressed
+    storage filename, the integrity baseline maintenance re-hashes against, and
+    export verification -- and that worked only because import copies bytes
+    verbatim, so "what the user gave us" and "what is on disk" were the same
+    string.
+
+    Canonical import breaks that identity: the stored artifact is a repackaged
+    CBZ that no source hash predicts. Keeping one column would force a choice
+    between duplicate detection failing (the same CBR re-imports because its
+    rebuilt CBZ hashes differently) and integrity checks failing (maintenance
+    re-hashes the CBZ and flags every converted book as corrupt).
+
+    So the jobs separate here, while output is still byte-verbatim and the two
+    values are provably equal. That is deliberate sequencing: it makes this
+    migration verifiable on its own, before any conversion code exists to
+    confound it.
+
+    ``storage_kind`` records which writer produced the file on disk, so a later
+    reader never has to infer it from the suffix.
+    """
+
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+    }
+    if "content_hash" not in columns:
+        raise sqlite3.OperationalError("book_files is missing content_hash before migration 13")
+    connection.execute(
+        """
+        CREATE TABLE book_files_v13 (
+            file_id TEXT PRIMARY KEY,
+            original_path TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            file_format TEXT NOT NULL,
+            hash_algorithm TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            stored_hash TEXT NOT NULL,
+            storage_kind TEXT NOT NULL CHECK (storage_kind IN ('verbatim', 'canonical')),
+            state TEXT NOT NULL CHECK (state IN ('healthy', 'missing', 'unavailable')),
+            integrity_error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(hash_algorithm, source_hash)
+        )
+        """
+    )
+    # Every existing row was stored verbatim, so both hashes are the value the
+    # single column already held. Lossless in both directions.
+    connection.execute(
+        """
+        INSERT INTO book_files_v13(
+            file_id, original_path, original_file_name, storage_path, file_format,
+            hash_algorithm, source_hash, stored_hash, storage_kind,
+            state, integrity_error_code, created_at, updated_at
+        )
+        SELECT
+            file_id, original_path, original_file_name, storage_path, file_format,
+            hash_algorithm, content_hash, content_hash, 'verbatim',
+            state, integrity_error_code, created_at, updated_at
+        FROM book_files
+        """
+    )
+    connection.execute("DROP TABLE book_files")
+    connection.execute("ALTER TABLE book_files_v13 RENAME TO book_files")
+    connection.execute(
+        "CREATE INDEX idx_book_files_source_hash ON book_files(hash_algorithm, source_hash)"
+    )
+    connection.execute(
+        "CREATE INDEX idx_book_files_stored_hash ON book_files(hash_algorithm, stored_hash)"
+    )
+    connection.execute("CREATE INDEX idx_book_files_state ON book_files(state)")
+
+
 MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
     (
         1,
@@ -404,6 +481,7 @@ MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
         """,
     ),
     (12, _migrate_book_files_v12),
+    (13, _migrate_book_files_v13),
 )
 
 

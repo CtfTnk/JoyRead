@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
-from PySide6.QtGui import QIcon, QMouseEvent
+from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -332,6 +332,16 @@ class SettingsPageWidget(QFrame):
         )
         import_folder_depth_item.value_changed.connect(self._viewmodel.set_import_folder_max_depth)
 
+        canonical_policy_item = SettingsDropdownItem(
+            t("settings.canonical_import_policy"),
+            self._viewmodel.canonical_import_policy_label,
+            self._viewmodel.canonical_import_policy_options,
+            self._resources,
+        )
+        canonical_policy_item.value_changed.connect(
+            self._viewmodel.set_canonical_import_policy
+        )
+
         library_banner = SectionBanner(t("settings.banner_library"), self._resources)
         verify_library = SettingsButtonItem(
             t("settings.verify_library_and_clean_cache"),
@@ -349,6 +359,7 @@ class SettingsPageWidget(QFrame):
             inspect_title_switch,
             import_banner,
             import_folder_depth_item,
+            canonical_policy_item,
             library_banner,
             verify_library,
         ]
@@ -864,6 +875,27 @@ class SettingsAddressItem(QFrame):
         layout.addWidget(option)
 
 
+def _dropdown_width(options: tuple[str, ...]) -> int:
+    """Wide enough for the longest option, never narrower than the design width.
+
+    Measured across *every* option rather than the current one, so choosing a
+    different value does not resize the control under the user's cursor. The
+    Figma width stays the floor, so the short dropdowns that already fit are
+    pixel-identical -- only one that would otherwise render its own default
+    clipped ("...sive and nested fo...") grows.
+    """
+
+    metrics = QFontMetrics(QLabel().font())
+    widest = max((metrics.horizontalAdvance(option) for option in options), default=0)
+    needed = widest + Theme.settings_dropdown_indicator_width + _DROPDOWN_TEXT_PADDING
+    return max(Theme.settings_dropdown_width, needed)
+
+
+#: Breathing room either side of the label, so text never touches the border or
+#: the chevron.
+_DROPDOWN_TEXT_PADDING = 20
+
+
 class SettingsDropdownButton(QFrame):
     value_changed = QtSignal(str)
 
@@ -882,7 +914,7 @@ class SettingsDropdownButton(QFrame):
         self.setProperty("class", "SettingsDropdownButton")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(Theme.settings_dropdown_width, Theme.settings_dropdown_height)
+        self.setFixedSize(_dropdown_width(options), Theme.settings_dropdown_height)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)

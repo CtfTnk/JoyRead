@@ -175,11 +175,6 @@ class ArchiveProbeResult:
     error_type: str | None = None
 
 
-# ``validate_archive`` was the public name before probes became deliberately
-# lightweight. Keep imports and annotations from integrations source-compatible
-# while returning the new shallow result shape.
-ArchiveValidationResult = ArchiveProbeResult
-
 
 @dataclass(frozen=True)
 class ArchivePage:

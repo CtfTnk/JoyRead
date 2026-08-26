@@ -12,6 +12,11 @@ from joyread.core.models.cache import (
     ArchiveCacheStrategy,
     normalize_archive_cache_strategy,
 )
+from joyread.core.models.import_policy import (
+    DEFAULT_CANONICAL_IMPORT_POLICY,
+    CanonicalImportPolicy,
+    normalize_canonical_import_policy,
+)
 from joyread.core.archive.limits import ArchiveOpenLimits, GIB, MEGAPIXEL
 from joyread.core.services.hidden_space_service import (
     HiddenSpacePasswordError,
@@ -72,6 +77,39 @@ ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MIN_SECONDS = 1
 ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS = 3600
 ARCHIVE_CACHE_STRATEGY_OPTIONS = tuple(ARCHIVE_CACHE_STRATEGY_LABELS.values())
 
+#: Locale key per policy. The *value* persisted is always the enum's own
+#: string; only the text shown to the user is translated, so switching
+#: language can never rewrite the setting.
+_CANONICAL_IMPORT_POLICY_KEYS: dict[CanonicalImportPolicy, str] = {
+    CanonicalImportPolicy.NEVER: "settings.canonical_import_never",
+    CanonicalImportPolicy.EXPENSIVE_AND_NESTED: "settings.canonical_import_expensive",
+    CanonicalImportPolicy.ALWAYS: "settings.canonical_import_always",
+}
+
+
+def canonical_import_policy_label(policy: CanonicalImportPolicy) -> str:
+    return locale_service.t(_CANONICAL_IMPORT_POLICY_KEYS[policy])
+
+
+def canonical_import_policy_options() -> tuple[str, ...]:
+    """Display labels in the enum's own order: least to most eager."""
+
+    return tuple(canonical_import_policy_label(policy) for policy in CanonicalImportPolicy)
+
+
+def canonical_import_policy_from_label(value: str) -> CanonicalImportPolicy:
+    """Map a shown label back to a policy.
+
+    Falls through to the model's normaliser, which understands the enum
+    values and the English labels -- so a value read from settings, or one
+    chosen before the language changed, still resolves.
+    """
+
+    for policy in CanonicalImportPolicy:
+        if value == canonical_import_policy_label(policy):
+            return policy
+    return normalize_canonical_import_policy(value)
+
 
 class SettingsViewModel:
     def __init__(
@@ -93,6 +131,7 @@ class SettingsViewModel:
         self.archive_open_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
         self.import_integrity_changed: Signal[None] = Signal()
+        self.canonical_import_policy_changed: Signal[None] = Signal()
         # The ViewModel owns only the user intent. AppContext/MainWindow owns
         # task scheduling, confirmation, and the maintenance service itself.
         self.library_maintenance_requested: Signal[None] = Signal()
@@ -138,6 +177,13 @@ class SettingsViewModel:
         )
         self.archive_cache_strategy = normalize_archive_cache_strategy(
             getattr(settings, "archive_cache_strategy", ArchiveCacheStrategy.ZIP_BUNDLE.value)
+        )
+        self.canonical_import_policy = normalize_canonical_import_policy(
+            getattr(
+                settings,
+                "canonical_import_policy",
+                DEFAULT_CANONICAL_IMPORT_POLICY.value,
+            )
         )
         self.import_folder_max_depth = _clamp_int(
             getattr(settings, "import_folder_max_depth", 1),
@@ -198,6 +244,14 @@ class SettingsViewModel:
     @property
     def archive_cache_strategy_label(self) -> str:
         return ARCHIVE_CACHE_STRATEGY_LABELS[self.archive_cache_strategy]
+
+    @property
+    def canonical_import_policy_label(self) -> str:
+        return canonical_import_policy_label(self.canonical_import_policy)
+
+    @property
+    def canonical_import_policy_options(self) -> tuple[str, ...]:
+        return canonical_import_policy_options()
 
     def set_section(self, section: SettingsSectionKey | str) -> None:
         normalized = SettingsSectionKey(section)
@@ -285,6 +339,15 @@ class SettingsViewModel:
         self.archive_cache_strategy = strategy
         self._persist(archive_cache_strategy=strategy.value)
         self.cache_budgets_changed.emit()
+        self.state_changed.emit()
+
+    def set_canonical_import_policy(self, value: str) -> None:
+        policy = canonical_import_policy_from_label(value)
+        if policy == self.canonical_import_policy:
+            return
+        self.canonical_import_policy = policy
+        self._persist(canonical_import_policy=policy.value)
+        self.canonical_import_policy_changed.emit()
         self.state_changed.emit()
 
     def set_import_folder_max_depth(self, value: int) -> None:

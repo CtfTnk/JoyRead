@@ -31,6 +31,7 @@
     "individual_read_window": "Individual Read Window",
     "inspect_title_control": "Inspect Windows/Linux Title Control",
     "import_folder_depth": "Import folder depth",
+    "canonical_import_policy": "Convert archives on import",
     "nested_archive_depth": "Nested archive depth",
     "archive_global_file_depth": "Archive global file depth",
     "archive_max_source_size_enabled": "Limit archive size",
@@ -58,7 +59,10 @@
     "btn_select": "Select",
     "btn_verify": "Verify",
     "reset_library": "Reset Library",
-    "btn_clear": "Clear"
+    "btn_clear": "Clear",
+    "canonical_import_never": "Never",
+    "canonical_import_expensive": "Expensive and nested formats",
+    "canonical_import_always": "Always"
   },
   "menu": {
     "read": "Read",
@@ -256,7 +260,15 @@
     "drop_count_one": "1 item",
     "drop_count_many": "{count} items",
     "drop_confirm_importing_one": "Importing 1 item",
-    "drop_confirm_importing_many": "Importing {count} items"
+    "drop_confirm_importing_many": "Importing {count} items",
+    "import_progress_title": "Importing",
+    "import_progress_preparing": "Preparing…",
+    "import_progress_item": "{index} of {total}",
+    "import_progress_staging": "Copying…",
+    "import_progress_inspecting": "Checking contents…",
+    "import_progress_converting": "Converting page {done} of {total}",
+    "import_progress_recording": "Adding to library…",
+    "import_progress_extracting": "Extracting pages…"
   },
   "detail": {
     "author_prefix": "Author: ",

@@ -10,6 +10,7 @@ from time import perf_counter
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.limits import GIB, MEGAPIXEL
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+from joyread.core.models.import_policy import normalize_canonical_import_policy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
@@ -429,6 +430,9 @@ class AppContext:
             self.import_service.set_verify_imported_file_integrity(
                 self.settings.verify_imported_file_integrity
             )
+            self.import_service.set_canonical_import_policy(
+                normalize_canonical_import_policy(self.settings.canonical_import_policy)
+            )
             if self.archive_warmup_coordinator is not None:
                 self.archive_warmup_coordinator.invalidate()
             self.shelf_viewmodel.invalidate_detail_thumbnail_source()
@@ -490,6 +494,9 @@ class AppContext:
             verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
             maintenance_coordinator=self.library_maintenance_coordinator,
             pdf_service=self.pdf_image_service,
+            canonical_import_policy=normalize_canonical_import_policy(
+                self.settings.canonical_import_policy
+            ),
         )
         self.library_maintenance_service = _create_library_maintenance_service(
             self.paths,
@@ -568,6 +575,9 @@ class AppContext:
                 verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
                 maintenance_coordinator=self.library_maintenance_coordinator,
                 pdf_service=self.pdf_image_service,
+                canonical_import_policy=normalize_canonical_import_policy(
+                    self.settings.canonical_import_policy
+                ),
             )
             self.library_maintenance_service = _create_library_maintenance_service(
                 self.paths,
@@ -808,6 +818,13 @@ def _create_app_context_bound(
     settings_viewmodel.import_integrity_changed.connect(
         lambda: context.import_service.set_verify_imported_file_integrity(
             context.settings_store.load().verify_imported_file_integrity
+        )
+    )
+    settings_viewmodel.canonical_import_policy_changed.connect(
+        lambda: context.import_service.set_canonical_import_policy(
+            normalize_canonical_import_policy(
+                context.settings_store.load().canonical_import_policy
+            )
         )
     )
     log_event(

@@ -1,7 +1,7 @@
 import json
 
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.app.app_context import create_app_context
@@ -191,10 +191,11 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     for earlier, later in zip(upper_order, upper_order[1:]):
         assert sidebar_item_positions[later] - sidebar_item_positions[earlier] == step
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Five General rows (Storage moved to Privacy), the one genuinely
-    # import-only depth row, and the Library maintenance action. Archive, Cache,
-    # and the two shared archive depth rows are in their own scope now.
-    assert len(setting_items) == 7
+    # Five General rows (Storage moved to Privacy), the two genuinely
+    # import-only rows (folder depth and the conversion policy), and the Library
+    # maintenance action. Archive, Cache, and the two shared archive depth rows
+    # are in their own scope now.
+    assert len(setting_items) == 8
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 1
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
@@ -1101,3 +1102,69 @@ def test_the_gate_switches_are_bold_and_nothing_else_is(qtbot) -> None:
     # The rows they gate stay at the normal weight, or the hierarchy says nothing.
     assert weights["Maximum archive size"] < QFont.Weight.Bold
     assert weights["Maximum extracted item"] < QFont.Weight.Bold
+
+
+def test_a_dropdown_is_wide_enough_for_its_longest_option(qtbot) -> None:
+    """The design width fits "English" and "Zip bundle" but not every option.
+
+    "Expensive and nested formats" is a *default*, so a fixed 121px rendered the
+    control clipped at both ends the moment Settings opened. Measuring across
+    every option rather than the current one also means picking a different
+    value never resizes the control under the user's cursor.
+    """
+
+    apply_theme()
+    page = SettingsPageWidget(SettingsViewModel(), ResourceLoader())
+    qtbot.addWidget(page)
+    page.resize(Theme.settings_panel_width, Theme.settings_panel_height)
+    page.show()
+
+    dropdowns = page.findChildren(SettingsDropdownButton)
+    by_value = {dropdown.value: dropdown for dropdown in dropdowns}
+
+    # Short options stay pixel-identical to the design.
+    assert by_value["English"].width() == Theme.settings_dropdown_width
+
+    policy = by_value["Expensive and nested formats"]
+    metrics = QFontMetrics(policy.font())
+    assert policy.width() > Theme.settings_dropdown_width
+    assert policy.width() >= (
+        metrics.horizontalAdvance("Expensive and nested formats")
+        + Theme.settings_dropdown_indicator_width
+    )
+
+
+def test_the_conversion_policy_dropdown_is_translated_but_stores_an_enum() -> None:
+    """Two separate things: what the user reads, and what gets written to disk.
+
+    Translating the stored value would make a settings file unreadable after a
+    language change; leaving the display in English makes a translated Settings
+    panel look half-finished. So the enum's own string persists and only the
+    label is localized — and a label chosen in one language still resolves after
+    switching to another.
+    """
+
+    viewmodel = SettingsViewModel()
+    labels_by_language = {}
+    for language in ("English", "Japanese", "Chinese"):
+        locale_service.load_language(language)
+        options = viewmodel.canonical_import_policy_options
+        assert len(options) == 3
+        assert all(option and not option.startswith("settings.") for option in options)
+        labels_by_language[language] = options
+
+    assert len(set(labels_by_language.values())) == 3  # genuinely different text
+
+    # Picking the Japanese label for "always" stores the enum value, not the text.
+    locale_service.load_language("Japanese")
+    viewmodel.set_canonical_import_policy(labels_by_language["Japanese"][2])
+    assert viewmodel.canonical_import_policy.value == "always"
+
+    locale_service.load_language("English")
+    assert viewmodel.canonical_import_policy_label == "Always"
+
+    # And a value read back from settings still resolves, whatever the language.
+    locale_service.load_language("Chinese")
+    viewmodel.set_canonical_import_policy("expensive_and_nested")
+    assert viewmodel.canonical_import_policy.value == "expensive_and_nested"
+    locale_service.load_language("English")

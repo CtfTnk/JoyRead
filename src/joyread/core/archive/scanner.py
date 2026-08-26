@@ -19,7 +19,7 @@ from joyread.core.archive.records import ArchiveListing, ArchiveSource, PageReco
 from joyread.core.archive.tree import (
     ArchiveTreeNode,
     ensure_folder_path,
-    is_metadata_entry,
+    is_junk_entry,
     safe_entry_name,
     strip_transparent_prefix,
     transparent_single_root_prefix,
@@ -95,7 +95,7 @@ class ArchiveScanner:
 
         for entry in entries:
             safe_name = safe_entry_name(entry.name)
-            if safe_name is None or is_metadata_entry(safe_name):
+            if safe_name is None or is_junk_entry(safe_name):
                 continue
 
             logical_name = strip_transparent_prefix(safe_name, entry_prefix)

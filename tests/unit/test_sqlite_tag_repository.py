@@ -27,11 +27,12 @@ def _insert_book(database: DatabaseInterpreter, book_id: str, *, file_id: str | 
             """
             INSERT INTO book_files(
                 file_id, original_path, original_file_name, storage_path, file_format,
-                hash_algorithm, content_hash, state, integrity_error_code, created_at, updated_at
+                hash_algorithm, source_hash, stored_hash, storage_kind,
+                state, integrity_error_code, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, 'CBZ', 'sha256', ?, 'healthy', NULL, ?, ?)
+            VALUES (?, ?, ?, ?, 'CBZ', 'sha256', ?, ?, 'verbatim', 'healthy', NULL, ?, ?)
             """,
-            (file_id, f"/tmp/{book_id}.cbz", f"{book_id}.cbz", f"/storage/{book_id}.cbz", book_id, now, now),
+            (file_id, f"/tmp/{book_id}.cbz", f"{book_id}.cbz", f"/storage/{book_id}.cbz", book_id, book_id, now, now),
         )
         connection.execute(
             """

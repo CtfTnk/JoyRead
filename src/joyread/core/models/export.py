@@ -12,5 +12,5 @@ class BookExportRecord:
     storage_path: str
     original_file_name: str
     hash_algorithm: str
-    content_hash: str
+    stored_hash: str
     is_missing: bool

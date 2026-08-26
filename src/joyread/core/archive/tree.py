@@ -39,7 +39,16 @@ def safe_entry_name(name: str) -> str | None:
     return path.as_posix()
 
 
-def is_metadata_entry(name: str) -> bool:
+def is_junk_entry(name: str) -> bool:
+    """Filesystem noise an archiver added, never content the user put there.
+
+    Named for what it matches: ``__MACOSX`` sidecars, ``.DS_Store``, and the
+    ``._`` resource forks macOS writes beside real files. Deliberately *not*
+    document metadata -- ``ComicInfo.xml`` and ``meta.json`` are content this
+    app reads, and the previous name (``is_metadata_entry``) implied they were
+    filtered here.
+    """
+
     parts = PurePosixPath(name).parts
     if not parts:
         return True
@@ -52,7 +61,7 @@ def transparent_single_root_prefix(entries: Iterable[ArchiveEntry]) -> str | Non
     roots: set[str] = set()
     for entry in entries:
         safe_name = safe_entry_name(entry.name)
-        if safe_name is None or is_metadata_entry(safe_name):
+        if safe_name is None or is_junk_entry(safe_name):
             continue
         parts = PurePosixPath(safe_name).parts
         if len(parts) <= 1:
@@ -123,6 +132,38 @@ def flatten_archive_tree(root: ArchiveTreeNode) -> tuple[list[PageRecord], tuple
         children = _sorted_children(node.children)
         pending.extend((child, depth + 1) for child in reversed(children))
     return pages, tuple(contents)
+
+
+def flatten_archive_tree_for_writing(
+    root: ArchiveTreeNode,
+) -> list[tuple[str, PageRecord]]:
+    """The same pages in the same order, each with the folder it belongs in.
+
+    :func:`flatten_archive_tree` throws the tree shape away once it has the
+    reading order, which is all a reader needs. Writing a canonical archive
+    needs the shape back: every node becomes a real directory, so that
+    re-scanning the result rebuilds an identical tree and therefore an identical
+    table of contents.
+
+    Deliberately shares ``_sorted_pages`` / ``_sorted_children`` with the
+    flattener rather than re-deriving an order. Two orderings that are meant to
+    agree but are written twice will eventually disagree.
+    """
+
+    placed: list[tuple[str, PageRecord]] = [("", page) for page in _sorted_pages(root.pages)]
+    pending = [(child, "") for child in reversed(_sorted_children(root.children))]
+    while pending:
+        node, prefix = pending.pop()
+        # The node's *label* names the directory, not its ``name``: the label is
+        # what a reader shows in Contents, and the scanner derives a folder's
+        # label from its directory name -- so writing the label back out is what
+        # makes the round trip identity-preserving.
+        node_prefix = f"{prefix}{node.label}/"
+        placed.extend((node_prefix, page) for page in _sorted_pages(node.pages))
+        pending.extend(
+            (child, node_prefix) for child in reversed(_sorted_children(node.children))
+        )
+    return placed
 
 
 def _sorted_pages(pages: Iterable[PageRecord]) -> list[PageRecord]:

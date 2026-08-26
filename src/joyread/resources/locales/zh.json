@@ -31,6 +31,7 @@
     "individual_read_window": "独立阅读窗口",
     "inspect_title_control": "检查 Windows/Linux 标题栏控件",
     "import_folder_depth": "导入文件夹层级",
+    "canonical_import_policy": "导入时转换压缩包",
     "nested_archive_depth": "嵌套压缩包深度",
     "archive_global_file_depth": "压缩包全局文件深度",
     "archive_max_source_size_enabled": "限制压缩包大小",
@@ -58,7 +59,10 @@
     "btn_select": "选择",
     "btn_verify": "校验",
     "reset_library": "重置书库",
-    "btn_clear": "清除"
+    "btn_clear": "清除",
+    "canonical_import_never": "从不转换",
+    "canonical_import_expensive": "仅低速与嵌套格式",
+    "canonical_import_always": "始终转换"
   },
   "menu": {
     "read": "阅读",
@@ -256,7 +260,15 @@
     "drop_count_one": "1 项",
     "drop_count_many": "{count} 项",
     "drop_confirm_importing_one": "正在导入 1 项",
-    "drop_confirm_importing_many": "正在导入 {count} 项"
+    "drop_confirm_importing_many": "正在导入 {count} 项",
+    "import_progress_title": "正在导入",
+    "import_progress_preparing": "准备中…",
+    "import_progress_item": "第 {index} 项，共 {total} 项",
+    "import_progress_staging": "正在复制…",
+    "import_progress_inspecting": "正在检查内容…",
+    "import_progress_converting": "正在转换第 {done} 页，共 {total} 页",
+    "import_progress_recording": "正在加入书库…",
+    "import_progress_extracting": "正在解压页面…"
   },
   "detail": {
     "author_prefix": "作者：",

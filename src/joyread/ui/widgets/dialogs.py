@@ -102,6 +102,11 @@ class DialogTextButton(QFrame):
         super().keyPressEvent(event)
 
 
+#: Qt's own "no maximum" sentinel (``QWIDGETSIZE_MAX``), which PySide does
+#: not re-export.
+_UNBOUNDED_HEIGHT = (1 << 24) - 1
+
+
 class DialogMessageContent(QWidget):
     """Centered text content used by info, confirm, and delete prompts."""
 
@@ -127,10 +132,27 @@ class DialogMessageContent(QWidget):
         self._label.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label)
 
+    def set_message(self, message: str) -> None:
+        """Replace the text without rebuilding the dialog.
+
+        A progress dialog updates many times a second; swapping the content
+        widget each time would reset the panel's size and make it jitter.
+        """
+
+        self._label.setText(message)
+
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
         inner_width = max(0, width - (Theme.dialog_content_padding * 2))
         self._label.setFixedWidth(inner_width)
+        # Release the previous height clamp before measuring. ``sizeHint`` on a
+        # fixed-height widget reports that fixed height, so measuring without
+        # this returns the last answer *plus* the clip guard -- and re-adds the
+        # guard on every call. That never showed while this ran once per content
+        # widget; a progress dialog calls it on every update and grew 2px a
+        # tick.
+        self._label.setMinimumHeight(0)
+        self._label.setMaximumHeight(_UNBOUNDED_HEIGHT)
         wrapped_height = max(self._label.sizeHint().height(), self._label.heightForWidth(inner_width))
         # QLabel word-wrap can be one or two pixels short with platform font
         # fallback. Keep the measured content explicit so dialog panels do not
@@ -138,6 +160,15 @@ class DialogMessageContent(QWidget):
         self._label.setFixedHeight(wrapped_height + Theme.dialog_message_clip_guard)
         self.setFixedHeight(self._label.height() + (Theme.dialog_content_padding * 2))
         self.updateGeometry()
+
+
+class DialogProgressContent(DialogMessageContent):
+    """Message content that is being driven by a running task.
+
+    A separate type rather than a flag: info and confirm dialogs use
+    ``DialogMessageContent`` too, and a late progress callback landing on the
+    *summary* dialog would otherwise overwrite it with stale text.
+    """
 
 
 class DialogInputFieldWithHeader(QWidget):
@@ -729,6 +760,44 @@ class JoyReadDialogPanel(QFrame):
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(((button_text, self.accepted.emit),))
 
+    def set_progress(self, title: str, message: str) -> None:
+        """A dialog that reports and cannot be dismissed.
+
+        No buttons: the work is already running and there is nothing for the
+        user to decide.
+        """
+
+        self._set_title(title)
+        self._set_content_widget(DialogProgressContent(message))
+        self._set_buttons(())
+
+    def is_showing_progress(self) -> bool:
+        """Whether the current content belongs to a running task."""
+
+        return isinstance(self._content_widget, DialogProgressContent)
+
+    def update_progress(self, message: str) -> bool:
+        """Retitle the running progress text. False when this is not one.
+
+        The panel answers rather than the overlay because the panel is the only
+        thing that always knows its *current* content widget. An overlay holding
+        its own reference would keep pointing at a widget that another dialog
+        had already replaced and deleted -- and progress arrives from a worker
+        thread's callbacks, which are exactly what is still in flight when that
+        happens.
+        """
+
+        content = self._content_widget
+        if not isinstance(content, DialogProgressContent):
+            return False
+        content.set_message(message)
+        # The panel sized itself for whatever the first message was -- usually a
+        # one-line "Preparing…" -- so without this the taller running message is
+        # drawn clipped. The text keeps a stable line count once running, so
+        # this settles after the first update rather than jittering.
+        self._refresh_size()
+        return True
+
     def set_confirm(
         self,
         title: str,
@@ -940,6 +1009,27 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept = None
         self._panel.set_info(title, message, button_text or t("dialog.btn_confirm"))
         self._show_centered()
+
+    def show_progress(self, title: str, message: str) -> None:
+        """Show an undismissable progress dialog. Close it with :meth:`close_progress`."""
+
+        self._on_accept = None
+        self._on_reject = None
+        self._on_skip = None
+        self._before_accept = None
+        self._panel.set_progress(title, message)
+        self._show_centered()
+
+    def update_progress(self, message: str) -> None:
+        """Update the visible progress text, if a progress dialog is showing.
+
+        Does nothing otherwise. Progress callbacks arrive from a worker thread
+        and can still land after the dialog has been closed or replaced by the
+        summary, so "no progress dialog" is a normal state, not an error.
+        """
+
+        if self.isVisible():
+            self._panel.update_progress(message)
 
     def show_confirm(
         self,
@@ -1216,6 +1306,14 @@ class JoyReadDialogOverlay(QWidget):
             callback()
 
     def _reject(self) -> None:
+        if self._panel.is_showing_progress():
+            # Escape has nothing to dismiss here. Clearing ``_on_reject`` stops
+            # the callback but not the hide, so Escape used to make the dialog
+            # vanish while the import carried on -- leaving the user with no
+            # progress and no way back to it. Until there is a cancel control,
+            # the honest behaviour is to do nothing.
+            logger.debug("Ignoring dismiss while a progress dialog is running")
+            return
         callback = self._on_reject
         logger.info("Dialog rejected title=%r", self._panel.title_text)
         self._clear_and_hide()

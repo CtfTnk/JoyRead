@@ -156,13 +156,16 @@ def test_dropping_on_import_submits_an_import_and_opens_no_reader(
 ) -> None:
     main, launches = window
     submitted: list[str] = []
-    original = main._context.task_service.submit
+    # Imports stream progress, so they go through ``submit_stream`` rather than
+    # ``submit`` -- the drop path has to reach the same submission as every
+    # other import entry point, not a second one that skips the progress dialog.
+    original = main._context.task_service.submit_stream
 
     def _record(name, work, **kwargs):  # noqa: ANN001, ANN202
         submitted.append(name)
         return original(name, work, **kwargs)
 
-    monkeypatch.setattr(main._context.task_service, "submit", _record)
+    monkeypatch.setattr(main._context.task_service, "submit_stream", _record)
     first = _cbz(tmp_path / "drop" / "a.cbz", "#111111")
     second = _cbz(tmp_path / "drop" / "b.cbz", "#222222")
     mime = _mime(first, second)
