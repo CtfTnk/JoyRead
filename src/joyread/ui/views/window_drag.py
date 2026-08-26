@@ -14,6 +14,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QWidget
 
+from joyread.ui.widgets.window_gestures import begin_system_move
+
 
 def start_window_drag_if_on_drag_handle(event: QMouseEvent, drag_handle: QWidget | None) -> bool:
     """Recognize, and best-effort start, a window drag from this press.
@@ -33,9 +35,7 @@ def start_window_drag_if_on_drag_handle(event: QMouseEvent, drag_handle: QWidget
         return False
     if drag_handle.childAt(local) is not None:
         return False
-    window_handle = drag_handle.window().windowHandle()
-    if window_handle is not None:
-        window_handle.startSystemMove()
+    begin_system_move(drag_handle)
     return True
 
 

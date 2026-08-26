@@ -16,7 +16,7 @@ from PySide6.QtGui import (
     QDropEvent,
     QIcon,
 )
-from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QSizeGrip, QStackedWidget, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext, StorageTransition
 from joyread.app.cover_editor import PreparedCoverSource
@@ -51,6 +51,7 @@ from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import TitleBarWidget
+from joyread.ui.widgets.window_gestures import install_system_resize_border
 
 
 logger = logging.getLogger(__name__)
@@ -146,10 +147,7 @@ class MainWindow(QMainWindow):
         self.settings_view.library_maintenance_requested.connect(self._request_library_maintenance)
         self.settings_view.hide()
 
-        self._resize_grip = QSizeGrip(root)
-        self._resize_grip.setFixedSize(Theme.resize_grip_size, Theme.resize_grip_size)
-        self._resize_grip.setObjectName("ResizeGrip")
-        self._resize_grip.raise_()
+        self._resize_border = install_system_resize_border(self)
 
         self.cover_editor_overlay = CoverEditorOverlay(context.resources, root, drag_handle=self.title_bar)
         self.cover_editor_overlay.hide()
@@ -598,8 +596,7 @@ class MainWindow(QMainWindow):
         self._embedded_reader.raise_()
         self._embedded_reader.setFocus(Qt.FocusReason.ActiveWindowFocusReason)
         self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
-        if hasattr(self, "_resize_grip"):
-            self._resize_grip.hide()
+        self._resize_border.raise_border()
 
     def _close_embedded_reader(self) -> None:
         if self._embedded_reader is None:
@@ -611,9 +608,7 @@ class MainWindow(QMainWindow):
         reader.hide()
         reader.deleteLater()
         self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
-        if hasattr(self, "_resize_grip"):
-            self._resize_grip.show()
-            self._resize_grip.raise_()
+        self._resize_border.raise_border()
 
     def _launch_standalone_reader(self, request: StandaloneReaderRequest) -> None:
         launcher = self._standalone_reader_launcher
@@ -1743,8 +1738,7 @@ class MainWindow(QMainWindow):
             return
         self.settings_view.hide()
         self._sync_sidebar()
-        if hasattr(self, "_resize_grip"):
-            self._resize_grip.raise_()
+        self._resize_border.raise_border()
         self._raise_dialog_overlay_if_visible()
 
     def _position_settings_overlay(self) -> None:
@@ -1845,12 +1839,6 @@ class MainWindow(QMainWindow):
         if self._embedded_reader is not None and self.centralWidget() is not None:
             self._embedded_reader.setGeometry(self.centralWidget().rect())
             self._embedded_reader.raise_()
-        if hasattr(self, "_resize_grip"):
-            margin = 2
-            self._resize_grip.move(
-                self.centralWidget().width() - self._resize_grip.width() - margin,
-                self.centralWidget().height() - self._resize_grip.height() - margin,
-            )
 
 
 def _validate_collection_name(name: str) -> str | None:

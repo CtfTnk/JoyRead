@@ -387,10 +387,6 @@ QToolButton[class="FigmaSwitchOption"] {
     padding: 0;
 }
 
-QSizeGrip#ResizeGrip {
-    background: transparent;
-}
-
 /* Sidebar */
 QWidget#Sidebar {
     background: __WINDOW_COLOR__;

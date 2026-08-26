@@ -12,6 +12,7 @@ from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.ui.resources.styles.theme import Theme
 from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget
+from joyread.ui.widgets.window_gestures import install_system_resize_border
 
 
 class NovelReaderWindow(QMainWindow):
@@ -50,6 +51,10 @@ class NovelReaderWindow(QMainWindow):
         )
         self.shell.progress_changed.connect(self.progress_changed.emit)
         self.setCentralWidget(self.shell)
+        # Frameless windows get no resize border from the platform, and the
+        # reader's drag handle auto-hides -- so the edge has to live on the
+        # window itself rather than on any widget that can disappear.
+        self._resize_border = install_system_resize_border(self)
 
         # Mirror the manga ReaderWindow aliases so tests and embedded
         # callers can talk to the shell's pieces directly regardless of
