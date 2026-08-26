@@ -107,13 +107,20 @@ def architecture_key() -> str:
 
 platform_directory = f"{platform_key()}-{architecture_key()}"
 extractor_directory = PACKAGE_ROOT / "resources" / "extractors" / "7zip" / platform_directory
-extractor_name = "7zz.exe" if platform_key() == "windows" else "7zz"
+# Unix ships one self-contained `7zz`. Windows has no equivalent: the only
+# standalone console build published there is `7za.exe`, which has "reduced
+# formats support" and drops RAR -- a format JoyRead advertises. So Windows
+# vendors the full `7z.exe` with its `7z.dll`, which must travel together: the
+# executable is a front end and opens nothing without the library beside it.
+extractor_name = "7z.exe" if platform_key() == "windows" else "7zz"
 extractor_path = extractor_directory / extractor_name
-if not extractor_path.is_file():
-    raise SystemExit(
-        f"Missing release extractor: {extractor_path}. "
-        "Add the platform 7-Zip binary before building this target."
-    )
+extractor_support = [extractor_directory / "7z.dll"] if platform_key() == "windows" else []
+for required in (extractor_path, *extractor_support):
+    if not required.is_file():
+        raise SystemExit(
+            f"Missing release extractor: {required}. "
+            "Add the platform 7-Zip binary before building this target."
+        )
 
 extractor_destination = f"joyread/resources/extractors/7zip/{platform_directory}"
 datas = [
@@ -164,7 +171,10 @@ for legal_name in ("License.txt", "readme.txt", "History.txt"):
 a = Analysis(
     [str(ROOT / "src" / "joyread" / "app" / "main.py")],
     pathex=[str(ROOT / "src")],
-    binaries=[(str(extractor_path), extractor_destination)],
+    binaries=[
+        (str(path), extractor_destination)
+        for path in (extractor_path, *extractor_support)
+    ],
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

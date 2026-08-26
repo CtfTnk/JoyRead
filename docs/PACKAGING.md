@@ -81,19 +81,38 @@ platform user log directory.
 
 ## 4. Platform requirements
 
-The spec intentionally refuses to build when the matching bundled 7-Zip
-helper is absent. Add the executable and its license files under:
+The spec refuses to build when the matching bundled 7-Zip helper is absent.
+Four targets are vendored, at 7-Zip 26.02:
 
 ```text
 src/joyread/resources/extractors/7zip/darwin-arm64/7zz
-src/joyread/resources/extractors/7zip/darwin-x86_64/7zz
-src/joyread/resources/extractors/7zip/windows-x86_64/7zz.exe
 src/joyread/resources/extractors/7zip/linux-x86_64/7zz
+src/joyread/resources/extractors/7zip/linux-arm64/7zz
+src/joyread/resources/extractors/7zip/windows-x86_64/7z.exe + 7z.dll
 ```
 
-The repository currently contains only the Darwin ARM64 target directory, which
-is why v1.0.0 ships for Apple Silicon only. Windows also needs a proper `.ico`
-application icon before it can be released.
+Windows is the odd one out and the spec knows it. There is no `7zz.exe`: the
+only standalone Windows console build is `7za.exe`, which has reduced format
+support and cannot read RAR, so Windows vendors the full `7z.exe` together with
+`7z.dll` — the executable opens nothing without the library beside it. Both are
+listed in `binaries`, and the build fails if either is missing.
+
+The Linux binaries are the `7zzs` (statically linked) builds from the release
+tarballs, renamed to `7zz`. The dynamic `7zz` links against the build machine's
+glibc and fails on older distributions, which defeats the point of bundling.
+
+See `src/joyread/resources/extractors/7zip/README.md` for the update procedure.
+
+Still outstanding before a non-macOS release:
+
+- **Windows needs a `.ico`.** Only `JoyRead.icns` exists, and the spec passes
+  `icon=None` off macOS, so a Windows build currently gets PyInstaller's default
+  icon. The build succeeds; it just is not branded.
+- **No Intel Mac target.** The macOS binary is a universal build, so
+  `darwin-x86_64/` only needs the same file copied into place.
+- **Each non-macOS binary is unexecuted by CI**, which runs on `macos-14` and
+  smoke-tests the Darwin helper only. Run the archive tests on the target
+  platform before advertising it.
 
 ## 5. Signing and notarizing a public macOS release
 
