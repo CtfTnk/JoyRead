@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from itertools import count
 from typing import TypeVar
 
@@ -25,6 +25,19 @@ class _TaskSignals(QObject):
     completed = QtSignal(object)
     failed = QtSignal(object)
     finished = QtSignal()
+
+
+def _describe_handles(handles: Iterable[TaskHandle[object]]) -> str:
+    """Name the tasks a shutdown is waiting on.
+
+    A drain that times out is only actionable if it says what it was waiting
+    for. ``_Runnable.run`` checks cancellation once, before calling the
+    callback, so anything already inside its callback runs to completion no
+    matter what ``cancel()`` did -- the wait can only ever be as short as the
+    longest callback still in flight.
+    """
+
+    return ", ".join(f"{h.task_id}({h.callback_label})" for h in handles) or "<none>"
 
 
 class _Runnable(QRunnable):
@@ -339,7 +352,11 @@ class TaskService:
         for handle in list(self._active_handles.values()):
             handle.cancel()
         pending = len(self._active_handles)
-        logger.info("TaskService quiesced with %d task(s) unwinding", pending)
+        logger.info(
+            "TaskService quiesced with %d task(s) unwinding: %s",
+            pending,
+            _describe_handles(self._active_handles.values()),
+        )
         return pending
 
     def pending_task_count(self) -> int:
@@ -369,6 +386,7 @@ class TaskService:
         self._pool.clear()
         drained = self._pool.waitForDone(max(0, int(timeout_ms)))
         pending = len(self._active_handles)
+        stragglers = _describe_handles(self._active_handles.values())
         for handle in list(self._active_handles.values()):
             handle.cancel()
             handle._signals = None
@@ -382,6 +400,8 @@ class TaskService:
             category="task",
             status="finished" if drained else "timed_out",
             count=pending,
+            duration_ms=float(timeout_ms) if not drained else None,
+            tasks=stragglers,
         )
 
     def submit_placeholder(self, name: str, callback: Callable[[], T] | None = None) -> TaskHandle[T]:
