@@ -17,7 +17,7 @@ handling, cancellation -- deliberately stay with each shell.
 Subclasses must provide, by the time these methods can run:
 
 ``_context``           the :class:`AppContext`, for ``settings_viewmodel``
-``_drag_position``     ``QPoint | None``, initialised to ``None``
+``_drag``              a :class:`~joyread.ui.widgets.window_gestures.SystemMoveGesture`
 ``auto_hide``          an :class:`~joyread.ui.views.reader_chrome.AutoHideController`
 ``dialog_overlay``     the overlay used for input dialogs
 ``header``             the reader header, with ``clear_topic_active_mode()``
@@ -31,7 +31,7 @@ Subclasses must provide, by the time these methods can run:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QRectF, Qt
+from PySide6.QtCore import QEvent, QRectF
 from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
 from PySide6.QtWidgets import QWidget
 
@@ -108,17 +108,12 @@ class ReaderShellBase(QWidget):
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched is self.header:
             if event.type() == QEvent.Type.MouseButtonPress and isinstance(event, QMouseEvent):
-                if event.button() == Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    self._drag_position = event.globalPosition().toPoint() - window.frameGeometry().topLeft()
+                self._drag.press(self, event)
             if event.type() == QEvent.Type.MouseMove and isinstance(event, QMouseEvent):
-                if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
-                    window = self.window()
-                    if not window.isMaximized():
-                        window.move(event.globalPosition().toPoint() - self._drag_position)
+                if self._drag.move(self, event):
                     return True
             if event.type() == QEvent.Type.MouseButtonRelease:
-                self._drag_position = None
+                self._drag.release()
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:

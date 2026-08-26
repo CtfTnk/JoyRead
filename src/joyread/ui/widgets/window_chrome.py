@@ -23,6 +23,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import SortField, ViewMode
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.mode_switches import ListModeSwitchWidget, SortModeSwitchWidget
+from joyread.ui.widgets.window_gestures import SystemMoveGesture
 
 
 class TitleBarWidget(QWidget):
@@ -42,7 +43,7 @@ class TitleBarWidget(QWidget):
         self._platform_name = platform_name or sys.platform
         self._sort_ascending = False
         self._current_sort_field: SortField = SortField.ADD_TIME
-        self._drag_position: QPoint | None = None
+        self._drag = SystemMoveGesture()
 
         self.setObjectName("TitleBar")
         self.setFixedHeight(Theme.toolbar_height)
@@ -158,22 +159,19 @@ class TitleBarWidget(QWidget):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self._drag_position = event.globalPosition().toPoint() - self.window().frameGeometry().topLeft()
+            self._drag.press(self, event)
             event.accept()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._drag_position is not None and event.buttons() & Qt.MouseButton.LeftButton:
-            if self.window().isMaximized():
-                return
-            self.window().move(event.globalPosition().toPoint() - self._drag_position)
+        if self._drag.move(self, event):
             event.accept()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        self._drag_position = None
+        self._drag.release()
         super().mouseReleaseEvent(event)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:

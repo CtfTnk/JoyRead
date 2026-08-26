@@ -42,6 +42,7 @@ from joyread.novel.ui.novel_content_area import NovelContentArea
 from joyread.novel.ui.novel_custom_panel import NovelCustomPanel
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
+from joyread.ui.widgets.window_gestures import SystemMoveGesture
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +68,7 @@ class NovelReaderShellWidget(ReaderShellBase):
         super().__init__(parent)
         self._context = context
         self._source_path = Path(source_path)
-        self._drag_position: QPoint | None = None
+        self._drag = SystemMoveGesture()
         self._show_back_button = show_back_button
         self._book = book
         # ``page_count`` here = spine length once the viewmodel loads.

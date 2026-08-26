@@ -34,6 +34,7 @@ from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader, ReaderStepButton
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode, ReaderTopicPanel
+from joyread.ui.widgets.window_gestures import SystemMoveGesture
 
 
 logger = logging.getLogger(__name__)
@@ -59,7 +60,7 @@ class ReaderShellWidget(ReaderShellBase):
         super().__init__(parent)
         self._context = context
         self._source_path = Path(source_path)
-        self._drag_position: QPoint | None = None
+        self._drag = SystemMoveGesture()
         self._show_back_button = show_back_button
         self._topic_page_count = -1
 

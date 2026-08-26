@@ -12,6 +12,7 @@ from joyread.app.app_context import AppContext
 from joyread.core.models.book import Book
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.reader_shell import ReaderShellWidget
+from joyread.ui.widgets.window_gestures import install_system_resize_border
 
 
 class ReaderWindow(QMainWindow):
@@ -50,6 +51,10 @@ class ReaderWindow(QMainWindow):
         )
         self.shell.progress_changed.connect(self.progress_changed.emit)
         self.setCentralWidget(self.shell)
+        # Frameless windows get no resize border from the platform, and the
+        # reader's drag handle auto-hides -- so the edge has to live on the
+        # window itself rather than on any widget that can disappear.
+        self._resize_border = install_system_resize_border(self)
 
         # Compatibility aliases: the embedded reader (in MainWindow) and
         # tests both reach into these widgets by attribute name. Exposing

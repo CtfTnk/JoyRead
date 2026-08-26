@@ -235,7 +235,12 @@ class Theme:
     sidebar_section_font_size = 16
     sidebar_lower_padding_bottom = 5
     toolbar_spacer_width = 2
-    resize_grip_size = 16
+    # Frameless windows carry their own resize border (see
+    # ``ui.widgets.window_gestures``). The edge strip is thin enough to stay
+    # out of the content's way; the corners are the wider target native
+    # window managers also give them.
+    window_resize_border = 6
+    window_resize_corner = 16
     # Floating shelf scrollbars
     shelf_scrollbar_width = 10
     shelf_scrollbar_radius = 5
