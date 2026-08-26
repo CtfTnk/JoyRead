@@ -131,9 +131,19 @@ class FigmaMenu(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self._loop = QEventLoop(self)
-        self._loop.exec()
-        self._loop = None
+        # Deliberately unparented, and kept in a local for the whole call. A
+        # QEventLoop parented to this widget is destroyed with it, and a menu
+        # can be destroyed by the very action it triggered. That leaves a
+        # dangling pointer in QThreadData::eventLoops, which
+        # QCoreApplication::exit() walks calling exit() on every entry -- so
+        # the crash lands later, on quit, far from the menu that caused it.
+        loop = QEventLoop()
+        self._loop = loop
+        try:
+            loop.exec()
+        finally:
+            if self._loop is loop:
+                self._loop = None
         _refresh_cursor_shape()
 
     def add_item(
@@ -165,8 +175,14 @@ class FigmaMenu(QWidget):
         self.updateGeometry()
 
     def _trigger(self, callback: Callable[[], None]) -> None:
+        # close() only asks the loop to quit; it returns long before exec()
+        # does. Invoking the callback here would run the entire action nested
+        # inside this menu's own event loop, so each menu-driven step stacks
+        # another loop on the main thread and the menu cannot be torn down
+        # while its own exec() is still on the stack. Deferring runs the action
+        # after exec() has returned, at the caller's own stack depth.
         self.close()
-        callback()
+        QTimer.singleShot(0, callback)
 
     def hideEvent(self, event: QHideEvent) -> None:
         _release_popup_grabs(self)
@@ -263,9 +279,19 @@ class LanguageDropdownMenu(QWidget):
         self.show()
         self.raise_()
         self.activateWindow()
-        self._loop = QEventLoop(self)
-        self._loop.exec()
-        self._loop = None
+        # Deliberately unparented, and kept in a local for the whole call. A
+        # QEventLoop parented to this widget is destroyed with it, and a menu
+        # can be destroyed by the very action it triggered. That leaves a
+        # dangling pointer in QThreadData::eventLoops, which
+        # QCoreApplication::exit() walks calling exit() on every entry -- so
+        # the crash lands later, on quit, far from the menu that caused it.
+        loop = QEventLoop()
+        self._loop = loop
+        try:
+            loop.exec()
+        finally:
+            if self._loop is loop:
+                self._loop = None
         _refresh_cursor_shape()
 
     def refresh_size(self) -> None:
@@ -287,8 +313,14 @@ class LanguageDropdownMenu(QWidget):
         self.updateGeometry()
 
     def _trigger(self, callback: Callable[[], None]) -> None:
+        # close() only asks the loop to quit; it returns long before exec()
+        # does. Invoking the callback here would run the entire action nested
+        # inside this menu's own event loop, so each menu-driven step stacks
+        # another loop on the main thread and the menu cannot be torn down
+        # while its own exec() is still on the stack. Deferring runs the action
+        # after exec() has returned, at the caller's own stack depth.
         self.close()
-        callback()
+        QTimer.singleShot(0, callback)
 
     def _indicator(self, *, up: bool) -> QWidget:
         frame = QWidget()

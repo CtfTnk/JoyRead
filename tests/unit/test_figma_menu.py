@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea, QWidget
 
 from joyread.core.models.book import Book
@@ -131,6 +131,8 @@ def test_menu_item_triggers_after_mouse_release(qtbot) -> None:
     assert triggered == []
 
     qtbot.mouseRelease(row, Qt.MouseButton.LeftButton)
+    # MenuItem defers ``clicked``, then _trigger defers the callback: two turns.
+    QApplication.processEvents()
     QApplication.processEvents()
     assert triggered == ["read"]
 
@@ -162,6 +164,7 @@ def test_book_context_menu_uses_figma_panel_and_option_list(qtbot) -> None:
     QApplication.processEvents()
     qtbot.mousePress(delete_row, Qt.MouseButton.LeftButton)
     qtbot.mouseRelease(delete_row, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
     QApplication.processEvents()
     assert deleted == ["book-1"]
 
@@ -234,6 +237,7 @@ def test_language_dropdown_menu_matches_figma_structure_and_selection(qtbot) -> 
     qtbot.mousePress(rows[2], Qt.MouseButton.LeftButton)
     qtbot.mouseRelease(rows[2], Qt.MouseButton.LeftButton)
     QApplication.processEvents()
+    QApplication.processEvents()
 
     assert selected == ["ja"]
 
@@ -257,3 +261,69 @@ def test_language_dropdown_scrolls_after_seven_items_without_scrollbar(qtbot) ->
     assert scroll_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert scroll_area.height() == (7 * Theme.menu_item_height) + (6 * Theme.menu_option_gap)
     assert option_list.height() > scroll_area.height()
+
+
+def test_menu_event_loop_is_not_parented_to_the_menu(qtbot) -> None:
+    """A menu's event loop must outlive the menu, not belong to it.
+
+    ``QEventLoop(self)`` is destroyed with its parent widget, and a menu is
+    routinely destroyed by the action it just triggered -- closing the window
+    the menu belongs to. The loop object then dies while its ``exec()`` is
+    still on the stack, leaving a dangling pointer in
+    ``QThreadData::eventLoops``. Nothing fails at that moment: the crash comes
+    later, when ``QCoreApplication::exit()`` walks that list and calls
+    ``exit()`` on every entry, which is why it surfaces as a segfault on quit
+    with no menu anywhere in the backtrace.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    menu = FigmaMenu(parent)
+    qtbot.addWidget(menu)
+    seen: list[QEventLoop | None] = []
+
+    def capture() -> None:
+        seen.append(menu._loop)
+        menu.close()
+
+    QTimer.singleShot(0, capture)
+    menu.exec(QPoint(0, 0))
+
+    assert seen, "the menu's event loop never ran"
+    loop = seen[0]
+    assert loop is not None
+    assert loop.parent() is None, "the event loop must not be owned by the menu"
+
+
+def test_menu_action_does_not_run_inside_the_menu_event_loop(qtbot) -> None:
+    """The triggered action must run after ``exec()`` returns, not under it.
+
+    ``close()`` only asks the loop to quit and returns before ``exec()`` does,
+    so invoking the callback straight after it runs the whole action nested
+    inside the menu's own loop. Every menu-driven step then stacks another
+    event loop on the main thread -- the reported crash had five -- and the
+    menu cannot be torn down while its own ``exec()`` is still running.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    menu = FigmaMenu(parent)
+    qtbot.addWidget(menu)
+    # ``isRunning()`` is useless as a probe here: ``close()`` calls ``quit()``
+    # first, which clears it while ``exec()`` is still on the stack. Observing
+    # whether ``exec()`` has *returned* is the real question.
+    exec_returned: list[bool] = []
+    observed: list[bool] = []
+
+    def action() -> None:
+        observed.append(bool(exec_returned))
+
+    QTimer.singleShot(0, lambda: menu._trigger(action))
+    menu.exec(QPoint(0, 0))
+    exec_returned.append(True)
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert observed == [True], "the action ran before the menu's exec() returned"

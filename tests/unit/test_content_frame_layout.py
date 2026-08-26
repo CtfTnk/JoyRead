@@ -1375,6 +1375,11 @@ def _trigger_menu_row(qtbot, menu: QWidget, label_text: str) -> None:  # noqa: A
     row = next(row for row in rows if row.findChild(QLabel).text() == label_text)
     qtbot.mousePress(row, Qt.MouseButton.LeftButton)
     qtbot.mouseRelease(row, Qt.MouseButton.LeftButton)
+    # Two deferrals separate a release from the action: MenuItem defers
+    # ``clicked`` so the press/release pair completes before the popup closes,
+    # and FigmaMenu._trigger defers the callback so it does not run nested
+    # inside the menu's own event loop. Each needs its own turn.
+    QApplication.processEvents()
     QApplication.processEvents()
 
 
