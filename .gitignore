@@ -90,14 +90,27 @@ Desktop.ini
 test_set/
 
 # Generated reports and build output, at the repository root only.
-# Unanchored patterns would also swallow docs/reports/, which is tracked
-# documentation rather than generated output.
 /reports/
 /artifacts/
 
-# Local agent files
+# Internal working files. These are the canonical copies in the private
+# CtfTnk/JoyRead-internal repository, kept here so local tooling can read them
+# and ignored so they can never reach the public repository. Nothing in this
+# block is required to build, run, or test JoyRead.
 .agent.md
-.claude/settings.local.json
+.claude/
+.codex/
+.cursor/
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+skills/
+docs/PRD.md
+docs/CODEX_MAIN_UI_BRIEF.md
+docs/ARCHIVE_CORE_HANDBOOK.md
+docs/DATABASE_HANDBOOK.md
+docs/technical/
+docs/reports/
 
 # Codex pets
 .codex-pets/

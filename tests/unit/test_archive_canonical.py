@@ -507,7 +507,7 @@ def test_unknown_size_entries_are_never_batched_together(tmp_path: Path) -> None
     """A declared size is attacker-controlled and may be absent entirely.
 
     Grouping on an assumed size is how a handful of under-declared pages become
-    a whole manga resident at once, which AGENTS.md forbids outright. The
+    a whole manga resident at once, which the archive core must never do. The
     shared batch planner isolates them; a second batching rule written here
     would not have.
     """
@@ -553,7 +553,7 @@ def test_an_archive_that_under_declares_its_pages_cannot_batch_them(
     Eight entries that each say "16 bytes" and each expand toward the per-item
     limit are a legal archive, and the batch planner groups all eight — bounded
     only by the 4 GiB operation budget. That is a whole manga resident at once,
-    which AGENTS.md rules out.
+    which the archive core must never do.
 
     The batch allowance is shrunk rather than the pages inflated: the mechanism
     under test is "the scoped budget catches the lie", not the size of the

@@ -210,7 +210,7 @@ def _load_xml(payload: bytes) -> ElementTree.Element | None:
     # memory. Both that and external entities require a DTD, and a legitimate
     # ComicInfo.xml has none -- so refusing a DOCTYPE outright removes the whole
     # class without pulling in a hardened parser. (``lxml`` is deliberately the
-    # EPUB-only extra; see AGENTS.md.)
+    # EPUB-only extra.)
     if _declares_a_doctype(payload):
         logger.warning(
             "Refusing a ComicInfo.xml that declares a DOCTYPE",

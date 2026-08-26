@@ -141,8 +141,7 @@ def extract_members_to_directory(
         # /proc/<pid>/cmdline expose it to any process running as the same user
         # for the length of the extraction. 7-Zip has no stdin or environment
         # alternative, so the only way to avoid it is to stop using the
-        # executable for encrypted archives. See "Known limitation" under
-        # Password Handling in docs/ARCHIVE_CORE_HANDBOOK.md.
+        # executable for encrypted archives.
         command.append(f"-p{password}")
     if thread_limit is not None:
         command.append(f"-mmt={max(1, int(thread_limit))}")

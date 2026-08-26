@@ -318,7 +318,7 @@ class _StagedPageReader:
         one: it isolates entries whose listing declares no size, and a declared
         size is attacker-controlled, so grouping on an assumed size is how a
         handful of under-declared pages become a whole manga held in memory at
-        once -- which AGENTS.md forbids outright.
+        once -- which the archive core must never do.
         """
 
         remaining = list(pages)
@@ -342,7 +342,7 @@ class _StagedPageReader:
         the archive's own claim about itself. Eight entries that each say
         "2 KB" and each expand toward ``max_extracted_item_bytes`` are a legal
         archive and would arrive together, bounded only by the 4 GiB operation
-        budget -- a whole manga in memory, which AGENTS.md forbids.
+        budget -- a whole manga in memory, which it must never do.
 
         So the batch is read under a budget scoped to the batch. An archive
         that told the truth is unaffected; one that under-declared trips that

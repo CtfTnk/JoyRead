@@ -338,9 +338,9 @@ class ReaderDocumentRuntime:
         if not by_format and not encrypted:
             return None
         # Scope follows where the document lives, not whether it is encrypted:
-        # a managed encrypted book caches persistently like any other. What
-        # that means for the extracted bytes is set out under "Encrypted
-        # archives and the pool" in ARCHIVE_CORE_HANDBOOK.md.
+        # a managed encrypted book caches persistently like any other. Either
+        # way the extracted bytes land on disk as plaintext -- see
+        # ``ArchiveSession._record_is_persistable``.
         scope = ArchiveCacheScope.PERSISTENT if self._managed else ArchiveCacheScope.EPHEMERAL
         lease = ArchiveCacheLease(
             self._archive_extraction_cache,

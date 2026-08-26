@@ -896,13 +896,11 @@ class ArchiveImageSession:
         """Whether this page is allowed in the cache at all, ignoring policy.
 
         Encrypted pages are cached like any other. Their extracted bytes are
-        plaintext on disk, which is a deliberate, documented trade: an
-        encrypted archive is the slowest thing JoyRead reads, and the pool is
-        the only mechanism that makes it usable. See "Encrypted archives and
-        the pool" in ``ARCHIVE_CORE_HANDBOOK.md``; encrypting the pool itself
-        is the planned answer ("Encrypt the extraction pool at rest" in
-        ``docs/technical/TODO.md``) and nothing here should be read as that
-        problem having been solved.
+        plaintext on disk, which is a deliberate trade: an encrypted archive
+        is the slowest thing JoyRead reads, and the pool is the only
+        mechanism that makes it usable. Encrypting the pool itself is the
+        planned answer, and nothing here should be read as that problem
+        having been solved.
         """
 
         return self._can_use_document_cache() and record.source.allow_persistent_cache

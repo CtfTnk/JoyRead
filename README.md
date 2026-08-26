@@ -97,11 +97,9 @@ supplying the corresponding `7zz` binary — see [docs/PACKAGING.md](docs/PACKAG
 
 ## Documentation
 
-- [docs/PRD.md](docs/PRD.md) — product requirements
-- [docs/technical/architecture.md](docs/technical/architecture.md) — architecture overview
-- [docs/technical/runtime-flows.md](docs/technical/runtime-flows.md) — how the major runtime paths fit together
-- [docs/ARCHIVE_CORE_HANDBOOK.md](docs/ARCHIVE_CORE_HANDBOOK.md) — archive core internals
+- [docs/MANUAL.md](docs/MANUAL.md) — user manual
 - [docs/PACKAGING.md](docs/PACKAGING.md) — building a release
+- [docs/i18n.md](docs/i18n.md) — adding or updating a translation
 
 ## License
 

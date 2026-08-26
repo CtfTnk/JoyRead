@@ -467,8 +467,6 @@ class RarArchiveBackend:
             # Known project limitation, deliberately not changed: the plaintext
             # password lands in the child's command line, readable through `ps`
             # or /proc/<pid>/cmdline by any process running as the same user.
-            # See "Known limitation" under Password Handling in
-            # docs/ARCHIVE_CORE_HANDBOOK.md.
             command.append(f"-p{password}")
         command.extend(["--", str(source.path), name])
         try:

@@ -131,7 +131,7 @@ def test_concurrent_manual_and_import_creation_cannot_cross_the_cap(
 def test_the_shipped_cap_matches_the_measured_ceiling() -> None:
     """5,000 is the last scale where a tag dialog still opens in under a
     second: 891ms to open and 282ms per search, against 1.8s and 587ms at
-    10,000. See ``MAX_TAG_COUNT`` and docs/technical/runtime-flows.md."""
+    10,000. See ``MAX_TAG_COUNT``."""
 
     assert MAX_TAG_COUNT == 5000
 

@@ -12,7 +12,7 @@
 # Conda provides just the interpreter and pip; every runtime dependency comes
 # from pyproject.toml so there is one source of truth. That includes the macOS
 # PyObjC packages, which carry `sys_platform == 'darwin'` markers and are
-# required for the deterministic launch gate -- see docs/technical/runtime-flows.md.
+# required for the deterministic launch gate.
 channels:
   - defaults
 dependencies:

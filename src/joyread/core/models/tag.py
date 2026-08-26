@@ -19,7 +19,7 @@ MAX_TAG_NAME_LENGTH = 32
 # crowded case.
 #
 # Raising this without making the browser virtualize its chips will make the
-# tag dialogs slow, not merely large. See docs/technical/runtime-flows.md.
+# tag dialogs slow, not merely large.
 MAX_TAG_COUNT = 5000
 
 
