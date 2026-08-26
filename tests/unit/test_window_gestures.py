@@ -140,8 +140,7 @@ class _StubWindow:
         self._full_screen = full_screen
         self._maximized = maximized
         self.handle_lookups = 0
-        self.restores = 0
-        self.geometry_writes = 0
+        self.calls: list[str] = []
 
     def isFullScreen(self) -> bool:  # noqa: N802 - Qt API shape.
         return self._full_screen
@@ -158,7 +157,7 @@ class _StubWindow:
 
     # Surface used by the restore path, so a test can see whether it ran.
     def showNormal(self) -> None:  # noqa: N802 - Qt API shape.
-        self.restores += 1
+        self.calls.append("showNormal")
 
     def geometry(self) -> QRect:
         return QRect(100, 100, 900, 600)
@@ -167,7 +166,7 @@ class _StubWindow:
         return QRect(100, 100, 900, 600)
 
     def setGeometry(self, *args: int) -> None:  # noqa: N802 - Qt API shape.
-        self.geometry_writes += 1
+        self.calls.append("setGeometry")
 
 
 def test_only_a_maximized_window_is_restored_before_the_drag() -> None:
@@ -175,12 +174,11 @@ def test_only_a_maximized_window_is_restored_before_the_drag() -> None:
     # its normal size, so geometry alone cannot show whether the restore ran.
     ordinary = _StubWindow()
     window_gestures.begin_system_move(ordinary)
-    assert ordinary.restores == 0
-    assert ordinary.geometry_writes == 0
+    assert ordinary.calls == []
 
     maximized = _StubWindow(maximized=True)
     window_gestures.begin_system_move(maximized)
-    assert maximized.restores == 1
+    assert "showNormal" in maximized.calls
 
 
 def test_a_full_screen_window_is_never_handed_to_the_compositor() -> None:
@@ -233,6 +231,24 @@ def test_restoring_keeps_the_grab_point_under_the_pointer(qtbot, monkeypatch) ->
     assert window.geometry().x() == round(grab.x() - across * 900), (
         "the restored window must stay under the pointer, not jump out from under it"
     )
+
+
+def test_the_window_is_placed_before_the_maximized_state_is_cleared(monkeypatch) -> None:
+    """One frame change, not two -- otherwise the restore reads as a flash.
+
+    Clearing the state first makes the window restore to wherever it sat before
+    it was maximized and only then jump to the anchored spot; both positions
+    get painted. The offscreen platform cannot show this (its ``showNormal()``
+    is not synchronous), so the ordering itself is what gets pinned.
+    """
+    monkeypatch.setattr(
+        window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
+    )
+    window = _StubWindow(maximized=True)
+
+    window_gestures.begin_system_move(window)
+
+    assert window.calls == ["setGeometry", "showNormal"]
 
 
 # --- SystemResizeBorder ----------------------------------------------------

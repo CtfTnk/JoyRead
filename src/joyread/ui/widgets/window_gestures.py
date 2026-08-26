@@ -53,14 +53,16 @@ def _restore_under_cursor(window: QWidget) -> None:
     # coordinates for a top-level window, and so is ``QCursor.pos()``.
     maximized = window.geometry()
     normal = window.normalGeometry()
-    window.showNormal()
     if not normal.isValid() or maximized.width() <= 0:
+        window.showNormal()
         return
     # Anchor the restored window so the grab point stays under the pointer
-    # instead of the window jumping out from under it. This states the whole
-    # rect rather than only the position: ``showNormal()`` restores geometry
-    # asynchronously, and a bare ``move()`` gets partly reconciled away when
-    # that lands.
+    # instead of the window jumping out from under it.
+    #
+    # Placed *before* the state is cleared, and stating the whole rect rather
+    # than only the position. Calling ``showNormal()`` first would restore the
+    # window to wherever it sat before it was maximized and only then jump to
+    # the anchored spot -- two frame changes, which reads as a flash.
     across = (cursor.x() - maximized.x()) / maximized.width()
     window.setGeometry(
         round(cursor.x() - across * normal.width()),
@@ -68,6 +70,7 @@ def _restore_under_cursor(window: QWidget) -> None:
         normal.width(),
         normal.height(),
     )
+    window.showNormal()
 
 
 def begin_system_move(widget: QWidget) -> bool:
