@@ -1,7 +1,21 @@
 from pathlib import Path
 
+import pytest
+
 from joyread.core.archive import ArchiveImageService
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+
+# The mock repository points two of its rows at a private comic corpus under
+# test_set/, which is gitignored and so absent on CI and on any fresh clone.
+# This assertion is specifically *about* those real files, so it cannot be
+# rewritten against a generated archive the way the thumbnail tests were --
+# it skips instead. Matches the idiom already used for the RAR corpus in
+# test_rar_reader_selection.py and the EPUB fixtures in tests/novel/.
+_CORPUS = Path("test_set")
+requires_local_corpus = pytest.mark.skipif(
+    not _CORPUS.is_dir(), reason="the private test_set/ corpus is not present"
+)
 
 
 def test_in_memory_repository_returns_stable_varied_books() -> None:
@@ -26,6 +40,7 @@ def test_in_memory_repository_returns_stable_varied_books() -> None:
     ]
 
 
+@requires_local_corpus
 def test_in_memory_repository_resolves_test_set_archives() -> None:
     repository = InMemoryBookRepository()
 

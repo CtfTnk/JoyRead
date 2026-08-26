@@ -144,6 +144,22 @@ def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
     return buffer.getvalue()
 
 
+def _synthetic_book(tmp_path: Path, *, pages: int = 20) -> Book:
+    """A real but tiny CBZ standing in for a corpus volume.
+
+    The mock repository's books point into ``test_set/``, a private corpus that
+    is not part of the repository, so any test that needs pages actually
+    decoded builds its own archive. Keeping these on a generated file is what
+    lets CI cover the thumbnail pipeline at all; only tests asserting something
+    about the real corpus may depend on it.
+    """
+    path = tmp_path / "synthetic.cbz"
+    with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:
+        for index in range(pages):
+            archive.writestr(f"{index:03d}.png", _png_bytes((120, 170), "#336699"))
+    return Book(**{**_sample_book().__dict__, "file_path": str(path), "page_count": pages})
+
+
 def _oriented_jpeg_bytes(size: tuple[int, int], orientation: int) -> bytes:
     image = Image.new("RGB", size, "#336699")
     exif = image.getexif()
@@ -162,7 +178,7 @@ def _write_pdf(path: Path) -> None:
 
 def test_thumbnail_service_generates_and_reuses_cover(tmp_path: Path) -> None:
     service = _thumbnail_service(tmp_path)
-    book = _sample_book()
+    book = _synthetic_book(tmp_path)
 
     first = service.generate_cover(book, (200, 284))
     second = service.generate_cover(book, (200, 284))
@@ -254,7 +270,7 @@ def test_cover_crop_fit_center_matches_default_contain_blur_renderer() -> None:
 
 def test_thumbnail_service_loads_cover_source_pages_for_archive_and_pdf(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
     service = _thumbnail_service(tmp_path)
-    archive_book = _sample_book()
+    archive_book = _synthetic_book(tmp_path)
     pdf_path = tmp_path / "source.pdf"
     _write_pdf(pdf_path)
     pdf_book = Book(**{**archive_book.__dict__, "uuid": "pdf-source", "file_path": str(pdf_path), "file_format": "PDF"})
@@ -271,7 +287,7 @@ def test_thumbnail_service_loads_cover_source_pages_for_archive_and_pdf(tmp_path
 
 def test_thumbnail_source_exposes_only_managed_file_cache_identity(tmp_path: Path) -> None:
     service = _thumbnail_service(tmp_path)
-    legacy_book = _sample_book()
+    legacy_book = _synthetic_book(tmp_path)
     managed_book = Book(**{**legacy_book.__dict__, "file_id": "content-42"})
 
     legacy_source = service.open_thumbnail_source(legacy_book)
@@ -419,7 +435,7 @@ def test_pdf_thumbnail_uses_target_prepared_frame_without_png_roundtrip(tmp_path
 
 def test_thumbnail_service_generates_detail_page_thumbnail_bytes(tmp_path: Path) -> None:
     service = _thumbnail_service(tmp_path)
-    book = _sample_book()
+    book = _synthetic_book(tmp_path)
 
     data = service.generate_page_thumbnail(book, 0, (100, 142))
 
@@ -431,7 +447,7 @@ def test_thumbnail_service_generates_detail_page_thumbnail_bytes(tmp_path: Path)
 
 def test_thumbnail_service_uses_caller_supplied_detail_cache_for_page_thumbnails(tmp_path: Path) -> None:
     service = _thumbnail_service(tmp_path)
-    book = _sample_book()
+    book = _synthetic_book(tmp_path)
     detail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(max_bytes=8 * 1024 * 1024)
 
     first = service.generate_page_thumbnail(book, 0, (100, 142), detail_cache=detail_cache)
@@ -447,7 +463,8 @@ def test_thumbnail_service_uses_caller_supplied_detail_cache_for_page_thumbnails
 
 def test_thumbnail_service_generates_detail_thumbnail_batches_for_large_archive(tmp_path: Path) -> None:
     service = _thumbnail_service(tmp_path)
-    book = _sample_book()
+    # More pages than one batch, so ``has_more`` has something to be true about.
+    book = _synthetic_book(tmp_path, pages=20)
     detail_cache: BoundedByteCache[tuple[int, int, int], bytes] = BoundedByteCache(max_bytes=8 * 1024 * 1024)
 
     first_batch = service.generate_detail_thumbnail_batch(
