@@ -20,6 +20,7 @@ import pyzipper
 import pytest
 
 from joyread.core.archive.backends import ExtractionBackend
+from joyread.core.archive.errors import ArchivePasswordRejected
 from joyread.core.archive.formats import zip_backend as zip_module
 from joyread.core.archive.formats.zip_backend import ZipArchiveBackend, uses_zipcrypto
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
@@ -38,8 +39,10 @@ requires_helper = pytest.mark.skipif(
 class _Resolver:
     def __init__(self, executable: str | None) -> None:
         self._executable = executable
+        self.calls = 0
 
     def seven_zip(self):  # noqa: ANN201
+        self.calls += 1
         if self._executable is None:
             return None
         return ExtractionBackend("7zz", self._executable, "test", supports_passwords=True)
@@ -58,12 +61,16 @@ def _encrypted_zip(tmp_path: Path, cipher: str) -> Path:
     return archive
 
 
-def _backend(executable: str | None) -> ZipArchiveBackend:
+def _backend(
+    executable: str | None,
+    *,
+    resolver: _Resolver | None = None,
+) -> ZipArchiveBackend:
     return ZipArchiveBackend(
         zipper_getter=lambda: pyzipper,
         bad_file_errors_getter=lambda: (pyzipper.zipfile.BadZipFile,),
         request_password=lambda *a, **k: PASSWORD,
-        backend_resolver=_Resolver(executable),
+        backend_resolver=resolver or _Resolver(executable),
     )
 
 
@@ -118,15 +125,41 @@ def test_an_aes_entry_stays_in_process(tmp_path: Path, monkeypatch) -> None:
 
     archive = _encrypted_zip(tmp_path, "AES256")
     calls: list[object] = []
+    resolver = _Resolver(str(_HELPER))
     monkeypatch.setattr(
         zip_module, "run_archive_stdout_command",
         lambda *a, **k: calls.append(a) or b"",
     )
 
-    payload = _read(_backend(str(_HELPER)), ArchiveSource(label=archive.name, suffix=".zip", path=archive))
+    payload = _read(
+        _backend(str(_HELPER), resolver=resolver),
+        ArchiveSource(label=archive.name, suffix=".zip", path=archive),
+    )
 
     assert payload == b"page-bytes"
     assert calls == [], "an AES entry must not be handed to the helper"
+    assert resolver.calls == 0, "AES must not even resolve an external helper"
+
+
+@requires_helper
+def test_helper_password_rejection_preserves_nested_archive_identity(tmp_path: Path) -> None:
+    archive = _encrypted_zip(tmp_path, "ZipCrypto")
+    source = ArchiveSource(
+        label="outer.cbz::nested.zip",
+        suffix=".zip",
+        path=archive,
+        spilled=True,
+    )
+
+    with pytest.raises(ArchivePasswordRejected) as exc_info:
+        _backend(str(_HELPER)).read_entries(
+            source,
+            [("001.txt", "wrong")],
+            limits=ArchiveOpenLimits(),
+            budget=ArchiveOperationBudget(1 << 30),
+        )
+
+    assert exc_info.value.archive_path == source.label
 
 
 @requires_helper

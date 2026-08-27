@@ -148,18 +148,23 @@ class ZipArchiveBackend:
         try:
             payloads: dict[str, bytes] = {}
             with zipper.AESZipFile(source.open_arg(), "r") as archive:
-                helper = self._zipcrypto_helper(source)
+                helper: str | None = None
+                helper_resolved = False
                 for name, password in entries:
-                    if password is not None and helper is not None and uses_zipcrypto(archive.getinfo(name)):
-                        payloads[name] = self._read_via_seven_zip(
-                            helper,
-                            source,
-                            name,
-                            password,
-                            limits=limits,
-                            budget=budget,
-                        )
-                        continue
+                    if password is not None and uses_zipcrypto(archive.getinfo(name)):
+                        if not helper_resolved:
+                            helper = self._zipcrypto_helper(source)
+                            helper_resolved = True
+                        if helper is not None:
+                            payloads[name] = self._read_via_seven_zip(
+                                helper,
+                                source,
+                                name,
+                                password,
+                                limits=limits,
+                                budget=budget,
+                            )
+                            continue
                     pwd = password.encode("utf-8") if password is not None else None
                     with archive.open(name, "r", pwd=pwd) as stream:
                         payloads[name] = read_stream_bounded(
@@ -219,14 +224,20 @@ class ZipArchiveBackend:
         # guarantee -- they are already as fast as this path.
         command.append(f"-p{password}")
         command.extend(["--", str(source.path), name])
-        return run_archive_stdout_command(
-            command,
-            name,
-            password=password,
-            max_item_bytes=limits.max_extracted_item_bytes,
-            budget=budget,
-            timeout_seconds=limits.external_command_timeout_seconds,
-        )
+        try:
+            return run_archive_stdout_command(
+                command,
+                name,
+                password=password,
+                max_item_bytes=limits.max_extracted_item_bytes,
+                budget=budget,
+                timeout_seconds=limits.external_command_timeout_seconds,
+            )
+        except ArchivePasswordRejected as exc:
+            raise ArchivePasswordRejected(
+                f"Password rejected for ZIP archive: {source.display_name}",
+                archive_path=source.display_name,
+            ) from exc
 
     def supports_bulk_extraction(self, source: ArchiveSource) -> bool:
         """Whether this source *can* be converted in one executable pass.
