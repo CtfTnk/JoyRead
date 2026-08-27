@@ -9,6 +9,7 @@ import hashlib
 from io import BytesIO
 import logging
 from pathlib import Path
+from shutil import rmtree
 from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore, RLock
 from time import perf_counter
@@ -123,7 +124,14 @@ class ArchiveImageSession:
         cache_lease: ArchiveCacheLease | None = None,
         cache_signature: str = "",
         limits: ArchiveOpenLimits | None = None,
+        spill_dir: Path | None = None,
     ) -> None:
+        # Nested archives spilled here have a path only for as long as this
+        # session lives: every PageRecord that came out of one still points at
+        # it. Removal therefore belongs in _finalize_close_locked, which runs
+        # once reads have drained, and never in close(), which can return while
+        # a read is still in flight.
+        self._spill_dir = spill_dir
         self._pages = tuple(pages)
         self._read_entries = read_entries
         self._bulk_extract = bulk_extract
@@ -1010,7 +1018,16 @@ class ArchiveImageSession:
             return False, None
         self._lease_finalized = True
         self._closed = True
+        self._discard_spilled_archives()
         return True, self._cache_lease
+
+    def _discard_spilled_archives(self) -> None:
+        spill_dir, self._spill_dir = self._spill_dir, None
+        if spill_dir is None:
+            return
+        # Best-effort: the session is over either way, and a file still mapped
+        # by a slow reader must not turn a completed close into an exception.
+        rmtree(spill_dir, ignore_errors=True)
 
     def _cache_identity_kind(self) -> str:
         lease = self._cache_lease

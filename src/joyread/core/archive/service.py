@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from shutil import rmtree
 from dataclasses import replace
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from threading import RLock
 from time import perf_counter
 from typing import Callable, Sequence
@@ -975,23 +976,33 @@ class ArchiveImageService:
             path=path,
             allow_persistent_cache=effective_lease is not None,
         )
-        context = _ScanContext(
-            password_provider=password_provider,
-            password_policy=password_policy,
-            skipped_archives=set(),
-            limits=effective_limits,
-            budget=ArchiveOperationBudget(effective_limits.max_operation_bytes),
-        )
-        root = self._scanner.scan(source, context)
-        _disambiguate_nested_archive_labels(root)
-        pages, contents = _flatten_archive_tree(root)
-        if not pages:
-            if context.skipped_archives:
-                raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
-            raise ArchiveEmptyError(
-                "No supported image pages found within the configured archive depth limits: "
-                f"{path}"
+        # Nested archives are spilled here so they have a real path, which is
+        # what makes the 7-Zip helper reachable for them at all. Ownership
+        # passes to the session on success; every path out before that has to
+        # remove it, or an archive that fails to open leaks its nested bytes.
+        spill_dir = Path(mkdtemp(prefix="joyread-nested-"))
+        try:
+            context = _ScanContext(
+                password_provider=password_provider,
+                password_policy=password_policy,
+                skipped_archives=set(),
+                limits=effective_limits,
+                budget=ArchiveOperationBudget(effective_limits.max_operation_bytes),
+                spill_dir=spill_dir,
             )
+            root = self._scanner.scan(source, context)
+            _disambiguate_nested_archive_labels(root)
+            pages, contents = _flatten_archive_tree(root)
+            if not pages:
+                if context.skipped_archives:
+                    raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
+                raise ArchiveEmptyError(
+                    "No supported image pages found within the configured archive depth limits: "
+                    f"{path}"
+                )
+        except BaseException:
+            rmtree(spill_dir, ignore_errors=True)
+            raise
         cache_signature = (
             f"archive-pages:scanner-v{SCANNER_SCHEMA_VERSION}:"
             f"{effective_limits.cache_signature()}"
@@ -1009,6 +1020,7 @@ class ArchiveImageService:
             cache_lease=effective_lease,
             cache_signature=cache_signature,
             limits=effective_limits,
+            spill_dir=spill_dir,
         )
 
     def _bulk_extract_for(self, source: _ArchiveSource) -> BulkExtract | None:

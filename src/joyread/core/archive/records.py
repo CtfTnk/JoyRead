@@ -19,10 +19,18 @@ class ArchiveSource:
     data: bytes | None = None
     allow_persistent_cache: bool = True
     requires_sequential_warmup: bool = False
+    # True when ``path`` is a scratch copy written by the scanner rather than
+    # the file the user actually has. It is still a real path -- backends that
+    # need one work unchanged -- but it must never be shown or recorded as the
+    # archive's identity: a password prompt reading
+    # "/var/folders/.../nested-0000.zip" tells the reader nothing.
+    spilled: bool = False
 
     @property
     def display_name(self) -> str:
-        return str(self.path) if self.path is not None else self.label
+        if self.path is None or self.spilled:
+            return self.label
+        return str(self.path)
 
     def open_arg(self) -> str | BytesIO:
         if self.data is not None:
