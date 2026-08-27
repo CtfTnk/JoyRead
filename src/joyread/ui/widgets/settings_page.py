@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread import __version__
 from joyread.core.archive.limits import GIB
 from joyread.infrastructure.i18n.locale_service import (
     LANGUAGE_DISPLAY_OPTIONS,
@@ -192,7 +193,21 @@ class SettingsPageWidget(QFrame):
             return self._privacy_items()
         if self._viewmodel.current_section == SettingsSectionKey.TAGS:
             return self._tags_items()
+        if self._viewmodel.current_section == SettingsSectionKey.ABOUT:
+            return self._about_items()
         return []
+
+    def _about_items(self) -> list[QWidget]:
+        """What JoyRead is, and the version, for a pane that rendered empty.
+
+        ABOUT reached the sidebar but had no branch here, so selecting it
+        cleared the content panel and showed nothing at all.
+        """
+
+        banner = SectionBanner(t("settings.section_about"), self._resources)
+        intro = SettingsAboutText(t("about.intro"))
+        version = SettingsVersionLabel(t("about.version", version=__version__))
+        return [banner, intro, version]
 
     def _tags_items(self) -> list[QWidget]:
         # Lazy import to avoid a circular dependency between the settings
@@ -561,6 +576,62 @@ class SettingsPageWidget(QFrame):
             archive_pool_usage,
         ]
 
+
+
+class SettingsAboutText(QFrame):
+    """A card of running prose, not a labelled control.
+
+    Every other row here is a name paired with something to operate. This is
+    the one place with something to read, so it wraps, keeps the blank lines
+    the translations use as paragraph breaks, and is selectable -- the text
+    names a repository someone may well want to copy.
+    """
+
+    def __init__(self, body: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setProperty("class", "SettingsItem")
+        self.setObjectName("SettingsAboutCard")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.settings_about_padding,
+            Theme.settings_about_padding,
+            Theme.settings_about_padding,
+            Theme.settings_about_padding,
+        )
+        layout.setSpacing(0)
+        self._label = QLabel(body)
+        self._label.setObjectName("SettingsAboutText")
+        self._label.setWordWrap(True)
+        self._label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+        self._label.setOpenExternalLinks(True)
+        self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        layout.addWidget(self._label)
+
+    def text(self) -> str:
+        return self._label.text()
+
+
+class SettingsVersionLabel(QFrame):
+    """The version, pushed to the trailing edge below the About text."""
+
+    def __init__(self, text_value: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("SettingsVersionRow")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, Theme.settings_about_padding, 0)
+        layout.setSpacing(0)
+        # The stretch is what puts it on the right; the panel lays items out
+        # top-down and would otherwise left-align it like every other row.
+        layout.addStretch(1)
+        self._label = QLabel(text_value)
+        self._label.setObjectName("SettingsVersionText")
+        self._label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._label)
+
+    def text(self) -> str:
+        return self._label.text()
 
 
 class SettingsSidebarWidget(QFrame):

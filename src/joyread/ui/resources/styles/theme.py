@@ -299,6 +299,10 @@ class Theme:
     settings_content_padding = 4
     settings_content_gap = 4
     settings_item_radius = 4
+    # The About card is the one block of running prose in Settings; the
+    # control rows' tighter padding makes a paragraph hard to read.
+    settings_about_padding = 12
+    settings_about_line_height = 20
     settings_item_padding = 2
     settings_item_height = 28
     settings_item_name_height = 24
@@ -717,6 +721,8 @@ class Theme:
             "__SETTINGS_SIDEBAR_RADIUS__": f"{cls.settings_sidebar_radius}px",
             "__SETTINGS_SIDEBAR_ITEM_RADIUS__": f"{cls.settings_sidebar_item_radius}px",
             "__SETTINGS_ITEM_RADIUS__": f"{cls.settings_item_radius}px",
+            "__SETTINGS_ABOUT_PADDING__": f"{cls.settings_about_padding}px",
+            "__SETTINGS_ABOUT_LINE_HEIGHT__": f"{cls.settings_about_line_height}px",
             "__SETTINGS_ITEM_FONT_SIZE__": f"{cls.settings_item_font_size}px",
             "__SETTINGS_CONTROL_FONT_SIZE__": f"{cls.settings_control_font_size}px",
             "__SETTINGS_PATH_EDGE__": cls.color_settings_path_edge,

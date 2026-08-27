@@ -380,5 +380,9 @@
     "opening_epub": "正在打开 EPUB…",
     "loading": "加载中…",
     "loading_page": "正在加载第 {index} 页…"
+  },
+  "about": {
+    "intro": "这是一个兴趣使然的个人项目。\n\n最初是想认真实践三件事：基于 Figma MCP 的设计开发、与 vibe coding agents 的协作，以及同一个应用的跨平台交付。做着做着，它也逐渐长成了最初设想的样子——一个更顺手的本地漫画管理与阅读工具。\n\n如果您喜欢它，欢迎为项目点一个 star，不胜感激。",
+    "version": "版本 {version}"
   }
 }

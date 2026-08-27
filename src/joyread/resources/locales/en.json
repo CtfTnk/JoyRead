@@ -380,5 +380,9 @@
     "opening_epub": "Opening EPUB…",
     "loading": "Loading…",
     "loading_page": "Loading page {index}…"
+  },
+  "about": {
+    "intro": "A personal project, made for the pleasure of making it.\n\nIt started as a way to properly practise three things: designing with Figma MCP, building alongside vibe-coding agents, and shipping the same app across platforms. Along the way it became the thing it set out to be — a comfortable place to keep and read a local manga library.\n\nIf you enjoy it, a star on the project would mean a lot. Thank you.",
+    "version": "Version {version}"
   }
 }

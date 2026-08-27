@@ -18,6 +18,7 @@ from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.widgets.menus import FigmaMenu
 from tests.support.qt_events import MenuLoopWatchdog, flush_deferred_deletes
 from joyread.ui.widgets.settings_page import (
+    SettingsAboutText,
     SettingsAddressItem,
     SettingsCacheStatusItem,
     SettingsContentPanel,
@@ -28,6 +29,7 @@ from joyread.ui.widgets.settings_page import (
     SettingsSpinButtonSmall,
     SettingsSwitchControl,
     SettingsSwitchItem,
+    SettingsVersionLabel,
 )
 
 
@@ -1311,3 +1313,86 @@ def test_the_conversion_policy_dropdown_is_translated_but_stores_an_enum() -> No
     viewmodel.set_canonical_import_policy("expensive_and_nested")
     assert viewmodel.canonical_import_policy.value == "expensive_and_nested"
     locale_service.load_language("English")
+
+
+def _about_page() -> SettingsPageWidget:
+    viewmodel = SettingsViewModel()
+    viewmodel.set_section(SettingsSectionKey.ABOUT)
+    return SettingsPageWidget(viewmodel, ResourceLoader())
+
+
+def test_the_about_section_is_not_empty(qtbot) -> None:
+    """ABOUT reached the sidebar with no branch in the dispatch, so selecting
+    it cleared the content panel and rendered nothing at all."""
+
+    page = _about_page()
+    qtbot.addWidget(page)
+
+    assert page.findChild(SettingsAboutText) is not None
+    assert page.findChild(SettingsVersionLabel) is not None
+
+
+def test_the_about_text_is_translated_rather_than_showing_its_key(qtbot) -> None:
+    """``t()`` returns the key itself when a translation is missing, so a
+    missing entry renders the literal string "about.intro" to the user."""
+
+    page = _about_page()
+    qtbot.addWidget(page)
+
+    body = page.findChild(SettingsAboutText).text()
+    assert "about.intro" not in body
+    assert len(body) > 80, "the About copy is missing or truncated"
+
+
+def test_the_version_label_reports_the_shipped_version(qtbot) -> None:
+    """A hard-coded version here would drift from pyproject silently, and the
+    About pane is exactly where someone checks what they are running."""
+
+    from joyread import __version__
+
+    page = _about_page()
+    qtbot.addWidget(page)
+
+    text = page.findChild(SettingsVersionLabel).text()
+    assert __version__ in text
+    assert "{version}" not in text, "the placeholder was not substituted"
+
+
+def test_the_version_sits_at_the_trailing_edge(qtbot) -> None:
+    """The content panel lays rows out top-down and left-aligned, so without a
+    leading stretch the version would sit under the text on the left."""
+
+    page = _about_page()
+    qtbot.addWidget(page)
+    row = page.findChild(SettingsVersionLabel)
+    page.resize(900, 560)
+    page.show()
+    QApplication.processEvents()
+
+    label = row.findChild(QLabel)
+    right_gap = row.width() - (label.x() + label.width())
+    assert label.x() > row.width() // 2, "the version is not on the trailing edge"
+    assert right_gap < row.width() // 3
+
+
+def test_the_about_copy_follows_the_selected_language(qtbot) -> None:
+    """Every string here is user-facing prose; a section that stayed English
+    while the rest of Settings switched would be the most visible miss."""
+
+    try:
+        locale_service.load_language("Chinese")
+        page = _about_page()
+        qtbot.addWidget(page)
+        chinese = page.findChild(SettingsAboutText).text()
+        version_zh = page.findChild(SettingsVersionLabel).text()
+
+        locale_service.load_language("English")
+        page_en = _about_page()
+        qtbot.addWidget(page_en)
+        english = page_en.findChild(SettingsAboutText).text()
+    finally:
+        locale_service.load_language("English")
+
+    assert chinese != english
+    assert "个人项目" in chinese
+    assert "版本" in version_zh

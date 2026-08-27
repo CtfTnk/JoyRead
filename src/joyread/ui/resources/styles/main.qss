@@ -933,6 +933,29 @@ QFrame[class="SettingsItem"] {
     border-radius: __SETTINGS_ITEM_RADIUS__;
 }
 
+/* The About pane: one card of prose and a version line, not control rows. */
+QLabel#SettingsAboutText {
+    color: __TEXT_COLOR__;
+    font-size: __SETTINGS_ITEM_FONT_SIZE__;
+    font-weight: 400;
+    line-height: __SETTINGS_ABOUT_LINE_HEIGHT__;
+    background: transparent;
+    border: none;
+}
+
+QFrame#SettingsVersionRow {
+    background: transparent;
+    border: none;
+}
+
+QLabel#SettingsVersionText {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __SETTINGS_ITEM_FONT_SIZE__;
+    font-weight: 400;
+    background: transparent;
+    border: none;
+}
+
 QFrame[class="SettingsDropdownButton"],
 QFrame[class="SettingsSpinButtonSmall"],
 QToolButton[class="SettingsPushButton"] {

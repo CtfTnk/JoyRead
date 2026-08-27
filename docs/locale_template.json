@@ -360,5 +360,9 @@
     "opening_epub": "Opening EPUB…",
     "loading": "Loading…",
     "loading_page": "Loading page {index}…"
+  },
+  "about": {
+    "intro": "Free prose. Keep the blank lines; they become paragraphs.",
+    "version": "Version {version}"
   }
 }
