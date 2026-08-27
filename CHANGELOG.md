@@ -3,7 +3,7 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] — unreleased
+## [1.0.0] — 2026-08-27
 
 First public release.
 
@@ -60,8 +60,15 @@ First public release.
   outlive the session.
 - Archive passwords are passed to the bundled 7-Zip executable on its command
   line and are therefore readable by same-user processes during extraction.
-  Encrypted ZIP is unaffected, being decrypted in-process.
+  This covers 7z, RAR, and ZIP using the legacy ZipCrypto cipher. AES-encrypted
+  ZIP is unaffected, being decrypted in-process — which for AES is also the
+  faster path. ZipCrypto is routed outside because decrypting it in Python runs
+  at ~2.6 MB/s against ~99 MB/s through the helper.
 - Solid-RAR performance is unverified; no solid RAR fixture was available. The
   7z thread policy is applied to RAR by extrapolation.
-- Windows and Linux builds are not published, pending their 7-Zip helper
-  binaries.
+- Windows and Linux builds are not published. Their 7-Zip helpers are vendored
+  and the code paths are complete; Windows still needs an application icon and
+  neither platform has installer packaging yet.
+- The macOS build is ad-hoc signed rather than notarised, so macOS reports it as
+  damaged on first launch until the quarantine attribute is removed. The disk
+  image explains this in English, Japanese, and Simplified Chinese.
