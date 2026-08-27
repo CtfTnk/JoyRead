@@ -79,6 +79,37 @@ and repeat the smoke test against a new Library. Inspect `Contents/MacOS` and
 `Contents/Frameworks` if startup fails; JoyRead logs remain under the normal
 platform user log directory.
 
+## 3a. Wrapping the app in a .dmg
+
+```bash
+python scripts/build_dmg.py
+```
+
+Produces `dist/JoyRead-<version>-macos-arm64.dmg` containing the app, an
+`Applications` symlink, and the trilingual first-launch note from
+`packaging/dmg/`.
+
+The script signs the bundle itself rather than letting PyInstaller do it, and
+that is load-bearing for an unsigned release. Setting
+`JOYREAD_CODESIGN_IDENTITY` makes PyInstaller sign with `--options runtime`,
+and the Hardened Runtime requires every loaded library to share the main
+executable's Team ID. An ad-hoc signature has no Team ID, so the app dies before
+reaching Python:
+
+```text
+libpython3.12.dylib ... not valid for use in process:
+mapping process and mapped file (non-platform) have different Team IDs
+```
+
+Hardened Runtime is only needed for notarization, which an ad-hoc build cannot
+do anyway. So `build_release.py` runs unsigned and `build_dmg.py` seals the
+bundle without it. Pass `--identity` once a Developer ID is available; section 5
+still covers notarization, which the script does not attempt.
+
+An ad-hoc build is quarantined on download and reports itself as *damaged*.
+That is what the note in the disk image explains, in English, Japanese and
+Simplified Chinese.
+
 ## 4. Platform requirements
 
 The spec refuses to build when the matching bundled 7-Zip helper is absent.

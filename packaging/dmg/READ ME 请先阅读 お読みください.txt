@@ -1,0 +1,119 @@
+JoyRead 1.0.0
+
+================================================================
+ENGLISH
+================================================================
+
+INSTALL
+  Drag JoyRead onto the Applications folder in this window.
+
+FIRST LAUNCH — PLEASE READ
+  macOS will probably say:
+
+      "JoyRead" is damaged and can't be opened.
+      You should move it to the Trash.
+
+  The app is not damaged. This build carries an ad-hoc signature
+  rather than an Apple Developer ID certificate, and macOS shows
+  that same message for any app it cannot check with Apple.
+
+  After copying JoyRead to Applications, run this once in Terminal:
+
+      xattr -d com.apple.quarantine /Applications/JoyRead.app
+
+  Then open JoyRead normally. You only need to do this once.
+
+  That command removes the check macOS applies to downloaded
+  files, so only run it on software you trust from a source you
+  trust.
+
+YOUR FILES
+  Everything stays on this Mac. No account, no cloud sync, no
+  telemetry. Your library lives in:
+
+      ~/Library/Application Support/JoyRead-Library
+
+REQUIREMENTS
+  macOS 13 or later, Apple Silicon.
+
+
+================================================================
+日本語
+================================================================
+
+インストール
+  このウィンドウ内の Applications フォルダへ JoyRead を
+  ドラッグしてください。
+
+初回起動時にお読みください
+  macOS が次のように表示することがあります:
+
+      「JoyRead」は壊れているため開けません。
+      ゴミ箱に入れる必要があります。
+
+  アプリは壊れていません。このビルドは Apple Developer ID 証明書
+  ではなくアドホック署名を使用しているため、Apple に確認できない
+  アプリに対して macOS が表示する定型のメッセージです。
+
+  JoyRead を Applications にコピーしたあと、ターミナルで次の
+  コマンドを一度だけ実行してください:
+
+      xattr -d com.apple.quarantine /Applications/JoyRead.app
+
+  そのあとは通常どおり起動できます。必要なのは最初の一度だけです。
+
+  このコマンドは、ダウンロードしたファイルに対する macOS の確認を
+  解除します。信頼できる入手元の、信頼できるソフトウェアにのみ
+  実行してください。
+
+ファイルの扱い
+  すべてこの Mac 内に保存されます。アカウント登録、クラウド同期、
+  利用状況の送信は一切ありません。ライブラリの保存先:
+
+      ~/Library/Application Support/JoyRead-Library
+
+動作環境
+  macOS 13 以降、Apple Silicon
+
+
+================================================================
+简体中文
+================================================================
+
+安装
+  将 JoyRead 拖到本窗口中的 Applications 文件夹。
+
+首次启动前请先阅读
+  macOS 可能会提示：
+
+      “JoyRead”已损坏，无法打开。
+      您应该将它移到废纸篓。
+
+  应用并没有损坏。此版本使用的是临时签名（ad-hoc），而不是
+  Apple Developer ID 证书；对于无法向 Apple 验证的应用，
+  macOS 都会显示这条相同的提示。
+
+  将 JoyRead 复制到 Applications 后，在“终端”中执行一次：
+
+      xattr -d com.apple.quarantine /Applications/JoyRead.app
+
+  之后即可正常打开。此操作只需执行一次。
+
+  该命令会移除 macOS 对下载文件的安全检查，
+  请仅对来源可信的软件使用。
+
+你的文件
+  全部保存在本机。没有账号，没有云同步，不收集任何使用数据。
+  书库位置：
+
+      ~/Library/Application Support/JoyRead-Library
+
+系统要求
+  macOS 13 或更高版本，Apple Silicon
+
+
+================================================================
+Source, manual, issues / ソース・マニュアル・不具合報告 /
+源码、使用手册与问题反馈
+    https://github.com/CtfTnk/JoyRead
+================================================================
