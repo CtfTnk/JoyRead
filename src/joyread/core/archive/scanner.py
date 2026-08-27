@@ -5,7 +5,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 import logging
-from pathlib import PurePosixPath
+from itertools import count
+from pathlib import Path, PurePosixPath
 
 from joyread.core.archive.errors import (
     ArchiveError,
@@ -43,6 +44,13 @@ class ArchiveScanContext:
     skipped_archives: set[str]
     limits: ArchiveOpenLimits
     budget: ArchiveOperationBudget
+    # Where a nested archive's bytes are written so it has a real path. A
+    # nested source without one is held in memory and can never be handed to
+    # the 7-Zip helper, because bulk extraction takes a file path -- see
+    # ``ArchiveScanner._materialize_nested_source``. ``None`` keeps the old
+    # in-memory behaviour, which callers that never read pages (probes,
+    # inspection) still want.
+    spill_dir: Path | None = None
 
 
 class ArchiveSourceSkipped(Exception):
@@ -66,6 +74,64 @@ class ArchiveScanner:
     ) -> None:
         self._list_entries = list_entries
         self._read_entry = read_entry
+
+    _spill_ids = count()
+
+    def _materialize_nested_source(
+        self,
+        *,
+        label: str,
+        suffix: str,
+        data: bytes,
+        allow_persistent_cache: bool,
+        context: ArchiveScanContext,
+    ) -> ArchiveSource:
+        """Give a nested archive a file path when the caller provided somewhere to put it.
+
+        Two things follow from a nested source having no path. Bulk extraction
+        is gated on one, so the 7-Zip helper can never touch a nested archive:
+        a ZipCrypto zip nested inside another archive is read through
+        ``zipfile._ZipDecrypter`` at ~2.6 MB/s, where the same zip at top level
+        converts at ~99 MB/s. And the bytes stay resident for the whole
+        session, bounded only by ``max_extracted_item_bytes`` -- a whole book
+        in memory, which this module otherwise refuses to do.
+
+        Spilling is best-effort on purpose. If the write fails there is still a
+        correct answer in hand, and falling back to memory keeps a readable
+        archive readable instead of turning a full disk into a failed open.
+        """
+
+        if context.spill_dir is not None:
+            # The label is attacker-controlled and arbitrary; the filename is
+            # not derived from it. Only the suffix carries over, because the
+            # backends dispatch on it.
+            spilled = context.spill_dir / f"nested-{next(self._spill_ids):04d}{suffix}"
+            try:
+                spilled.write_bytes(data)
+            except OSError:
+                logger.warning(
+                    "Could not spill a nested archive to disk; keeping it in memory",
+                    extra={
+                        "event": "archive.nested.spill.failed",
+                        "category": "archive",
+                        "status": "failed",
+                    },
+                    exc_info=True,
+                )
+            else:
+                return ArchiveSource(
+                    label=label,
+                    suffix=suffix,
+                    path=spilled,
+                    allow_persistent_cache=allow_persistent_cache,
+                    spilled=True,
+                )
+        return ArchiveSource(
+            label=label,
+            suffix=suffix,
+            data=data,
+            allow_persistent_cache=allow_persistent_cache,
+        )
 
     def scan(
         self,
@@ -130,12 +196,14 @@ class ArchiveScanner:
                     limits=context.limits,
                     budget=context.budget,
                 )
-                nested_source = ArchiveSource(
+                nested_source = self._materialize_nested_source(
                     label=f"{source.label}::{logical_name}",
                     suffix=suffix,
                     data=nested_data,
                     allow_persistent_cache=source.allow_persistent_cache and entry.password is None,
+                    context=context,
                 )
+                del nested_data
                 nested_root = self.scan(
                     nested_source,
                     context,
