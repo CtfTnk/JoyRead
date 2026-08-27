@@ -313,8 +313,14 @@ anything that can read your cache directory.
 
 **Passwords are briefly visible to other local processes.** The bundled 7-Zip
 executable accepts a password only as a command-line argument, so during
-extraction it can be read via `ps` by another process running as you. Encrypted
-ZIP is unaffected — JoyRead decrypts it in-process.
+extraction it can be read via `ps` by another process running as you. This
+covers 7z, RAR, and ZIP files using the legacy ZipCrypto cipher.
+
+ZIP files using AES encryption are unaffected — JoyRead decrypts those itself,
+without launching anything, and for AES that is also the faster route. It is
+only ZipCrypto that has to go outside: decrypting it inside JoyRead runs about
+forty times slower, which is the difference between a page appearing at once
+and taking a second.
 
 Neither matters much on a machine only you use. Both matter on a shared one.
 

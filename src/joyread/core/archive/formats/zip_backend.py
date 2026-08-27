@@ -13,7 +13,11 @@ from joyread.core.archive.errors import (
     ArchivePasswordRejected,
     ArchiveReadError,
 )
-from joyread.core.archive.formats.common import looks_like_password_error, read_stream_bounded
+from joyread.core.archive.formats.common import (
+    looks_like_password_error,
+    read_stream_bounded,
+    run_archive_stdout_command,
+)
 from joyread.core.archive.formats.seven_zip_command import (
     EXTRACT_STALL_SECONDS,
     background_thread_limit,
@@ -22,6 +26,34 @@ from joyread.core.archive.formats.seven_zip_command import (
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
+
+
+# WinZip AES stores its parameters in an extra field with this header id. Its
+# absence on an encrypted entry means the legacy ZipCrypto cipher.
+_AES_EXTRA_HEADER_ID = 0x9901
+_ENCRYPTED_FLAG = 0x1
+
+
+def uses_zipcrypto(info: object) -> bool:
+    """Whether this entry is encrypted with ZipCrypto rather than AES.
+
+    The distinction is worth a central-directory walk because the two are not
+    remotely comparable in cost. AES is handed to a C backend and decrypts at
+    ~166 MB/s; ZipCrypto goes through ``zipfile._ZipDecrypter``, a per-byte
+    Python loop holding the GIL, measured at ~2.6 MB/s. A single 2 MB page
+    costs ~12 ms one way and ~1 s the other.
+    """
+
+    if not getattr(info, "flag_bits", 0) & _ENCRYPTED_FLAG:
+        return False
+    extra = getattr(info, "extra", b"") or b""
+    offset = 0
+    while offset + 4 <= len(extra):
+        header_id = int.from_bytes(extra[offset : offset + 2], "little")
+        if header_id == _AES_EXTRA_HEADER_ID:
+            return False
+        offset += 4 + int.from_bytes(extra[offset + 2 : offset + 4], "little")
+    return True
 
 
 class ZipArchiveBackend:
@@ -116,7 +148,18 @@ class ZipArchiveBackend:
         try:
             payloads: dict[str, bytes] = {}
             with zipper.AESZipFile(source.open_arg(), "r") as archive:
+                helper = self._zipcrypto_helper(source)
                 for name, password in entries:
+                    if password is not None and helper is not None and uses_zipcrypto(archive.getinfo(name)):
+                        payloads[name] = self._read_via_seven_zip(
+                            helper,
+                            source,
+                            name,
+                            password,
+                            limits=limits,
+                            budget=budget,
+                        )
+                        continue
                     pwd = password.encode("utf-8") if password is not None else None
                     with archive.open(name, "r", pwd=pwd) as stream:
                         payloads[name] = read_stream_bounded(
@@ -135,6 +178,55 @@ class ZipArchiveBackend:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
         except (*bad_file_errors, KeyError) as exc:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
+
+    def _zipcrypto_helper(self, source: ArchiveSource) -> str | None:
+        """The 7-Zip executable to decrypt ZipCrypto entries with, if usable.
+
+        Needs a file on disk: the helper takes a path, not a stream. Nested
+        archives only qualify because the scanner spills them (see
+        ``ArchiveScanner._materialize_nested_source``); before that they were
+        bytes in memory and every nested ZipCrypto page paid the Python loop.
+        """
+
+        if source.path is None:
+            return None
+        backend = self._backend_resolver.seven_zip()
+        return backend.executable if backend is not None else None
+
+    def _read_via_seven_zip(
+        self,
+        executable: str,
+        source: ArchiveSource,
+        name: str,
+        password: str,
+        *,
+        limits: ArchiveOpenLimits,
+        budget: ArchiveOperationBudget,
+    ) -> bytes:
+        """Decrypt one ZipCrypto entry out of process, measured ~70x faster.
+
+        Same argument discipline as the RAR backend: entry names come from
+        archive metadata and are attacker controlled, so "-spd" stops a name
+        being read as a wildcard and "--" stops it being read as a switch.
+        "-scsUTF-8" keeps CJK names intact.
+        """
+
+        command = [executable, "x", "-so", "-y", "-spd", "-scsUTF-8"]
+        # Known project limitation, shared with 7z and RAR: 7-Zip accepts a
+        # password only as a command-line argument, so it is readable through
+        # `ps` by any process running as this user for the length of the
+        # extraction. AES entries never reach here and keep the in-process
+        # guarantee -- they are already as fast as this path.
+        command.append(f"-p{password}")
+        command.extend(["--", str(source.path), name])
+        return run_archive_stdout_command(
+            command,
+            name,
+            password=password,
+            max_item_bytes=limits.max_extracted_item_bytes,
+            budget=budget,
+            timeout_seconds=limits.external_command_timeout_seconds,
+        )
 
     def supports_bulk_extraction(self, source: ArchiveSource) -> bool:
         """Whether this source *can* be converted in one executable pass.

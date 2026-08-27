@@ -89,9 +89,12 @@ supplying the corresponding `7zz` binary — see [docs/PACKAGING.md](docs/PACKAG
   pages are readable by anything that can read your cache directory.
 - **Archive passwords are visible to local processes.** The bundled 7-Zip
   executable only accepts a password as a command-line argument, so while an
-  encrypted 7z or RAR is being extracted the password can be read via `ps` by
-  another process running as you. Encrypted ZIP is unaffected — it is decrypted
-  in-process.
+  encrypted 7z, RAR, or ZipCrypto ZIP is being extracted the password can be
+  read via `ps` by another process running as you. AES-encrypted ZIP is
+  unaffected — it is decrypted in-process, which for AES is also the faster
+  path. ZipCrypto is the legacy ZIP cipher; decrypting it in Python runs at
+  ~2.6 MB/s against ~99 MB/s through the helper, so JoyRead trades this
+  exposure for a readable book.
 - **RAR is read-only**, and by the terms of the bundled unRAR code, JoyRead's
   RAR support may not be used to build a RAR-compatible archiver.
 
