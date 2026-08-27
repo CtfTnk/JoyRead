@@ -8,8 +8,8 @@ from zipfile import ZIP_DEFLATED, ZipFile
 import pytest
 import shiboken6
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, qInstallMessageHandler
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QPoint, QPointF, QRectF, QTimer, Qt, qInstallMessageHandler
+from PySide6.QtGui import QContextMenuEvent, QIcon
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
@@ -34,6 +34,8 @@ from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.menus import FigmaMenu
+from tests.support.qt_events import MenuLoopWatchdog, flush_deferred_deletes
 from joyread.ui.widgets.reader_controls import (
     ReaderProgressSlider,
     ReaderStepButton,
@@ -688,6 +690,109 @@ def test_reader_topic_bookmark_row_elides_long_names_without_expanding_panel(qtb
     assert rows[0].width() <= bookmark_scroll.viewport().width()
     assert labels[0].text() != long_name
     assert labels[0].toolTip() == long_name
+
+    context.close()
+
+
+def test_bookmark_menu_survives_the_refresh_that_replaces_its_row(qtbot) -> None:
+    """A bookmark load landing mid-gesture must not take the open menu with it.
+
+    The load runs on a worker thread, so its result reaches the GUI thread as a
+    posted event -- and the open menu's own event loop delivers it. That
+    rebuilds every row, so a menu owned by the row it was opened on would be
+    destroyed along with the action the user was in the middle of picking.
+    """
+
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_bookmarks((ReaderBookmarkItem("bookmark-1", "Chapter 1", 3),))
+    panel.set_mode(ReaderTopicMode.BOOKMARKS)
+    panel.show()
+    qtbot.wait(0)
+
+    renamed: list[tuple[str, str]] = []
+    panel.bookmark_rename_requested.connect(lambda uuid, name: renamed.append((uuid, name)))
+    row = next(item for item in panel.findChildren(QFrame) if item.property("class") == "ReaderTopicItem")
+    watchdog = MenuLoopWatchdog(timeout_ms=500)
+    menu_labels: list[list[str]] = []
+
+    def bookmark_load_lands() -> None:
+        menu = panel.findChildren(FigmaMenu)[0]
+        # Handed over before the rebuild, so the watchdog can end a wedged run.
+        watchdog.watch(menu._loop)
+        # The refresh renames the bookmark under the open menu, so the action
+        # has to carry the new name rather than the one the row was built with.
+        panel.set_bookmarks((ReaderBookmarkItem("bookmark-1", "Prologue", 3),))
+        flush_deferred_deletes()
+
+        rows = [item for item in menu.findChildren(QFrame) if item.objectName() == "FigmaMenuItem"]
+        # Recorded, not asserted: an exception here would be swallowed by the
+        # event loop that called us, and the failure would surface elsewhere.
+        menu_labels.append([item.findChild(QLabel).text() for item in rows])
+        qtbot.mousePress(rows[0], Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(rows[0], Qt.MouseButton.LeftButton)
+
+    QTimer.singleShot(0, bookmark_load_lands)
+    with watchdog:
+        QApplication.sendEvent(
+            row,
+            QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), row.mapToGlobal(QPoint(5, 5))),
+        )
+    # MenuItem defers ``clicked``, then _trigger defers the callback: two turns.
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert not watchdog.fired, "the menu kept waiting after the refresh"
+    assert menu_labels == [["Rename", "Delete"]]
+    assert not shiboken6.isValid(row), "the refresh should have replaced the row the menu was opened on"
+    assert renamed == [("bookmark-1", "Prologue")], "the rename carried the name the row was built with"
+
+    context.close()
+
+
+def test_bookmark_rename_is_dropped_when_the_bookmark_is_gone(qtbot) -> None:
+    """Nothing to rename means no dialog.
+
+    The menu now outlives the row it was opened on, so the bookmark behind it
+    can be deleted -- from another window, or by a refresh -- between the right
+    click and the pick. Renaming it then would resurrect a deleted bookmark.
+    """
+
+    context = create_app_context()
+    panel = ReaderTopicPanel(context.resources)
+    qtbot.addWidget(panel)
+    panel.set_bookmarks((ReaderBookmarkItem("bookmark-1", "Chapter 1", 3),))
+    panel.set_mode(ReaderTopicMode.BOOKMARKS)
+    panel.show()
+    qtbot.wait(0)
+
+    renamed: list[tuple[str, str]] = []
+    panel.bookmark_rename_requested.connect(lambda uuid, name: renamed.append((uuid, name)))
+    row = next(item for item in panel.findChildren(QFrame) if item.property("class") == "ReaderTopicItem")
+    watchdog = MenuLoopWatchdog(timeout_ms=500)
+
+    def the_bookmark_is_deleted_elsewhere() -> None:
+        menu = panel.findChildren(FigmaMenu)[0]
+        watchdog.watch(menu._loop)
+        panel.set_bookmarks(())
+        flush_deferred_deletes()
+
+        rows = [item for item in menu.findChildren(QFrame) if item.objectName() == "FigmaMenuItem"]
+        qtbot.mousePress(rows[0], Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(rows[0], Qt.MouseButton.LeftButton)
+
+    QTimer.singleShot(0, the_bookmark_is_deleted_elsewhere)
+    with watchdog:
+        QApplication.sendEvent(
+            row,
+            QContextMenuEvent(QContextMenuEvent.Reason.Mouse, QPoint(5, 5), row.mapToGlobal(QPoint(5, 5))),
+        )
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert not watchdog.fired, "the menu kept waiting after the refresh"
+    assert renamed == []
 
     context.close()
 

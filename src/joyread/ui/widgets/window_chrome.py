@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPen
@@ -112,8 +113,8 @@ class TitleBarWidget(QWidget):
             force_non_macos_title_controls=False,
         )
 
-    def set_action_menu(self, menu: FigmaMenu) -> None:
-        self._action_button.setMenu(menu)
+    def set_action_menu_factory(self, build_menu: Callable[[], FigmaMenu]) -> None:
+        self._action_button.set_menu_factory(build_menu)
 
     def set_sidebar_visible(self, visible: bool) -> None:
         self._sidebar_button.setChecked(visible)
@@ -326,7 +327,7 @@ class ActionMenuButton(QFrame):
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._menu: FigmaMenu | None = None
+        self._build_menu: Callable[[], FigmaMenu] | None = None
         self.setProperty("class", "ActionMenuButton")
         self.setToolTip(t("toolbar.actions"))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -358,17 +359,21 @@ class ActionMenuButton(QFrame):
         )
         layout.addWidget(dropout_icon, alignment=Qt.AlignmentFlag.AlignVCenter)
 
-    def setMenu(self, menu: FigmaMenu) -> None:
-        self._menu = menu
-        self._menu.closed.connect(self._finish_menu_interaction)
+    def set_menu_factory(self, build_menu: Callable[[], FigmaMenu]) -> None:
+        # A factory rather than a menu: FigmaMenu.exec() destroys the menu it
+        # showed, so every press needs its own. Building on demand also picks
+        # up the current locale for the row labels.
+        self._build_menu = build_menu
 
     def refresh_tooltip(self) -> None:
         self.setToolTip(t("toolbar.actions"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and self._menu is not None:
+        if event.button() == Qt.MouseButton.LeftButton and self._build_menu is not None:
+            menu = self._build_menu()
+            menu.closed.connect(self._finish_menu_interaction)
             self._finish_menu_interaction()
-            self._menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+            menu.exec(self.mapToGlobal(QPoint(0, self.height())))
             event.accept()
             return
         super().mousePressEvent(event)

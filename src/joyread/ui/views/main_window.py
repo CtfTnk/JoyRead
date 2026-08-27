@@ -163,7 +163,7 @@ class MainWindow(QMainWindow):
         self._position_dialog_overlay()
         self._position_drop_zone_overlay()
 
-        self.chrome.set_action_menu(self.shelf_view.create_action_menu())
+        self.chrome.set_action_menu_factory(self.shelf_view.create_action_menu)
         self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.chrome.view_mode_changed.connect(context.shelf_viewmodel.set_view_mode)
         self.chrome.sort_changed.connect(context.shelf_viewmodel.set_sort)
@@ -1673,7 +1673,6 @@ class MainWindow(QMainWindow):
         self.sidebar.refresh_labels()
         self.settings_view.refresh_labels()
         self.chrome.refresh_labels()
-        self.chrome.set_action_menu(self.shelf_view.create_action_menu())
         self.shelf_view.toolbar.refresh_labels()
         self.cover_editor_overlay.refresh_labels()
         self.shelf_view.render()

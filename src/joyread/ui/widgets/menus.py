@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 
+import shiboken6
 from PySide6.QtCore import QEventLoop, QPoint, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QCursor, QHideEvent, QIcon, QMouseEvent, QTransform
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
@@ -73,25 +74,120 @@ class MenuItem(QFrame):
                 # Closing a Qt.Popup during mousePress can leave Qt's cursor and
                 # hover bookkeeping stale until the next click. Trigger after
                 # release so the normal press/release sequence can complete.
-                QTimer.singleShot(0, self.clicked.emit)
+                # This row is the timer's context object: a menu is destroyed
+                # once its exec() returns, so an emit still pending then has to
+                # be dropped with the row rather than fire on a deleted one.
+                QTimer.singleShot(0, self, self.clicked.emit)
             return
         self._pressed_inside = False
         super().mouseReleaseEvent(event)
 
 
-class FigmaMenu(QWidget):
-    """Popup root containing a styled panel and a zero-margin option list."""
+class _PopupMenu(QWidget):
+    """Shared lifetime for the Figma popup menus: one opening, then gone.
+
+    Both menus are ``Qt.Popup`` widgets run modally by their own event loop,
+    parented to something that outlives them. Everything that follows from
+    that -- the loop that must not be owned by the widget, the deferral that
+    keeps an action off the menu's own stack, the single opening, the
+    self-deletion -- is the same for both, and has been got wrong here before.
+    It lives once, here.
+    """
 
     closed = QtSignal()
 
-    def __init__(self, parent: QWidget, width: int = Theme.menu_width) -> None:
+    def __init__(self, parent: QWidget, width: int) -> None:
         super().__init__(parent)
         self._menu_width = width
-        self.setObjectName("FigmaMenuPopup")
+        self._loop: QEventLoop | None = None
+        self._opened = False
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
-        self._loop: QEventLoop | None = None
+
+    def refresh_size(self) -> None:
+        """Size the popup to its content. Each menu lays itself out its own way."""
+
+        raise NotImplementedError
+
+    def exec(self, global_pos: QPoint) -> None:
+        """Show the menu modally, then destroy it.
+
+        A menu is single-use: callers build one per opening and this call
+        disposes of it. Nothing may touch the menu once ``exec()`` returns.
+        """
+
+        if self._opened:
+            # Reopening would show a widget that is already deleted, or about
+            # to be: nothing appears, no hide event ever arrives, and the loop
+            # below runs with nothing left to quit it -- the app hangs with no
+            # hint of why. Say so here instead.
+            raise RuntimeError(f"{type(self).__name__} is single-use; build a new menu for each opening")
+        self._opened = True
+        self.refresh_size()
+        self.move(global_pos)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        # Deliberately unparented, and kept in a local for the whole call. A
+        # QEventLoop parented to this widget is destroyed with it, and a menu
+        # can be destroyed by the very action it triggered. That leaves a
+        # dangling pointer in QThreadData::eventLoops, which
+        # QCoreApplication::exit() walks calling exit() on every entry -- so
+        # the crash lands later, on quit, far from the menu that caused it.
+        loop = QEventLoop()
+        self._loop = loop
+        # A menu can be destroyed while it is open, because whatever owns it
+        # can go away underneath it: a background refresh rebuilding the rows
+        # a context menu belongs to, a window closing. Qt sends no hide event
+        # for that, so without this the loop below would keep running with
+        # nothing left to quit it and the window would freeze.
+        self.destroyed.connect(loop.quit)
+        try:
+            loop.exec()
+        finally:
+            if self._loop is loop:
+                self._loop = None
+        _refresh_cursor_shape()
+        if not shiboken6.isValid(self):
+            # Destroyed while it was open: there is no widget left to delete,
+            # and nothing below this line may touch one.
+            return
+        # Menus are parented to widgets that outlive them -- a shelf, a panel,
+        # a toolbar button -- so nothing else ever deletes one, and every open
+        # would otherwise leave the whole menu behind: its rows, and whatever
+        # its callbacks captured. Here is the one safe place to drop it.
+        # WA_DeleteOnClose, or a deleteLater() from _trigger or hideEvent,
+        # destroys the widget while its own exec() is still on the stack -- the
+        # crash commit a5b8ce1 fixed. By this point the loop has returned and
+        # is held only by a local, so the deletion can reach nothing running.
+        self.deleteLater()
+
+    def _trigger(self, callback: Callable[[], None]) -> None:
+        # close() only asks the loop to quit; it returns long before exec()
+        # does. Invoking the callback here would run the entire action nested
+        # inside this menu's own event loop, so each menu-driven step stacks
+        # another loop on the main thread and the menu cannot be torn down
+        # while its own exec() is still on the stack. Deferring runs the action
+        # after exec() has returned, at the caller's own stack depth.
+        self.close()
+        QTimer.singleShot(0, callback)
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        _release_popup_grabs(self)
+        if self._loop is not None and self._loop.isRunning():
+            self._loop.quit()
+        self.closed.emit()
+        _refresh_cursor_shape()
+        super().hideEvent(event)
+
+
+class FigmaMenu(_PopupMenu):
+    """Popup root containing a styled panel and a zero-margin option list."""
+
+    def __init__(self, parent: QWidget, width: int = Theme.menu_width) -> None:
+        super().__init__(parent, width)
+        self.setObjectName("FigmaMenuPopup")
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -125,27 +221,6 @@ class FigmaMenu(QWidget):
         self._option_layout.setSpacing(Theme.menu_option_gap)
         self._option_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
 
-    def exec(self, global_pos: QPoint) -> None:
-        self.refresh_size()
-        self.move(global_pos)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        # Deliberately unparented, and kept in a local for the whole call. A
-        # QEventLoop parented to this widget is destroyed with it, and a menu
-        # can be destroyed by the very action it triggered. That leaves a
-        # dangling pointer in QThreadData::eventLoops, which
-        # QCoreApplication::exit() walks calling exit() on every entry -- so
-        # the crash lands later, on quit, far from the menu that caused it.
-        loop = QEventLoop()
-        self._loop = loop
-        try:
-            loop.exec()
-        finally:
-            if self._loop is loop:
-                self._loop = None
-        _refresh_cursor_shape()
-
     def add_item(
         self,
         text: str,
@@ -174,29 +249,9 @@ class FigmaMenu(QWidget):
         self.setFixedSize(self._menu_width, panel_height)
         self.updateGeometry()
 
-    def _trigger(self, callback: Callable[[], None]) -> None:
-        # close() only asks the loop to quit; it returns long before exec()
-        # does. Invoking the callback here would run the entire action nested
-        # inside this menu's own event loop, so each menu-driven step stacks
-        # another loop on the main thread and the menu cannot be torn down
-        # while its own exec() is still on the stack. Deferring runs the action
-        # after exec() has returned, at the caller's own stack depth.
-        self.close()
-        QTimer.singleShot(0, callback)
 
-    def hideEvent(self, event: QHideEvent) -> None:
-        _release_popup_grabs(self)
-        if self._loop is not None and self._loop.isRunning():
-            self._loop.quit()
-        self.closed.emit()
-        _refresh_cursor_shape()
-        super().hideEvent(event)
-
-
-class LanguageDropdownMenu(QWidget):
+class LanguageDropdownMenu(_PopupMenu):
     """Figma dropdown-menu component with top/bottom indicators and hidden scrollbars."""
-
-    closed = QtSignal()
 
     def __init__(
         self,
@@ -204,15 +259,10 @@ class LanguageDropdownMenu(QWidget):
         resources: ResourceLoader,
         width: int = Theme.language_menu_width,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, width)
         self._resources = resources
-        self._menu_width = width
         self._item_count = 0
-        self._loop: QEventLoop | None = None
         self.setObjectName("LanguageDropdownMenuPopup")
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
 
         root_layout = QVBoxLayout(self)
         root_layout.setContentsMargins(0, 0, 0, 0)
@@ -273,27 +323,6 @@ class LanguageDropdownMenu(QWidget):
         self.refresh_size()
         return item
 
-    def exec(self, global_pos: QPoint) -> None:
-        self.refresh_size()
-        self.move(global_pos)
-        self.show()
-        self.raise_()
-        self.activateWindow()
-        # Deliberately unparented, and kept in a local for the whole call. A
-        # QEventLoop parented to this widget is destroyed with it, and a menu
-        # can be destroyed by the very action it triggered. That leaves a
-        # dangling pointer in QThreadData::eventLoops, which
-        # QCoreApplication::exit() walks calling exit() on every entry -- so
-        # the crash lands later, on quit, far from the menu that caused it.
-        loop = QEventLoop()
-        self._loop = loop
-        try:
-            loop.exec()
-        finally:
-            if self._loop is loop:
-                self._loop = None
-        _refresh_cursor_shape()
-
     def refresh_size(self) -> None:
         visible_items = min(max(self._item_count, 1), Theme.language_menu_max_visible_items)
         option_height = (visible_items * Theme.menu_item_height) + (
@@ -311,16 +340,6 @@ class LanguageDropdownMenu(QWidget):
         self._panel.setFixedSize(self._menu_width, panel_height)
         self.setFixedSize(self._menu_width, panel_height)
         self.updateGeometry()
-
-    def _trigger(self, callback: Callable[[], None]) -> None:
-        # close() only asks the loop to quit; it returns long before exec()
-        # does. Invoking the callback here would run the entire action nested
-        # inside this menu's own event loop, so each menu-driven step stacks
-        # another loop on the main thread and the menu cannot be torn down
-        # while its own exec() is still on the stack. Deferring runs the action
-        # after exec() has returned, at the caller's own stack depth.
-        self.close()
-        QTimer.singleShot(0, callback)
 
     def _indicator(self, *, up: bool) -> QWidget:
         frame = QWidget()
@@ -342,14 +361,6 @@ class LanguageDropdownMenu(QWidget):
         icon.setPixmap(pixmap)
         layout.addWidget(icon, alignment=Qt.AlignmentFlag.AlignCenter)
         return frame
-
-    def hideEvent(self, event: QHideEvent) -> None:
-        _release_popup_grabs(self)
-        if self._loop is not None and self._loop.isRunning():
-            self._loop.quit()
-        self.closed.emit()
-        _refresh_cursor_shape()
-        super().hideEvent(event)
 
 
 def _figma_menu(parent: QWidget, width: int = Theme.menu_width) -> FigmaMenu:

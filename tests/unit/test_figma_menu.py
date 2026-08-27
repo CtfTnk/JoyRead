@@ -1,5 +1,7 @@
 from datetime import datetime
 
+import pytest
+import shiboken6
 from PySide6.QtCore import QEventLoop, QPoint, QTimer, Qt
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea, QWidget
 
@@ -9,10 +11,13 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.menus import (
     FigmaMenu,
+    LanguageDropdownMenu,
+    MenuItem,
     build_action_menu,
     build_book_context_menu,
     build_language_dropdown_menu,
 )
+from tests.support.qt_events import MenuLoopWatchdog, flush_deferred_deletes
 
 
 def make_book() -> Book:
@@ -279,8 +284,9 @@ def test_menu_event_loop_is_not_parented_to_the_menu(qtbot) -> None:
     apply_theme()
     parent = QWidget()
     qtbot.addWidget(parent)
+    # Not registered with qtbot: exec() deletes the menu, so there would be
+    # nothing left for the teardown to close.
     menu = FigmaMenu(parent)
-    qtbot.addWidget(menu)
     seen: list[QEventLoop | None] = []
 
     def capture() -> None:
@@ -310,7 +316,6 @@ def test_menu_action_does_not_run_inside_the_menu_event_loop(qtbot) -> None:
     parent = QWidget()
     qtbot.addWidget(parent)
     menu = FigmaMenu(parent)
-    qtbot.addWidget(menu)
     # ``isRunning()`` is useless as a probe here: ``close()`` calls ``quit()``
     # first, which clears it while ``exec()`` is still on the stack. Observing
     # whether ``exec()`` has *returned* is the real question.
@@ -327,3 +332,144 @@ def test_menu_action_does_not_run_inside_the_menu_event_loop(qtbot) -> None:
     QApplication.processEvents()
 
     assert observed == [True], "the action ran before the menu's exec() returned"
+
+
+def a_figma_menu(parent: QWidget) -> FigmaMenu:
+    menu = FigmaMenu(parent)
+    menu.add_item("Read", lambda: None)
+    return menu
+
+
+def a_language_dropdown(parent: QWidget) -> LanguageDropdownMenu:
+    languages = (Language("English", "en"), Language("Japanese", "ja"))
+    return build_language_dropdown_menu(parent, ResourceLoader(), languages, "en", lambda _code: None)
+
+
+#: Both popup classes share one lifetime, so both must be held to it: they run
+#: the same ``exec()``, and a test that only ever builds one of them would let
+#: the other drift the moment either grows its own override.
+both_menus = pytest.mark.parametrize(
+    "make_menu",
+    [a_figma_menu, a_language_dropdown],
+    ids=["figma_menu", "language_dropdown"],
+)
+
+
+@both_menus
+def test_menus_do_not_accumulate_on_their_parent_across_opens(qtbot, make_menu) -> None:  # noqa: ANN001
+    """Opening a menu must not leave one behind.
+
+    Menus are parented to widgets that outlive them by design -- a shelf, a
+    panel, a toolbar button -- so C++ keeps every menu alive after ``exec()``
+    returns and nothing ever deletes it. Each one holds its rows and whatever
+    its callbacks captured, so the pile grows for as long as the app is used.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    for _ in range(3):
+        menu = make_menu(parent)
+        menu_type = type(menu)
+        # exec() blocks until the popup closes, so the dismissal has to come
+        # from inside the menu's own event loop.
+        QTimer.singleShot(0, menu.close)
+        menu.exec(QPoint(0, 0))
+
+    flush_deferred_deletes()
+
+    assert parent.findChildren(menu_type) == []
+    assert parent.findChildren(MenuItem) == []
+
+
+def test_triggered_menu_is_destroyed_and_its_action_still_runs(qtbot) -> None:
+    """The action outlives the menu that triggered it.
+
+    ``_trigger`` defers the callback so it runs after ``exec()`` returns, which
+    is also where the menu deletes itself. The action must survive that: it is
+    the caller's work, not the menu's, and by then the menu is gone.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    triggered: list[str] = []
+
+    menu = FigmaMenu(parent)
+    menu.add_item("Read", lambda: triggered.append("read"))
+
+    def click_row() -> None:
+        row = menu_rows(menu)[0]
+        qtbot.mousePress(row, Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(row, Qt.MouseButton.LeftButton)
+
+    QTimer.singleShot(0, click_row)
+    menu.exec(QPoint(0, 0))
+    flush_deferred_deletes()
+
+    assert parent.findChildren(FigmaMenu) == []
+
+    # _trigger defers the callback by a turn, so it is still pending here.
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert triggered == ["read"]
+
+
+@both_menus
+def test_a_menu_refuses_a_second_opening(qtbot, make_menu) -> None:  # noqa: ANN001
+    """Reopening a consumed menu hangs the app, so it has to be refused.
+
+    ``exec()`` deletes the menu, and a deleted popup shows nothing and sends no
+    hide event -- the second ``exec()`` would sit in an event loop that nothing
+    can quit, wedging the app with no hint of where it stopped.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+
+    menu = make_menu(parent)
+    QTimer.singleShot(0, menu.close)
+    menu.exec(QPoint(0, 0))
+
+    # Without the guard the second call really opens a menu nothing will
+    # dismiss, so hand its loop to the watchdog: the test then fails on the
+    # missing error instead of hanging the run.
+    watchdog = MenuLoopWatchdog()
+    QTimer.singleShot(0, lambda: watchdog.watch(menu._loop))
+    with watchdog, pytest.raises(RuntimeError, match="single-use"):
+        menu.exec(QPoint(0, 0))
+
+
+@both_menus
+def test_a_menu_destroyed_while_open_stops_waiting(qtbot, make_menu) -> None:  # noqa: ANN001
+    """A menu whose owner goes away must not leave its loop running.
+
+    Whatever a menu is parented to can be rebuilt underneath it -- a bookmark
+    refresh replacing the row a context menu was opened on, say. Qt sends no
+    hide event when a widget is destroyed, so nothing would quit the loop
+    inside ``exec()`` and the window would freeze with no clue where.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    owner = QWidget(parent)
+    menu = make_menu(owner)
+    watchdog = MenuLoopWatchdog()
+
+    def destroy_the_owner() -> None:
+        # What a list rebuild does to the row a context menu was opened on.
+        watchdog.watch(menu._loop)
+        owner.setParent(None)
+        owner.deleteLater()
+        flush_deferred_deletes()
+
+    QTimer.singleShot(0, destroy_the_owner)
+    with watchdog:
+        menu.exec(QPoint(0, 0))
+
+    assert not shiboken6.isValid(menu), "the owner's destruction should have taken the menu with it"
+    assert not watchdog.fired, "exec() kept waiting after the menu was destroyed"

@@ -1,14 +1,17 @@
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton
+from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import FileFilter, SortField
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
+from joyread.ui.widgets.menus import FigmaMenu, build_action_menu
 from joyread.ui.widgets.mode_switches import SortModeSwitchWidget
 from joyread.ui.widgets.search_panel import SearchPanelWidget
 from joyread.ui.widgets.top_toolbar import TagFilterButton, TopToolbarWidget
+from tests.support.qt_events import flush_deferred_deletes
+
 from joyread.ui.widgets.window_chrome import (
     ActionMenuButton,
     StoplightControlsWidget,
@@ -173,6 +176,84 @@ def test_action_menu_button_shadow_is_shifted_down(qtbot) -> None:
     assert effect is not None
     assert effect.offset().x() == 0
     assert effect.offset().y() == 1
+
+
+def test_action_menu_button_builds_a_fresh_menu_for_every_press(qtbot) -> None:
+    """The button holds a factory, not a menu.
+
+    ``FigmaMenu.exec()`` destroys the menu it showed, so a cached instance
+    would be dead on the second press. Building per press also keeps a menu
+    from being left behind on the button's parent every time it is opened.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    button = ActionMenuButton(ResourceLoader(), parent)
+    built = 0
+
+    def build_menu() -> FigmaMenu:
+        nonlocal built
+        built += 1
+        menu = FigmaMenu(parent)
+        menu.add_item("Import", lambda: None)
+        return menu
+
+    def dismiss_open_menu() -> None:
+        for menu in parent.findChildren(FigmaMenu):
+            if menu.isVisible():
+                menu.close()
+
+    button.set_menu_factory(build_menu)
+    for _ in range(3):
+        # exec() blocks until the popup closes, so the dismissal has to come
+        # from inside the menu's own event loop.
+        QTimer.singleShot(0, dismiss_open_menu)
+        qtbot.mousePress(button, Qt.MouseButton.LeftButton)
+    flush_deferred_deletes()
+
+    assert built == 3
+    assert parent.findChildren(FigmaMenu) == []
+
+
+def test_action_menu_rows_follow_the_locale_of_the_press(qtbot) -> None:
+    """Row labels are translated when the menu is built, so on every press.
+
+    The button used to hold a single menu built at start-up, which left a
+    language change to hand it a replacement. Building per press removes that
+    obligation -- and the menu it used to strand on the shelf.
+    """
+
+    apply_theme()
+    parent = QWidget()
+    qtbot.addWidget(parent)
+    button = ActionMenuButton(ResourceLoader(), parent)
+    opened: list[list[str]] = []
+
+    def dismiss_open_menu() -> None:
+        # Only the menu this press opened: a menu from an earlier press may not
+        # have reached its deferred deletion yet, but it is hidden.
+        for menu in parent.findChildren(FigmaMenu):
+            if not menu.isVisible():
+                continue
+            rows = [row for row in menu.findChildren(QFrame) if row.objectName() == "FigmaMenuItem"]
+            opened.append([row.findChild(QLabel).text() for row in rows])
+            menu.close()
+
+    button.set_menu_factory(lambda: build_action_menu(parent, lambda: None, lambda: None, lambda: None))
+
+    QTimer.singleShot(0, dismiss_open_menu)
+    qtbot.mousePress(button, Qt.MouseButton.LeftButton)
+
+    locale_service.load_language("Chinese")
+    QTimer.singleShot(0, dismiss_open_menu)
+    qtbot.mousePress(button, Qt.MouseButton.LeftButton)
+    locale_service.load_language("English")
+
+    assert opened == [
+        ["Open Book", "Open & Import", "Import"],
+        ["打开书籍", "打开并导入", "导入"],
+    ]
 
 
 def test_title_control_group_matches_figma_geometry_after_sort_switch(qtbot) -> None:

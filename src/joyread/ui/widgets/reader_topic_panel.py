@@ -47,6 +47,7 @@ class ReaderTopicPanel(QFrame):
         self._resources = resources
         self._mode = ReaderTopicMode.THUMBNAILS
         self._page_count = 0
+        self._bookmarks: tuple[ReaderBookmarkItem, ...] = ()
         self._last_thumbnail_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
         self._thumbnail_check_timer = QTimer(self)
         self._thumbnail_check_timer.setSingleShot(True)
@@ -132,12 +133,14 @@ class ReaderTopicPanel(QFrame):
         self._contents_layout.addStretch(1)
 
     def set_bookmarks(self, bookmarks: tuple[ReaderBookmarkItem, ...]) -> None:
+        # Kept so an open context menu can read the current name when its
+        # action fires, rather than the one the row was built with.
+        self._bookmarks = bookmarks
         _clear_layout(self._bookmark_layout)
         for bookmark in bookmarks:
             row = _TopicBookmarkRow(bookmark)
             row.clicked.connect(self.bookmark_selected.emit)
-            row.rename_requested.connect(self.bookmark_rename_requested.emit)
-            row.delete_requested.connect(self.bookmark_delete_requested.emit)
+            row.context_menu_requested.connect(self._show_bookmark_menu)
             self._bookmark_layout.addWidget(row)
         add_row = _NewBookmarkRow(self._resources)
         add_row.clicked.connect(self.new_bookmark_requested.emit)
@@ -224,6 +227,43 @@ class ReaderTopicPanel(QFrame):
         self._scroll_handles.append(AutoHideScrollHandle(scroll, parent=self))
         return scroll
 
+    def _show_bookmark_menu(self, bookmark_uuid: str, global_pos: QPoint) -> None:
+        """Open the row's context menu, owned by the panel rather than the row.
+
+        A bookmark refresh replaces every row, and it can land while the menu
+        is open -- the load runs on a worker thread, so its result arrives as a
+        posted event that the menu's own loop delivers. A menu parented to the
+        row would be destroyed mid-gesture, taking the action with it. The
+        panel outlives the rows, so it owns the menu, and only the uuid is
+        carried across: the name is looked up when the action fires.
+        """
+
+        menu = FigmaMenu(self)
+        menu.add_item(
+            t("reader.bookmark_rename"),
+            lambda: self._request_bookmark_rename(bookmark_uuid),
+        )
+        menu.add_item(
+            t("reader.bookmark_delete"),
+            lambda: self.bookmark_delete_requested.emit(bookmark_uuid),
+            destructive=True,
+        )
+        menu.exec(global_pos)
+
+    def _request_bookmark_rename(self, bookmark_uuid: str) -> None:
+        """Ask for a rename with the name the bookmark has *now*.
+
+        The rename dialog opens pre-filled with it, so a stale one would let
+        the user revert a rename someone else made while this menu was open --
+        a second window on the same book, or a refresh mid-gesture. If the
+        bookmark went away entirely, there is nothing to rename.
+        """
+
+        for bookmark in self._bookmarks:
+            if bookmark.uuid == bookmark_uuid:
+                self.bookmark_rename_requested.emit(bookmark_uuid, bookmark.name)
+                return
+
     def _defer_thumbnail_check(self) -> None:
         if not self._thumbnail_check_timer.isActive():
             self._thumbnail_check_timer.start(0)
@@ -309,8 +349,7 @@ class _TopicContentsRow(QFrame):
 
 class _TopicBookmarkRow(QFrame):
     clicked = QtSignal(int)
-    rename_requested = QtSignal(str, str)
-    delete_requested = QtSignal(str)
+    context_menu_requested = QtSignal(str, QPoint)
 
     def __init__(self, bookmark: ReaderBookmarkItem, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -360,17 +399,10 @@ class _TopicBookmarkRow(QFrame):
         super().mouseReleaseEvent(event)
 
     def contextMenuEvent(self, event: QContextMenuEvent) -> None:
-        menu = FigmaMenu(self)
-        menu.add_item(
-            t("reader.bookmark_rename"),
-            lambda bookmark=self._bookmark: self.rename_requested.emit(bookmark.uuid, bookmark.name),
-        )
-        menu.add_item(
-            t("reader.bookmark_delete"),
-            lambda bookmark=self._bookmark: self.delete_requested.emit(bookmark.uuid),
-            destructive=True,
-        )
-        menu.exec(event.globalPos())
+        # The panel builds the menu: this row can be replaced by a bookmark
+        # refresh while the menu is open, and neither the menu nor the action
+        # it triggers may depend on the row still being there.
+        self.context_menu_requested.emit(self._bookmark.uuid, event.globalPos())
 
 
 class _NewBookmarkRow(QFrame):
