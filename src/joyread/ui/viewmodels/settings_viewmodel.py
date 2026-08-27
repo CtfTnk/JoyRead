@@ -130,6 +130,11 @@ class SettingsViewModel:
         self.archive_depth_limits_changed: Signal[None] = Signal()
         self.archive_open_limits_changed: Signal[None] = Signal()
         self.clear_archive_pool_requested: Signal[None] = Signal()
+        # Pool usage moves on its own, reported from the caching workers, and
+        # it feeds exactly one label. It gets its own signal so the settings
+        # page can update that label in place instead of rebuilding the
+        # section it sits in -- see ``refresh_archive_pool_usage``.
+        self.archive_pool_usage_changed: Signal[None] = Signal()
         self.import_integrity_changed: Signal[None] = Signal()
         self.canonical_import_policy_changed: Signal[None] = Signal()
         # The ViewModel owns only the user intent. AppContext/MainWindow owns
@@ -518,7 +523,11 @@ class SettingsViewModel:
         if usage == self.archive_pool_current_bytes:
             return
         self.archive_pool_current_bytes = usage
-        self.state_changed.emit()
+        # Deliberately not ``state_changed``: this arrives from the caching
+        # workers about once a second while a book is being cached, and a
+        # section-wide rebuild for one number tears down every control in it,
+        # including any popup the user has open on one.
+        self.archive_pool_usage_changed.emit()
 
     def set_hidden_space_service(self, service: HiddenSpaceService | None) -> None:
         # Storage reconfiguration rebuilds the service; the VM holds a

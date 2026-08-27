@@ -1,6 +1,7 @@
 import json
 
-from PySide6.QtCore import QPoint, Qt
+import shiboken6
+from PySide6.QtCore import QPoint, QTimer, Qt
 from PySide6.QtGui import QFont, QFontMetrics
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
@@ -14,11 +15,14 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, SettingsViewModel
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.settings_view import SettingsView
+from joyread.ui.widgets.menus import FigmaMenu
+from tests.support.qt_events import MenuLoopWatchdog, flush_deferred_deletes
 from joyread.ui.widgets.settings_page import (
     SettingsAddressItem,
     SettingsCacheStatusItem,
     SettingsContentPanel,
     SettingsDropdownButton,
+    SettingsOptionItem,
     SettingsPageWidget,
     SettingsSidebarItem,
     SettingsSpinButtonSmall,
@@ -337,6 +341,145 @@ def test_settings_content_panel_accepts_reusable_setting_item_classes(qtbot) -> 
     assert len(panel.findChildren(SettingsSwitchItem)) == 1
     assert len(panel.findChildren(SettingsAddressItem)) == 1
     assert panel.widget().layout().count() == 3  # two setting items plus final stretch
+
+
+def test_open_dropdown_does_not_wedge_when_a_re_render_destroys_it(qtbot) -> None:
+    """A section re-render can land while one of its dropdowns is open.
+
+    Archive-pool usage is reported from worker threads as a queued signal, and
+    the settings page re-renders the current section on it -- so the rebuild
+    arrives as a posted event, which the open menu's own loop delivers. That
+    destroys the control the menu belongs to, and Qt sends no hide event for a
+    destroyed widget: the loop has to end on its own or the window freezes.
+    """
+
+    apply_theme()
+    panel = SettingsContentPanel()
+    qtbot.addWidget(panel)
+    control = SettingsDropdownButton("Slide", ("Slide", "Fade"), ResourceLoader())
+    panel.set_items([SettingsOptionItem("Transition", control)])
+    panel.show()
+    qtbot.wait(0)
+    watchdog = MenuLoopWatchdog()
+
+    def re_render_the_section() -> None:
+        watchdog.watch(panel.findChildren(FigmaMenu)[0]._loop)
+        replacement = SettingsDropdownButton("Slide", ("Slide", "Fade"), ResourceLoader())
+        panel.set_items([SettingsOptionItem("Transition", replacement)])
+        flush_deferred_deletes()
+
+    QTimer.singleShot(0, re_render_the_section)
+    with watchdog:
+        qtbot.mousePress(control, Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(control, Qt.MouseButton.LeftButton)
+
+    assert not shiboken6.isValid(control), "the re-render should have replaced the open dropdown"
+    assert not watchdog.fired, "the dropdown kept waiting after the re-render destroyed it"
+
+
+def test_pool_usage_updates_its_label_without_rebuilding_the_section(qtbot) -> None:
+    """The usage figure moves on its own, and it feeds exactly one label.
+
+    Rendering the whole section for it tears down and rebuilds every control
+    in that section -- measured at eight rebuilds while caching a single 48 MB
+    book -- and takes any popup the user has open along with them.
+    """
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    QApplication.processEvents()
+    pool_bytes = [0]
+    viewmodel.set_archive_pool_bytes_provider(lambda: pool_bytes[0])
+
+    usage_item = page.findChild(SettingsCacheStatusItem)
+    usage_label = page.findChild(QLabel, "SettingsCacheUsageLabel")
+    assert usage_label.text() == "0.0 / 5 GB"
+
+    pool_bytes[0] = 3 * GIB
+    viewmodel.refresh_archive_pool_usage()
+
+    assert page.findChild(SettingsCacheStatusItem) is usage_item, "the section was rebuilt for one label"
+    assert usage_label.text() == "3.0 / 5 GB"
+
+
+def test_pool_usage_after_leaving_the_cache_section_touches_nothing(qtbot) -> None:
+    """Navigating away deletes the usage row, and the ticks keep coming.
+
+    They arrive from the caching workers whatever section is on screen, so the
+    page must not still be holding the row that navigation destroyed.
+    """
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    QApplication.processEvents()
+    pool_bytes = [0]
+    viewmodel.set_archive_pool_bytes_provider(lambda: pool_bytes[0])
+
+    viewmodel.set_section(SettingsSectionKey.GENERAL)
+    flush_deferred_deletes()
+
+    pool_bytes[0] = 3 * GIB
+    viewmodel.refresh_archive_pool_usage()
+
+    assert page.findChild(SettingsCacheStatusItem) is None
+
+
+def test_pool_usage_does_not_close_an_open_dropdown(qtbot) -> None:
+    """Cache strategy sits in the same section as the usage figure.
+
+    So the dropdown most exposed to a usage-driven rebuild is the one right
+    next to it -- and while a book is caching those arrive about once a
+    second, which is shorter than it takes to read two options and pick one.
+    """
+
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    page.show()
+    qtbot.wait(0)
+    pool_bytes = [0]
+    viewmodel.set_archive_pool_bytes_provider(lambda: pool_bytes[0])
+    dropdown = page.findChildren(SettingsDropdownButton)[0]
+    picked: list[str] = []
+    dropdown.value_changed.connect(picked.append)
+    survived: list[bool] = []
+    label_seen: list[str] = []
+    watchdog = MenuLoopWatchdog(timeout_ms=500)
+
+    def usage_tick_lands() -> None:
+        menus = page.findChildren(FigmaMenu)
+        watchdog.watch(menus[0]._loop)
+        pool_bytes[0] = 3 * GIB
+        viewmodel.refresh_archive_pool_usage()
+        flush_deferred_deletes()
+
+        survived.append(bool(page.findChildren(FigmaMenu)) and shiboken6.isValid(dropdown))
+        label_seen.append(page.findChild(QLabel, "SettingsCacheUsageLabel").text())
+        if not survived[-1]:
+            return
+        rows = [row for row in menus[0].findChildren(QFrame) if row.objectName() == "FigmaMenuItem"]
+        qtbot.mousePress(rows[1], Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(rows[1], Qt.MouseButton.LeftButton)
+
+    QTimer.singleShot(0, usage_tick_lands)
+    with watchdog:
+        qtbot.mousePress(dropdown, Qt.MouseButton.LeftButton)
+        qtbot.mouseRelease(dropdown, Qt.MouseButton.LeftButton)
+    # MenuItem defers ``clicked``, then _trigger defers the callback: two turns.
+    QApplication.processEvents()
+    QApplication.processEvents()
+
+    assert label_seen == ["3.0 / 5 GB"], "the usage change never reached the label"
+    assert survived == [True], "the usage change closed the open dropdown"
+    assert picked == ["Hidden image files"]
 
 
 def test_settings_overlay_resizes_panel_within_figma_min_max(qtbot) -> None:

@@ -94,6 +94,7 @@ class SettingsPageWidget(QFrame):
         self._resources = resources
         self._tag_viewmodel = tag_viewmodel
         self._tag_page = None  # cached TagManagementPage, lazily created
+        self._archive_pool_usage_item: SettingsCacheStatusItem | None = None
         self._disposed = False
         self._sidebar_items: dict[SettingsSectionKey, SettingsSidebarItem] = {}
         self.setProperty("class", "SettingsPanel")
@@ -122,6 +123,7 @@ class SettingsPageWidget(QFrame):
         layout.addWidget(self._content, stretch=1)
 
         self._viewmodel.state_changed.connect(self.render)
+        self._viewmodel.archive_pool_usage_changed.connect(self._refresh_archive_pool_usage)
         self.destroyed.connect(self._handle_destroyed)
         self.render()
 
@@ -133,6 +135,7 @@ class SettingsPageWidget(QFrame):
             return
         self._disposed = True
         self._viewmodel.state_changed.disconnect(self.render)
+        self._viewmodel.archive_pool_usage_changed.disconnect(self._refresh_archive_pool_usage)
         if self._tag_page is not None:
             self._tag_page.dispose()
             self._tag_page = None
@@ -150,6 +153,25 @@ class SettingsPageWidget(QFrame):
         ):
             self._tag_viewmodel.clear_selection()
         self._content.set_items(self._items_for_current_section())
+        # Only the cache section carries a usage row; elsewhere this is None
+        # and the usage signal has nothing to update.
+        self._archive_pool_usage_item = self._content.findChild(SettingsCacheStatusItem)
+
+    def _refresh_archive_pool_usage(self) -> None:
+        """Update the pool-usage label in place.
+
+        The figure changes on its own while books are being cached. Re-running
+        ``render()`` for it would destroy and rebuild every control in the
+        section about once a second -- and a dropdown the user has open is one
+        of those controls.
+        """
+
+        if self._disposed or self._archive_pool_usage_item is None:
+            return
+        self._archive_pool_usage_item.set_usage(
+            self._viewmodel.archive_pool_current_bytes,
+            self._viewmodel.archive_extraction_pool_gb * GIB,
+        )
 
     def refresh_labels(self) -> None:
         """Refresh static labels and rebuild current content after a language change."""
