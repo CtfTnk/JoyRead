@@ -5,6 +5,7 @@ import time
 from io import BytesIO
 from pathlib import Path
 
+import pytest
 from PIL import Image
 from PIL import ImageDraw
 from PySide6.QtCore import QRectF
@@ -17,7 +18,11 @@ from joyread.core.reader import ReaderSessionService
 from joyread.core.reader.pdf import PdfReadError
 from joyread.infrastructure import pdf_image_service as pdf_module
 from joyread.infrastructure.pdf_document_thread import PdfThreadError, pdf_thread
-from joyread.infrastructure.pdf_image_service import PdfImageService, _normalize_rendered_pdf_png
+from joyread.infrastructure.pdf_image_service import (
+    PdfImageService,
+    _normalize_rendered_pdf_png,
+    _PdfRenderCompletion,
+)
 
 
 def _write_pdf(path: Path, pages: int = 1) -> None:
@@ -440,7 +445,9 @@ def test_a_render_that_times_out_does_not_leak_its_pending_entry(
         def never_resolves(self, page_index, size):  # noqa: ANN001, ARG001
             completion = pdf_module._PdfRenderCompletion()  # noqa: SLF001
             request_id = -1
-            self._pending[request_id] = completion  # noqa: SLF001
+            # Mirrors the real request_page: one id can hold several waiters,
+            # because QPdfPageRenderer coalesces identical requests.
+            self._pending.setdefault(request_id, []).append(completion)  # noqa: SLF001
             return request_id, completion
 
         monkeypatch.setattr(pdf_module._AsyncPageRenderer, "request_page", never_resolves)  # noqa: SLF001
@@ -531,3 +538,89 @@ def _png_bytes(image: Image.Image) -> bytes:
     output = BytesIO()
     image.save(output, format="PNG")
     return output.getvalue()
+
+
+def test_concurrent_identical_page_requests_all_receive_their_render(
+    tmp_path: Path, qtbot  # noqa: ARG001
+) -> None:
+    """One render id can have several waiters, and every one must be answered.
+
+    ``QPdfPageRenderer.requestPage()`` coalesces identical (page, size)
+    requests and returns the *same* id to every caller. Keying one completion
+    per id therefore overwrites the earlier waiters: a single ``pageRendered``
+    resolves only the survivor, and the rest are neither resolved nor
+    reachable by ``dispose()``. They block for the whole
+    ``PDF_CALL_TIMEOUT_SECONDS``, holding a task worker -- and process exit --
+    for two minutes after the reader has closed.
+    """
+
+    source = tmp_path / "shared.pdf"
+    _write_image_heavy_pdf(source, pages=2, side=1200)
+    session = PdfImageService().open(source)
+    request = ReaderPageRequest(
+        page_index=0,
+        target_width=900,
+        target_height=1200,
+        device_pixel_ratio=1.0,
+        generation=1,
+        priority=TaskPriority.HIGH,
+    )
+
+    results: list[object] = []
+    errors: list[BaseException] = []
+    # Four workers plus this thread all trip the barrier together.
+    start = threading.Barrier(5)
+
+    def render() -> None:
+        start.wait(timeout=10.0)
+        try:
+            results.append(session.prepare_page(request, None))
+        except BaseException as exc:  # noqa: BLE001 - reported on the main thread.
+            errors.append(exc)
+
+    workers = [threading.Thread(target=render) for _ in range(4)]
+    for worker in workers:
+        worker.start()
+    start.wait(timeout=10.0)
+    for worker in workers:
+        # Generous next to a correct render, far below the 120s timeout a
+        # dropped waiter would burn -- the point is that none of them waits.
+        worker.join(timeout=20.0)
+        assert not worker.is_alive(), "a waiter was left blocked on a coalesced render"
+
+    session.close()
+    assert not errors, f"a concurrent waiter failed: {errors[0]!r}"
+    assert len(results) == 4
+
+
+def test_closing_a_session_rejects_every_waiter_on_one_render_id(
+    tmp_path: Path, qtbot  # noqa: ARG001
+) -> None:
+    """``dispose()`` must fail every waiter registered under an id, not one.
+
+    Coalesced requests put several completions behind a single id. If teardown
+    rejects only one of them the rest are unreachable -- no ``pageRendered``
+    is coming once the document is detached -- so they wait out the full
+    ``PDF_CALL_TIMEOUT_SECONDS`` and keep the process alive with them.
+
+    The waiters are registered directly because provoking a real coalesce at
+    exactly the moment of ``close()`` is a race; what is under test here is
+    teardown's handling of the resulting state, not how it arises.
+    """
+
+    source = tmp_path / "closing.pdf"
+    _write_pdf(source, pages=1)
+    session = PdfImageService().open(source)
+    first, second = _PdfRenderCompletion(), _PdfRenderCompletion()
+
+    def register_two_waiters_on_one_id() -> None:
+        # Runs on the PDF thread, which owns this bookkeeping.
+        session._renderer._pending.setdefault(4242, []).extend([first, second])
+
+    pdf_thread().call(register_two_waiters_on_one_id)
+    session.close()
+
+    for completion in (first, second):
+        with pytest.raises(PdfReadError):
+            # Bounded well under the 120s a dropped waiter would burn.
+            completion.wait(10.0)

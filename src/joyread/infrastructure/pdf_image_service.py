@@ -117,7 +117,13 @@ class _AsyncPageRenderer:
         self._renderer.setDocument(document)
         self._renderer.setRenderMode(QPdfPageRenderer.RenderMode.MultiThreaded)
         self._renderer.pageRendered.connect(self._on_page_rendered)
-        self._pending: dict[int, _PdfRenderCompletion] = {}
+        # Keyed by request id, but a *list* per id: QPdfPageRenderer coalesces
+        # identical (page, size) requests and hands back the same id to every
+        # caller. Storing one completion per id silently drops all but the last
+        # waiter -- the others are never resolved and never rejected, so they
+        # block for the whole PDF_CALL_TIMEOUT_SECONDS and hold a task worker
+        # (and process exit) with them.
+        self._pending: dict[int, list[_PdfRenderCompletion]] = {}
         # Tracked so a PDF-thread shutdown that arrives before the owning
         # session ever calls close() can still fail this renderer's pending
         # completions -- otherwise a caller stranded mid-wait would block
@@ -129,10 +135,10 @@ class _AsyncPageRenderer:
 
         completion = _PdfRenderCompletion()
         request_id = self._renderer.requestPage(page_index, size)
-        self._pending[request_id] = completion
+        self._pending.setdefault(request_id, []).append(completion)
         return request_id, completion
 
-    def discard(self, request_id: int) -> None:
+    def discard(self, request_id: int, completion: "_PdfRenderCompletion | None" = None) -> None:
         """Drop a pending completion the caller gave up waiting on.
 
         Without this, a request whose ``pageRendered`` never arrives (the
@@ -143,19 +149,33 @@ class _AsyncPageRenderer:
         finds nothing and is a no-op, same as today's post-``dispose()`` case.
         """
 
-        self._pending.pop(request_id, None)
+        if completion is None:
+            self._pending.pop(request_id, None)
+            return
+        waiters = self._pending.get(request_id)
+        if waiters is None:
+            return
+        # Only this caller gave up. Co-waiters coalesced onto the same id are
+        # still waiting on a render that may yet arrive, so they stay.
+        try:
+            waiters.remove(completion)
+        except ValueError:
+            return
+        if not waiters:
+            del self._pending[request_id]
 
     def _on_page_rendered(
         self, page_index: int, image_size: QSize, image: QImage, options: object, request_id: int
     ) -> None:
         del page_index, image_size, options
-        completion = self._pending.pop(request_id, None)
-        if completion is None:
+        waiters = self._pending.pop(request_id, None)
+        if not waiters:
             # Already resolved by dispose() (session closed mid-render), or a
             # stale id from a renderer that no longer exists. Either way there
             # is no one left to hand this result to.
             return
-        completion.resolve(image)
+        for completion in waiters:
+            completion.resolve(image)
 
     def dispose(self) -> None:
         """Detach the document and fail anything still outstanding.
@@ -172,8 +192,9 @@ class _AsyncPageRenderer:
         self._renderer.setDocument(None)
         self._renderer.pageRendered.disconnect(self._on_page_rendered)
         self._renderer.deleteLater()
-        for completion in pending.values():
-            completion.reject(PdfReadError("PDF session is closed."))
+        for waiters in pending.values():
+            for completion in waiters:
+                completion.reject(PdfReadError("PDF session is closed."))
 
 
 # Touched only on the PDF thread, same custody rule as _live_documents below.
@@ -273,7 +294,7 @@ class PdfImageSession:
             # A `pageRendered` that never arrives (not a `dispose()` reject,
             # which already pops this entry) would otherwise leak this
             # request's slot in `_pending` for the renderer's remaining life.
-            pdf_thread().post(lambda: renderer.discard(request_id))
+            pdf_thread().post(lambda: renderer.discard(request_id, completion))
             raise
         render_ms = (perf_counter() - started) * 1000.0 if perf_enabled else 0.0
         if image.isNull():
