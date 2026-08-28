@@ -38,6 +38,7 @@ from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
 from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
+from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
 from joyread.novel.ui.novel_content_area import NovelContentArea
 from joyread.novel.ui.novel_custom_panel import NovelCustomPanel
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader
@@ -133,6 +134,11 @@ class NovelReaderShellWidget(ReaderShellBase):
         self.topic_panel.hide()
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources, drag_handle=self.header)
         self.dialog_overlay.hide()
+        self._path_issue_prompt = PathIssuePromptController(
+            self,
+            self.dialog_overlay,
+            context.path_issue_viewmodel,
+        )
 
         resolved_title = title or (book.title if book is not None else self._source_path.stem)
         self.header.set_title(resolved_title)

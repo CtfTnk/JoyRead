@@ -12,9 +12,16 @@ from tests.support.in_memory_book_repository import InMemoryBookRepository
 # rewritten against a generated archive the way the thumbnail tests were --
 # it skips instead. Matches the idiom already used for the RAR corpus in
 # test_rar_reader_selection.py and the EPUB fixtures in tests/novel/.
-_CORPUS = Path("test_set")
+_CORPUS_BOOK_IDS = frozenset({"mock-book-01", "mock-book-15"})
+_CORPUS_PATHS = tuple(
+    Path(book.file_path)
+    for book in InMemoryBookRepository().list_books()
+    if book.uuid in _CORPUS_BOOK_IDS
+)
 requires_local_corpus = pytest.mark.skipif(
-    not _CORPUS.is_dir(), reason="the private test_set/ corpus is not present"
+    len(_CORPUS_PATHS) != len(_CORPUS_BOOK_IDS)
+    or not all(path.is_file() for path in _CORPUS_PATHS),
+    reason="the complete private test_set/ corpus required by this test is not present",
 )
 
 

@@ -44,6 +44,7 @@ from uuid import uuid4
 from zipfile import BadZipFile, ZIP_STORED, ZipFile
 
 from joyread.core.diagnostics import cache_identity_kind, reader_perf_event
+from joyread.core.services.path_issue_service import PathIssueService
 
 
 logger = logging.getLogger(__name__)
@@ -179,10 +180,17 @@ class ArchiveExtractionPool(_UsageNotifier):
     _SCHEMA_MARKER = ".joyread-archive-cache-schema"
     _SCHEMA_VERSION = "3"
 
-    def __init__(self, directory: Path | None, max_bytes: int) -> None:
+    def __init__(
+        self,
+        directory: Path | None,
+        max_bytes: int,
+        *,
+        path_issue_service: PathIssueService | None = None,
+    ) -> None:
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
         self._directory = Path(directory) if directory is not None else None
+        self._path_issue_service = path_issue_service
         self._max_bytes = int(max_bytes)
         # Insertion order tracks mtime-ascending so the head of the dict is
         # always the least-recently-used book bundle.
@@ -411,6 +419,14 @@ class ArchiveExtractionPool(_UsageNotifier):
                 # Rewriting an identical manifest would copy the whole bundle
                 # for nothing, because a zip entry cannot be replaced in place.
                 manifest_is_current = existing_manifest == manifest_payload
+            service = self._path_issue_service
+            if service is not None and (
+                not service.check_directory(
+                    bundle_path.parent, operation="archive_cache_directory_create"
+                )
+                or not service.check_path(bundle_path, operation="archive_cache_publish")
+            ):
+                return False
             if not manifest_is_current:
                 try:
                     bundle_path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,6 +435,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                         {self._MANIFEST_ENTRY: manifest_payload},
                     )
                 except (BadZipFile, OSError) as exc:
+                    if isinstance(exc, OSError) and service is not None:
+                        service.report_os_error(
+                            exc,
+                            (bundle_path,),
+                            operation="archive_cache_publish",
+                        )
                     logger.warning(
                         "Archive cache manifest write failed for key=%s: %s", book_key, exc
                     )
@@ -426,16 +448,26 @@ class ArchiveExtractionPool(_UsageNotifier):
             published_path = bundle_path
             if bundle_path.name.endswith(f".partial{self._ZIP_SUFFIX}"):
                 final_path = self._directory / f"{book_key}{self._ZIP_SUFFIX}"
-                try:
-                    os.replace(bundle_path, final_path)
-                    published_path = final_path
-                except OSError as exc:
-                    logger.warning(
-                        "Archive cache publish rename failed for key=%s (bundle stays "
-                        "complete and readable): %s",
-                        book_key,
-                        exc,
-                    )
+                final_supported = service is None or service.check_path(
+                    final_path, operation="archive_cache_publish"
+                )
+                if final_supported:
+                    try:
+                        os.replace(bundle_path, final_path)
+                        published_path = final_path
+                    except OSError as exc:
+                        if service is not None:
+                            service.report_os_error(
+                                exc,
+                                (bundle_path, final_path),
+                                operation="archive_cache_publish",
+                            )
+                        logger.warning(
+                            "Archive cache publish rename failed for key=%s (bundle stays "
+                            "complete and readable): %s",
+                            book_key,
+                            exc,
+                        )
             try:
                 stat = published_path.stat()
             except OSError as exc:
@@ -588,6 +620,11 @@ class ArchiveExtractionPool(_UsageNotifier):
             suffix = self._ZIP_SUFFIX if target_is_ready else f".partial{self._ZIP_SUFFIX}"
             assert self._directory is not None
             target_path = self._directory / f"{target_key}{suffix}"
+            service = self._path_issue_service
+            if service is not None and not service.check_path(
+                target_path, operation="archive_cache_promote"
+            ):
+                return False
             if _is_symlink(target_path) or (target is not None and _is_symlink(target.path)):
                 logger.warning("Archive cache promotion rejected a symlink target")
                 return False
@@ -596,10 +633,16 @@ class ArchiveExtractionPool(_UsageNotifier):
                     os.replace(source.path, target_path)
                     stat = target_path.stat()
                 except OSError as exc:
+                    if service is not None:
+                        service.report_os_error(
+                            exc,
+                            (source.path, target_path),
+                            operation="archive_cache_promote",
+                        )
                     logger.warning("Archive cache promotion failed: %s", exc)
                     return False
             else:
-                tmp_path = target_path.with_suffix(f".{uuid4().hex}.tmp")
+                tmp_path = _atomic_temp_path(target_path)
                 try:
                     self._merge_bundles_locked(
                         target.path,
@@ -610,6 +653,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                     os.replace(tmp_path, target_path)
                     stat = target_path.stat()
                 except (BadZipFile, OSError) as exc:
+                    if isinstance(exc, OSError) and service is not None:
+                        service.report_os_error(
+                            exc,
+                            (target.path, source.path, tmp_path, target_path),
+                            operation="archive_cache_promote",
+                        )
                     logger.warning("Archive cache promotion merge failed: %s", exc)
                     try:
                         tmp_path.unlink(missing_ok=True)
@@ -715,11 +764,26 @@ class ArchiveExtractionPool(_UsageNotifier):
                 if existing is not None
                 else self._directory / f"{book_key}.partial{self._ZIP_SUFFIX}"
             )
+            if self._path_issue_service is not None and (
+                not self._path_issue_service.check_directory(
+                    bundle_path.parent, operation="archive_cache_directory_create"
+                )
+                or not self._path_issue_service.check_path(
+                    bundle_path, operation="archive_cache_write"
+                )
+            ):
+                return False
             try:
                 bundle_path.parent.mkdir(parents=True, exist_ok=True)
                 self._append_bundle_locked(bundle_path, safe_payloads)
                 stat = bundle_path.stat()
             except (BadZipFile, OSError) as exc:
+                if isinstance(exc, OSError) and self._path_issue_service is not None:
+                    self._path_issue_service.report_os_error(
+                        exc,
+                        (bundle_path,),
+                        operation="archive_cache_write",
+                    )
                 logger.warning(
                     "Archive bundle batch write failed for %s (%d entries): %s",
                     bundle_path,
@@ -967,7 +1031,7 @@ class ArchiveExtractionPool(_UsageNotifier):
                     archive.writestr(name, payload)
 
     def _rewrite_manifest_locked(self, bundle_path: Path, payloads: Mapping[str, bytes]) -> None:
-        tmp_path = bundle_path.with_suffix(f".{uuid4().hex}.tmp")
+        tmp_path = _atomic_temp_path(bundle_path)
         try:
             with ZipFile(bundle_path, "r") as source, ZipFile(
                 tmp_path,
@@ -1086,10 +1150,17 @@ class HiddenImageExtractionPool(_UsageNotifier):
     _SCHEMA_MARKER = ".joyread-archive-cache-schema"
     _SCHEMA_VERSION = "3"
 
-    def __init__(self, directory: Path | None, max_bytes: int) -> None:
+    def __init__(
+        self,
+        directory: Path | None,
+        max_bytes: int,
+        *,
+        path_issue_service: PathIssueService | None = None,
+    ) -> None:
         if max_bytes < 0:
             raise ValueError("max_bytes must be non-negative")
         self._directory = Path(directory) if directory is not None else None
+        self._path_issue_service = path_issue_service
         self._max_bytes = int(max_bytes)
         self._index: "OrderedDict[tuple[str, str], _PoolEntry]" = OrderedDict()
         self._current_bytes = 0
@@ -1474,13 +1545,32 @@ class HiddenImageExtractionPool(_UsageNotifier):
     ) -> tuple[tuple[str, str], _PoolEntry] | None:
         entry_key = self._entry_key_for(entry_name)
         final_path = self._entry_path(book_key, entry_key)
-        tmp_path = final_path.with_suffix(f".{uuid4().hex}.tmp")
+        # Keep the full document and entry hashes in the durable path: they are
+        # the cache identity, not disposable decoration.  The temporary file
+        # needs only collision resistance, though. Repeating the 64-character
+        # entry hash before a UUID pushed otherwise-valid 236-251 character
+        # Windows cache paths past MAX_PATH during the atomic write.
+        tmp_path = _atomic_temp_path(final_path)
+        service = self._path_issue_service
+        if service is not None and (
+            not service.check_directory(
+                final_path.parent, operation="archive_cache_directory_create"
+            )
+            or not service.check_path(final_path, operation="archive_cache_write")
+        ):
+            return None
         try:
             final_path.parent.mkdir(parents=True, exist_ok=True)
             tmp_path.write_bytes(data)
             os.replace(tmp_path, final_path)
             stat = final_path.stat()
         except OSError as exc:
+            if service is not None:
+                service.report_os_error(
+                    exc,
+                    (tmp_path, final_path),
+                    operation="archive_cache_write",
+                )
             logger.warning("Hidden image cache write failed for %s: %s", final_path, exc)
             try:
                 tmp_path.unlink(missing_ok=True)
@@ -1758,6 +1848,12 @@ def _is_symlink(path: Path) -> bool:
     except OSError:
         # An unreadable target is not safe to adopt during promotion.
         return True
+
+
+def _atomic_temp_path(target_path: Path) -> Path:
+    """Return a collision-resistant sibling without repeating target hashes."""
+
+    return target_path.parent / f".{uuid4().hex}.tmp"
 
 
 def archive_cache_storage_key(document_cache_key: str) -> str:

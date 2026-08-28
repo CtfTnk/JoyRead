@@ -30,6 +30,7 @@ from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
 from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
+from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader, ReaderStepButton
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
@@ -95,6 +96,11 @@ class ReaderShellWidget(ReaderShellBase):
         self.topic_panel.hide()
         self.dialog_overlay = JoyReadDialogOverlay(self, context.resources, drag_handle=self.header)
         self.dialog_overlay.hide()
+        self._path_issue_prompt = PathIssuePromptController(
+            self,
+            self.dialog_overlay,
+            context.path_issue_viewmodel,
+        )
 
         app_settings = context.reload_settings()
         logger.info(

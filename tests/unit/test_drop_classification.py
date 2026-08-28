@@ -7,12 +7,21 @@ and which are refused before any UI appears.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+
+import pytest
 
 from joyread.app.launch.intent import (
     DropPayload,
     ReadUnavailable,
     classify_drop_paths,
+)
+
+
+requires_symlink_creation = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows users are not required to enable symlink creation",
 )
 
 
@@ -137,6 +146,7 @@ def test_import_paths_carries_files_then_folders(tmp_path: Path) -> None:
     assert payload.import_paths == (source, folder)
 
 
+@requires_symlink_creation
 def test_classification_does_not_walk_symlinks(tmp_path: Path) -> None:
     """This runs on the UI thread inside ``dragEnterEvent``.
 
@@ -163,6 +173,7 @@ def test_classification_does_not_walk_symlinks(tmp_path: Path) -> None:
     assert folder_payload.folders == (link_dir,)
 
 
+@requires_symlink_creation
 def test_launch_normalisation_still_resolves(tmp_path: Path) -> None:
     """The opt-out is per-caller. Launch must keep resolving, or two argv
     spellings of one document open two windows."""

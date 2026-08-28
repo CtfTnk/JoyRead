@@ -36,6 +36,7 @@ from joyread.core.services.import_service import (
     ImportStage,
 )
 from joyread.core.services.library_maintenance_service import LibraryAuditPlan, LibraryAuditReport
+from joyread.core.services.storage_validation_service import StorageValidationCode
 from joyread.app.tasking import TaskPriority
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
@@ -49,6 +50,7 @@ from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.drop_zone_overlay import DropZoneOverlay, payload_from_mime_urls
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
+from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import TitleBarWidget
 from joyread.ui.widgets.window_gestures import install_system_resize_border
@@ -153,6 +155,11 @@ class MainWindow(QMainWindow):
         self.cover_editor_overlay.hide()
         self.dialog_overlay = JoyReadDialogOverlay(root, context.resources, drag_handle=self.title_bar)
         self.dialog_overlay.hide()
+        self._path_issue_prompt = PathIssuePromptController(
+            self,
+            self.dialog_overlay,
+            context.path_issue_viewmodel,
+        )
         self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
         self.drop_zone_overlay.set_content_area(view_panel)
         self.drop_zone_overlay.read_requested.connect(self.open_reader_for_file)
@@ -1269,6 +1276,12 @@ class MainWindow(QMainWindow):
                 status="failed",
                 reason=message,
             )
+            if getattr(result, "code", None) == StorageValidationCode.LONG_PATHS_DISABLED:
+                # PathIssueBridge queued the localized actionable dialog before
+                # this worker result. Reusing the same overlay for a generic
+                # storage rejection would overwrite its View Instructions
+                # button and consume the once-per-run issue permanently.
+                return
             self.dialog_overlay.show_info(
                 t("dialog.storage_title"),
                 t("dialog.storage_invalid_location", message=message),

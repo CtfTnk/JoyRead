@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import os
 from pathlib import Path
@@ -9,7 +10,12 @@ import sys
 from PySide6.QtCore import QLockFile
 import pytest
 
-from joyread.app.launch.intent import MAX_LAUNCH_MESSAGE_BYTES, LaunchAction, LaunchIntent
+from joyread.app.launch.intent import (
+    MAX_LAUNCH_MESSAGE_BYTES,
+    LaunchAction,
+    LaunchIntent,
+    encode_launch_intent,
+)
 from joyread.app.launch.single_instance_broker import (
     InstanceRole,
     SingleInstanceBroker,
@@ -17,39 +23,84 @@ from joyread.app.launch.single_instance_broker import (
 )
 
 
+_SECONDARY_SCRIPT = """
+import base64
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QCoreApplication
+
+from joyread.app.launch.intent import decode_launch_intent
+from joyread.app.launch.single_instance_broker import SingleInstanceBroker
+
+app = QCoreApplication([])
+intent = decode_launch_intent(base64.b64decode(sys.argv[2]))
+broker = SingleInstanceBroker(Path(sys.argv[1]))
+try:
+    print(broker.start(lambda: intent).value, flush=True)
+finally:
+    broker.dispose()
+"""
+
+
+def _launch_secondary(support_root: Path, intent: LaunchIntent) -> subprocess.Popen[str]:
+    encoded = base64.b64encode(encode_launch_intent(intent)).decode("ascii")
+    return subprocess.Popen(
+        [sys.executable, "-c", _SECONDARY_SCRIPT, str(support_root), encoded],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _assert_secondary_finished(qtbot, process: subprocess.Popen[str]) -> None:  # noqa: ANN001
+    qtbot.waitUntil(lambda: process.poll() is not None, timeout=5000)
+    stdout, stderr = process.communicate(timeout=1)
+    assert process.returncode == 0, stderr
+    assert stdout.strip() == InstanceRole.SECONDARY.value
+
+
+def _stop_process(process: subprocess.Popen[str] | None) -> None:
+    if process is not None and process.poll() is None:
+        process.kill()
+        process.wait(timeout=5)
+
+
 def test_secondary_forwards_to_primary(qtbot, tmp_path: Path) -> None:
     primary = SingleInstanceBroker(tmp_path)
-    secondary = SingleInstanceBroker(tmp_path)
+    secondary: subprocess.Popen[str] | None = None
     received: list[LaunchIntent] = []
     source = tmp_path / "book.cbz"
 
     try:
         assert primary.start(lambda: LaunchIntent.show_library()) == InstanceRole.PRIMARY
         primary.set_intent_handler(received.append)
-        assert secondary.start(lambda: LaunchIntent.open_files((source,))) == InstanceRole.SECONDARY
+        secondary = _launch_secondary(tmp_path, LaunchIntent.open_files((source,)))
 
-        qtbot.waitUntil(lambda: len(received) == 1, timeout=1000)
+        qtbot.waitUntil(lambda: len(received) == 1, timeout=5000)
         assert received == [LaunchIntent.open_files((source,))]
+        _assert_secondary_finished(qtbot, secondary)
     finally:
-        secondary.dispose()
+        _stop_process(secondary)
         primary.dispose()
 
 
 def test_primary_queues_intents_until_handler_is_ready(qtbot, tmp_path: Path) -> None:
     primary = SingleInstanceBroker(tmp_path)
-    secondary = SingleInstanceBroker(tmp_path)
+    secondary: subprocess.Popen[str] | None = None
     intent = LaunchIntent.show_library()
     received: list[LaunchIntent] = []
 
     try:
         assert primary.start(lambda: intent) == InstanceRole.PRIMARY
-        assert secondary.start(lambda: intent) == InstanceRole.SECONDARY
-        qtbot.waitUntil(lambda: bool(primary._pending_intents), timeout=1000)
+        secondary = _launch_secondary(tmp_path, intent)
+        qtbot.waitUntil(lambda: bool(primary._pending_intents), timeout=5000)
 
         primary.set_intent_handler(received.append)
         assert received == [intent]
+        _assert_secondary_finished(qtbot, secondary)
     finally:
-        secondary.dispose()
+        _stop_process(secondary)
         primary.dispose()
 
 
@@ -97,8 +148,8 @@ os._exit(0)
 
 def test_handler_failure_does_not_stop_later_launches(qtbot, tmp_path: Path, caplog) -> None:
     primary = SingleInstanceBroker(tmp_path)
-    failing_secondary = SingleInstanceBroker(tmp_path)
-    succeeding_secondary = SingleInstanceBroker(tmp_path)
+    failing_secondary: subprocess.Popen[str] | None = None
+    succeeding_secondary: subprocess.Popen[str] | None = None
     received: list[LaunchIntent] = []
 
     def fail_handler(_intent: LaunchIntent) -> None:
@@ -109,19 +160,21 @@ def test_handler_failure_does_not_stop_later_launches(qtbot, tmp_path: Path, cap
         primary.set_intent_handler(fail_handler)
 
         with caplog.at_level(logging.ERROR, logger="joyread.app.launch.single_instance_broker"):
-            assert failing_secondary.start(lambda: LaunchIntent.show_library()) == InstanceRole.SECONDARY
+            failing_secondary = _launch_secondary(tmp_path, LaunchIntent.show_library())
             qtbot.waitUntil(
                 lambda: "Launch intent handler failed" in caplog.text,
-                timeout=1000,
+                timeout=5000,
             )
+            _assert_secondary_finished(qtbot, failing_secondary)
 
         primary.set_intent_handler(received.append)
         follow_up = LaunchIntent.open_files((tmp_path / "follow-up.cbz",))
-        assert succeeding_secondary.start(lambda: follow_up) == InstanceRole.SECONDARY
-        qtbot.waitUntil(lambda: received == [follow_up], timeout=1000)
+        succeeding_secondary = _launch_secondary(tmp_path, follow_up)
+        qtbot.waitUntil(lambda: received == [follow_up], timeout=5000)
+        _assert_secondary_finished(qtbot, succeeding_secondary)
     finally:
-        succeeding_secondary.dispose()
-        failing_secondary.dispose()
+        _stop_process(succeeding_secondary)
+        _stop_process(failing_secondary)
         primary.dispose()
 
 

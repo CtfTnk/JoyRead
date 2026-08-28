@@ -32,7 +32,7 @@ from uuid import uuid4
 
 import shiboken6
 from PIL import Image, ImageChops
-from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize
+from PySide6.QtCore import QByteArray, QBuffer, QFile, QIODevice, QSize
 from PySide6.QtGui import QImage
 from PySide6.QtPdf import QPdfDocument, QPdfPageRenderer
 
@@ -642,13 +642,23 @@ def _probe_page_count(source: Path) -> int:
         if _probe_document is None:
             _probe_document = _retain_document(QPdfDocument())
         document = _probe_document
+        # QPdfDocument.load(str) owns an internal QFile. On Windows Qt 6.11
+        # keeps that handle past close(), so ImportService cannot atomically
+        # move the staged PDF it just validated. Give Qt an explicitly-owned
+        # device instead: the reusable document still bounds batch memory, and
+        # closing the device makes handle release deterministic on every OS.
+        device = QFile(str(source))
+        if not device.open(QIODevice.OpenModeFlag.ReadOnly):
+            raise PdfOpenError(f"Could not open PDF: {source} ({device.errorString()})")
         try:
-            error = document.load(str(source))
+            document.load(device)
+            error = document.error()
             if error != QPdfDocument.Error.None_:
                 _raise_for_load_error(error, source)
             return document.pageCount()
         finally:
             document.close()
+            device.close()
 
     return worker.call(probe)
 

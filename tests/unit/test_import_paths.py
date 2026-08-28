@@ -8,16 +8,26 @@ dialog per thing they happened to have selected.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
+import pytest
 
 from joyread.core.archive import ArchiveImageService
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
+from joyread.core.services.path_issue_service import PathIssueService
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
 from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.infrastructure.filesystem.windows_long_paths import WindowsLongPathCapability
+
+
+requires_symlink_creation = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows users are not required to enable symlink creation",
+)
 
 
 def _database(tmp_path: Path) -> DatabaseInterpreter:
@@ -36,10 +46,20 @@ def _write_cbz(path: Path, color: str = "#336699") -> Path:
     return path
 
 
-def _service(tmp_path: Path) -> ImportService:
+def _service(
+    tmp_path: Path,
+    *,
+    path_issue_service: PathIssueService | None = None,
+) -> ImportService:
     paths = PathService(storage_root=tmp_path / "storage", support_root=tmp_path / "support")
     paths.ensure_directories()
-    return ImportService(paths, _database(tmp_path), ArchiveImageService(), HashService())
+    return ImportService(
+        paths,
+        _database(tmp_path),
+        ArchiveImageService(),
+        HashService(),
+        path_issue_service=path_issue_service,
+    )
 
 
 def test_files_import_as_one_batch(tmp_path: Path) -> None:
@@ -115,6 +135,7 @@ def test_an_empty_drop_is_an_empty_batch(tmp_path: Path) -> None:
     assert result.items == ()
 
 
+@requires_symlink_creation
 def test_a_symlinked_folder_and_the_real_file_import_once(tmp_path: Path) -> None:
     """Dedupe has to resolve, not just normcase.
 
@@ -153,3 +174,17 @@ def test_unsupported_files_are_skipped_not_failed(tmp_path: Path) -> None:
     assert result.imported_count == 1
     assert result.failed_count == 0
     assert len(result.items) == 1
+
+
+def test_an_overlong_path_is_reported_in_the_mixed_drop_result(tmp_path: Path) -> None:
+    path_issues = PathIssueService(
+        WindowsLongPathCapability(platform_name="nt", registry_reader=lambda: False)
+    )
+    service = _service(tmp_path, path_issue_service=path_issues)
+    inaccessible = tmp_path / ("deep-" * 40) / "book.cbz"
+
+    result = service.import_paths([inaccessible])
+
+    assert result.failed_count == 1
+    assert len(result.items) == 1
+    assert result.items[0].source_path == str(inaccessible)

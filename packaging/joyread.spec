@@ -123,6 +123,26 @@ for required in (extractor_path, *extractor_support):
         )
 
 extractor_destination = f"joyread/resources/extractors/7zip/{platform_directory}"
+binaries = [
+    (str(path), extractor_destination)
+    for path in (extractor_path, *extractor_support)
+]
+if platform_key() == "windows":
+    # The repository's prefix-based Conda Python links these from
+    # <prefix>/Library/bin. PyInstaller does not add that directory to its
+    # dependency search, even when the environment is activated, so an
+    # otherwise-successful build omits them and fails when ctypes or SQLite is
+    # first imported on a clean machine.
+    conda_runtime_directory = Path(sys.prefix) / "Library" / "bin"
+    for runtime_name in ("ffi.dll", "sqlite3.dll"):
+        runtime_path = conda_runtime_directory / runtime_name
+        if not runtime_path.is_file():
+            raise SystemExit(
+                f"Missing Windows Conda runtime DLL: {runtime_path}. "
+                "Build with the repository's .conda/joyread-py312 environment."
+            )
+        binaries.append((str(runtime_path), "."))
+
 datas = [
     (str(ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt"), "."),
     (str(PACKAGE_ROOT / "ui" / "resources"), "joyread/ui/resources"),
@@ -171,10 +191,7 @@ for legal_name in ("License.txt", "readme.txt", "History.txt"):
 a = Analysis(
     [str(ROOT / "src" / "joyread" / "app" / "main.py")],
     pathex=[str(ROOT / "src")],
-    binaries=[
-        (str(path), extractor_destination)
-        for path in (extractor_path, *extractor_support)
-    ],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
@@ -184,9 +201,34 @@ a = Analysis(
     noarchive=False,
     optimize=1,
 )
+if platform_key() == "windows":
+    # Qt6Core links against Windows' system ICU shim (`System32/icuuc.dll`).
+    # PyInstaller searches the build process PATH and can mistake an unrelated
+    # application's full ICU distribution for that system library. The Codex
+    # Poppler runtime exposed ICU 78 this way: bundling it as `_internal/icuuc.dll`
+    # made Windows prefer it over the system shim and QtCore failed at import
+    # with "The specified procedure could not be found." Root-level ICU is
+    # therefore never a JoyRead binary; platform-local Qt files, if Qt starts
+    # shipping any later, retain their subdirectory and are left untouched.
+    def is_foreign_root_icu(entry) -> bool:  # noqa: ANN001
+        destination = Path(entry[0])
+        name = destination.name.casefold()
+        return len(destination.parts) == 1 and (
+            name == "icuuc.dll" or (name.startswith("icudt") and name.endswith(".dll"))
+        )
+
+    a.binaries = [entry for entry in a.binaries if not is_foreign_root_icu(entry)]
 pyz = PYZ(a.pure)
 
-icon_path = PACKAGE_ROOT / "ui" / "resources" / "icons" / "JoyRead.icns"
+icon_directory = PACKAGE_ROOT / "ui" / "resources" / "icons"
+macos_icon_path = icon_directory / "JoyRead.icns"
+windows_icon_path = icon_directory / "JoyRead.ico"
+executable_icon_path = {
+    "darwin": macos_icon_path,
+    "windows": windows_icon_path,
+}.get(platform_key())
+if executable_icon_path is not None and not executable_icon_path.is_file():
+    raise SystemExit(f"Missing application icon for {platform_key()}: {executable_icon_path}")
 exe = EXE(
     pyz,
     a.scripts,
@@ -198,7 +240,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,
-    icon=str(icon_path) if sys.platform == "darwin" else None,
+    icon=str(executable_icon_path) if executable_icon_path is not None else None,
     codesign_identity=CODESIGN_IDENTITY,
     entitlements_file=ENTITLEMENTS_FILE,
 )
@@ -215,7 +257,7 @@ if sys.platform == "darwin":
     app = BUNDLE(
         collection,
         name=f"{APP_NAME}.app",
-        icon=str(icon_path),
+        icon=str(macos_icon_path),
         bundle_identifier=BUNDLE_ID,
         info_plist={
             "CFBundleDisplayName": APP_NAME,

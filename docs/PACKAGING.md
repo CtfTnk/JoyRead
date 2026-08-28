@@ -131,19 +131,55 @@ listed in `binaries`, and the build fails if either is missing.
 The Linux binaries are the `7zzs` (statically linked) builds from the release
 tarballs, renamed to `7zz`. The dynamic `7zz` links against the build machine's
 glibc and fails on older distributions, which defeats the point of bundling.
+CI resolves the helper through the same `ExtractionBackendResolver` production
+uses, refuses a PATH fallback, and executes `7zz i` natively on both Ubuntu
+x86-64 and Ubuntu ARM64. Windows likewise executes the bundled `7z.exe` beside
+its `7z.dll`; macOS executes its bundled universal helper.
+
+Application icons are platform-native representations of the same artwork:
+`JoyRead.icns` for the macOS bundle and `JoyRead.ico` (16 through 256 px) for
+the Windows executable. The PyInstaller spec selects the matching format and
+fails the build if that platform's icon is absent. Linux currently leaves the
+executable icon unset and relies on its future desktop-entry/package metadata.
+
+Windows builds also collect `ffi.dll` and `sqlite3.dll` explicitly from the
+required repository Conda prefix's `Library/bin`. PyInstaller does not discover
+those two transitive Python runtime DLLs reliably from a prefix environment;
+the spec fails with a targeted message if they are absent instead of producing
+an executable that only breaks when ctypes or SQLite is first imported.
+
+The Windows analysis also discards root-level `icuuc.dll` / `icudt*.dll`
+discoveries. Qt6Core links against the Windows system ICU shim, but PyInstaller
+searches the build process PATH and can otherwise copy an unrelated tool's full
+ICU runtime into `_internal`. That private DLL shadows the system shim and makes
+`QtCore.pyd` fail with a missing-procedure loader error. Qt libraries that live
+under their own package directory are not affected by this filter.
+
+PyInstaller's default Windows manifest declares the executable long-path
+aware, but Windows still requires the machine-level `LongPathsEnabled` policy
+for ordinary Python/Win32 paths beyond classic `MAX_PATH`. JoyRead does not
+change that policy. When a concrete storage, import, Reader, or cache operation
+is diagnosed as path-too-long, the application explains how to enable the
+policy and restart, or offers moving the file/Library to a shorter directory.
+Errors from a backend after the policy is already enabled are not mislabeled as
+"please enable" failures.
+
+This is diagnosis and recovery guidance, not a cache-layout migration. Durable
+hidden-cache paths intentionally retain full document and page SHA-256 keys, so
+an unusually deep Library can still exceed classic `MAX_PATH`; on a machine
+where the policy cannot be enabled, the supported recovery is a shorter Library
+location. JoyRead does not claim arbitrary over-260 paths work with the policy
+disabled.
 
 See `src/joyread/resources/extractors/7zip/README.md` for the update procedure.
 
 Still outstanding before a non-macOS release:
 
-- **Windows needs a `.ico`.** Only `JoyRead.icns` exists, and the spec passes
-  `icon=None` off macOS, so a Windows build currently gets PyInstaller's default
-  icon. The build succeeds; it just is not branded.
 - **No Intel Mac target.** The macOS binary is a universal build, so
   `darwin-x86_64/` only needs the same file copied into place.
-- **Each non-macOS binary is unexecuted by CI**, which runs on `macos-14` and
-  smoke-tests the Darwin helper only. Run the archive tests on the target
-  platform before advertising it.
+- **Packaged non-macOS applications still need manual smoke passes.** CI runs
+  the suite and the exact bundled helper on Windows and both Linux
+  architectures, but it does not yet launch a packaged GUI artifact there.
 
 ## 5. Signing and notarizing a public macOS release
 

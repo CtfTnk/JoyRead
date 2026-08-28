@@ -19,7 +19,7 @@ import subprocess
 import pyzipper
 import pytest
 
-from joyread.core.archive.backends import ExtractionBackend
+from joyread.core.archive.backends import ExtractionBackend, ExtractionBackendResolver
 from joyread.core.archive.errors import ArchivePasswordRejected
 from joyread.core.archive.formats import zip_backend as zip_module
 from joyread.core.archive.formats.zip_backend import ZipArchiveBackend, uses_zipcrypto
@@ -27,12 +27,19 @@ from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudge
 from joyread.core.archive.records import ArchiveSource
 
 PASSWORD = "secret"
-_HELPER = (
-    Path(__file__).resolve().parents[2]
-    / "src/joyread/resources/extractors/7zip/darwin-arm64/7zz"
-)
+
+
+def _bundled_helper_for_this_platform() -> Path | None:
+    backend = ExtractionBackendResolver().seven_zip()
+    if backend is None or not backend.source.startswith("bundled:"):
+        return None
+    return Path(backend.executable)
+
+
+_HELPER = _bundled_helper_for_this_platform()
 requires_helper = pytest.mark.skipif(
-    not _HELPER.is_file(), reason="needs the bundled 7-Zip helper for this platform"
+    _HELPER is None,
+    reason="needs the bundled 7-Zip helper for this platform",
 )
 
 
@@ -49,6 +56,7 @@ class _Resolver:
 
 
 def _encrypted_zip(tmp_path: Path, cipher: str) -> Path:
+    assert _HELPER is not None
     tmp_path.mkdir(parents=True, exist_ok=True)
     payload = tmp_path / "001.txt"
     payload.write_bytes(b"page-bytes")
@@ -59,6 +67,19 @@ def _encrypted_zip(tmp_path: Path, cipher: str) -> Path:
         check=True, capture_output=True,
     )
     return archive
+
+
+@requires_helper
+def test_the_bundled_helper_executes_on_this_platform() -> None:
+    assert _HELPER is not None
+
+    completed = subprocess.run(
+        [str(_HELPER), "i"],
+        check=True,
+        capture_output=True,
+    )
+
+    assert b"7-Zip" in completed.stdout
 
 
 def _backend(

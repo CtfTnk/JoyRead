@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 from zipfile import ZipFile
@@ -15,6 +16,12 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
     archive_cache_storage_key,
+)
+
+
+requires_symlink_creation = pytest.mark.skipif(
+    os.name == "nt",
+    reason="Windows users are not required to enable symlink creation",
 )
 
 
@@ -405,6 +412,32 @@ def test_promotion_merges_missing_pages_into_a_ready_target(tmp_path: Path) -> N
     assert pool.is_complete(target, 1, "ready-limits")
 
 
+def test_zip_pool_promotion_uses_a_uuid_only_sibling_temp(tmp_path: Path, monkeypatch) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    target = "external:sha256:digest"
+    pool.put(target, "pages/00000000", b"target-page")
+    pool.mark_complete(target, 1, "ready-limits")
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("pages/00000001", b"ephemeral-page")
+    temp_paths: list[tuple[Path, Path]] = []
+    real_temp_path = pool_module._atomic_temp_path  # noqa: SLF001
+
+    def recording_temp_path(target_path: Path) -> Path:
+        temp_path = real_temp_path(target_path)
+        temp_paths.append((target_path, temp_path))
+        return temp_path
+
+    monkeypatch.setattr(pool_module, "_atomic_temp_path", recording_temp_path)
+
+    assert lease.promote(target)
+
+    promotion_target, promotion_temp = temp_paths[-1]
+    assert promotion_temp.parent == promotion_target.parent
+    assert promotion_temp.name.startswith(".") and promotion_temp.name.endswith(".tmp")
+    assert promotion_target.stem not in promotion_temp.name
+    assert len(promotion_temp.name) == 37
+
+
 def test_failed_promotion_keeps_lease_ephemeral_for_close_cleanup(
     tmp_path: Path,
     monkeypatch,
@@ -422,6 +455,7 @@ def test_failed_promotion_keeps_lease_ephemeral_for_close_cleanup(
     assert pool.get("session:reader", "001.png") is None
 
 
+@requires_symlink_creation
 def test_zip_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
     directory = tmp_path / "cache"
     pool = ArchiveExtractionPool(directory, max_bytes=4096)
@@ -439,6 +473,7 @@ def test_zip_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
     lease.close()
 
 
+@requires_symlink_creation
 def test_hidden_pool_promotion_rejects_symlink_target(tmp_path: Path) -> None:
     directory = tmp_path / ".archive_image_pages"
     pool = HiddenImageExtractionPool(directory, max_bytes=4096)
@@ -716,6 +751,32 @@ def test_republishing_an_identical_manifest_does_not_rewrite_the_bundle(
     with ZipFile(bundle) as archive:
         manifests = [name for name in archive.namelist() if "manifest" in name]
     assert len(manifests) == 1
+
+
+def test_zip_manifest_rewrite_uses_a_uuid_only_sibling_temp(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    pool = ArchiveExtractionPool(tmp_path, 8 * 1024 * 1024)
+    pool.put_many("file:book", {"a": b"1"})
+    assert pool.publish_complete("file:book", ("a",), 1, "sig-one") is True
+    temp_paths: list[tuple[Path, Path]] = []
+    real_temp_path = pool_module._atomic_temp_path  # noqa: SLF001
+
+    def recording_temp_path(target_path: Path) -> Path:
+        temp_path = real_temp_path(target_path)
+        temp_paths.append((target_path, temp_path))
+        return temp_path
+
+    monkeypatch.setattr(pool_module, "_atomic_temp_path", recording_temp_path)
+
+    assert pool.publish_complete("file:book", ("a",), 1, "sig-two") is True
+
+    rewrite_target, rewrite_temp = temp_paths[-1]
+    assert rewrite_temp.parent == rewrite_target.parent
+    assert rewrite_temp.name.startswith(".") and rewrite_temp.name.endswith(".tmp")
+    assert rewrite_target.stem not in rewrite_temp.name
+    assert len(rewrite_temp.name) == 37
 
 
 def test_hidden_pool_accounts_for_files_a_failed_batch_already_wrote(

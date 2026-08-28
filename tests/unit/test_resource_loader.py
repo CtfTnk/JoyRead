@@ -1,5 +1,6 @@
 import tomllib
 
+from PIL import Image
 from PySide6.QtGui import QIcon
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -16,7 +17,26 @@ def test_app_icon_resource_is_available(qtbot) -> None:
     assert any(size.width() == 1024 and size.height() == 1024 for size in icon.availableSizes())
 
 
-def test_app_icon_uses_single_canonical_resource() -> None:
+def test_windows_app_icon_has_native_multisize_resource() -> None:
+    path = ResourceLoader().icon_path("JoyRead.ico")
+
+    with Image.open(path) as icon:
+        assert icon.format == "ICO"
+        assert icon.mode == "RGBA"
+        assert icon.info["sizes"] == {
+            (16, 16),
+            (20, 20),
+            (24, 24),
+            (32, 32),
+            (40, 40),
+            (48, 48),
+            (64, 64),
+            (128, 128),
+            (256, 256),
+        }
+
+
+def test_app_icon_has_no_legacy_duplicates() -> None:
     icon_dir = ResourceLoader().icon_path("")
 
     assert not (icon_dir / "joyread_app_icon.icns").exists()

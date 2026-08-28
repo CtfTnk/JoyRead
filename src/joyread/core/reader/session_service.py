@@ -20,6 +20,7 @@ from joyread.core.archive.service import ARCHIVE_EXTENSIONS
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease
+from joyread.core.services.path_issue_service import PathIssueService
 
 
 logger = logging.getLogger(__name__)
@@ -63,9 +64,12 @@ class ReaderSessionService:
         self,
         archive_image_service: ArchiveImageService,
         pdf_image_service: PdfImageServicePort | None = None,
+        *,
+        path_issue_service: PathIssueService | None = None,
     ) -> None:
         self._archive_image_service = archive_image_service
         self._pdf_image_service = pdf_image_service
+        self._path_issue_service = path_issue_service
 
     def open_document(
         self,
@@ -81,26 +85,37 @@ class ReaderSessionService:
         allow_persistent_cache: bool = False,
         cache_lease: ArchiveCacheLease | None = None,
     ) -> ReaderImageSession:
+        if self._path_issue_service is not None:
+            self._path_issue_service.require_path(path, operation="reader_open")
         suffix = Path(path).suffix.lower()
         logger.info("Opening reader document: path=%s suffix=%s", path, suffix)
-        if suffix in ARCHIVE_EXTENSIONS:
-            return self.open_archive(
-                path,
-                password=password,
-                passwords=passwords,
-                skipped_archives=skipped_archives,
-                nested_archive_max_depth=nested_archive_max_depth,
-                archive_global_file_max_depth=archive_global_file_max_depth,
-                limits=limits,
-                document_cache_key=document_cache_key,
-                allow_persistent_cache=allow_persistent_cache,
-                cache_lease=cache_lease,
-            )
-        if suffix in PDF_EXTENSIONS:
-            if self._pdf_image_service is None:
-                raise RuntimeError("No PDF image service is configured.")
-            return self._pdf_image_service.open(path)
-        raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
+        try:
+            if suffix in ARCHIVE_EXTENSIONS:
+                return self.open_archive(
+                    path,
+                    password=password,
+                    passwords=passwords,
+                    skipped_archives=skipped_archives,
+                    nested_archive_max_depth=nested_archive_max_depth,
+                    archive_global_file_max_depth=archive_global_file_max_depth,
+                    limits=limits,
+                    document_cache_key=document_cache_key,
+                    allow_persistent_cache=allow_persistent_cache,
+                    cache_lease=cache_lease,
+                )
+            if suffix in PDF_EXTENSIONS:
+                if self._pdf_image_service is None:
+                    raise RuntimeError("No PDF image service is configured.")
+                return self._pdf_image_service.open(path)
+            raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
+        except Exception as exc:
+            if self._path_issue_service is not None:
+                self._path_issue_service.report_os_error(
+                    exc,
+                    (path,),
+                    operation="reader_open",
+                )
+            raise
 
     def open_archive(
         self,

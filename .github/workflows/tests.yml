@@ -13,21 +13,33 @@ concurrency:
 
 jobs:
   test:
-    # macos-14+ runners are Apple Silicon, which is the only platform whose
-    # bundled 7-Zip helper is vendored, so the real archive backends run here
-    # rather than falling back to py7zr.
-    runs-on: macos-14
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
 
     strategy:
       fail-fast: false
       matrix:
-        # Both halves of the novel-reader split. "dev" is the shipping v1.0.0
-        # configuration and proves the app is complete without the feature or
-        # its lxml dependency; "dev,epub" additionally runs tests/novel/.
-        extras: ["dev,epub", "dev"]
+        include:
+          # Both halves of the novel-reader split stay on the shipping macOS
+          # target. Linux and Windows add platform/runtime coverage without
+          # tripling the optional EPUB leg.
+          - os: macos-14
+            extras: dev,epub
+            label: macOS (EPUB enabled)
+          - os: macos-14
+            extras: dev
+            label: macOS (shipping configuration)
+          - os: ubuntu-24.04
+            extras: dev
+            label: Linux x86-64
+          - os: ubuntu-24.04-arm
+            extras: dev
+            label: Linux ARM64
+          - os: windows-latest
+            extras: dev
+            label: Windows x86-64
 
-    name: test (${{ matrix.extras }})
+    name: test (${{ matrix.label }})
 
     steps:
       - uses: actions/checkout@v4
@@ -44,22 +56,24 @@ jobs:
         if: matrix.extras == 'dev'
         # The whole point of this leg. A transitive dependency quietly pulling
         # lxml back in would make the run pass while proving nothing.
-        run: |
-          python - <<'PY'
-          import importlib.util, sys
-          if importlib.util.find_spec("lxml") is not None:
-              sys.exit("lxml is installed; this leg cannot prove the app runs without it")
-          print("lxml absent, as required")
-          PY
+        run: >-
+          python -c "import importlib.util;
+          assert importlib.util.find_spec('lxml') is None,
+          'lxml is installed; this leg cannot prove the app runs without it';
+          print('lxml absent, as required')"
 
       - name: Confirm the bundled 7-Zip helper is executable
-        # Git preserves only the executable bit; a helper that lost it would
-        # silently push every 7z/RAR test onto the py7zr fallback path instead
-        # of failing, quietly hiding a whole backend from CI.
-        run: |
-          helper=src/joyread/resources/extractors/7zip/darwin-arm64/7zz
-          chmod +x "$helper"
-          "$helper" i > /dev/null
+        # Resolve exactly as the app does, require the bundled candidate (not a
+        # host PATH fallback), and execute it. On Ubuntu this proves each
+        # checked-in static Linux ELF and its executable bit on native x86-64
+        # and ARM64 runners.
+        run: >-
+          python -c "import subprocess;
+          from joyread.core.archive.backends import ExtractionBackendResolver;
+          backend=ExtractionBackendResolver().seven_zip();
+          assert backend is not None and backend.source.startswith('bundled:'), backend;
+          subprocess.run([backend.executable, 'i'], check=True,
+          stdout=subprocess.DEVNULL)"
 
       - name: Test
         env:

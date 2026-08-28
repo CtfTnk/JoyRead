@@ -28,6 +28,26 @@ def _write_pdf(path: Path, pages: int = 3) -> None:
     painter.end()
 
 
+def test_probe_releases_the_source_for_an_atomic_move(tmp_path: Path, qtbot) -> None:  # noqa: ANN001, ARG001
+    """Import validates a staged PDF immediately before renaming it.
+
+    Windows refuses that rename while QPdfDocument retains its internal file
+    handle, even after close(). The probe owns and closes the input device so
+    validation never extends the staging file's lifetime.
+    """
+
+    source = tmp_path / "staged.pdf"
+    target = tmp_path / "published.pdf"
+    _write_pdf(source, pages=1)
+
+    result = PdfImageService().probe_pdf(source)
+    source.replace(target)
+
+    assert result.is_valid
+    assert target.is_file()
+    assert not source.exists()
+
+
 def test_work_runs_on_the_pdf_thread_not_the_caller(qtbot) -> None:  # noqa: ANN001, ARG001
     worker = PdfDocumentThread()
     try:

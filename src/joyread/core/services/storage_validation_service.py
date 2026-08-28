@@ -17,6 +17,7 @@ from pathlib import Path
 import sqlite3
 from uuid import uuid4
 
+from joyread.core.services.path_issue_service import PathIssueService
 from joyread.infrastructure.database import LATEST_SCHEMA_VERSION, apply_migrations
 from joyread.infrastructure.database.sqlite_connection import open_sqlite_connection
 from joyread.infrastructure.filesystem.path_service import StoragePathResolver, WritableLocation
@@ -69,6 +70,7 @@ class StorageValidationCode(StrEnum):
     SCHEMA_INCOMPLETE = "schema_incomplete"
     SCHEMA_TOO_NEW = "schema_too_new"
     SMOKE_TEST_FAILED = "smoke_test_failed"
+    LONG_PATHS_DISABLED = "long_paths_disabled"
 
 
 @dataclass(frozen=True)
@@ -88,6 +90,9 @@ class StorageValidationResult:
 
 class StorageValidationService:
     """Validates storage roots for the storage management flows."""
+
+    def __init__(self, path_issue_service: PathIssueService | None = None) -> None:
+        self._path_issue_service = path_issue_service
 
     def database_path(self, storage_root: Path) -> Path:
         return Path(storage_root) / WritableLocation.DATABASE / DATABASE_FILENAME
@@ -110,6 +115,10 @@ class StorageValidationService:
         root = Path(storage_root)
         logger.debug("validate_full storage_root=%s", root)
 
+        long_path = self._check_supported_path(root)
+        if long_path is not None:
+            return long_path
+
         readable = self._check_readable(root)
         if readable is not None:
             return readable
@@ -129,6 +138,9 @@ class StorageValidationService:
             return conflict
 
         database = self.database_path(root)
+        long_path = self._check_supported_path(database)
+        if long_path is not None:
+            return long_path
         if not database.is_file():
             return StorageValidationResult.failure(
                 StorageValidationCode.DATABASE_MISSING,
@@ -159,11 +171,18 @@ class StorageValidationService:
         root = Path(storage_root)
         logger.debug("validate_lightweight storage_root=%s", root)
 
+        long_path = self._check_supported_path(root)
+        if long_path is not None:
+            return long_path
+
         readable = self._check_readable(root)
         if readable is not None:
             return readable
 
         database = self.database_path(root)
+        long_path = self._check_supported_path(database)
+        if long_path is not None:
+            return long_path
         if not database.is_file():
             return StorageValidationResult.failure(
                 StorageValidationCode.DATABASE_MISSING,
@@ -198,6 +217,15 @@ class StorageValidationService:
         return StorageValidationResult.success()
 
     # -- internal helpers ---------------------------------------------------
+
+    def _check_supported_path(self, path: Path) -> StorageValidationResult | None:
+        service = self._path_issue_service
+        if service is None or service.check_path(path, operation="storage_validation"):
+            return None
+        return StorageValidationResult.failure(
+            StorageValidationCode.LONG_PATHS_DISABLED,
+            "Windows long-path support is required for this storage location.",
+        )
 
     def _check_readable(self, root: Path) -> StorageValidationResult | None:
         if not root.is_dir() or not os.access(root, os.R_OK):
@@ -257,7 +285,16 @@ class StorageValidationService:
 
         try:
             for name in REQUIRED_SUBDIRECTORIES:
-                (root / name).mkdir(parents=True, exist_ok=True)
+                directory = root / name
+                service = self._path_issue_service
+                if service is not None and not service.check_directory(
+                    directory, operation="storage_directory_create"
+                ):
+                    return StorageValidationResult.failure(
+                        StorageValidationCode.LONG_PATHS_DISABLED,
+                        "Windows long-path support is required for this storage location.",
+                    )
+                directory.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return StorageValidationResult.failure(
                 StorageValidationCode.NOT_WRITABLE,

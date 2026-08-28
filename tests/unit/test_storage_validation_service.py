@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from pathlib import Path
 
 import pytest
@@ -99,18 +98,28 @@ def test_validate_full_fails_on_missing_key_table(tmp_path: Path) -> None:
     assert result.code == StorageValidationCode.SCHEMA_INCOMPLETE
 
 
-@pytest.mark.skipif(
-    hasattr(os, "geteuid") and os.geteuid() == 0,
-    reason="root bypasses filesystem write permissions",
-)
-def test_validate_full_fails_on_unwritable_root(tmp_path: Path) -> None:
+def test_validate_full_fails_on_unwritable_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the failed write probe without relying on POSIX chmod.
+
+    Windows and root both bypass the old mode-bit setup, turning this into a
+    DATABASE_MISSING assertion instead of testing the service's error path.
+    """
+
     root = tmp_path / "readonly"
     root.mkdir()
-    os.chmod(root, 0o500)
-    try:
-        result = StorageValidationService().validate_full(root)
-    finally:
-        os.chmod(root, 0o700)
+    real_write_bytes = Path.write_bytes
+
+    def reject_probe(path: Path, data: bytes) -> int:
+        if path.parent == root and path.name.startswith(".joyread-write-test-"):
+            raise PermissionError("simulated read-only storage root")
+        return real_write_bytes(path, data)
+
+    monkeypatch.setattr(Path, "write_bytes", reject_probe)
+
+    result = StorageValidationService().validate_full(root)
 
     assert not result.ok
     assert result.code == StorageValidationCode.NOT_WRITABLE

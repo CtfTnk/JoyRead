@@ -44,6 +44,7 @@ from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.library_maintenance_service import LibraryMaintenanceCoordinator
+from joyread.core.services.path_issue_service import PathIssueService
 from joyread.core.services.tag_service import TagService
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
@@ -224,6 +225,8 @@ class ImportService:
         maintenance_coordinator: LibraryMaintenanceCoordinator | None = None,
         canonical_import_policy: CanonicalImportPolicy = DEFAULT_CANONICAL_IMPORT_POLICY,
         canonical_writer: CanonicalWriter | None = None,
+        *,
+        path_issue_service: PathIssueService | None = None,
     ) -> None:
         self._paths = paths
         self._database = database
@@ -231,6 +234,7 @@ class ImportService:
         self._pdf_service = pdf_service
         self._hash_service = hash_service
         self._hash_algorithm = hash_algorithm
+        self._path_issue_service = path_issue_service
         self._tag_service = tag_service
         self._archive_limits = archive_limits or ArchiveOpenLimits()
         self._verify_imported_file_integrity = bool(verify_imported_file_integrity)
@@ -270,6 +274,8 @@ class ImportService:
         """
 
         path = Path(manifest_path).expanduser()
+        if self._path_issue_service is not None:
+            self._path_issue_service.require_path(path, operation="import_manifest")
         logger.debug("Reading import manifest path=%s", path)
         raw = json.loads(path.read_text(encoding="utf-8"))
         if int(raw.get("version", 0)) != 1:
@@ -367,6 +373,8 @@ class ImportService:
         is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportBatchResult:
         folder = Path(path).expanduser()
+        if self._path_issue_service is not None:
+            self._path_issue_service.require_path(folder, operation="import_folder")
         files = _supported_files_within_depth(folder, max_depth=max_depth)
         logger.info("Import folder requested path=%s depth=%d matched=%d", folder, max_depth, len(files))
         return self.import_files(
@@ -408,7 +416,15 @@ class ImportService:
             # imports it twice and reports a duplicate against the user's own
             # single drop. The unresolved path is what gets imported, so a
             # symlinked source is still recorded the way the user named it.
-            key = os.path.normcase(str(candidate.resolve(strict=False)))
+            try:
+                resolved = candidate.resolve(strict=False)
+            except OSError:
+                # Resolution itself can be the first MAX_PATH casualty. The
+                # path issue was already published by the boundary preflight;
+                # an absolute lexical key still keeps repeated inputs together
+                # until `_import_one` records the actionable failure.
+                resolved = Path(os.path.abspath(os.fspath(candidate)))
+            key = os.path.normcase(str(resolved))
             if key not in seen:
                 seen.add(key)
                 files.append(candidate)
@@ -417,6 +433,14 @@ class ImportService:
         skipped_unsupported = 0
         for value in paths:
             path = Path(value).expanduser()
+            if self._path_issue_service is not None and not self._path_issue_service.check_path(
+                path, operation="import_path"
+            ):
+                # Keep the inaccessible item in the batch. `_import_one` runs
+                # the same preflight and records a failed `ImportItemResult`,
+                # so one mixed drag cannot silently lose part of the gesture.
+                _add(path)
+                continue
             if path.is_dir():
                 folder_count += 1
                 for found in _supported_files_within_depth(path, max_depth=max_depth):
@@ -764,7 +788,13 @@ class ImportService:
                 staging_path,
                 self._hash_algorithm,
             )
-        except Exception:
+        except Exception as exc:
+            if self._path_issue_service is not None:
+                self._path_issue_service.report_os_error(
+                    exc,
+                    (source_path, staging_path),
+                    operation="import_staging",
+                )
             staging_path.unlink(missing_ok=True)
             raise
 
@@ -879,6 +909,13 @@ class ImportService:
         """Check only the source invariants that precede a streaming copy."""
 
         logger.debug("Checking import source path=%s", source_path)
+        if self._path_issue_service is not None and not self._path_issue_service.check_path(
+            source_path, operation="import_source"
+        ):
+            return _ValidationFailure(
+                "failed",
+                "Windows long-path support is required for this source file.",
+            )
         if not source_path.exists():
             return _ValidationFailure("failed", f"Source file does not exist: {source_path}")
         if not source_path.is_file():
