@@ -14,7 +14,6 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
-    QIcon,
 )
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
@@ -29,7 +28,10 @@ from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.logging import log_event
 from joyread.core.models.tag import Tag
-from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
+# `core.file_types`, not the `core.reader` re-export: this module already needs
+# the reader stack, but routing a constant through it invites the same mistake
+# somewhere that does not. See the note in app/bootstrap.py.
+from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import (
     BOOK_EXTENSIONS,
     ImportProgress,
@@ -104,7 +106,10 @@ class MainWindow(QMainWindow):
         )
         self.setObjectName("MainWindow")
         self.setWindowTitle("JoyRead")
-        self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
+        # No setWindowIcon: Qt falls back to QApplication::windowIcon(), which
+        # the composition root already set. Re-reading the file here decoded the
+        # same image a second time on the startup path -- 53-69 ms for the .icns
+        # -- to arrive at exactly the icon the window would have inherited.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)

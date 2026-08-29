@@ -5,6 +5,19 @@ arbitration, the application context, and window ownership together, but owns
 no policy of its own: what the first window should be lives in
 :mod:`joyread.app.launch.coordinator`, and which windows outlive which lives in
 :mod:`joyread.app.windows.ownership`.
+
+**Module scope is a budget, not a convenience.** Every launch imports this
+module before it knows whether it is the primary process or a secondary that
+exists only to hand a file path to an already-running primary and exit. The
+secondary's entire useful work is ~5 ms of arbitration; importing the primary
+runtime here made it pay ~780 ms first, for objects it would never construct.
+
+So the split below is load-bearing. Module scope holds only what arbitration
+needs. Everything the primary runtime alone requires -- ``AppContext``, the
+window manager, the recovery dialog, the romanizer -- is imported inside the
+function that uses it. ``tests/unit/test_startup_import_cost.py`` fails if that
+erodes, because nothing else would notice: a stray top-level import is invisible
+except in the startup profile.
 """
 
 from __future__ import annotations
@@ -16,20 +29,25 @@ from collections.abc import Callable
 from pathlib import Path
 from dataclasses import dataclass
 from threading import Thread
+from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEvent, QEventLoop, QObject, QTimer
 from PySide6.QtGui import QFontDatabase, QIcon
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QMainWindow,
+    QMessageBox,
+    QWidget,
+)
 
-from joyread.app.app_context import AppContext, create_app_context
-from joyread.app.launch.coordinator import LaunchCoordinator
+from joyread.app import startup_trace
 from joyread.app.launch.file_open_router import FileOpenRouter, JoyReadApplication
 from joyread.app.launch.intent import (
     LaunchIntent,
     intent_from_arguments,
     merge_open_intents,
 )
-from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
 from joyread.app.launch.ready_gate import (
     ImmediateLaunchGate,
     LaunchReadyGate,
@@ -40,18 +58,12 @@ from joyread.app.launch.single_instance_broker import (
     SingleInstanceBroker,
     SingleInstanceError,
 )
-from joyread.app.windows.manager import (
-    ApplicationWindowManager,
-    center_window_on_launch,
-)
-from joyread.app.windows.novel_provider import NovelReaderProvider
-from joyread.core.file_types import EPUB_ACCESS_ENABLED
-from joyread.core.reader import SUPPORTED_READER_EXTENSIONS
-from joyread.core.tag_indexing import warm_romanizers
-from joyread.core.services.storage_recovery_service import (
-    StorageRecoveryCancelled,
-    StorageRecoveryPromptResult,
-)
+# Both constants come from `core.file_types` on purpose. It is Qt-free and
+# dependency-free (4 ms), while the identical re-export through `core.reader`
+# drags in the whole reader engine, the archive stack, natsort, py7zr and PIL
+# (435 ms) -- to obtain a frozenset of seven suffixes, on every launch,
+# secondary processes included.
+from joyread.core.file_types import EPUB_ACCESS_ENABLED, SUPPORTED_READER_EXTENSIONS
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import (
     SettingsStore,
@@ -64,16 +76,38 @@ from joyread.infrastructure.logging import (
     shutdown_logging,
     write_emergency_log,
 )
-from joyread.infrastructure.resources.resource_loader import ResourceLoader
-from joyread.ui.dialogs.storage_recovery_dialog import (
-    StorageRecoveryDialog,
-    StorageRecoveryDialogResult,
-)
+
+if TYPE_CHECKING:
+    # Annotations only. `from __future__ import annotations` makes these
+    # strings at runtime, so naming them here costs a secondary process nothing.
+    from joyread.app.app_context import AppContext
+    from joyread.app.launch.coordinator import LaunchCoordinator
+    from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
+    from joyread.app.windows.manager import ApplicationWindowManager
+    from joyread.app.windows.novel_provider import NovelReaderProvider
+    from joyread.core.services.storage_recovery_service import StorageRecoveryPromptResult
+    from joyread.infrastructure.resources.resource_loader import ResourceLoader
 
 
 logger = logging.getLogger(__name__)
 
 __all__ = ["center_window_on_launch", "create_application", "run"]
+
+
+def __getattr__(name: str) -> object:
+    """Resolve ``center_window_on_launch`` on first access, not on import.
+
+    It is part of this module's published surface but lives in
+    ``windows.manager``, which costs ~95 ms and pulls ``MainWindow`` in behind
+    it. A secondary process never places a window, so re-exporting it eagerly
+    would reintroduce the cost the split above exists to remove. PEP 562.
+    """
+
+    if name == "center_window_on_launch":
+        from joyread.app.windows.manager import center_window_on_launch
+
+        return center_window_on_launch
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Upper bound on how long a secondary process waits for the platform to finish
 # describing its launch before forwarding. It must exceed the macOS gate's own
@@ -143,10 +177,18 @@ def _prepare_startup_environment(
     # notification that Qt's own startup triggers.
     resolved_gate = gate if gate is not None else create_launch_gate()
     app = _create_qt_application(resolved_argv)
+    startup_trace.mark("qt_app_created")
     config = AppConfig()
     settings_store = create_environment_settings_store(config.app_name, config.app_author)
     app.setApplicationName(config.app_name)
     app.setOrganizationName(config.app_author)
+    # Links a running window back to `packaging/linux/joyread.desktop`, which is
+    # what lets the desktop show the real icon instead of a generic one and stops
+    # a second taskbar entry appearing beside the launcher. Wayland derives the
+    # `app_id` from this; X11 derives WM_CLASS, matching the entry's
+    # `StartupWMClass`. Inert on Windows and macOS, which have their own
+    # identity mechanisms, so it needs no platform guard.
+    app.setDesktopFileName("joyread")
     return _StartupEnvironment(
         argv=resolved_argv,
         app=app,
@@ -158,6 +200,10 @@ def _prepare_startup_environment(
 
 
 def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRuntime:
+    # The whole graph enters here, and only here. This is the ~683 ms a
+    # secondary process must never pay.
+    from joyread.app.app_context import create_app_context
+
     app = environment.app
     previous_router = getattr(app, "_joyread_file_open_router", None)
     if isinstance(previous_router, FileOpenRouter):
@@ -176,11 +222,14 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
         settings_store=environment.settings_store,
     )
     context.paths.ensure_directories()
+    startup_trace.mark("context_ready")
 
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
     _load_application_fonts(context.resources)
     app.setStyleSheet(context.resources.load_stylesheet())
-    _warm_tag_romanizers()
+    startup_trace.mark("resources_ready")
+    # Romanizer warm-up is deliberately *not* started here; see
+    # `_configure_window_management`.
     app.aboutToQuit.connect(_log_about_to_quit)
     app.aboutToQuit.connect(context.close)
     app.aboutToQuit.connect(_shutdown_application_logging)
@@ -216,6 +265,12 @@ def _configure_window_management(
     broker: SingleInstanceBroker | None = None,
     enable_macos_reopen: bool,
 ) -> tuple[ApplicationWindowManager, LaunchCoordinator]:
+    # Window ownership and launch routing are primary-only, and the isinstance
+    # checks below need the real classes, not just their annotations.
+    from joyread.app.launch.coordinator import LaunchCoordinator
+    from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
+    from joyread.app.windows.manager import ApplicationWindowManager
+
     # create_application() is re-entrant (tests and embedded callers invoke it
     # repeatedly against one shared QApplication). Unlike SingleInstanceBroker
     # and LaunchCoordinator, which each refuse a second start(), this
@@ -254,8 +309,50 @@ def _configure_window_management(
     runtime.file_open_router.set_open_handler(coordinator.open_file)
     if broker is not None:
         broker.set_intent_handler(_broker_intent_handler(coordinator))
+    _install_first_paint_probe(runtime.app)
     coordinator.start(runtime.initial_intent)
+    startup_trace.mark("window_shown")
+    # After the window exists, never before it. The warm-up thread spends its
+    # first ~1.5 s importing pykakasi and jaconv, and Python serializes imports:
+    # started any earlier it starves the main thread's own deferred imports and
+    # adds a measured ~295 ms to window construction. Starting it here leaves it
+    # overlapping only the first paint, which is main-thread work of ~10 ms.
+    _warm_tag_romanizers()
     return manager, coordinator
+
+
+class _FirstPaintProbe(QObject):
+    """Record the first frame any JoyRead window actually paints.
+
+    ``process.ready`` fires while the event loop has yet to run, so it is not
+    the moment the user sees something. Watching for the first ``Paint`` at the
+    application level catches whichever window the launch decided on -- Library
+    or Reader -- without either view knowing it is being measured. Qt does not
+    paint hidden widgets, so the first ``Paint`` is a real frame.
+    """
+
+    def __init__(self, app: QApplication) -> None:
+        super().__init__(app)
+        self._app = app
+        app.installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        # Filters every event until the first paint, so this stays a type check
+        # and nothing more; the probe removes itself as soon as it fires.
+        if event.type() == QEvent.Type.Paint and isinstance(watched, QWidget):
+            self._app.removeEventFilter(self)
+            startup_trace.mark("first_paint")
+            startup_trace.flush_to_log(logger)
+            self.deleteLater()
+        return False
+
+
+def _install_first_paint_probe(app: QApplication) -> None:
+    if any(name == "first_paint" for name, _elapsed, _stage in startup_trace.milestones()):
+        return
+    if isinstance(getattr(app, "_joyread_first_paint_probe", None), _FirstPaintProbe):
+        return
+    setattr(app, "_joyread_first_paint_probe", _FirstPaintProbe(app))
 
 
 def _create_qt_application(argv: list[str]) -> QApplication:
@@ -267,6 +364,12 @@ def _create_qt_application(argv: list[str]) -> QApplication:
 
 def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryPromptResult:
     """Ask the user to initialize the default library or select an existing one."""
+
+    from joyread.core.services.storage_recovery_service import StorageRecoveryPromptResult
+    from joyread.ui.dialogs.storage_recovery_dialog import (
+        StorageRecoveryDialog,
+        StorageRecoveryDialogResult,
+    )
 
     logger.info("Prompting storage recovery for unavailable location %s", current)
     while True:
@@ -337,6 +440,7 @@ def run(argv: list[str] | None = None) -> int:
     )
     try:
         role = broker.start(lambda: _resolve_secondary_intent(environment))
+        startup_trace.mark("role_resolved")
     except SingleInstanceError as exc:
         logger.error("Single-instance startup failed: %s", exc)
         write_emergency_log(
@@ -358,6 +462,10 @@ def run(argv: list[str] | None = None) -> int:
             category="launch",
             status="finished",
         )
+        # A secondary never reaches `configure_logging`, so these land on the
+        # early stderr handler. That is the only channel it has, and it is the
+        # one `scripts/bench_startup.py` reads for the `Open With` scenario.
+        startup_trace.flush_to_log(logger)
         broker.dispose()
         shutdown_logging()
         return 0
@@ -373,6 +481,12 @@ def run(argv: list[str] | None = None) -> int:
     )
     setattr(environment.app, "_joyread_single_instance_broker", broker)
     environment.app.aboutToQuit.connect(broker.dispose)
+    # An `except` clause evaluates its class at runtime, so this one cannot be
+    # deferred to TYPE_CHECKING. It is imported here rather than at module
+    # scope because a secondary has already returned by this point and must not
+    # pay for the storage-recovery module.
+    from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
+
     try:
         runtime = _build_primary_runtime(environment)
     except StorageRecoveryCancelled:
@@ -419,6 +533,9 @@ def run(argv: list[str] | None = None) -> int:
         category="process",
         status="finished",
     )
+    # Everything up to here is loggable now; `first_paint` arrives later and
+    # flushes itself from the probe.
+    startup_trace.flush_to_log(logger)
     return runtime.app.exec()
 
 
@@ -504,12 +621,20 @@ def _load_application_fonts(resources: ResourceLoader) -> None:
 def _warm_tag_romanizers() -> None:
     """Build the CJK reading dictionaries off the UI thread.
 
-    Measured at ~110ms. Left lazy, that lands on the UI thread the first time
-    a library with Japanese or Chinese tags opens a tag surface, which is a
-    visible stall on a dialog the user just asked for. A plain daemon thread
-    is enough: the work touches no Qt object and nothing waits on it, so a
-    quit mid-warm simply abandons it.
+    Left lazy, this lands on the UI thread the first time a library with
+    Japanese or Chinese tags opens a tag surface, which is a visible stall on a
+    dialog the user just asked for. A plain daemon thread is enough: the work
+    touches no Qt object and nothing waits on it, so a quit mid-warm simply
+    abandons it.
+
+    Measured at 2761 ms in a source-tree launch, not the ~110 ms this docstring
+    claimed before startup instrumentation existed. Its first ~1.5 s is spent
+    importing pykakasi and jaconv, and Python serializes imports -- which is why
+    the caller starts it only once the window is up. See the note at its call
+    site in ``_configure_window_management``.
     """
+
+    from joyread.core.tag_indexing import warm_romanizers
 
     Thread(
         target=warm_romanizers,

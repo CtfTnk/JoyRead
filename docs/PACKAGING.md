@@ -110,6 +110,65 @@ An ad-hoc build is quarantined on download and reports itself as *damaged*.
 That is what the note in the disk image explains, in English, Japanese and
 Simplified Chinese.
 
+## 3b. Linux desktop integration
+
+```bash
+python scripts/build_linux_desktop.py --exec /opt/joyread/JoyRead
+```
+
+Writes `packaging/linux/joyread.desktop`. Without it Linux has no "Open With
+JoyRead" at all -- no file manager can hand the app a document, so the
+single-instance forwarding path is not merely slow there, it is unreachable.
+
+The generator is the Linux counterpart of the `CFBundleDocumentTypes` block the
+spec builds for macOS, and it reads `src/joyread/core/file_types.py` through
+`runpy` for the same reason: the declared types cannot drift from what the app
+dispatches. `SUPPORTED_READER_EXTENSIONS` already honours `EPUB_ACCESS_ENABLED`,
+so the shipping entry claims no EPUB type and needs no edit when that flag
+flips. An extension with no MIME mapping fails the build rather than being
+dropped -- an unmapped type is one the desktop silently never offers JoyRead
+for, and the app would still open it from the command line, so nothing else
+would reveal the gap. `tests/unit/test_linux_desktop_entry.py` holds the same
+line at test time and checks the committed file is current.
+
+Three details are load-bearing:
+
+- **`%F`, not `%f`.** A launch can carry several paths, and
+  `LaunchCoordinator` merges them into one intent; `%f` would spawn one process
+  per file and lose that.
+- **`Icon=joyread` is a theme name, not a path.** `--install` copies
+  `JoyRead.png` to `~/.local/share/icons/hicolor/512x512/apps/joyread.png` and
+  lets the icon theme resolve it. A path would break the moment the app moved.
+- **The running app has to claim the entry.** `bootstrap.py` calls
+  `app.setDesktopFileName("joyread")`, which is what links a live window back to
+  `joyread.desktop`: Wayland derives the `app_id` from it, X11 derives WM_CLASS
+  to match `StartupWMClass`. Without it the desktop shows a generic icon and
+  opens a second taskbar entry beside the launcher. The call is inert on Windows
+  and macOS, so it needs no platform guard.
+
+`--install` is Linux-only and installs for the current user: the desktop entry,
+the hicolor icon, and best-effort `update-desktop-database` /
+`gtk-update-icon-cache` runs. **It deliberately does not touch
+`mimeapps.list`.** Listing a MIME type offers JoyRead in "Open With"; writing
+`mimeapps.list` would make it the *default* handler for `.pdf` and `.zip`, which
+is the user's choice, not an installer's. That mirrors the "Alternate" handler
+rank the macOS bundle declares. Users who want the default run:
+
+```bash
+xdg-mime default joyread.desktop application/vnd.comicbook+zip
+```
+
+A real distribution package installs the same two files to
+`/usr/share/applications` and `/usr/share/icons/hicolor/512x512/apps`, with
+`Exec=` pointing at the installed path. The checked-in file assumes
+`/opt/joyread/JoyRead`; regenerate with `--exec` for any other layout.
+`desktop-file-validate` runs automatically when it is on `PATH` and fails the
+generation if the entry is malformed.
+
+**This has not been verified on a real Ubuntu desktop yet.** The file is
+generated, validated by shape, and guarded by tests, but nobody has right-clicked
+a `.cbz` in Nautilus and watched a Reader open.
+
 ## 4. Platform requirements
 
 The spec refuses to build when the matching bundled 7-Zip helper is absent.
@@ -136,17 +195,61 @@ uses, refuses a PATH fallback, and executes `7zz i` natively on both Ubuntu
 x86-64 and Ubuntu ARM64. Windows likewise executes the bundled `7z.exe` beside
 its `7z.dll`; macOS executes its bundled universal helper.
 
+Linux also needs system libraries that neither PySide6's wheels nor a
+PyInstaller bundle carry. Qt ships its own libraries but links against the
+distribution's C libraries, and a minimal image has almost none of them --
+`libegl1`, `libgl1`, `libdbus-1-3`, `libxkbcommon0`, `libxkbcommon-x11-0`,
+`libfontconfig1`, `libfreetype6`. Even the `offscreen` platform plugin needs
+libEGL and libGL, because QtGui links them unconditionally; "headless" does not
+mean "no GL". A desktop Ubuntu install has all of these already, which is why
+this surfaces on CI runners and container images rather than on a developer
+machine. The Linux CI legs install them and then load Qt on its own, before
+pytest: `pytest-qt` imports PySide6 while its plugin is still loading, so a
+missing library aborts pytest itself and reports "internal error" (exit 3)
+without ever naming the library. Loading Qt in a separate step turns that into
+the actual `cannot open shared object file` line.
+
 Application icons are platform-native representations of the same artwork:
-`JoyRead.icns` for the macOS bundle and `JoyRead.ico` (16 through 256 px) for
-the Windows executable. The PyInstaller spec selects the matching format and
-fails the build if that platform's icon is absent. Linux currently leaves the
-executable icon unset and relies on its future desktop-entry/package metadata.
+`JoyRead.icns` for the macOS bundle, `JoyRead.ico` (16 through 256 px) for the
+Windows executable, and `JoyRead.png` (512 px RGBA) for Linux, which has no
+native multi-size container. The PyInstaller spec selects the matching format
+for the *executable* and fails the build if that platform's icon is absent.
+Linux leaves the executable icon unset -- an ELF cannot carry one -- and relies
+on the desktop entry from section 3b, which installs `JoyRead.png` into the
+hicolor theme as `joyread.png`.
+
+At *runtime* the same choice is made by `ResourceLoader.app_icon_path()`, which
+is the only place a window icon should come from. Serving `.icns` everywhere
+cost 53-69 ms per load against 2-3 ms for the `.ico`, because `QIcon` does not
+cache and the `.icns` is 3.76 MB. Windows never displays it. Individual windows
+must not call `setWindowIcon`: Qt inherits `QApplication::windowIcon()`, so each
+call was decoding the same image again to reach the icon it already had.
 
 Windows builds also collect `ffi.dll` and `sqlite3.dll` explicitly from the
 required repository Conda prefix's `Library/bin`. PyInstaller does not discover
 those two transitive Python runtime DLLs reliably from a prefix environment;
 the spec fails with a targeted message if they are absent instead of producing
 an executable that only breaks when ctypes or SQLite is first imported.
+
+Two exclusions run on every platform after analysis. **Unused Qt modules**: the
+spec drops `qtvirtualkeyboardplugin` and the `Qt6VirtualKeyboard` /
+`Qt6Quick` / `Qt6Qml*` libraries it links. JoyRead imports exactly five Qt
+modules -- QtCore, QtGui, QtNetwork, QtPdf, QtWidgets -- and PyInstaller already
+ships only those Python bindings, but a 34 KB input-context plugin was dragging
+the whole QML stack in behind it: ~17 MB of a 180 MB bundle for an on-screen
+keyboard that only activates under `QT_IM_MODULE=qtvirtualkeyboard`. The match
+is on an explicit list of library stems, normalized across `.dll`/`.dylib`/
+`.so.N`, rather than a substring match on "qml" or "quick" that would be one Qt
+release away from removing something load-bearing. **Foreign application
+icons**: only the container this platform's `ResourceLoader.app_icon_path()`
+actually selects is shipped; the other two are inert, and `JoyRead.icns` alone is
+3.76 MB.
+
+Both are bundle-size measures, not startup measures -- the removed files were
+never opened at runtime, and a before/after benchmark showed no change beyond
+noise. Windows was smoke-tested against the trimmed bundle (launch, first paint,
+and opening a CBZ in a Reader). **macOS and Linux need the same pass before a
+release ships from those platforms.**
 
 The Windows analysis also discards root-level `icuuc.dll` / `icudt*.dll`
 discoveries. Qt6Core links against the Windows system ICU shim, but PyInstaller

@@ -218,6 +218,58 @@ if platform_key() == "windows":
         )
 
     a.binaries = [entry for entry in a.binaries if not is_foreign_root_icu(entry)]
+
+# JoyRead imports exactly five Qt modules -- QtCore, QtGui, QtNetwork, QtPdf and
+# QtWidgets -- and PyInstaller correctly ships only those Python bindings. The
+# QML/Quick stack arrives anyway, through one 34 KB plugin: Qt's virtual
+# keyboard input context links Qt6VirtualKeyboard, which links Qt6Quick, which
+# links Qt6Qml and its satellites. That is ~17 MB of a 180 MB bundle for an
+# on-screen keyboard that only activates under QT_IM_MODULE=qtvirtualkeyboard,
+# which a desktop reader never sets. Dropping the plugin drops the whole chain.
+#
+# Matched by library stem so the same rule holds for .dll, .dylib and .so.N
+# names. Deliberately an explicit list: a substring match on "qml" or "quick"
+# would be one Qt release away from removing something load-bearing.
+_UNUSED_QT_LIBRARY_STEMS = frozenset(
+    {
+        "qtvirtualkeyboardplugin",
+        "qt6virtualkeyboard",
+        "qt6quick",
+        "qt6qml",
+        "qt6qmlmeta",
+        "qt6qmlmodels",
+        "qt6qmlworkerscript",
+    }
+)
+
+
+def _library_stem(name: str) -> str:
+    """Normalize ``libQt6Quick.so.6`` / ``Qt6Quick.dll`` to ``qt6quick``."""
+
+    stem = name.casefold()
+    if stem.startswith("lib"):
+        stem = stem[3:]
+    return stem.partition(".")[0]
+
+
+def is_unused_qt_module(entry) -> bool:  # noqa: ANN001
+    return _library_stem(Path(entry[0]).name) in _UNUSED_QT_LIBRARY_STEMS
+
+
+a.binaries = [entry for entry in a.binaries if not is_unused_qt_module(entry)]
+
+# One icon container per build, not three. `ResourceLoader.app_icon_path()`
+# chooses by platform at runtime, so the other two are inert -- and `JoyRead.icns`
+# alone is 3.76 MB. The missing-icon `SystemExit` below is what guarantees the
+# one kept here is actually present.
+_KEPT_APP_ICON = {"darwin": "joyread.icns", "windows": "joyread.ico"}.get(
+    platform_key(), "joyread.png"
+)
+_FOREIGN_APP_ICONS = {"joyread.icns", "joyread.ico", "joyread.png"} - {_KEPT_APP_ICON}
+a.datas = [
+    entry for entry in a.datas if Path(entry[0]).name.casefold() not in _FOREIGN_APP_ICONS
+]
+
 pyz = PYZ(a.pure)
 
 icon_directory = PACKAGE_ROOT / "ui" / "resources" / "icons"

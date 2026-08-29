@@ -11,6 +11,7 @@ from uuid import uuid4
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow
 
+from joyread.app import startup_trace
 from joyread.app.app_context import AppContext
 from joyread.app.launch.intent import canonical_path_key, normalize_launch_paths
 from joyread.app.windows.activation import (
@@ -369,6 +370,11 @@ class ApplicationWindowManager(QObject):
 
 
 def present_new_window(window: QMainWindow) -> None:
+    # The one seam both window kinds pass through between "constructed" and
+    # "on screen", so it dates the constructor cost for whichever window the
+    # launch chose. `mark` keeps the first observation, so later windows in the
+    # same session do not overwrite the startup figure.
+    startup_trace.mark("window_constructed")
     center_window_on_launch(window)
     activate_window(window)
 

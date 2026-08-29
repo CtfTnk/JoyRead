@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal as QtSignal
-from PySide6.QtGui import QCloseEvent, QIcon, QKeyEvent
+from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import QMainWindow, QWidget
 
 from joyread.app.app_context import AppContext
@@ -34,7 +34,8 @@ class NovelReaderWindow(QMainWindow):
         super().__init__(parent)
         self.setObjectName("NovelReaderWindow")
         self.setWindowTitle(title or (book.title if book is not None else Path(source_path).stem))
-        self.setWindowIcon(QIcon(str(context.resources.app_icon_path())))
+        # Inherited from QApplication::windowIcon(); see MainWindow for why
+        # re-reading the icon file per window was worth removing.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
