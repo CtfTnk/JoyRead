@@ -169,6 +169,43 @@ generation if the entry is malformed.
 generated, validated by shape, and guarded by tests, but nobody has right-clicked
 a `.cbz` in Nautilus and watched a Reader open.
 
+## 3c. Windows MSI
+
+Build the PyInstaller onedir application and wrap that exact tree in a WiX MSI:
+
+```powershell
+python scripts/build_windows_msi.py
+```
+
+If `dist/JoyRead` has already been built and smoke-tested from the current
+commit, avoid rebuilding it:
+
+```powershell
+python scripts/build_windows_msi.py --skip-app-build
+```
+
+The result is `dist/JoyRead-<version>-windows-x86_64.msi`. The repository pins
+WiX 5.0.2 as a local .NET tool in `.config/dotnet-tools.json`; the script runs
+`dotnet tool restore`, so a .NET SDK and network access are required on the
+first build. WiX 5 is intentionally pinned because WiX 6 and 7 releases add the
+Open Source Maintenance Fee/EULA. WiX 5 no longer receives consumer security
+updates, so moving to a current WiX release is a release-owner licensing
+decision rather than a silent build-script upgrade.
+
+The MSI is a dual-purpose package that defaults to per-user installation. A
+normal double-click installs under the current user's redirected Programs
+folder without UAC; administrators may explicitly request a per-machine install.
+It creates a Start menu shortcut and registers JoyRead in Default Apps/Open With
+for `.cbz`, `.cbr`, `.cb7`, and `.pdf`. It does **not** claim generic `.zip`,
+`.rar`, or `.7z`, and it never writes the protected user-default association.
+Windows still requires the user to choose JoyRead as the default through system
+UI.
+
+The MSI is unsigned. Sign it before public distribution. Always smoke an
+install, file activation, repair/upgrade, and uninstall on a clean Windows VM;
+an administrative extraction proves the payload but does not exercise registry
+redirection or shell notification behavior.
+
 ## 4. Platform requirements
 
 The spec refuses to build when the matching bundled 7-Zip helper is absent.

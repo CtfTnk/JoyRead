@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+    Name="JoyRead"
+    Manufacturer="JoyRead contributors"
+    Version="$(Version)"
+    UpgradeCode="2FC32BD6-FE41-52BC-AFD4-37F3789A965D"
+    Scope="perUserOrMachine"
+    InstallerVersion="500"
+    Language="1033">
+
+    <!--
+      A dual-purpose package defaults to per-user installation. Windows
+      Installer redirects ProgramFiles6432Folder and HKMU registrations to the
+      current user's locations, so the normal double-click flow needs no UAC.
+      Administrators can still request a machine installation explicitly.
+    -->
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="JoyRead" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- JoyRead.exe needs stable identity for shortcuts and shell commands. -->
+    <Component Id="ApplicationExecutable" Directory="INSTALLFOLDER" Bitness="always64">
+      <File
+        Id="JoyReadExe"
+        Source="!(bindpath.AppDir)\JoyRead.exe"
+        KeyPath="yes">
+        <!-- Advertised so Windows Installer can repair a missing EXE and so
+             the shortcut carries no fixed per-user/per-machine ownership. -->
+        <Shortcut
+          Id="JoyReadStartMenuShortcut"
+          Directory="ProgramMenuFolder"
+          Name="JoyRead"
+          Description="Local manga and document reader"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="JoyRead.exe"
+          IconIndex="0"
+          Advertise="yes" />
+      </File>
+    </Component>
+
+    <Icon Id="JoyRead.exe" SourceFile="!(bindpath.AppDir)\JoyRead.exe" />
+
+    <!-- Harvest the rest of PyInstaller's onedir tree without duplicating EXE. -->
+    <Files Include="!(bindpath.AppDir)\**" Directory="INSTALLFOLDER">
+      <Exclude Files="!(bindpath.AppDir)\JoyRead.exe" />
+    </Files>
+
+    <!--
+      Register supported document types as candidates, not defaults. Modern
+      Windows protects the user's defaults; the MSI only makes JoyRead appear
+      in Open With and Settings > Default apps. Generic .zip/.rar/.7z are not
+      claimed because JoyRead should not compete with archive managers.
+    -->
+    <Component Id="FileAssociations" Directory="INSTALLFOLDER" Bitness="always64">
+      <RegistryKey Root="HKMU" Key="Software\Classes\JoyRead.Document">
+        <RegistryValue Type="string" Value="JoyRead Document" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\JoyRead.Document\DefaultIcon">
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]JoyRead.exe,0" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\JoyRead.Document\shell\open\command">
+        <RegistryValue
+          Type="string"
+          Value="&quot;[INSTALLFOLDER]JoyRead.exe&quot; &quot;%1&quot;" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKMU" Key="Software\Classes\.cbz\OpenWithProgids">
+        <RegistryValue Name="JoyRead.Document" Type="string" Value="" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\.cbr\OpenWithProgids">
+        <RegistryValue Name="JoyRead.Document" Type="string" Value="" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\.cb7\OpenWithProgids">
+        <RegistryValue Name="JoyRead.Document" Type="string" Value="" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\.pdf\OpenWithProgids">
+        <RegistryValue Name="JoyRead.Document" Type="string" Value="" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKMU" Key="Software\Classes\Applications\JoyRead.exe">
+        <RegistryValue Name="FriendlyAppName" Type="string" Value="JoyRead" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\Applications\JoyRead.exe\shell\open\command">
+        <RegistryValue
+          Type="string"
+          Value="&quot;[INSTALLFOLDER]JoyRead.exe&quot; &quot;%1&quot;" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\Classes\Applications\JoyRead.exe\SupportedTypes">
+        <RegistryValue Name=".cbz" Type="string" Value="" />
+        <RegistryValue Name=".cbr" Type="string" Value="" />
+        <RegistryValue Name=".cb7" Type="string" Value="" />
+        <RegistryValue Name=".pdf" Type="string" Value="" />
+      </RegistryKey>
+
+      <RegistryKey Root="HKMU" Key="Software\JoyRead\Capabilities">
+        <RegistryValue Name="ApplicationName" Type="string" Value="JoyRead" />
+        <RegistryValue
+          Name="ApplicationDescription"
+          Type="string"
+          Value="Read local manga archives and PDF documents." />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\JoyRead\Capabilities\FileAssociations">
+        <RegistryValue Name=".cbz" Type="string" Value="JoyRead.Document" />
+        <RegistryValue Name=".cbr" Type="string" Value="JoyRead.Document" />
+        <RegistryValue Name=".cb7" Type="string" Value="JoyRead.Document" />
+        <RegistryValue Name=".pdf" Type="string" Value="JoyRead.Document" />
+      </RegistryKey>
+      <RegistryKey Root="HKMU" Key="Software\RegisteredApplications">
+        <RegistryValue
+          Name="JoyRead"
+          Type="string"
+          Value="Software\JoyRead\Capabilities"
+          KeyPath="yes" />
+      </RegistryKey>
+      <RegistryKey
+        Root="HKMU"
+        Key="Software\Microsoft\Windows\CurrentVersion\App Paths\JoyRead.exe">
+        <RegistryValue Type="string" Value="[INSTALLFOLDER]JoyRead.exe" />
+        <RegistryValue Name="Path" Type="string" Value="[INSTALLFOLDER]" />
+      </RegistryKey>
+    </Component>
+  </Package>
+</Wix>

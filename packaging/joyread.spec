@@ -144,6 +144,7 @@ if platform_key() == "windows":
         binaries.append((str(runtime_path), "."))
 
 datas = [
+    (str(ROOT / "LICENSE"), "."),
     (str(ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt"), "."),
     (str(PACKAGE_ROOT / "ui" / "resources"), "joyread/ui/resources"),
     (str(PACKAGE_ROOT / "resources" / "locales"), "joyread/resources/locales"),
