@@ -192,14 +192,24 @@ Open Source Maintenance Fee/EULA. WiX 5 no longer receives consumer security
 updates, so moving to a current WiX release is a release-owner licensing
 decision rather than a silent build-script upgrade.
 
-The MSI is a dual-purpose package that defaults to per-user installation. A
-normal double-click installs under the current user's redirected Programs
-folder without UAC; administrators may explicitly request a per-machine install.
-It creates a Start menu shortcut and registers JoyRead in Default Apps/Open With
-for `.cbz`, `.cbr`, `.cb7`, and `.pdf`. It does **not** claim generic `.zip`,
-`.rar`, or `.7z`, and it never writes the protected user-default association.
-Windows still requires the user to choose JoyRead as the default through system
-UI.
+The MSI is a conventional per-machine desktop install. It requests elevation
+and defaults to `C:\Program Files\JoyRead`. `WixUI_FeatureTree` provides a
+welcome/license flow, a feature-and-directory page, confirmation, visible
+install progress, and a completion page rather than silently running and
+closing.
+
+The Start menu shortcut is required. Two features are user-configurable:
+
+- **Desktop shortcut** is selected by default and may be removed.
+- **Open With integration** is unselected by default. Selecting it registers
+  JoyRead in Default Apps/Open With for `.cbz`, `.cbr`, `.cb7`, and `.pdf`.
+
+The integration feature does **not** claim generic `.zip`, `.rar`, or `.7z`,
+and it never writes the protected per-user default-association value. Windows
+still requires the user to choose JoyRead as the default through system UI.
+The payload cabinet uses medium rather than high compression: the MSI is a bit
+larger, but installation spends less time decompressing it, and the progress
+page makes the remaining file copy/Defender work visible.
 
 The MSI is unsigned. Sign it before public distribution. Always smoke an
 install, file activation, repair/upgrade, and uninstall on a clean Windows VM;

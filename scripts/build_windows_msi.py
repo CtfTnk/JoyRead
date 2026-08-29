@@ -20,6 +20,9 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_DIR = ROOT / "dist" / "JoyRead"
 WIX_SOURCE = ROOT / "packaging" / "windows" / "JoyRead.wxs"
 INTERMEDIATE_DIR = ROOT / "build" / "msi"
+LICENSE_SOURCE = ROOT / "LICENSE"
+LICENSE_RTF = INTERMEDIATE_DIR / "LICENSE.rtf"
+WIX_UI_EXTENSION = "WixToolset.UI.wixext/5.0.2"
 REQUIRED_RELEASE_FILES = (
     Path("JoyRead.exe"),
     Path("_internal") / "LICENSE",
@@ -54,7 +57,51 @@ def validate_app_dir(app_dir: Path = APP_DIR) -> None:
         )
 
 
-def wix_build_command(version: str, destination: Path) -> list[str]:
+def render_license_rtf(text: str) -> str:
+    """Return plain license text as conservative ANSI/Unicode RTF."""
+
+    escaped: list[str] = []
+    for character in text:
+        if character in "\\{}":
+            escaped.append(f"\\{character}")
+        elif character == "\n":
+            escaped.append("\\par\n")
+        elif ord(character) > 127:
+            codepoint = ord(character)
+            signed = codepoint if codepoint <= 32767 else codepoint - 65536
+            escaped.append(f"\\u{signed}?")
+        elif character != "\r":
+            escaped.append(character)
+    return "{\\rtf1\\ansi\\deff0{\\fonttbl{\\f0 Segoe UI;}}\\f0\\fs18\n" + "".join(escaped) + "\n}"
+
+
+def write_license_rtf(destination: Path = LICENSE_RTF) -> Path:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_text(
+        render_license_rtf(LICENSE_SOURCE.read_text(encoding="utf-8")),
+        encoding="ascii",
+    )
+    return destination
+
+
+def wix_extension_command() -> list[str]:
+    return [
+        "dotnet",
+        "tool",
+        "run",
+        "wix",
+        "--",
+        "extension",
+        "add",
+        WIX_UI_EXTENSION,
+    ]
+
+
+def wix_build_command(
+    version: str,
+    destination: Path,
+    license_rtf: Path = LICENSE_RTF,
+) -> list[str]:
     return [
         "dotnet",
         "tool",
@@ -66,6 +113,10 @@ def wix_build_command(version: str, destination: Path) -> list[str]:
         "x64",
         "-d",
         f"Version={version}",
+        "-d",
+        f"LicenseRtf={license_rtf}",
+        "-ext",
+        WIX_UI_EXTENSION,
         "-bindpath",
         f"AppDir={APP_DIR}",
         "-intermediateFolder",
@@ -106,7 +157,16 @@ def main(argv: list[str] | None = None) -> int:
     INTERMEDIATE_DIR.mkdir(parents=True, exist_ok=True)
 
     subprocess.run(["dotnet", "tool", "restore"], cwd=ROOT, check=True)
-    subprocess.run(wix_build_command(version, destination), cwd=ROOT, check=True)
+    # Keep the extension cache under ignored build/ rather than changing a
+    # developer's global WiX state. The version is explicit so it cannot drift
+    # away from the pinned CLI major.
+    subprocess.run(wix_extension_command(), cwd=INTERMEDIATE_DIR, check=True)
+    license_rtf = write_license_rtf()
+    subprocess.run(
+        wix_build_command(version, destination, license_rtf),
+        cwd=INTERMEDIATE_DIR,
+        check=True,
+    )
     print(f"built {destination.relative_to(ROOT)}")
     return 0
 
