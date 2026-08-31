@@ -9,14 +9,14 @@ from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt
+from PySide6.QtCore import QObject, QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QMainWindow
 
 from joyread.app.app_context import create_app_context
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.reader_window import ReaderWindow
-from joyread.ui.widgets import window_gestures
+from joyread.ui.widgets import window_gestures, window_state
 from joyread.ui.widgets.window_gestures import SystemMoveGesture, install_system_resize_border
 
 
@@ -119,7 +119,7 @@ def test_a_press_alone_never_triggers_a_client_side_restore(monkeypatch) -> None
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
     window = _StubWindow(maximized=True)
     gesture = SystemMoveGesture()
 
@@ -182,7 +182,7 @@ def test_dragging_a_maximized_window_restores_it_first(qtbot, monkeypatch) -> No
     it was measured against a real cocoa window instead.
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
     window = QMainWindow()
     qtbot.addWidget(window)
     window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -238,11 +238,12 @@ def test_the_compositor_owns_the_restore_on_linux_only() -> None:
 
 
 def test_the_cocoa_workarounds_are_confined_to_macos() -> None:
-    """Both were measured against AppKit specifically, and only apply there.
+    """Every one of these was measured against AppKit, and only applies there.
 
-    Widening either to a platform whose ``showNormal()`` is the thing that
-    clears the state, or whose move loop reads the live pointer rather than the
-    event, breaks dragging there.
+    Widening any of them to a platform whose ``showNormal()`` is the thing that
+    clears the state, whose move loop reads the live pointer rather than the
+    event, or whose ``normalGeometry()`` survives a maximize, breaks that
+    platform.
 
     Re-imported under each platform rather than compared against
     ``sys.platform``: this suite's own machine is usually the macOS one, where
@@ -253,18 +254,27 @@ def test_the_cocoa_workarounds_are_confined_to_macos() -> None:
     try:
         for platform, expected in (("darwin", True), ("linux", False), ("win32", False)):
             sys.platform = platform
-            reloaded = importlib.reload(window_gestures)
-            assert reloaded._GEOMETRY_CLEARS_MAXIMIZED is expected, platform
-            assert reloaded._MOVE_ANCHORS_ON_ITS_EVENT is expected, platform
+            gestures = importlib.reload(window_gestures)
+            state = importlib.reload(window_state)
+            assert gestures._MOVE_ANCHORS_ON_ITS_EVENT is expected, platform
+            assert state._GEOMETRY_ALONE_LEAVES_MAXIMIZED is expected, platform
+            assert state._PLATFORM_OWNS_THE_ZOOM_STATE is expected, platform
+            assert state._PLATFORM_FORGETS_THE_RESTORE_SIZE is expected, platform
     finally:
         sys.platform = real
+        importlib.reload(window_state)
         importlib.reload(window_gestures)
 
 
-class _StubWindow:
-    """Minimal stand-in that records whether the platform handle was reached."""
+class _StubWindow(QObject):
+    """Minimal stand-in that records whether the platform handle was reached.
+
+    A ``QObject`` because the remembered restore geometry is kept as a child
+    object of the window, so the stub has to be able to parent one.
+    """
 
     def __init__(self, *, full_screen: bool = False, maximized: bool = False) -> None:
+        super().__init__()
         self._full_screen = full_screen
         self._maximized = maximized
         self.handle_lookups = 0
@@ -305,7 +315,7 @@ def test_only_a_maximized_window_is_restored_before_the_drag(monkeypatch) -> Non
     # The anchor arithmetic degenerates to identity when the window is already
     # its normal size, so geometry alone cannot show whether the restore ran.
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
     ordinary = _StubWindow()
     window_gestures.begin_system_move(ordinary)
     assert ordinary.calls == []
@@ -382,7 +392,7 @@ def test_the_maximized_state_is_cleared_before_the_window_is_placed(monkeypatch)
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
     window = _StubWindow(maximized=True)
 
     window_gestures.begin_system_move(window)
@@ -403,7 +413,8 @@ def test_the_restore_is_one_frame_change_where_geometry_clears_the_state(monkeyp
     monkeypatch.setattr(
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
-    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", True)
+    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", True)
+    monkeypatch.setattr(window_state, "_PLATFORM_FORGETS_THE_RESTORE_SIZE", False)
     window = _StubWindow(maximized=True)
 
     window_gestures._restore_under_cursor(window)

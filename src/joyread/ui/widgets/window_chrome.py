@@ -25,6 +25,7 @@ from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.mode_switches import ListModeSwitchWidget, SortModeSwitchWidget
 from joyread.ui.widgets.window_gestures import SystemMoveGesture
+from joyread.ui.widgets.window_state import toggle_maximized
 
 
 class TitleBarWidget(QWidget):
@@ -194,11 +195,7 @@ class TitleBarWidget(QWidget):
         self.sort_changed.emit(field.value, self._sort_ascending)
 
     def _toggle_zoom(self) -> None:
-        window = self.window()
-        if window.isMaximized():
-            window.showNormal()
-        else:
-            window.showMaximized()
+        toggle_maximized(self.window())
 
     def _icon(self, name: str) -> QIcon:
         return QIcon(str(self._resources.icon_path(name)))

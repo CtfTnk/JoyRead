@@ -52,6 +52,11 @@ from PySide6.QtWidgets import (
 
 from joyread.ui.widgets import window_gestures
 from joyread.ui.widgets.window_gestures import SystemMoveGesture
+from joyread.ui.widgets.window_state import (
+    is_maximized,
+    restore_geometry,
+    toggle_maximized,
+)
 
 _T0 = time.monotonic()
 _LINES: list[str] = []
@@ -118,7 +123,10 @@ def snapshot(window: QWidget) -> str:
     return (
         f"qt[geom={geometry.x()},{geometry.y()} {geometry.width()}x{geometry.height()} "
         f"normal={normal.width()}x{normal.height()} "
-        f"max={int(window.isMaximized())} qwin={states}]" + _appkit_state(window)
+        f"max={int(window.isMaximized())} qwin={states}] "
+        f"own[maximized={int(is_maximized(window))} "
+        f"restore={restore_geometry(window).width()}x{restore_geometry(window).height()}]"
+        + _appkit_state(window)
     )
 
 
@@ -150,10 +158,7 @@ class ProbeTitleBar(QWidget):
     def _toggle_zoom(self) -> None:
         window = self.window()
         log(f"BUTTON zoom, before: {snapshot(window)}")
-        if window.isMaximized():
-            window.showNormal()
-        else:
-            window.showMaximized()
+        toggle_maximized(window)
         QTimer.singleShot(600, lambda: log(f"BUTTON zoom, settled: {snapshot(window)}"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:

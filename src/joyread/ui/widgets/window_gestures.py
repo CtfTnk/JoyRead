@@ -22,11 +22,17 @@ from __future__ import annotations
 
 import sys
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, QRect, Qt
 from PySide6.QtGui import QCursor, QMouseEvent
 from PySide6.QtWidgets import QWidget
 
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.window_state import (
+    is_maximized,
+    leave_maximized,
+    remember_restore_geometry,
+    restore_geometry,
+)
 
 
 # Windows runs its system-move loop synchronously from the button press and
@@ -45,19 +51,6 @@ _MOVE_STARTS_ON_DRAG = sys.platform == "win32"
 # geometry of a window it considers maximized, so it snaps the frame back and
 # the move loop ends up anchored on a frame the client has already left.
 _COMPOSITOR_RESTORES_ON_DRAG = sys.platform.startswith("linux")
-
-# Whether setting the geometry is by itself enough to leave the maximized
-# state. On Cocoa it is: AppKit drops the zoomed state as soon as the frame
-# stops matching the zoomed one, and Qt follows, so the widget, the QWindow and
-# the NSWindow all still agree afterwards. Avoiding ``showNormal()`` there is
-# the point rather than a bonus -- on Cocoa it is ``-[NSWindow zoom:]``, which
-# animates the un-zoom inside a nested run loop and blocks its caller for
-# ~350ms. Measured on macOS 26.6 with PySide6 6.11: 350.6ms for showNormal()
-# against 0.9ms for setGeometry() alone, and setting
-# ``NSWindowAnimationBehaviorNone`` does not shorten it. Blocking a third of a
-# second inside a mouse handler is what made the restore visible as a flicker
-# and a bounce, and it let a backlog of mouse events pile up behind it.
-_GEOMETRY_CLEARS_MAXIMIZED = sys.platform == "darwin"
 
 # Whether the platform's move loop takes its grab point from the mouse event it
 # is handed rather than from the pointer's live position.
@@ -84,7 +77,11 @@ def _restore_under_cursor(window: QWidget) -> None:
     # One coordinate space throughout -- ``geometry()`` is already in screen
     # coordinates for a top-level window, and so is ``QCursor.pos()``.
     maximized = window.geometry()
-    normal = window.normalGeometry()
+    # Deliberately not ``normalGeometry()``: a platform maximize animation
+    # overwrites it with the maximized size, so restoring to it puts a
+    # full-screen window back at full screen -- and leaves the frame large
+    # enough that AppKit goes on considering it zoomed.
+    normal = restore_geometry(window)
     if not normal.isValid() or maximized.width() <= 0:
         window.showNormal()
         return
@@ -92,28 +89,14 @@ def _restore_under_cursor(window: QWidget) -> None:
     # instead of the window jumping out from under it: the same fraction along
     # the title bar, and the same top edge.
     across = max(0.0, min(1.0, (cursor.x() - maximized.x()) / maximized.width()))
-    # Where ``showNormal()`` is needed at all it must come first, and the order
-    # is load-bearing. ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized``
-    # from the widget's own state without telling the QWindow, so a
-    # ``showNormal()`` after it compares equal to the state it already believes
-    # it is in, returns early, and the platform is never told to leave
-    # maximized. The window then stays maximized as far as the window manager is
-    # concerned while the widget reports otherwise. Reproduced identically under
-    # the offscreen and minimal QPA plugins, so this is QWidget behaviour rather
-    # than one backend's quirk.
-    #
-    # On Cocoa the call is not merely redundant but harmful, and the frame
-    # change alone leaves the state consistent -- see
-    # :data:`_GEOMETRY_CLEARS_MAXIMIZED`. Skipping it there also makes the
-    # restore a single frame change, so there is no intermediate frame left to
-    # paint and nothing to flicker.
-    if not _GEOMETRY_CLEARS_MAXIMIZED:
-        window.showNormal()
-    window.setGeometry(
-        round(cursor.x() - across * normal.width()),
-        maximized.y(),
-        normal.width(),
-        normal.height(),
+    leave_maximized(
+        window,
+        geometry=QRect(
+            round(cursor.x() - across * normal.width()),
+            maximized.y(),
+            normal.width(),
+            normal.height(),
+        ),
     )
 
 
@@ -126,7 +109,7 @@ def _request_system_move(window: QWidget) -> bool:
 
 def _restore_would_run(window: QWidget) -> bool:
     """Whether starting a move now would un-maximize the window from here."""
-    return window.isMaximized() and not _COMPOSITOR_RESTORES_ON_DRAG
+    return is_maximized(window) and not _COMPOSITOR_RESTORES_ON_DRAG
 
 
 def begin_system_move(widget: QWidget) -> bool:
@@ -142,7 +125,7 @@ def begin_system_move(widget: QWidget) -> bool:
     window = widget.window()
     if window.isFullScreen():
         return False
-    if window.isMaximized() and not _COMPOSITOR_RESTORES_ON_DRAG:
+    if is_maximized(window) and not _COMPOSITOR_RESTORES_ON_DRAG:
         _restore_under_cursor(window)
     return _request_system_move(window)
 
@@ -150,7 +133,7 @@ def begin_system_move(widget: QWidget) -> bool:
 def begin_system_resize(widget: QWidget, edges: Qt.Edge) -> bool:
     """Ask the window manager to resize ``widget``'s window from ``edges``."""
     window = widget.window()
-    if window.isMaximized() or window.isFullScreen():
+    if is_maximized(window) or window.isFullScreen():
         return False
     handle = window.windowHandle()
     if handle is None or not edges:
@@ -172,6 +155,10 @@ class SystemMoveGesture:
     def press(self, widget: QWidget, event: QMouseEvent) -> bool:
         if event.button() != Qt.MouseButton.LeftButton:
             return False
+        # A drag can end in a platform maximize -- dragging to the top edge
+        # tiles the window on macOS -- and that animation is what destroys
+        # ``normalGeometry()``. Latch before it can.
+        remember_restore_geometry(widget.window())
         if _MOVE_STARTS_ON_DRAG or _restore_would_run(widget.window()):
             # Defer to the first move. On Windows that keeps the release Qt
             # needs for a double click; for a client-side restore it is the
@@ -215,9 +202,13 @@ class _ResizeGrip(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_NoSystemBackground, True)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() == Qt.MouseButton.LeftButton and begin_system_resize(self, self._edges):
-            event.accept()
-            return
+        if event.button() == Qt.MouseButton.LeftButton:
+            # About to change the size on purpose, so this is the size to come
+            # back to -- captured now, while nothing is animating.
+            remember_restore_geometry(self.window())
+            if begin_system_resize(self, self._edges):
+                event.accept()
+                return
         super().mousePressEvent(event)
 
 
@@ -298,7 +289,7 @@ class SystemResizeBorder(QObject):
         # A maximized or full-screen window has no resizable edge, and leaving
         # the grips in place would show resize cursors that do nothing.
         window = self._target()
-        if window.isMaximized() or window.isFullScreen():
+        if is_maximized(window) or window.isFullScreen():
             for grip in self._grips:
                 grip.hide()
             return
