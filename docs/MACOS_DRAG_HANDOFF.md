@@ -1,164 +1,130 @@
 # macOS maximized-drag handoff
 
-**Temporary.** Delete this file once the macOS behaviour is fixed.
+**Temporary.** Delete this file once the behaviour below is confirmed on a Mac.
 
-Dragging a *maximized* window by its custom title bar is fixed on Linux and
-still wrong on macOS. The remaining fix depends on one fact about AppKit that
-can only be measured on a Mac. This note says how to measure it.
-
-`docs/technical/` and `docs/reports/` are gitignored, so nothing in them reaches
-the Mac. Everything needed is repeated here.
+The measurement this file used to ask for has been taken. What is left is one
+confirmation run, described in Part 1. Everything else is the record of what was
+found, so that nobody re-derives it.
 
 ---
 
-## Part 1 — What to run
-
-Set the environment up as usual (activate **by path**; a bare name will not work):
+## Part 1 — The one thing left to do
 
 ```bash
-conda env create --prefix .conda/joyread-py312 -f environment-release.yml   # first time only
 conda activate ./.conda/joyread-py312
+python scripts/window_drag_probe.py --mode shipping --log /tmp/mac-shipping.txt
 ```
 
-Then run the probe three times, one per mode. It opens a frameless window and
-logs Qt's state *and* the real `NSWindow` while **you** perform the gestures by
-hand. It changes nothing and fixes nothing — it only reports.
+`shipping` routes the gesture through `SystemMoveGesture` itself, so the run
+exercises what the app actually does rather than a re-implementation of it.
 
-```bash
-python scripts/window_drag_probe.py --mode delegate --log /tmp/mac-delegate.txt
-```
+Maximize with the probe's own button, then:
 
-```bash
-python scripts/window_drag_probe.py --mode restore --log /tmp/mac-restore.txt
-```
-
-```bash
-python scripts/window_drag_probe.py --mode restore-on-drag --log /tmp/mac-ondrag.txt
-```
-
-**Start with `delegate`.** It is the decisive one — see Part 4.
-
----
-
-## Part 2 — What to do in each run
-
-Use the probe's own "Maximize / Restore" button to maximize, and "Quit" to end
-the run (quitting is what writes the log file).
-
-Run all five in `--mode delegate`. For the other two modes, G3 and G4 are enough.
-
-| | Gesture | What *should* happen |
+| | Gesture | What should happen |
 | --- | --- | --- |
-| **G1** | Maximize, then single-click the title bar and release **without moving** | Nothing. The window stays maximized. |
-| **G2** | Maximize, then **double-click** the title bar | It restores to its normal size, cleanly, once. |
-| **G3** | Maximize, press and **hold ~1 second** without moving, then release | Nothing. No flash, no resize, no bounce. |
-| **G4** | Maximize, then press and **drag away in one continuous motion** | It un-maximizes *under the pointer*, and the exact spot you grabbed stays under the cursor for the whole drag. |
-| **G5** | With the window **not** maximized, drag it around | Moves normally. |
+| **G1** | Single-click the title bar, no movement | Nothing at all. |
+| **G2** | Double-click the title bar | Restores once, cleanly. |
+| **G3** | Press and hold ~1s without moving, release | Nothing. No flash, no bounce, no resize. |
+| **G4** | Press and drag away in one motion | Un-maximizes under the pointer, and the spot you grabbed stays under the cursor for the whole drag. |
+| **G5** | Not maximized: drag it around | Moves normally. |
 
-G4 is the one that matters most.
-
----
-
-## Part 3 — What to write down and paste back
-
-For each of the three runs, note in plain words what you actually **saw** —
-especially:
-
-- Did a plain click (G1) disturb the window at all?
-- Did anything flicker, flash, or bounce?
-- In G4, did the window end up under the cursor, or off to one side? If off to
-  one side, roughly how far, and did that gap stay constant while you dragged?
-
-Then paste back:
-
-1. The three log files: `/tmp/mac-delegate.txt`, `/tmp/mac-restore.txt`,
-   `/tmp/mac-ondrag.txt`
-2. Your notes for each
-3. The output of `sw_vers` and `python -c "import PySide6; print(PySide6.__version__)"`
+**G4 is the one that matters**, and specifically whether the grab offset holds
+constant. The log prints `grab_offset=` on every move; in a good run the numbers
+stop changing once the drag is under way.
 
 ---
 
-## Part 4 — Context for an assistant working on the Mac
+## Part 2 — What was measured, and what changed
 
-Everything below is **already established**. Do not re-derive it, and do not
-"fix" it again.
+Measured on macOS 26.6.1, PySide6 6.11.1, against a real cocoa window.
 
-### What was wrong, and what is already fixed
+### `showNormal()` costs 350ms, every time
 
-`QWidget.setGeometry()` clears `Qt::WindowMaximized` from the widget's own
-`data.window_state` **without telling the `QWindow`**. So calling it before
-`showNormal()` makes `showNormal()` compare equal to the state the widget
-already believes it is in, return early, and never reach the platform — leaving
-the window manager owning the geometry of a window it still thinks is maximized.
-Reproduced identically under the `offscreen` and `minimal` QPA plugins, so this
-is cross-platform `QWidget` behaviour, not one backend's quirk. **Fixed** —
-`showNormal()` now runs first (commit `fc189b7`).
+On Cocoa `showNormal()` on a zoomed window is `-[NSWindow zoom:]`, which
+animates the un-zoom inside a nested run loop and **blocks its caller**:
 
-On Linux the actual resolution was to stop restoring client-side altogether:
-Mutter implements "shake loose" for `_NET_WM_MOVERESIZE` itself, un-maximizing
-under the pointer with its own animation. That is what
-`_COMPOSITOR_RESTORES_ON_DRAG` selects. Verified with real X11 input: the grab
-offset stays constant for the whole drag. **This must not regress.**
+| call | blocked for |
+| --- | --- |
+| `showNormal()` | 350.6 ms |
+| `showNormal()` with `NSWindowAnimationBehaviorNone` | 352.2 ms |
+| `setGeometry()` alone | **0.9 ms** |
 
-Most recently: `SystemMoveGesture.press()` no longer starts the move on a bare
-press when doing so would trigger the client-side restore. It arms, and the
-restore runs from the first mouse *move*. That is why a plain click no longer
-un-maximizes and why double-click-to-zoom works again.
+Blocking a third of a second inside a mouse handler is the flicker, the bounce,
+and the "click and drag feel combined into one action". Setting
+`animationBehavior` does not help — that was the obvious fix and it is wrong.
 
-### What is still wrong on macOS
+**The frame change alone is enough on Cocoa.** After a plain `setGeometry()` on
+a maximized window, all three records agree: `isMaximized()` 0,
+`QWindow.windowStates()` `WindowNoState`, `NSWindow.isZoomed()` 0 — and
+`normalGeometry()` survives. This is the opposite of the offscreen/X11
+behaviour that `_restore_under_cursor` was originally written around, which is
+why the call is now conditional on `_GEOMETRY_CLEARS_MAXIMIZED`.
 
-Reported by the maintainer, after all of the above:
+### AppKit does not un-zoom on drag, and `delegate` loses the remembered size
 
-- The window flickers, and on press-and-hold it resizes small and then bounces
-  back. AppKit animates the un-zoom, so the frame between `showNormal()` and
-  `setGeometry()` **is** painted. A comment in the source previously claimed the
-  pair was atomic; it is not, on macOS.
-- During the drag the window is re-centred on the cursor rather than keeping the
-  grab point. Note that `--mode restore` reproduces a misaligned drag **on Linux
-  too**, even with the ordering fixed — so `setGeometry()` followed by
-  `startSystemMove()` is racy on its own: the WM grabs at the old frame while the
-  client moves it to a new one.
+`performWindowDragWithEvent:` drags a zoomed window at full size. It does not
+"shake loose" the way Mutter does, so `_COMPOSITOR_RESTORES_ON_DRAG` must not be
+widened to macOS. Worse, Qt then clears `WindowMaximized` while overwriting
+`normalGeometry()` with the maximized size:
 
-### The one question the probe answers
+```
+PRESS    qt[geom=0,33 1512x949 normal=900x600  max=1 qwin=WindowMaximized]
+MOVE     qt[geom=0,56 1512x949 normal=1512x949 max=0 qwin=WindowNoState]
+```
 
-**Does `-[NSWindow performWindowDragWithEvent:]` un-zoom a zoomed window by
-itself, the way Mutter does?**
+`normal=900x600` becomes `normal=1512x949` and never comes back — after one such
+drag the zoom button restores to full size. That alone rules the mode out.
 
-- **If yes** — `--mode delegate` shows the window un-maximizing under the pointer
-  with a constant grab offset — then the fix is to widen
-  `_COMPOSITOR_RESTORES_ON_DRAG` to cover macOS, and `_restore_under_cursor()`
-  becomes Windows-only. The whole class of bugs disappears.
-- **If no**, then `--mode restore-on-drag` shows whether deferring the restore to
-  first movement, plus suppressing AppKit's un-zoom animation, is enough.
+### The move loop anchors on the event it is handed
 
-Answer it from the probe's log. Do not answer it by reasoning about what AppKit
-ought to do — two previous attempts at this bug failed exactly that way.
+An `NSEvent`'s location is relative to the window frame *as it was when the
+event was created*, and `performWindowDragWithEvent:` takes its grab point from
+there. Restoring and starting the move from the same event therefore anchors
+the drag to a frame that has already been discarded. In the `restore` logs, two
+separate press-and-holds — restored to x=317 and x=267 — both came to rest at
+Cocoa origin `(0,0)`, which is the *maximized* frame's origin, and is the
+"window moves to the lower-left" in the report.
 
-Also worth checking in the log: does `ns[zoomed=...]` report `1` after Qt's
-`showMaximized()`? If AppKit does not consider the window zoomed at all, it has
-no reason to un-zoom it on drag, and that settles the question immediately.
+The fix lets one more mouse event arrive before handing over, so the location
+the move loop reads was measured against the frame the window actually has. It
+costs one pointer sample.
 
-### Traps
+---
 
-- **`tests/conftest.py` forces `QT_QPA_PLATFORM=offscreen`.** There is no window
-  manager under it, so the suite **cannot** see any of this and will pass either
-  way. A green test run is not verification here. This is precisely how the
-  original bug shipped with all its tests passing.
+## Part 3 — What could not be verified here
+
+**The G4 grab offset has not been confirmed end-to-end.** Driving a real
+held-button drag needs synthesised input, which needs Accessibility permission
+this environment does not have. The two changes are each justified by direct
+measurement, and the deferral is correct under either reading of how AppKit
+picks its anchor — but Part 1 is what turns that into evidence.
+
+`tests/conftest.py` forces `QT_QPA_PLATFORM=offscreen`, where there is no window
+manager and where `setGeometry()` behaves the X11 way rather than the Cocoa way.
+**The suite cannot see any of this and passes either way.** The tests added with
+the fix pin the call ordering and the platform confinement, not the behaviour.
+
+---
+
+## Part 4 — Traps
+
 - **Never assert `isMaximized()`** for this behaviour — the widget flag is the
   thing that desyncs. Assert
   `window.windowHandle().windowStates() & Qt.WindowState.WindowMaximized`.
-- **Do not add timers, polling, or retry loops.** That was tried and removed; it
-  papers over the symptom and does not fix the cause.
+- **Do not add timers, polling, or retry loops.** Tried and removed once
+  already. The deferral in `SystemMoveGesture.move()` is event-driven, not
+  timed, and that distinction is the point.
 - **Do not flip `_MOVE_STARTS_ON_DRAG` to include macOS.** It governs *all*
-  drags, so that would change non-maximized dragging too, and lose
+  drags, so it would change non-maximized dragging too and lose
   `performWindowDragWithEvent:`'s handling of the user's title-bar double-click
-  preference. The maximized case is already handled separately in `press()`.
-- `window_drag.py`'s overlay path still calls `begin_system_move()` straight from
-  a press with no move tracking. Known, deliberately deferred — do not fix it in
-  the same change.
+  preference. The maximized case is handled separately in `press()`.
+- **Do not widen `_GEOMETRY_CLEARS_MAXIMIZED` or `_MOVE_ANCHORS_ON_ITS_EVENT`.**
+  Both are properties of AppKit, and both are wrong everywhere else.
+- `window_drag.py`'s overlay path still calls `begin_system_move()` straight
+  from a press with no move tracking. Known, deliberately deferred.
 
-### Files
+## Files
 
 - `src/joyread/ui/widgets/window_gestures.py` — all of the behaviour
 - `tests/unit/test_window_gestures.py` — the tests
-- `scripts/window_drag_probe.py` — the diagnostic described above
+- `scripts/window_drag_probe.py` — the probe described above

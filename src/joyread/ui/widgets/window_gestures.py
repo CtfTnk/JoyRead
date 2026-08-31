@@ -46,6 +46,31 @@ _MOVE_STARTS_ON_DRAG = sys.platform == "win32"
 # the move loop ends up anchored on a frame the client has already left.
 _COMPOSITOR_RESTORES_ON_DRAG = sys.platform.startswith("linux")
 
+# Whether setting the geometry is by itself enough to leave the maximized
+# state. On Cocoa it is: AppKit drops the zoomed state as soon as the frame
+# stops matching the zoomed one, and Qt follows, so the widget, the QWindow and
+# the NSWindow all still agree afterwards. Avoiding ``showNormal()`` there is
+# the point rather than a bonus -- on Cocoa it is ``-[NSWindow zoom:]``, which
+# animates the un-zoom inside a nested run loop and blocks its caller for
+# ~350ms. Measured on macOS 26.6 with PySide6 6.11: 350.6ms for showNormal()
+# against 0.9ms for setGeometry() alone, and setting
+# ``NSWindowAnimationBehaviorNone`` does not shorten it. Blocking a third of a
+# second inside a mouse handler is what made the restore visible as a flicker
+# and a bounce, and it let a backlog of mouse events pile up behind it.
+_GEOMETRY_CLEARS_MAXIMIZED = sys.platform == "darwin"
+
+# Whether the platform's move loop takes its grab point from the mouse event it
+# is handed rather than from the pointer's live position.
+# ``-[NSWindow performWindowDragWithEvent:]`` does, and an ``NSEvent`` carries a
+# location relative to the window frame as it was when the event was created.
+# Restoring and starting the move from that same event therefore anchors the
+# drag to a frame that no longer exists: measured, a maximized window pressed
+# and held came to rest at the maximized frame's origin every time, whatever
+# position the restore had just placed it at. Letting one more event arrive
+# first costs a single frame at the pointer's polling rate and gives the move
+# loop a location measured against the frame the window actually has.
+_MOVE_ANCHORS_ON_ITS_EVENT = sys.platform == "darwin"
+
 
 def _restore_under_cursor(window: QWidget) -> None:
     """Un-maximize, keeping the pointer where it sits on the title bar.
@@ -67,20 +92,23 @@ def _restore_under_cursor(window: QWidget) -> None:
     # instead of the window jumping out from under it: the same fraction along
     # the title bar, and the same top edge.
     across = max(0.0, min(1.0, (cursor.x() - maximized.x()) / maximized.width()))
-    # ``showNormal()`` must come first, and the order is load-bearing.
-    # ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized`` from the widget's
-    # own state without telling the QWindow, so a ``showNormal()`` after it
-    # compares equal to the state it already believes it is in, returns early,
-    # and the platform is never told to leave maximized. The window then stays
-    # maximized as far as the window manager is concerned while the widget
-    # reports otherwise. Reproduced identically under the offscreen and minimal
-    # QPA plugins, so this is QWidget behaviour rather than one backend's quirk.
+    # Where ``showNormal()`` is needed at all it must come first, and the order
+    # is load-bearing. ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized``
+    # from the widget's own state without telling the QWindow, so a
+    # ``showNormal()`` after it compares equal to the state it already believes
+    # it is in, returns early, and the platform is never told to leave
+    # maximized. The window then stays maximized as far as the window manager is
+    # concerned while the widget reports otherwise. Reproduced identically under
+    # the offscreen and minimal QPA plugins, so this is QWidget behaviour rather
+    # than one backend's quirk.
     #
-    # The pair is not atomic on every platform. AppKit animates the un-zoom, so
-    # macOS does paint the intermediate frame -- reported there as a flicker and
-    # a bounce. Whether macOS should be taking this path at all is open; see
-    # ``scripts/window_drag_probe.py``.
-    window.showNormal()
+    # On Cocoa the call is not merely redundant but harmful, and the frame
+    # change alone leaves the state consistent -- see
+    # :data:`_GEOMETRY_CLEARS_MAXIMIZED`. Skipping it there also makes the
+    # restore a single frame change, so there is no intermediate frame left to
+    # paint and nothing to flicker.
+    if not _GEOMETRY_CLEARS_MAXIMIZED:
+        window.showNormal()
     window.setGeometry(
         round(cursor.x() - across * normal.width()),
         maximized.y(),
@@ -159,6 +187,15 @@ class SystemMoveGesture:
     def move(self, widget: QWidget, event: QMouseEvent) -> bool:
         if not self._armed or not (event.buttons() & Qt.MouseButton.LeftButton):
             return False
+        if _MOVE_ANCHORS_ON_ITS_EVENT and _restore_would_run(widget.window()):
+            # Restore now, hand over on the next move. This event's location was
+            # measured against the maximized frame, so the move loop would
+            # anchor the drag to a frame this call is about to discard; the next
+            # one is measured against the frame the window ends up with. Staying
+            # armed is what brings us back here -- see
+            # :data:`_MOVE_ANCHORS_ON_ITS_EVENT`.
+            _restore_under_cursor(widget.window())
+            return True
         self._armed = False
         return begin_system_move(widget)
 

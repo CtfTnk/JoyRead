@@ -21,8 +21,11 @@ Modes, in the order worth trying:
                     client-side on mouse *press*, then start the system move.
 ``restore-on-drag`` Same restore, but deferred until the pointer has actually
                     moved, so a plain click or a double click never un-maximizes.
+``shipping``        Route the gesture through :class:`SystemMoveGesture` itself,
+                    so what the run exercises is what the app actually does.
+                    Use this one to confirm a fix rather than to diagnose.
 
-Nothing here is a fix. It only reports.
+The first three only report. ``shipping`` reports on the real thing.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.ui.widgets import window_gestures
+from joyread.ui.widgets.window_gestures import SystemMoveGesture
 
 _T0 = time.monotonic()
 _LINES: list[str] = []
@@ -79,16 +83,27 @@ def _nswindow(window: QWidget):
         return None
 
 
+def _rect(frame) -> str:
+    # Reached through a raw pointer, pyobjc has no signature for -frame and
+    # hands back a plain ((x, y), (w, h)) tuple rather than an NSRect. Reading
+    # it as an NSRect is what made every ns[...] field in the first round of
+    # logs come back "unreadable", losing the AppKit half of the measurement.
+    if isinstance(frame, tuple):
+        (x, y), (width, height) = frame
+    else:
+        x, y = frame.origin.x, frame.origin.y
+        width, height = frame.size.width, frame.size.height
+    return f"{x:.0f},{y:.0f} {width:.0f}x{height:.0f}"
+
+
 def _appkit_state(window: QWidget) -> str:
     native = _nswindow(window)
     if native is None:
         return ""
     try:
-        frame = native.frame()
         return (
             f"  ns[zoomed={int(native.isZoomed())} "
-            f"frame={frame.origin.x:.0f},{frame.origin.y:.0f} "
-            f"{frame.size.width:.0f}x{frame.size.height:.0f} "
+            f"frame={_rect(native.frame())} "
             f"anim={native.animationBehavior()}]"
         )
     except Exception as error:  # pragma: no cover - diagnostic only
@@ -116,6 +131,7 @@ class ProbeTitleBar(QWidget):
         self._mode = mode
         self._press_pos = None
         self._restored = False
+        self._gesture = SystemMoveGesture()
         self.setObjectName("ProbeTitleBar")
         self.setFixedHeight(48)
         self.setStyleSheet("#ProbeTitleBar { background: #2f5d8a; } QLabel { color: white; }")
@@ -149,6 +165,11 @@ class ProbeTitleBar(QWidget):
         self._restored = False
         log(f"PRESS   {snapshot(window)}")
 
+        if self._mode == "shipping":
+            log(f"  -> gesture.press() returned {self._gesture.press(self, event)}")
+            event.accept()
+            return
+
         if self._mode == "restore-on-drag":
             # Nothing on press: a click, and a double click, must not disturb
             # the window at all.
@@ -170,6 +191,14 @@ class ProbeTitleBar(QWidget):
             f"grab_offset={cursor.x() - geometry.x()},{cursor.y() - geometry.y()}  "
             f"{snapshot(window)}"
         )
+        if self._mode == "shipping":
+            before = window.isMaximized()
+            took = self._gesture.move(self, event)
+            if before:
+                log(f"  -> gesture.move() returned {took}: {snapshot(window)}")
+            event.accept()
+            return
+
         if self._mode == "restore-on-drag" and not self._restored:
             travelled = (cursor - self._press_pos).manhattanLength()
             if travelled >= QApplication.startDragDistance():
@@ -178,6 +207,7 @@ class ProbeTitleBar(QWidget):
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        self._gesture.release()
         log(f"RELEASE {snapshot(self.window())}")
         QTimer.singleShot(700, lambda: log(f"SETTLED {snapshot(self.window())}"))
         event.accept()
@@ -221,8 +251,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("delegate", "restore", "restore-on-drag"),
-        default="delegate",
+        choices=("delegate", "restore", "restore-on-drag", "shipping"),
+        default="shipping",
     )
     parser.add_argument("--log", type=Path, default=None, help="also write the log here")
     args = parser.parse_args()

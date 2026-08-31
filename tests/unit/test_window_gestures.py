@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,6 +34,15 @@ def _mouse(
         button,
         buttons if buttons is not None else button,
         Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _dragging() -> QMouseEvent:
+    """A move with the button still held, as arrives during a drag."""
+    return _mouse(
+        QMouseEvent.Type.MouseMove,
+        button=Qt.MouseButton.NoButton,
+        buttons=Qt.MouseButton.LeftButton,
     )
 
 
@@ -109,18 +119,14 @@ def test_a_press_alone_never_triggers_a_client_side_restore(monkeypatch) -> None
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
     window = _StubWindow(maximized=True)
     gesture = SystemMoveGesture()
 
     assert gesture.press(window, _mouse(QMouseEvent.Type.MouseButtonPress)) is False
     assert window.calls == [], "the press must leave the window untouched"
 
-    dragged = _mouse(
-        QMouseEvent.Type.MouseMove,
-        button=Qt.MouseButton.NoButton,
-        buttons=Qt.MouseButton.LeftButton,
-    )
-    gesture.move(window, dragged)
+    gesture.move(window, _dragging())
     assert "showNormal" in window.calls, "the drag itself still restores"
 
 
@@ -168,8 +174,15 @@ def test_dragging_a_maximized_window_restores_it_first(qtbot, monkeypatch) -> No
     ``Qt::WindowMaximized`` from the widget's own state on its own, so a test
     reading it passes even when the platform was never told to leave maximized
     and the window is still full size on screen.
+
+    Pinned to the shape of a platform that needs ``showNormal()``, because that
+    is the shape this suite runs under: ``conftest`` forces the offscreen
+    plugin, where -- exactly as above -- the geometry call never reaches the
+    QWindow. Cocoa answers the opposite way and cannot be reached from here, so
+    it was measured against a real cocoa window instead.
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
     window = QMainWindow()
     qtbot.addWidget(window)
     window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -224,6 +237,30 @@ def test_the_compositor_owns_the_restore_on_linux_only() -> None:
     assert window_gestures._COMPOSITOR_RESTORES_ON_DRAG is sys.platform.startswith("linux")
 
 
+def test_the_cocoa_workarounds_are_confined_to_macos() -> None:
+    """Both were measured against AppKit specifically, and only apply there.
+
+    Widening either to a platform whose ``showNormal()`` is the thing that
+    clears the state, or whose move loop reads the live pointer rather than the
+    event, breaks dragging there.
+
+    Re-imported under each platform rather than compared against
+    ``sys.platform``: this suite's own machine is usually the macOS one, where
+    such a comparison reads ``True is True`` and passes just as happily for a
+    trait that was widened to every platform.
+    """
+    real = sys.platform
+    try:
+        for platform, expected in (("darwin", True), ("linux", False), ("win32", False)):
+            sys.platform = platform
+            reloaded = importlib.reload(window_gestures)
+            assert reloaded._GEOMETRY_CLEARS_MAXIMIZED is expected, platform
+            assert reloaded._MOVE_ANCHORS_ON_ITS_EVENT is expected, platform
+    finally:
+        sys.platform = real
+        importlib.reload(window_gestures)
+
+
 class _StubWindow:
     """Minimal stand-in that records whether the platform handle was reached."""
 
@@ -246,9 +283,12 @@ class _StubWindow:
     def window(self) -> "_StubWindow":
         return self
 
-    # Surface used by the restore path, so a test can see whether it ran.
+    # Surfaces used by the restore path, so a test can see whether it ran.
+    # Either one leaves the maximized state on the platform that uses it, and
+    # the deferred hand-over depends on that having happened.
     def showNormal(self) -> None:  # noqa: N802 - Qt API shape.
         self.calls.append("showNormal")
+        self._maximized = False
 
     def geometry(self) -> QRect:
         return QRect(100, 100, 900, 600)
@@ -258,12 +298,14 @@ class _StubWindow:
 
     def setGeometry(self, *args: int) -> None:  # noqa: N802 - Qt API shape.
         self.calls.append("setGeometry")
+        self._maximized = False
 
 
 def test_only_a_maximized_window_is_restored_before_the_drag(monkeypatch) -> None:
     # The anchor arithmetic degenerates to identity when the window is already
     # its normal size, so geometry alone cannot show whether the restore ran.
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
     ordinary = _StubWindow()
     window_gestures.begin_system_move(ordinary)
     assert ordinary.calls == []
@@ -340,11 +382,94 @@ def test_the_maximized_state_is_cleared_before_the_window_is_placed(monkeypatch)
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", False)
     window = _StubWindow(maximized=True)
 
     window_gestures.begin_system_move(window)
 
     assert window.calls == ["showNormal", "setGeometry"]
+
+
+def test_the_restore_is_one_frame_change_where_geometry_clears_the_state(monkeypatch) -> None:
+    """On Cocoa the frame change alone leaves maximized, and showNormal() hurts.
+
+    There ``showNormal()`` is ``-[NSWindow zoom:]``, which animates the un-zoom
+    inside a nested run loop: measured at 350.6ms against 0.9ms for the
+    geometry call alone, blocking a mouse handler for a third of a second and
+    painting an intermediate frame the user sees as a flicker and a bounce.
+    Setting ``NSWindowAnimationBehaviorNone`` does not shorten it, so the only
+    way not to pay for it is not to call it.
+    """
+    monkeypatch.setattr(
+        window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
+    )
+    monkeypatch.setattr(window_gestures, "_GEOMETRY_CLEARS_MAXIMIZED", True)
+    window = _StubWindow(maximized=True)
+
+    window_gestures._restore_under_cursor(window)
+
+    assert window.calls == ["setGeometry"], "the un-zoom animation must not be paid for"
+
+
+def test_a_move_loop_that_anchors_on_its_event_is_handed_a_fresh_one(monkeypatch) -> None:
+    """The restore and the hand-over must not share a mouse event.
+
+    ``-[NSWindow performWindowDragWithEvent:]`` reads its grab point from the
+    event it is given, and an ``NSEvent``'s location is relative to the window
+    frame as it was when the event was created. Restoring first and handing
+    over from that same event anchors the drag to the frame the restore just
+    discarded: measured on macOS, a maximized window pressed and held came to
+    rest at the maximized frame's origin every time, whatever position the
+    restore had placed it at.
+    """
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", True)
+    monkeypatch.setattr(
+        window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
+    )
+    started = _record_moves(monkeypatch)
+    window = _StubWindow(maximized=True)
+    gesture = SystemMoveGesture()
+
+    gesture.press(window, _mouse(QMouseEvent.Type.MouseButtonPress))
+
+    assert gesture.move(window, _dragging()) is True
+    assert window.calls, "the first move must restore"
+    assert started == [], "and must not hand over on the event that measured the old frame"
+
+    assert gesture.move(window, _dragging()) is True
+    assert started == [window], "the next event is measured against the restored frame"
+
+
+def test_a_move_loop_that_reads_the_live_pointer_hands_over_at_once(monkeypatch) -> None:
+    # Windows takes the grab point from the pointer rather than from the event,
+    # so there is nothing stale to wait out and a second event would only
+    # delay the drag.
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", False)
+    started = _record_moves(monkeypatch)
+    window = _StubWindow(maximized=True)
+    gesture = SystemMoveGesture()
+
+    gesture.press(window, _mouse(QMouseEvent.Type.MouseButtonPress))
+
+    assert gesture.move(window, _dragging()) is True
+    assert started == [window], "one event is enough when nothing was measured stale"
+
+
+def test_an_ordinary_window_is_never_deferred_by_the_anchor_rule(monkeypatch) -> None:
+    # The deferral exists only to outlive a restore. With no restore to do,
+    # dragging a normal window must still start from the press.
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", True)
+    started = _record_moves(monkeypatch)
+    window = _StubWindow()
+
+    assert SystemMoveGesture().press(window, _mouse(QMouseEvent.Type.MouseButtonPress)) is True
+    assert started == [window]
 
 
 # --- SystemResizeBorder ----------------------------------------------------
