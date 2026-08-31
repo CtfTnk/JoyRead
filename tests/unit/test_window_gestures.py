@@ -100,6 +100,54 @@ def test_release_disarms_a_pending_drag(qtbot, monkeypatch) -> None:
     assert started == []
 
 
+def test_a_press_alone_never_triggers_a_client_side_restore(monkeypatch) -> None:
+    """A press is not yet a drag, and the client-side restore is destructive.
+
+    It rewrites geometry and window state, so firing it from the press alone
+    means a plain click un-maximizes the window and the maximized state that
+    ``mouseDoubleClickEvent`` toggles is gone before the second click lands.
+    """
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    window = _StubWindow(maximized=True)
+    gesture = SystemMoveGesture()
+
+    assert gesture.press(window, _mouse(QMouseEvent.Type.MouseButtonPress)) is False
+    assert window.calls == [], "the press must leave the window untouched"
+
+    dragged = _mouse(
+        QMouseEvent.Type.MouseMove,
+        button=Qt.MouseButton.NoButton,
+        buttons=Qt.MouseButton.LeftButton,
+    )
+    gesture.move(window, dragged)
+    assert "showNormal" in window.calls, "the drag itself still restores"
+
+
+def test_a_click_that_never_becomes_a_drag_leaves_the_window_maximized(monkeypatch) -> None:
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    window = _StubWindow(maximized=True)
+    gesture = SystemMoveGesture()
+
+    gesture.press(window, _mouse(QMouseEvent.Type.MouseButtonPress))
+    gesture.release()
+
+    assert window.calls == [], "double-click-to-zoom depends on this state surviving"
+
+
+def test_a_delegating_platform_still_hands_over_on_press(monkeypatch) -> None:
+    # Linux is verified working this way: the compositor applies its own drag
+    # threshold, so waiting for a move here would only delay handing over.
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", True)
+    monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
+    started = _record_moves(monkeypatch)
+    window = _StubWindow(maximized=True)
+
+    assert SystemMoveGesture().press(window, _mouse(QMouseEvent.Type.MouseButtonPress)) is True
+    assert started == [window]
+
+
 def test_only_the_left_button_starts_a_drag(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
     started = _record_moves(monkeypatch)

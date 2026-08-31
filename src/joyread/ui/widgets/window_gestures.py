@@ -76,8 +76,10 @@ def _restore_under_cursor(window: QWidget) -> None:
     # reports otherwise. Reproduced identically under the offscreen and minimal
     # QPA plugins, so this is QWidget behaviour rather than one backend's quirk.
     #
-    # Both calls run inside a single mouse-press handler, so no frame is
-    # presented between them and the intermediate size is never painted.
+    # The pair is not atomic on every platform. AppKit animates the un-zoom, so
+    # macOS does paint the intermediate frame -- reported there as a flicker and
+    # a bounce. Whether macOS should be taking this path at all is open; see
+    # ``scripts/window_drag_probe.py``.
     window.showNormal()
     window.setGeometry(
         round(cursor.x() - across * normal.width()),
@@ -92,6 +94,11 @@ def _request_system_move(window: QWidget) -> bool:
     if handle is None:
         return False
     return bool(handle.startSystemMove())
+
+
+def _restore_would_run(window: QWidget) -> bool:
+    """Whether starting a move now would un-maximize the window from here."""
+    return window.isMaximized() and not _COMPOSITOR_RESTORES_ON_DRAG
 
 
 def begin_system_move(widget: QWidget) -> bool:
@@ -137,8 +144,14 @@ class SystemMoveGesture:
     def press(self, widget: QWidget, event: QMouseEvent) -> bool:
         if event.button() != Qt.MouseButton.LeftButton:
             return False
-        if _MOVE_STARTS_ON_DRAG:
-            # Defer to the first move so Qt still sees the release.
+        if _MOVE_STARTS_ON_DRAG or _restore_would_run(widget.window()):
+            # Defer to the first move. On Windows that keeps the release Qt
+            # needs for a double click; for a client-side restore it is the
+            # difference between a gesture and an accident. That restore
+            # rewrites the window's geometry and state, so firing it from the
+            # press alone means a plain click un-maximizes the window, and the
+            # maximized state that ``mouseDoubleClickEvent`` toggles is gone
+            # before the second click arrives. A press is not yet a drag.
             self._armed = True
             return False
         return begin_system_move(widget)
