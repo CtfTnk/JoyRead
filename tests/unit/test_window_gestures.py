@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRect, Qt
+from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QMainWindow
 
@@ -111,14 +112,19 @@ def test_only_the_left_button_starts_a_drag(qtbot, monkeypatch) -> None:
     assert started == []
 
 
-def test_dragging_a_maximized_window_restores_it_first(qtbot) -> None:
-    """The compositor drags the window as-is; the restore has to happen here.
+def test_dragging_a_maximized_window_restores_it_first(qtbot, monkeypatch) -> None:
+    """Where the platform will not un-maximize on drag, the restore happens here.
 
-    Without it the window is hauled around at full size, while the same window
-    tiled by the OS springs back -- the inconsistency this guards against.
+    Asserted against ``QWindow.windowStates()`` rather than ``isMaximized()``.
+    The widget flag is not evidence: ``QWidget.setGeometry()`` clears
+    ``Qt::WindowMaximized`` from the widget's own state on its own, so a test
+    reading it passes even when the platform was never told to leave maximized
+    and the window is still full size on screen.
     """
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     window = QMainWindow()
     qtbot.addWidget(window)
+    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
     window.resize(900, 600)
     window.show()
     window.showMaximized()
@@ -128,9 +134,46 @@ def test_dragging_a_maximized_window_restores_it_first(qtbot) -> None:
     window_gestures.begin_system_move(window)
     qtbot.wait(20)
 
-    assert not window.isMaximized()
-    assert window.width() == 900
-    assert window.height() == 600
+    assert not (window.windowHandle().windowStates() & Qt.WindowState.WindowMaximized), (
+        "the platform window, not just the widget, must have left maximized state"
+    )
+    assert window.size() == QSize(900, 600)
+
+
+def test_a_compositor_that_restores_on_drag_is_left_to_do_it(qtbot, monkeypatch) -> None:
+    """Mutter un-maximizes a dragged window itself; touching it here fights that.
+
+    The compositor still owns the geometry of a window it considers maximized,
+    so a client-side restore is undone, its move loop stays anchored on the
+    frame the client has already left, and ``normalGeometry()`` is overwritten
+    with the snapped-back full-screen rect -- losing the remembered size.
+    """
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", True)
+    started: list = []
+    monkeypatch.setattr(
+        window_gestures,
+        "_request_system_move",
+        lambda window: (started.append(window), True)[1],
+    )
+    window = QMainWindow()
+    qtbot.addWidget(window)
+    window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+    window.resize(900, 600)
+    window.show()
+    window.showMaximized()
+    qtbot.wait(20)
+    remembered = window.normalGeometry()
+
+    assert window_gestures.begin_system_move(window) is True
+    qtbot.wait(20)
+
+    assert started == [window], "the move must still be handed to the compositor"
+    assert window.isMaximized(), "the window must be handed over as it is"
+    assert window.normalGeometry() == remembered, "the remembered size must survive"
+
+
+def test_the_compositor_owns_the_restore_on_linux_only() -> None:
+    assert window_gestures._COMPOSITOR_RESTORES_ON_DRAG is sys.platform.startswith("linux")
 
 
 class _StubWindow:
@@ -169,9 +212,10 @@ class _StubWindow:
         self.calls.append("setGeometry")
 
 
-def test_only_a_maximized_window_is_restored_before_the_drag() -> None:
+def test_only_a_maximized_window_is_restored_before_the_drag(monkeypatch) -> None:
     # The anchor arithmetic degenerates to identity when the window is already
     # its normal size, so geometry alone cannot show whether the restore ran.
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     ordinary = _StubWindow()
     window_gestures.begin_system_move(ordinary)
     assert ordinary.calls == []
@@ -208,6 +252,7 @@ def test_a_normal_window_is_not_disturbed_before_the_drag(qtbot) -> None:
 
 
 def test_restoring_keeps_the_grab_point_under_the_pointer(qtbot, monkeypatch) -> None:
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     window = QMainWindow()
     qtbot.addWidget(window)
     # Frameless, as every JoyRead window is: a decorated window's deferred
@@ -233,22 +278,25 @@ def test_restoring_keeps_the_grab_point_under_the_pointer(qtbot, monkeypatch) ->
     )
 
 
-def test_the_window_is_placed_before_the_maximized_state_is_cleared(monkeypatch) -> None:
-    """One frame change, not two -- otherwise the restore reads as a flash.
+def test_the_maximized_state_is_cleared_before_the_window_is_placed(monkeypatch) -> None:
+    """The state must leave first, or it never leaves at all.
 
-    Clearing the state first makes the window restore to wherever it sat before
-    it was maximized and only then jump to the anchored spot; both positions
-    get painted. The offscreen platform cannot show this (its ``showNormal()``
-    is not synchronous), so the ordering itself is what gets pinned.
+    ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized`` from the widget's
+    own state without telling the QWindow. Placing the window first therefore
+    makes the following ``showNormal()`` compare equal to the state the widget
+    already believes it is in, return early, and never reach the platform --
+    which goes on owning the geometry of a window it still thinks is maximized.
+    Only the ordering can be pinned here; the desync itself is inside Qt.
     """
     monkeypatch.setattr(
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     window = _StubWindow(maximized=True)
 
     window_gestures.begin_system_move(window)
 
-    assert window.calls == ["setGeometry", "showNormal"]
+    assert window.calls == ["showNormal", "setGeometry"]
 
 
 # --- SystemResizeBorder ----------------------------------------------------

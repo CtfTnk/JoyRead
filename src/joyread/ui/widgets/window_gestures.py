@@ -37,16 +37,23 @@ from joyread.ui.resources.styles.theme import Theme
 # also honours the user's "double-click a window's title bar to" preference.
 _MOVE_STARTS_ON_DRAG = sys.platform == "win32"
 
+# Whether the platform's own system-move loop un-maximizes the window for us.
+# Mutter implements "shake loose" for both ``_NET_WM_MOVERESIZE`` and
+# ``xdg_toplevel.move``: once the drag passes its threshold it un-maximizes,
+# keeps the grab point under the pointer, and plays its own restore animation.
+# Restoring client-side as well fights it -- the compositor still owns the
+# geometry of a window it considers maximized, so it snaps the frame back and
+# the move loop ends up anchored on a frame the client has already left.
+_COMPOSITOR_RESTORES_ON_DRAG = sys.platform.startswith("linux")
+
 
 def _restore_under_cursor(window: QWidget) -> None:
     """Un-maximize, keeping the pointer where it sits on the title bar.
 
-    The system move APIs drag the window exactly as it is; only a title bar
-    the *platform* drew un-maximizes on drag, and ours is a custom widget. So
-    a maximized window would otherwise be hauled around at full size -- while
-    the same window tiled by the compositor springs back to its old size,
-    because there the compositor owns the restore. Doing it here makes the two
-    routes agree.
+    Only for platforms whose move loop does not do this itself -- see
+    :data:`_COMPOSITOR_RESTORES_ON_DRAG`. There, the system move API drags the
+    window exactly as it is, so a maximized window would be hauled around at
+    full size unless it is restored first.
     """
     cursor = QCursor.pos()
     # One coordinate space throughout -- ``geometry()`` is already in screen
@@ -57,40 +64,52 @@ def _restore_under_cursor(window: QWidget) -> None:
         window.showNormal()
         return
     # Anchor the restored window so the grab point stays under the pointer
-    # instead of the window jumping out from under it.
+    # instead of the window jumping out from under it: the same fraction along
+    # the title bar, and the same top edge.
+    across = max(0.0, min(1.0, (cursor.x() - maximized.x()) / maximized.width()))
+    # ``showNormal()`` must come first, and the order is load-bearing.
+    # ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized`` from the widget's
+    # own state without telling the QWindow, so a ``showNormal()`` after it
+    # compares equal to the state it already believes it is in, returns early,
+    # and the platform is never told to leave maximized. The window then stays
+    # maximized as far as the window manager is concerned while the widget
+    # reports otherwise. Reproduced identically under the offscreen and minimal
+    # QPA plugins, so this is QWidget behaviour rather than one backend's quirk.
     #
-    # Placed *before* the state is cleared, and stating the whole rect rather
-    # than only the position. Calling ``showNormal()`` first would restore the
-    # window to wherever it sat before it was maximized and only then jump to
-    # the anchored spot -- two frame changes, which reads as a flash.
-    across = (cursor.x() - maximized.x()) / maximized.width()
+    # Both calls run inside a single mouse-press handler, so no frame is
+    # presented between them and the intermediate size is never painted.
+    window.showNormal()
     window.setGeometry(
         round(cursor.x() - across * normal.width()),
         maximized.y(),
         normal.width(),
         normal.height(),
     )
-    window.showNormal()
+
+
+def _request_system_move(window: QWidget) -> bool:
+    handle = window.windowHandle()
+    if handle is None:
+        return False
+    return bool(handle.startSystemMove())
 
 
 def begin_system_move(widget: QWidget) -> bool:
     """Ask the window manager to drag ``widget``'s window.
 
-    A maximized window is restored first (see :func:`_restore_under_cursor`);
-    a full-screen one is left alone, since dragging out of full screen is not
-    a gesture any platform offers.
+    A maximized window is restored first, unless the platform's move loop does
+    that itself (see :data:`_COMPOSITOR_RESTORES_ON_DRAG`). A full-screen one is
+    left alone, since dragging out of full screen is not a gesture any platform
+    offers.
 
     Returns ``False`` when the platform declines, so callers can fall back.
     """
     window = widget.window()
     if window.isFullScreen():
         return False
-    if window.isMaximized():
+    if window.isMaximized() and not _COMPOSITOR_RESTORES_ON_DRAG:
         _restore_under_cursor(window)
-    handle = window.windowHandle()
-    if handle is None:
-        return False
-    return bool(handle.startSystemMove())
+    return _request_system_move(window)
 
 
 def begin_system_resize(widget: QWidget, edges: Qt.Edge) -> bool:
