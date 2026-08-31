@@ -1,7 +1,9 @@
 # JoyRead Packaging Guide
 
-This guide builds JoyRead v1.0.0 with PyInstaller. Build each target on its own
-operating system; PyInstaller does not cross-compile desktop apps.
+This guide builds the production JoyRead v1.0.0 artifacts with PyInstaller.
+Build each target on its own operating system; PyInstaller does not
+cross-compile desktop apps. Inno Setup wraps the verified Windows onedir as the
+production installer described in section 3c.
 
 The version is read from `pyproject.toml` by `packaging/joyread.spec`, so it is
 set in exactly one place. `src/joyread/__init__.py` carries the same string for
@@ -169,52 +171,47 @@ generation if the entry is malformed.
 generated, validated by shape, and guarded by tests, but nobody has right-clicked
 a `.cbz` in Nautilus and watched a Reader open.
 
-## 3c. Windows MSI
+## 3c. Windows Inno Setup EXE
 
-Build the PyInstaller onedir application and wrap that exact tree in a WiX MSI:
-
-```powershell
-python scripts/build_windows_msi.py
-```
-
-If `dist/JoyRead` has already been built and smoke-tested from the current
-commit, avoid rebuilding it:
+Inno Setup 7 builds the production single-file Windows installer from a verified
+JoyRead onedir:
 
 ```powershell
-python scripts/build_windows_msi.py --skip-app-build
+python scripts/build_windows_inno.py
 ```
 
-The result is `dist/JoyRead-<version>-windows-x86_64.msi`. The repository pins
-WiX 5.0.2 as a local .NET tool in `.config/dotnet-tools.json`; the script runs
-`dotnet tool restore`, so a .NET SDK and network access are required on the
-first build. WiX 5 is intentionally pinned because WiX 6 and 7 releases add the
-Open Source Maintenance Fee/EULA. WiX 5 no longer receives consumer security
-updates, so moving to a current WiX release is a release-owner licensing
-decision rather than a silent build-script upgrade.
+The default source is the production PyInstaller tree at `dist/JoyRead`, and
+the result is `dist/JoyRead-<version>-windows-x86_64-setup.exe`. Once that tree
+has been independently verified, skip rebuilding it with:
 
-The MSI is a conventional per-machine desktop install. It requests elevation
-and defaults to `C:\Program Files\JoyRead`. `WixUI_FeatureTree` provides a
-welcome/license flow, a feature-and-directory page, confirmation, visible
-install progress, and a completion page rather than silently running and
-closing.
+```powershell
+python scripts/build_windows_inno.py --skip-app-build
+```
 
-The Start menu shortcut is required. Two features are user-configurable:
+`build_windows_inno.py` discovers Inno Setup 7's `ISCC.exe` from the standard
+installation locations or from `JOYREAD_INNO_ISCC`. It rejects a partial
+onedir before compiling: copying only `JoyRead.exe` would omit its Python
+runtime, Qt libraries/plugins, resources, and bundled 7-Zip.
 
-- **Desktop shortcut** is selected by default and may be removed.
-- **Open With integration** is unselected by default. Selecting it registers
-  JoyRead in Default Apps/Open With for `.cbz`, `.cbr`, `.cb7`, and `.pdf`.
+The setup defaults to an elevated `Program Files` install and includes a Start
+menu shortcut. Its desktop shortcut task is selected by default. It presents
+separate, unselected checkbox tasks for `.cbz`, `.cbr`, `.cb7`, and `.pdf`.
+Selecting one adds JoyRead only as an Open With candidate and Default Apps
+option; it does not write the user's protected default-app choice. `.zip`,
+`.rar`, and `.7z` are always registered as Open With alternatives, so Explorer
+can offer JoyRead without making users browse to `Program Files`, but they do
+not appear in JoyRead's Default Apps capabilities. Registry cleanup removes
+only JoyRead-owned values and empty keys. Inno copies the same dedicated
+`JoyReadDocument.ico` beside the app before registering it as the shared
+`JoyRead.Document` icon, so PyInstaller's internal layout does not affect
+Explorer's appearance. A clean Windows VM/Sandbox still needs to exercise
+installation, Open With, upgrade, and uninstall before this becomes a release
+artifact.
 
-The integration feature does **not** claim generic `.zip`, `.rar`, or `.7z`,
-and it never writes the protected per-user default-association value. Windows
-still requires the user to choose JoyRead as the default through system UI.
-The payload cabinet uses medium rather than high compression: the MSI is a bit
-larger, but installation spends less time decompressing it, and the progress
-page makes the remaining file copy/Defender work visible.
-
-The MSI is unsigned. Sign it before public distribution. Always smoke an
-install, file activation, repair/upgrade, and uninstall on a clean Windows VM;
-an administrative extraction proves the payload but does not exercise registry
-redirection or shell notification behavior.
+The setup executable is unsigned. Sign it before public distribution. Always
+smoke install, file activation, repair/upgrade, and uninstall on a clean Windows
+VM; compiling the setup proves its payload but does not exercise registry
+redirection, shell notification, or Windows default-app behavior.
 
 ## 4. Platform requirements
 
@@ -271,6 +268,19 @@ cost 53-69 ms per load against 2-3 ms for the `.ico`, because `QIcon` does not
 cache and the `.icns` is 3.76 MB. Windows never displays it. Individual windows
 must not call `setWindowIcon`: Qt inherits `QApplication::windowIcon()`, so each
 call was decoding the same image again to reach the icon it already had.
+
+The Windows file-association icon is intentionally a different asset:
+`src/joyread/ui/resources/icons/JoyReadDocument.svg` is its reviewable vector
+source, and `JoyReadDocument.ico` is the checked-in 16–256 px shell container.
+Regenerate it after an SVG edit with:
+
+```powershell
+python scripts/build_windows_document_icon.py
+```
+
+The Windows Inno Setup installer places the ICO at the installation root and
+points the single `JoyRead.Document` ProgID at that path. It is not the
+application window icon and is not selected by `ResourceLoader.app_icon_path()`.
 
 Windows builds also collect `ffi.dll` and `sqlite3.dll` explicitly from the
 required repository Conda prefix's `Library/bin`. PyInstaller does not discover

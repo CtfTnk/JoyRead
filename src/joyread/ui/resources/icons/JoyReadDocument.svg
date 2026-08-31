@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" xmlns:bx="https://boxy-svg.com">
+  <title>JoyRead document</title>
+  <desc>Folded file page with a centered JoyRead J mark.</desc>
+  <g id="joyread-document-artwork" transform="translate(44 0)">
+  <path id="joyread-document-page" d="M 27.49 13.834 L 117.49 13.834 L 164.49 60.834 L 164.49 201.834 C 164.49 215.089 153.745 225.834 140.49 225.834 L 27.49 225.834 C 14.235 225.834 3.49 215.089 3.49 201.834 L 3.49 37.834 C 3.49 24.579 14.235 13.834 27.49 13.834 Z" fill="#F6F3F2" stroke="#293242" stroke-linejoin="round" stroke-width="10" style="stroke-width: 10;"/>
+  <path id="joyread-document-fold" d="M 115.754 18.412 L 115.754 62.562 L 159.904 62.562" fill="#DCEBFF" stroke="#293242" stroke-linejoin="round" stroke-width="10" style="stroke-width: 10;"/>
+  <rect id="joyread-document-mark" x="34.49" y="78.834" width="100" height="100" rx="18" fill="#293242" style="stroke-width: 1;"/>
+  <g id="joyread-document-j" fill="#F6F3F2" transform="matrix(1, 0, 0, 1, -25.509946, -8.165702)">
+    <path id="joyread-document-j-bar" style="" d="M 118.687 98.29 H 132.531 A 0 0 0 0 1 132.531 98.29 V 108.166 A 0 0 0 0 1 132.531 108.166 H 110.687 A 0 0 0 0 1 110.687 108.166 V 103.228 L 118.687 98.29 Z" bx:shape="rect 110.687 98.29 21.844 9.876 1 8 8 0 0 0 0 0 0 0 0 0 2@70eab3df"/>
+    <path id="joyread-document-j-hook" d="M 125.51 108.166 L 125.51 146.166 C 125.51 160.966 118.91 168.166 108.51 168.166 C 100.51 168.166 94.51 164.266 91.01 157.666" fill="none" stroke="#F6F3F2" stroke-width="14" style="stroke-linejoin: bevel; stroke-linecap: round; paint-order: fill; transform-box: fill-box; transform-origin: 50% 50%;"/>
+  </g>
+  </g>
+</svg>

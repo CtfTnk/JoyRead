@@ -89,9 +89,14 @@ Desktop.ini
 # Local sample books and large manual test data
 test_set/
 
-# Generated reports and build output, at the repository root only.
+# Generated/local reports and build output.
+/docs/reports/
 /reports/
 /artifacts/
+
+# Local Windows-only Nuitka packaging experiment.
+/scripts/build_nuitka_experiment.py
+/tests/unit/test_nuitka_packaging.py
 
 # 7-Zip ships its HTML help pages beside the binary. Nothing in JoyRead reads
 # them and joyread.spec never bundles them -- it copies the binary plus
@@ -116,7 +121,6 @@ docs/CODEX_MAIN_UI_BRIEF.md
 docs/ARCHIVE_CORE_HANDBOOK.md
 docs/DATABASE_HANDBOOK.md
 docs/technical/
-docs/reports/
 
 # Codex pets
 .codex-pets/
