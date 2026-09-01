@@ -236,7 +236,14 @@ def leave_maximized(window: QWidget, *, geometry: QRect) -> None:
 def toggle_maximized(window: QWidget) -> None:
     """What a zoom button does, asking the platform rather than the widget."""
     if is_maximized(window):
-        leave_maximized(window, geometry=restore_geometry(window))
+        # Only say where the window should land on a platform that has
+        # forgotten. Elsewhere ``showNormal()`` restores the position as well
+        # as the size, and placing the window afterwards would fight a window
+        # manager that still owns the frame -- the documented Linux failure.
+        # An invalid rectangle tells :func:`leave_maximized` we have no
+        # opinion, which is exactly the case here.
+        target = restore_geometry(window) if _platform_forgets_the_restore_size() else QRect()
+        leave_maximized(window, geometry=target)
         return
     # About to maximize on purpose, so this is the size to come back to.
     remember_restore_geometry(window)

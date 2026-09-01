@@ -313,9 +313,25 @@ def test_no_screen_falls_back_to_restoring(qtbot, monkeypatch) -> None:
 class _Recorder(QObject):
     """Records the calls the restore path makes, in order."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, maximized: bool = False) -> None:
         super().__init__()
+        self._maximized = maximized
         self.calls: list[str] = []
+
+    def isMaximized(self) -> bool:  # noqa: N802 - Qt API shape.
+        return self._maximized
+
+    def isFullScreen(self) -> bool:  # noqa: N802 - Qt API shape.
+        return False
+
+    def windowHandle(self):  # noqa: N802 - Qt API shape.
+        return None
+
+    def geometry(self) -> QRect:
+        return QRect(0, 0, 1512, 949)
+
+    def normalGeometry(self) -> QRect:  # noqa: N802 - Qt API shape.
+        return QRect(100, 100, 900, 600)
 
     def showNormal(self) -> None:  # noqa: N802 - Qt API shape.
         self.calls.append("showNormal")
@@ -347,3 +363,29 @@ def test_a_window_with_no_nswindow_is_not_evidence_either(qtbot, monkeypatch) ->
     window = _window(qtbot)
 
     assert window_state._appkit_is_zoomed(window) is None
+
+
+def test_the_zoom_button_lets_a_remembering_platform_place_the_window(monkeypatch) -> None:
+    """Off Cocoa, ``showNormal()`` restores the position as well as the size.
+
+    Following it with ``setGeometry()`` would fight a window manager that still
+    owns the frame, which is the failure mode Linux was already documented for.
+    So the button must ask for nothing more than the state change there.
+    """
+    monkeypatch.setattr(window_state, "_platform_forgets_the_restore_size", lambda: False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
+    window = _Recorder(maximized=True)
+
+    toggle_maximized(window)
+
+    assert window.calls == ["showNormal"], "no client-side placement to fight the WM with"
+
+
+def test_the_zoom_button_places_the_window_where_the_platform_forgets(monkeypatch) -> None:
+    monkeypatch.setattr(window_state, "_platform_forgets_the_restore_size", lambda: True)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: True)
+    window = _Recorder(maximized=True)
+
+    toggle_maximized(window)
+
+    assert window.calls == ["setGeometry"], "the size we remembered, in one frame change"
