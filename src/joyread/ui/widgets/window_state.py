@@ -60,6 +60,11 @@ _PLATFORM_FORGETS_THE_RESTORE_SIZE = sys.platform == "darwin"
 # user chose.
 _GEOMETRY_ALONE_LEAVES_MAXIMIZED = sys.platform == "darwin"
 
+# How far a window's size may sit from the screen's usable area and still
+# count as filling it. A maximized window matches it exactly; the slack is for
+# a platform that insets the frame by a pixel or two.
+_FILLS_THE_SCREEN_SLACK = 4
+
 _STORE_NAME = "JoyReadRestoreGeometry"
 
 
@@ -199,3 +204,30 @@ def toggle_maximized(window: QWidget) -> None:
     # About to maximize on purpose, so this is the size to come back to.
     remember_restore_geometry(window)
     window.showMaximized()
+
+
+def fills_the_screen(window: QWidget) -> bool:
+    """Whether ``window`` still occupies the whole usable screen area.
+
+    Asked before un-maximizing, because that only means "shrink a window that
+    fills the screen". A window the platform still calls maximized but which
+    no longer fills it has been resized by the user since -- macOS keeps a
+    native resize edge on a tiled window, which bypasses our own resize grips
+    entirely and leaves the window tiled at a size the user chose. Shrinking
+    it then throws that size away.
+
+    Stated in geometry we can see rather than in what the platform means by
+    its state flags, so it holds whatever the platform's tiling semantics turn
+    out to be.
+    """
+    screen = window.screen()
+    if screen is None:
+        # No screen to compare against. Assume the caller's reading of the
+        # window state rather than silently skipping a restore it wanted.
+        return True
+    available = screen.availableGeometry().size()
+    current = window.geometry().size()
+    return (
+        abs(current.width() - available.width()) <= _FILLS_THE_SCREEN_SLACK
+        and abs(current.height() - available.height()) <= _FILLS_THE_SCREEN_SLACK
+    )

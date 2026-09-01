@@ -28,6 +28,7 @@ from PySide6.QtWidgets import QWidget
 
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.window_state import (
+    fills_the_screen,
     is_maximized,
     leave_maximized,
     remember_restore_geometry,
@@ -109,7 +110,11 @@ def _request_system_move(window: QWidget) -> bool:
 
 def _restore_would_run(window: QWidget) -> bool:
     """Whether starting a move now would un-maximize the window from here."""
-    return is_maximized(window) and not _COMPOSITOR_RESTORES_ON_DRAG
+    if _COMPOSITOR_RESTORES_ON_DRAG or not is_maximized(window):
+        return False
+    # Only shrink a window that is actually filling the screen. One the user
+    # has resized since is theirs to keep -- see :func:`fills_the_screen`.
+    return fills_the_screen(window)
 
 
 def begin_system_move(widget: QWidget) -> bool:
@@ -125,7 +130,7 @@ def begin_system_move(widget: QWidget) -> bool:
     window = widget.window()
     if window.isFullScreen():
         return False
-    if is_maximized(window) and not _COMPOSITOR_RESTORES_ON_DRAG:
+    if _restore_would_run(window):
         _restore_under_cursor(window)
     return _request_system_move(window)
 

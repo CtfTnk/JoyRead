@@ -303,6 +303,12 @@ class _StubWindow(QObject):
     def geometry(self) -> QRect:
         return QRect(100, 100, 900, 600)
 
+    def screen(self):
+        # Sized to match geometry(), so the stub reads as filling its screen --
+        # which is what a maximized window does, and what the restore path
+        # now requires before it will shrink anything.
+        return SimpleNamespace(availableGeometry=lambda: QRect(0, 0, 900, 600))
+
     def normalGeometry(self) -> QRect:  # noqa: N802 - Qt API shape.
         return QRect(100, 100, 900, 600)
 
@@ -620,3 +626,24 @@ def test_the_reader_window_keeps_its_resize_edge_when_the_header_hides(
 
     window.close()
     context.close()
+
+
+def test_a_resized_maximized_window_is_dragged_at_the_size_the_user_chose(monkeypatch) -> None:
+    """The restore must not fire on a window that is no longer full size.
+
+    macOS leaves its own resize edge live on a tiled window, so the user can
+    resize one without ever touching our grips, and AppKit keeps it tiled at
+    the new size. Restoring from there throws that size away -- reported as a
+    window snapping back to its pre-zoom size the instant it starts moving.
+    """
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
+    monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: True)
+    window = _StubWindow(maximized=True)
+    # Smaller than the stub's screen, as a window the user has resized is.
+    monkeypatch.setattr(type(window), "geometry", lambda self: QRect(100, 100, 800, 500))
+
+    assert window_gestures._restore_would_run(window) is False
+
+    window_gestures.begin_system_move(window)
+    assert window.calls == [], "the size the user chose must survive the drag"

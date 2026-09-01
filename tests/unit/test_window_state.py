@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QMainWindow
 
 from joyread.ui.widgets import window_state
 from joyread.ui.widgets.window_state import (
+    fills_the_screen,
     is_maximized,
     leave_maximized,
     remember_restore_geometry,
@@ -232,3 +233,59 @@ def test_the_traits_are_macos_only() -> None:
     assert window_state._PLATFORM_OWNS_THE_ZOOM_STATE is darwin
     assert window_state._PLATFORM_FORGETS_THE_RESTORE_SIZE is darwin
     assert window_state._GEOMETRY_ALONE_LEAVES_MAXIMIZED is darwin
+
+
+# --- only shrink what is actually big ---------------------------------------
+
+
+def _looks_maximized(monkeypatch) -> None:
+    """Make the platform claim the window is maximized, whatever its size."""
+    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
+    monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: True)
+
+
+def test_a_window_filling_the_screen_is_still_restored(qtbot) -> None:
+    window = _window(qtbot)
+    window.showMaximized()
+    qtbot.wait(20)
+
+    assert fills_the_screen(window), "a maximized window fills its screen"
+
+
+def test_a_window_the_user_resized_is_left_at_that_size(qtbot, monkeypatch) -> None:
+    """macOS keeps its own resize edge on a tiled window.
+
+    That edge bypasses our resize grips entirely -- ``begin_system_resize``
+    refuses while maximized, and it makes no difference, because the drag never
+    reaches us. AppKit resizes the tile and leaves it tiled, so the window is
+    still ``isZoomed`` at a size the user chose deliberately. Restoring it then
+    discards that size, which is what the report described: resize a zoomed
+    window to 800x900, drag it, and it snaps back to the size from before.
+    """
+    _looks_maximized(monkeypatch)
+    window = _window(qtbot)
+    window.resize(800, 900)
+    qtbot.wait(10)
+
+    assert is_maximized(window), "precondition: the platform still calls it maximized"
+    assert not fills_the_screen(window), "but it is no longer filling the screen"
+
+
+def test_a_few_pixels_of_inset_still_counts_as_filling(qtbot, monkeypatch) -> None:
+    # Exact equality would be brittle: a platform that insets a maximized frame
+    # by a pixel would stop restoring altogether, which is the worse failure.
+    window = _window(qtbot)
+    available = window.screen().availableGeometry().size()
+    window.resize(available.width() - 2, available.height() - 2)
+    qtbot.wait(10)
+
+    assert fills_the_screen(window)
+
+
+def test_no_screen_falls_back_to_restoring(qtbot, monkeypatch) -> None:
+    # Unable to tell, so trust the caller's reading of the window state rather
+    # than silently skipping a restore it wanted.
+    window = _window(qtbot)
+    monkeypatch.setattr(type(window), "screen", lambda self: None)
+
+    assert fills_the_screen(window) is True
