@@ -5,10 +5,18 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [1.0.1] — 2026-09-01
 
-### Library
+### Bug Fixes
 
-- Increased the minimum Library width so two book cards remain visible with
-  the sidebar and vertical scrollbar open.
+- Fixed title-bar clicks restoring a maximized window before a drag began,
+  which also broke double-click zoom behavior.
+- Fixed maximized-window dragging flickering, pausing, or jumping away from the
+  grab point on macOS.
+- Let Linux and Windows restore remembered window geometry through their window
+  manager instead of racing it with a second client-side placement.
+- Preserved the user-selected size of a resized tiled window when starting a
+  later title-bar drag instead of snapping back to stale normal geometry.
+- Increased the minimum Library width so the shelf no longer collapses to one
+  column with the sidebar and vertical scrollbar open.
 
 ### Maintenance
 
