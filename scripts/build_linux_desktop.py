@@ -98,9 +98,10 @@ def render(executable: str) -> str:
             f"Exec={executable} %F",
             "Icon=joyread",
             "Terminal=false",
-            # `Viewer` is an additional category and needs a main one beside it;
-            # Graphics covers comics, Office covers PDF/EPUB.
-            "Categories=Graphics;Office;Viewer;",
+            # `Viewer` is an additional category and needs a main one beside
+            # it. Graphics is the app's primary identity; declaring Office too
+            # makes some menus show the same launcher twice.
+            "Categories=Graphics;Viewer;",
             f"MimeType={';'.join(mimes)};",
             "StartupWMClass=JoyRead",
             "",

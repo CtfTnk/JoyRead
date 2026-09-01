@@ -93,6 +93,7 @@ def test_the_desktop_entry_has_the_required_keys() -> None:
     assert entries["Type"] == "Application"
     assert entries["Name"] == "JoyRead"
     assert entries["Terminal"] == "false"
+    assert entries["Categories"] == "Graphics;Viewer;"
     # `Icon` is a theme name, not a path: the installer drops JoyRead.png into
     # hicolor as `joyread.png` and the theme resolves the rest.
     assert entries["Icon"] == "joyread"

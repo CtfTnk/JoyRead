@@ -7,6 +7,6 @@ Comment=Read manga archives and light novels
 Exec=/opt/joyread/JoyRead %F
 Icon=joyread
 Terminal=false
-Categories=Graphics;Office;Viewer;
+Categories=Graphics;Viewer;
 MimeType=application/x-7z-compressed;application/x-cb7;application/vnd.comicbook-rar;application/vnd.comicbook+zip;application/pdf;application/vnd.rar;application/x-rar-compressed;application/zip;
 StartupWMClass=JoyRead
