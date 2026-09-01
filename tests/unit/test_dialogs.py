@@ -142,7 +142,7 @@ def test_tag_dialog_widens_to_the_ceiling(qtbot) -> None:
 
 
 def test_wide_dialog_fits_a_minimum_width_window(qtbot) -> None:
-    """680 plus margins is the tight case at ``window_min_width`` (700)."""
+    """The widest dialog remains contained by the Library minimum width."""
 
     apply_theme()
     root = QWidget()

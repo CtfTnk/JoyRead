@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "joyread"
-version = "1.0.0"
+version = "1.0.1"
 description = "Cross-platform desktop manga and light novel reader."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -739,9 +739,9 @@ class JoyReadDialogPanel(QFrame):
 
         Content opts in by exposing ``preferred_dialog_width``; anything that
         does not stays at the default 400. The clamp against the overlay
-        matters because ``window_min_width`` is 700 and a 680 panel plus its
-        margins does not fit there -- without it the dialog is cut off at the
-        window edge rather than merely tight.
+        matters because the reader shell and other embedded hosts are not bound
+        by the Library window's minimum width. Without it a wide dialog is cut
+        off at the host edge rather than merely tight.
         """
 
         requested = getattr(self._content_widget, "preferred_dialog_width", Theme.dialog_width)

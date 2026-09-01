@@ -130,7 +130,7 @@ class MainWindow(QMainWindow):
         view_panel.setObjectName("ViewPanel")
         layout = QHBoxLayout(view_panel)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(Theme.main_view_gap)
 
         self.sidebar = SidebarWidget(context.resources)
         self.shelf_view = ShelfView(context.shelf_viewmodel, context.resources)

@@ -1,6 +1,6 @@
 # JoyRead Packaging Guide
 
-This guide builds the production JoyRead v1.0.0 artifacts with PyInstaller.
+This guide builds the production JoyRead v1.0.1 artifacts with PyInstaller.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. Inno Setup wraps the verified Windows onedir as the
 production installer described in section 3c.

@@ -3,6 +3,20 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] — 2026-09-01
+
+### Library
+
+- Increased the minimum Library width so two book cards remain visible with
+  the sidebar and vertical scrollbar open.
+
+### Maintenance
+
+- Removed the development-only Windows/Linux title-control preview from
+  Settings while preserving each platform's production window controls.
+- Removed the development JSON-manifest picker from the production import menu;
+  manifest import remains available to scripts and internal tooling.
+
 ## [1.0.0] — 2026-08-27
 
 First public release.

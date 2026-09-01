@@ -20,10 +20,10 @@ class Theme:
     # Window and page layout
     window_width = 1200
     window_height = 860
-    window_min_width = 700
     window_min_height = 600
     window_corner_radius = 18
     sidebar_width = 260
+    main_view_gap = 6
     toolbar_height = 52
     content_frame_width = 934
     content_frame_height = 808
@@ -250,6 +250,19 @@ class Theme:
     # Qt scrollbars consume viewport width. Reducing the content right margin
     # keeps the visual gap from content to app edge at Figma's 48px.
     content_scrollbar_adjusted_right_padding = content_horizontal_padding - shelf_scrollbar_width
+    # Keep two full cards visible at the narrowest Library window while the
+    # sidebar and a vertical scrollbar are both present. Every term is owned by
+    # the layout it represents, so card/sidebar/padding changes move this gate
+    # instead of silently returning the minimum-width shelf to one column.
+    window_min_width = (
+        sidebar_width
+        + main_view_gap
+        + shelf_scrollbar_width
+        + content_horizontal_padding
+        + content_scrollbar_adjusted_right_padding
+        + (book_card_width * 2)
+        + grid_min_gap
+    )
 
     # Figma menu popups and native combo popup metrics
     menu_width = 130
@@ -421,8 +434,8 @@ class Theme:
     # Ceiling for a dialog that asks to be wider than the default 400. The tag
     # browser (screen 1a) is the widest content the panel carries, so its
     # layout defines the maximum. Content that asks for nothing stays at
-    # ``dialog_width``; the panel additionally clamps to its overlay, because
-    # 680 plus padding does not fit a ``window_min_width`` window.
+    # ``dialog_width``; the panel additionally clamps to its overlay because
+    # reader and embedded hosts are not all bound by the Library minimum width.
     dialog_max_width = tag_browser_width
     dialog_wide_content_max_height = (
         tag_browser_search_height
