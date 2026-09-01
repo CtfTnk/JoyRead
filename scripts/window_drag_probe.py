@@ -51,6 +51,7 @@ from PySide6.QtWidgets import (
 from joyread.ui.widgets import window_gestures
 from joyread.ui.widgets.window_gestures import SystemMoveGesture
 from joyread.ui.widgets.window_state import (
+    fills_the_screen,
     is_maximized,
     restore_geometry,
     toggle_maximized,
@@ -123,6 +124,7 @@ def snapshot(window: QWidget) -> str:
         f"normal={normal.width()}x{normal.height()} "
         f"max={int(window.isMaximized())} qwin={states}] "
         f"own[maximized={int(is_maximized(window))} "
+        f"fills={int(fills_the_screen(window))} "
         f"restore={restore_geometry(window).width()}x{restore_geometry(window).height()}]"
         + _appkit_state(window)
     )
