@@ -31,6 +31,7 @@ from joyread.ui.widgets.window_state import (
     fills_the_screen,
     is_maximized,
     leave_maximized,
+    on_cocoa,
     remember_restore_geometry,
     restore_geometry,
 )
@@ -53,26 +54,29 @@ _MOVE_STARTS_ON_DRAG = sys.platform == "win32"
 # the move loop ends up anchored on a frame the client has already left.
 _COMPOSITOR_RESTORES_ON_DRAG = sys.platform.startswith("linux")
 
-# Whether the platform's move loop takes its grab point from the mouse event it
-# is handed rather than from the pointer's live position.
-# ``-[NSWindow performWindowDragWithEvent:]`` does, and an ``NSEvent`` carries a
-# location relative to the window frame as it was when the event was created.
-# Restoring and starting the move from that same event therefore anchors the
-# drag to a frame that no longer exists: measured, a maximized window pressed
-# and held came to rest at the maximized frame's origin every time, whatever
-# position the restore had just placed it at. Letting one more event arrive
-# first costs a single frame at the pointer's polling rate and gives the move
-# loop a location measured against the frame the window actually has.
-_MOVE_ANCHORS_ON_ITS_EVENT = sys.platform == "darwin"
+
+def _move_loop_anchors_on_its_event() -> bool:
+    """Whether the move loop takes its grab point from the event it is handed.
+
+    ``-[NSWindow performWindowDragWithEvent:]`` does, and an ``NSEvent`` carries
+    a location relative to the window frame as it was when the event was
+    created. Restoring and starting the move from that same event therefore
+    anchors the drag to a frame that no longer exists: measured, a maximized
+    window pressed and held came to rest at the maximized frame's origin every
+    time, whatever position the restore had just placed it at. Letting one more
+    event arrive first costs a single frame at the pointer's polling rate and
+    gives the move loop a location measured against the frame the window has.
+    """
+    return on_cocoa()
 
 
 def _restore_under_cursor(window: QWidget) -> None:
     """Un-maximize, keeping the pointer where it sits on the title bar.
 
-    Only for platforms whose move loop does not do this itself -- see
-    :data:`_COMPOSITOR_RESTORES_ON_DRAG`. There, the system move API drags the
-    window exactly as it is, so a maximized window would be hauled around at
-    full size unless it is restored first.
+    Only called when :func:`_restore_would_run` allows it. Where the platform's
+    own move loop does not un-maximize (see :data:`_COMPOSITOR_RESTORES_ON_DRAG`)
+    the system move API drags the window exactly as it is, so a maximized window
+    would be hauled around at full size unless it is restored first.
     """
     cursor = QCursor.pos()
     # One coordinate space throughout -- ``geometry()`` is already in screen
@@ -84,7 +88,9 @@ def _restore_under_cursor(window: QWidget) -> None:
     # enough that AppKit goes on considering it zoomed.
     normal = restore_geometry(window)
     if not normal.isValid() or maximized.width() <= 0:
-        window.showNormal()
+        # Nothing to anchor to. Still leave maximized -- an invalid rectangle
+        # tells :func:`leave_maximized` we have no opinion about where.
+        leave_maximized(window, geometry=QRect())
         return
     # Anchor the restored window so the grab point stays under the pointer
     # instead of the window jumping out from under it: the same fraction along
@@ -120,10 +126,9 @@ def _restore_would_run(window: QWidget) -> bool:
 def begin_system_move(widget: QWidget) -> bool:
     """Ask the window manager to drag ``widget``'s window.
 
-    A maximized window is restored first, unless the platform's move loop does
-    that itself (see :data:`_COMPOSITOR_RESTORES_ON_DRAG`). A full-screen one is
-    left alone, since dragging out of full screen is not a gesture any platform
-    offers.
+    A maximized window is restored first when :func:`_restore_would_run` says
+    so. A full-screen one is left alone, since dragging out of full screen is
+    not a gesture any platform offers.
 
     Returns ``False`` when the platform declines, so callers can fall back.
     """
@@ -163,8 +168,9 @@ class SystemMoveGesture:
         # A drag can end in a platform maximize -- dragging to the top edge
         # tiles the window on macOS -- and that animation is what destroys
         # ``normalGeometry()``. Latch before it can.
-        remember_restore_geometry(widget.window())
-        if _MOVE_STARTS_ON_DRAG or _restore_would_run(widget.window()):
+        window = widget.window()
+        remember_restore_geometry(window)
+        if _MOVE_STARTS_ON_DRAG or _restore_would_run(window):
             # Defer to the first move. On Windows that keeps the release Qt
             # needs for a double click; for a client-side restore it is the
             # difference between a gesture and an accident. That restore
@@ -179,14 +185,14 @@ class SystemMoveGesture:
     def move(self, widget: QWidget, event: QMouseEvent) -> bool:
         if not self._armed or not (event.buttons() & Qt.MouseButton.LeftButton):
             return False
-        if _MOVE_ANCHORS_ON_ITS_EVENT and _restore_would_run(widget.window()):
+        window = widget.window()
+        if _move_loop_anchors_on_its_event() and _restore_would_run(window):
             # Restore now, hand over on the next move. This event's location was
             # measured against the maximized frame, so the move loop would
             # anchor the drag to a frame this call is about to discard; the next
             # one is measured against the frame the window ends up with. Staying
-            # armed is what brings us back here -- see
-            # :data:`_MOVE_ANCHORS_ON_ITS_EVENT`.
-            _restore_under_cursor(widget.window())
+            # armed is what brings us back here.
+            _restore_under_cursor(window)
             return True
         self._armed = False
         return begin_system_move(widget)

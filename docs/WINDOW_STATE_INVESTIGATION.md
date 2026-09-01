@@ -85,27 +85,101 @@ continuous" versus "wait a while" split in the report.
 
 ---
 
-## Proposed rebuild: one owner per fact
+## What was built: one owner per fact
 
-**Who is maximized?** The platform, never the widget. One `is_maximized()` that
-reads `NSWindow.isZoomed()` on macOS and `QWindow.windowStates()` elsewhere,
-used by the gestures, the resize border and the zoom buttons alike.
+`ui/widgets/window_state.py` owns both answers. Everything else -- the drag
+gesture, the resize border, both zoom buttons -- asks it rather than deciding.
 
-**What size does it restore to?** Ours, never `normalGeometry()`. Latched from
-*user intent* rather than from observed frames: at first show, before we
-maximize, and at the start of a user-initiated resize or move. All three are
-moments when nothing is animating, so a platform animation cannot poison it.
+**Who is maximized?** The platform. `is_maximized()` reads `NSWindow.isZoomed()`
+where it can and falls back to the widget flag only when it cannot. An NSWindow
+that cannot be read returns `None`, not `False`: "no answer" must not be
+mistaken for "not maximized", or a maximized window gets stranded exactly the
+way the widget flag stranded it.
 
-**Who performs the state change?** The platform. `-[NSWindow zoom:]` is public
-API and was measured to correctly untile a filled window, which
-`setGeometry()` does not. Restoring to a geometry we own also means the frame
-ends up genuinely small, which is what clears `isZoomed` — so owning the size
-fixes the stuck-tiled case as a side effect.
+**What size does it return to?** Ours. `remember_restore_geometry()` latches it
+from *user intent* -- at the start of a title-bar drag, at the start of a
+resize, before the zoom button maximizes -- never from observed geometry. Those
+are the moments when nothing is animating. `normalGeometry()` remains the
+fallback for a window that has never been touched, and the only source off
+macOS.
 
-pyobjc is already a declared runtime dependency (`pyproject.toml`) and the
-PyInstaller spec already bundles `objc`/`Foundation`/`AppKit` on darwin, so
-reading AppKit directly costs nothing new.
+**Restoring** is `leave_maximized()`, the single way out, shared by the button
+and the drag. On Cocoa it is a bare `setGeometry`: measured at 1.2ms with all
+three records agreeing afterwards, against ~350ms for `showNormal()`, which is
+`-[NSWindow zoom:]` and animates inside a nested run loop.
+`NSWindowAnimationBehaviorNone` does not shorten it, and `zoom:` restores to
+AppKit's own saved frame, which the same animation has already overwritten.
 
-**Private API is for diagnosis only.** `_zoomFill_` and `_currentZoomState`
-appear in this document because they reproduce the user's gesture on demand.
-Nothing proposed above uses them.
+**Only shrink what is actually big.** `fills_the_screen()` gates the restore.
+macOS keeps a native resize edge on a tiled window which bypasses our grips
+entirely, so a window can be `isZoomed` at a size the user chose deliberately;
+restoring it then throws that size away. Stated in geometry we can see rather
+than in what the platform means by its flags, so it holds whatever tiling turns
+out to mean.
+
+### Gating
+
+Every workaround keys off `on_cocoa()` -- the QPA backend, never `sys.platform`.
+macOS running the offscreen plugin behaves the X11 way for all of it, and
+`winId()` there is not an NSView pointer: handing it to `objc_object()`
+**segfaults rather than raising**, straight past any `except`.
+
+The behaviour predicates are kept separate from `on_cocoa()` itself even though
+they only return it, because `on_cocoa()` is also that safety guard. A test
+that wants to exercise macOS behaviour must not be able to switch the guard off
+by accident -- which is exactly what happened once, and cost a segfault.
+
+---
+
+## Confirming a change
+
+```bash
+python scripts/window_drag_probe.py --mode shipping --log /tmp/run.txt
+```
+
+`shipping` routes the gesture through `SystemMoveGesture` itself, so the run
+exercises what the app does rather than a copy of it. Maximize with the probe's
+own button, then: single-click the title bar (nothing should happen), double
+click it (restores once), press and hold a second (nothing), drag away in one
+motion (un-maximizes under the pointer, grab point stays put), and drag a
+non-maximized window around. The log prints `grab_offset=` on every move; in a
+good run it stops changing once the drag is under way.
+
+## Traps
+
+- **The suite cannot see any of this.** `tests/conftest.py` forces
+  `QT_QPA_PLATFORM=offscreen`, where there is no window manager and where
+  `setGeometry()` behaves the X11 way. The tests pin call ordering, gating and
+  arithmetic; they cannot pin the behaviour. A green run is not verification.
+- **Never assert `isMaximized()`** for this behaviour -- the widget flag is the
+  thing that desyncs. Assert
+  `window.windowHandle().windowStates() & Qt.WindowState.WindowMaximized`, or
+  ask `is_maximized()`.
+- **No timers, polling, or retry loops.** Tried and removed once already. The
+  one-event deferral in `SystemMoveGesture.move()` is event-driven, and that
+  distinction is the point.
+- **Do not fold `_MOVE_STARTS_ON_DRAG` into the macOS path.** It governs *all*
+  drags, so it would change non-maximized dragging too and lose
+  `performWindowDragWithEvent:`'s handling of the user's title-bar double-click
+  preference.
+- `window_drag.py` hands over from a press with no move tracking, because an
+  overlay sees the press and nothing after it. Dragging a maximized window from
+  an overlay is therefore still anchored to the discarded frame. Documented at
+  the call site, deliberately not fixed.
+
+## Known remaining
+
+- The grab point drifts a few pixels on a fast drag: Qt and AppKit anchor at
+  different instants, and closing that needs sub-frame synchronisation neither
+  exposes.
+- A flash when a drag begins very shortly after a maximize animation ends --
+  the reconcile race in §4. The fixes are a timer or private API, both worse
+  than the symptom.
+- A zoom/restore size mismatch remains reachable by some path; reported after
+  the `fills_the_screen` fix, cause not established.
+
+## Private API
+
+`_zoomFill_` and `_currentZoomState` appear in this document because they
+reproduce a drag-to-top on demand. **Nothing shipped uses them**, and nothing
+should.

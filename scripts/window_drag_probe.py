@@ -10,22 +10,20 @@ Run it, then perform each gesture the prompt asks for and paste the log back.
 
     python scripts/window_drag_probe.py --mode delegate
 
-Modes, in the order worth trying:
+Two modes:
 
-``delegate``        Hand the maximized window to the platform untouched. If the
-                    platform un-maximizes it under the pointer by itself, this
-                    is the whole fix and the client-side restore can go. This is
-                    what Linux/Mutter does, and it is the decisive experiment on
-                    macOS.
-``restore``         The current shipping behaviour off Linux: restore
-                    client-side on mouse *press*, then start the system move.
-``restore-on-drag`` Same restore, but deferred until the pointer has actually
-                    moved, so a plain click or a double click never un-maximizes.
-``shipping``        Route the gesture through :class:`SystemMoveGesture` itself,
-                    so what the run exercises is what the app actually does.
-                    Use this one to confirm a fix rather than to diagnose.
+``shipping``  Route the gesture through :class:`SystemMoveGesture` itself, so
+              the run exercises what the app actually does. Use this to confirm
+              a fix. This is the default.
+``delegate``  Hand the maximized window to the platform untouched, skipping the
+              client-side restore entirely. This is what Linux/Mutter can be
+              left to do; on macOS it was measured as wrong, and the mode is
+              kept so that stays checkable rather than remembered.
 
-The first three only report. ``shipping`` reports on the real thing.
+Earlier revisions carried two more modes that reimplemented restore strategies
+the code no longer has. They were frozen copies with nothing to keep them
+honest, so they are gone; ``docs/WINDOW_STATE_INVESTIGATION.md`` records what
+they measured.
 """
 
 from __future__ import annotations
@@ -137,8 +135,6 @@ class ProbeTitleBar(QWidget):
     def __init__(self, mode: str) -> None:
         super().__init__()
         self._mode = mode
-        self._press_pos = None
-        self._restored = False
         self._gesture = SystemMoveGesture()
         self.setObjectName("ProbeTitleBar")
         self.setFixedHeight(48)
@@ -166,22 +162,12 @@ class ProbeTitleBar(QWidget):
             super().mousePressEvent(event)
             return
         window = self.window()
-        self._press_pos = event.globalPosition().toPoint()
-        self._restored = False
         log(f"PRESS   {snapshot(window)}")
-
         if self._mode == "shipping":
             log(f"  -> gesture.press() returned {self._gesture.press(self, event)}")
-            event.accept()
-            return
-
-        if self._mode == "restore-on-drag":
-            # Nothing on press: a click, and a double click, must not disturb
-            # the window at all.
-            event.accept()
-            return
-
-        self._start(window, "press")
+        else:
+            log(f"  -> handing the window to the platform untouched")
+            log(f"  -> startSystemMove() returned {window_gestures._request_system_move(window)}")
         event.accept()
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
@@ -197,18 +183,10 @@ class ProbeTitleBar(QWidget):
             f"{snapshot(window)}"
         )
         if self._mode == "shipping":
-            before = window.isMaximized()
+            was_maximized = is_maximized(window)
             took = self._gesture.move(self, event)
-            if before:
+            if was_maximized:
                 log(f"  -> gesture.move() returned {took}: {snapshot(window)}")
-            event.accept()
-            return
-
-        if self._mode == "restore-on-drag" and not self._restored:
-            travelled = (cursor - self._press_pos).manhattanLength()
-            if travelled >= QApplication.startDragDistance():
-                self._restored = True
-                self._start(window, f"first move ({travelled}px)")
         event.accept()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
@@ -216,18 +194,6 @@ class ProbeTitleBar(QWidget):
         log(f"RELEASE {snapshot(self.window())}")
         QTimer.singleShot(700, lambda: log(f"SETTLED {snapshot(self.window())}"))
         event.accept()
-
-    def _start(self, window: QWidget, when: str) -> None:
-        maximized = window.isMaximized()
-        if maximized and self._mode != "delegate":
-            log(f"  -> client-side restore on {when}")
-            window_gestures._restore_under_cursor(window)
-            log(f"  -> after restore: {snapshot(window)}")
-        elif maximized:
-            log(f"  -> handing the maximized window to the platform on {when}")
-        started = window_gestures._request_system_move(window)
-        log(f"  -> startSystemMove() returned {started}")
-
 
 class ProbeWindow(QMainWindow):
     def __init__(self, mode: str) -> None:
@@ -256,7 +222,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("delegate", "restore", "restore-on-drag", "shipping"),
+        choices=("shipping", "delegate"),
         default="shipping",
     )
     parser.add_argument("--log", type=Path, default=None, help="also write the log here")

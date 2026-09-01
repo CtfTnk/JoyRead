@@ -1,7 +1,7 @@
-"""Who is maximized, and what size it returns to.
+"""Who is maximized, and what size the window returns to.
 
-These are the two facts the window chrome keeps getting wrong, because Qt
-offers four separate answers to them and three are unreliable:
+These are the two facts the window chrome kept getting wrong, because Qt offers
+four separate answers to them and three are unreliable:
 
 * ``QWidget.isMaximized()`` is cleared by ``QWidget.setGeometry()`` without the
   platform being told, so it reads ``False`` for a window the window manager
@@ -19,68 +19,74 @@ So this module owns both answers. :func:`is_maximized` asks the platform rather
 than the widget, and the restore size is *latched from user intent* rather than
 read back from the window -- see :func:`remember_restore_geometry`.
 
-See ``docs/WINDOW_STATE_INVESTIGATION.md`` for the measurements.
+Every workaround here keys off the QPA backend rather than ``sys.platform``,
+because every one of them is a property of that backend and not of the
+operating system -- macOS running the offscreen plugin behaves the X11 way for
+all of it. :func:`on_cocoa` answers that question once. The behaviour
+predicates below each return it, and are kept separate from it deliberately:
+:func:`on_cocoa` is also the *safety* gate on reaching into AppKit at all, and
+a test that wants to exercise one of the behaviours must not be able to switch
+that guard off by accident. See ``docs/WINDOW_STATE_INVESTIGATION.md`` for the
+measurements.
 """
 
 from __future__ import annotations
 
 import ctypes
-import sys
 
 from PySide6.QtCore import QObject, QRect, Qt
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QWidget
 
 
-# Whether the platform keeps a zoom state of its own that Qt does not reliably
-# mirror. On macOS the user can maximize a window in ways Qt never initiates --
-# the green button, a title-bar double click, dragging to the top edge to tile
-# it -- and after any of those ``QWidget.isMaximized()`` and
-# ``NSWindow.isZoomed()`` can disagree indefinitely.
-_PLATFORM_OWNS_THE_ZOOM_STATE = sys.platform == "darwin"
-
-# Whether ``normalGeometry()`` survives a platform-driven resize. On macOS it
-# does not; see the module docstring. Everywhere else it is still the best
-# answer available, and changing that is a behaviour change on platforms this
-# was not measured against.
-_PLATFORM_FORGETS_THE_RESTORE_SIZE = sys.platform == "darwin"
-
-# Whether setting the geometry is by itself enough to leave the maximized
-# state. On Cocoa it is: AppKit drops the zoomed state as soon as the frame
-# stops matching the zoomed one -- measured from a tiled window, a 900x600
-# setGeometry left isMaximized, QWindow.windowStates() and NSWindow.isZoomed()
-# all agreeing, in 1.2ms. Avoiding ``showNormal()`` there is the point rather
-# than a bonus: on Cocoa it is ``-[NSWindow zoom:]``, which animates the
-# un-zoom inside a nested run loop and blocks its caller for ~350ms, and
-# ``NSWindowAnimationBehaviorNone`` does not shorten it.
-#
-# ``zoom:`` is also the wrong answer for a different reason: measured from a
-# tiled window it restores to AppKit's *own* saved frame, which the same
-# animation has already overwritten -- 1492x929 rather than the 900x600 the
-# user chose.
-_GEOMETRY_ALONE_LEAVES_MAXIMIZED = sys.platform == "darwin"
-
-# How far a window's size may sit from the screen's usable area and still
-# count as filling it. A maximized window matches it exactly; the slack is for
-# a platform that insets the frame by a pixel or two.
+# How far a window's size may sit from the screen's usable area and still count
+# as filling it. A maximized window matches it exactly; the slack is for a
+# platform that insets the frame by a pixel or two.
 _FILLS_THE_SCREEN_SLACK = 4
 
 _STORE_NAME = "JoyReadRestoreGeometry"
 
 
-def _on_cocoa() -> bool:
+def on_cocoa() -> bool:
     """Whether the Cocoa QPA backend is the one in use.
 
-    The gate is the backend, not the OS. Under the offscreen and minimal
-    plugins -- which macOS can perfectly well be running, and which the test
-    suite forces -- ``winId()`` is not an NSView pointer, and handing it to
-    ``objc_object()`` segfaults rather than raising, straight past any except.
+    Both the source of every behaviour predicate below and, in
+    :func:`_appkit_is_zoomed`, the guard against reaching into AppKit when
+    there is no AppKit to reach: under the offscreen and minimal plugins
+    ``winId()`` is not an NSView pointer, and handing it to ``objc_object()``
+    segfaults rather than raising, straight past any ``except``.
     """
     return QGuiApplication.platformName() == "cocoa"
 
 
+def _platform_forgets_the_restore_size() -> bool:
+    """Whether ``normalGeometry()`` survives a platform-driven resize.
+
+    On Cocoa it does not -- see the module docstring. Everywhere else Qt's
+    answer is still the best available, and second-guessing it would be a
+    behaviour change on a platform none of this was measured against.
+    """
+    return on_cocoa()
+
+
+def _geometry_alone_leaves_maximized() -> bool:
+    """Whether setting the frame is by itself enough to leave maximized.
+
+    On Cocoa it is: measured from a tiled window, a 900x600 ``setGeometry``
+    left ``isMaximized()``, ``QWindow.windowStates()`` and
+    ``NSWindow.isZoomed()`` all agreeing, in 1.2ms. Skipping ``showNormal()``
+    there is the point rather than a bonus -- on Cocoa it is
+    ``-[NSWindow zoom:]``, which animates the un-zoom inside a nested run loop
+    and blocks its caller for ~350ms, and ``NSWindowAnimationBehaviorNone``
+    does not shorten it. ``zoom:`` is wrong for a second reason too: it
+    restores to AppKit's own saved frame, which that same animation has
+    already overwritten.
+    """
+    return on_cocoa()
+
+
 def _native_window(window: QWidget):
-    """The ``NSWindow`` behind ``window``. Only safe once :func:`_on_cocoa`."""
+    """The ``NSWindow`` behind ``window``. Only safe once :func:`on_cocoa`."""
     import objc
 
     view = objc.objc_object(c_void_p=ctypes.c_void_p(int(window.winId())))
@@ -94,7 +100,7 @@ def _appkit_is_zoomed(window: QWidget) -> bool | None:
     evidence that the window is unmaximized, and saying so would strand a
     maximized window exactly the way the widget flag already does.
     """
-    if not _on_cocoa():
+    if not on_cocoa():
         return None
     # winId() creates the native window as a side effect, so only ask once the
     # window already has one.
@@ -110,17 +116,41 @@ def _appkit_is_zoomed(window: QWidget) -> bool | None:
 def is_maximized(window: QWidget) -> bool:
     """Whether the *platform* considers ``window`` maximized.
 
-    Deliberately not ``QWidget.isMaximized()``. That flag is cleared by
-    ``setGeometry()`` without the platform being told, which is what let a
-    window get stuck: our code read ``False``, stopped trying to restore it,
-    and the window manager went on refusing to move or resize a window it
-    still considered maximized.
+    Deliberately not ``QWidget.isMaximized()``, which is used only as the
+    fallback. That flag is cleared by ``setGeometry()`` without the platform
+    being told, which is what let a window get stuck: our code read ``False``,
+    stopped trying to restore it, and the window manager went on refusing to
+    move or resize a window it still considered maximized.
     """
-    if _PLATFORM_OWNS_THE_ZOOM_STATE:
-        zoomed = _appkit_is_zoomed(window)
-        if zoomed is not None:
-            return zoomed
-    return window.isMaximized()
+    zoomed = _appkit_is_zoomed(window)
+    return window.isMaximized() if zoomed is None else zoomed
+
+
+def fills_the_screen(window: QWidget) -> bool:
+    """Whether ``window`` still occupies the whole usable screen area.
+
+    Asked before un-maximizing, because that only means "shrink a window that
+    fills the screen". A window the platform still calls maximized but which no
+    longer fills it has been resized by the user since -- macOS keeps a native
+    resize edge on a tiled window, which bypasses our own resize grips entirely
+    and leaves the window tiled at a size the user chose. Shrinking it then
+    throws that size away.
+
+    Stated in geometry we can see rather than in what the platform means by its
+    state flags, so it holds whatever the platform's tiling semantics turn out
+    to be.
+    """
+    screen = window.screen()
+    if screen is None:
+        # No screen to compare against. Assume the caller's reading of the
+        # window state rather than silently skipping a restore it wanted.
+        return True
+    available = screen.availableGeometry().size()
+    current = window.geometry().size()
+    return (
+        abs(current.width() - available.width()) <= _FILLS_THE_SCREEN_SLACK
+        and abs(current.height() - available.height()) <= _FILLS_THE_SCREEN_SLACK
+    )
 
 
 class _RestoreGeometry(QObject):
@@ -149,12 +179,14 @@ def remember_restore_geometry(window: QWidget) -> None:
 
     Called when the user is *about* to do something -- start a drag, start a
     resize, press the zoom button -- rather than from observed geometry
-    changes. That distinction is the whole point: a platform maximize
-    animation is a torrent of geometry changes, and latching on those is
-    exactly how ``normalGeometry()`` destroys itself. At these moments nothing
-    is animating and the window is the size the user chose.
+    changes. That distinction is the whole point: a platform maximize animation
+    is a torrent of geometry changes, and latching on those is exactly how
+    ``normalGeometry()`` destroys itself. At these moments nothing is animating
+    and the window is the size the user chose.
 
-    A maximized window has nothing worth remembering, so it is ignored.
+    A maximized window has nothing worth remembering, so it is ignored. The
+    latch is kept on every platform even though only Cocoa reads it back, so
+    that the recording and the decision to trust it stay independent.
     """
     if is_maximized(window) or window.isFullScreen():
         return
@@ -162,8 +194,12 @@ def remember_restore_geometry(window: QWidget) -> None:
 
 
 def restore_geometry(window: QWidget) -> QRect:
-    """The size ``window`` should return to when it un-maximizes."""
-    if not _PLATFORM_FORGETS_THE_RESTORE_SIZE:
+    """The size ``window`` should return to when it un-maximizes.
+
+    Ours where the platform forgets it -- see
+    :func:`_platform_forgets_the_restore_size`.
+    """
+    if not _platform_forgets_the_restore_size():
         return window.normalGeometry()
     remembered = _store(window).rect
     # Nothing latched yet -- a window maximized before it was ever dragged or
@@ -175,23 +211,24 @@ def restore_geometry(window: QWidget) -> QRect:
 def leave_maximized(window: QWidget, *, geometry: QRect) -> None:
     """Take ``window`` out of maximized state and place it at ``geometry``.
 
-    The single way out of maximized state, shared by the zoom button and by a
-    title-bar drag; they differ only in the rectangle they ask for.
+    The single way out, shared by the zoom button and by a title-bar drag; they
+    differ only in the rectangle they ask for. An invalid rectangle means the
+    caller has no opinion about where the window should land, only that it must
+    stop being maximized.
 
-    Where ``showNormal()`` is needed at all it must come first, and the order
-    is load-bearing. ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized``
-    from the widget's own state without telling the QWindow, so a
-    ``showNormal()`` after it compares equal to the state the widget already
-    believes it is in, returns early, and the platform is never told to leave
-    maximized -- leaving the window manager owning the geometry of a window it
-    still thinks is maximized. Reproduced identically under the offscreen and
-    minimal QPA plugins, so this is QWidget behaviour rather than one backend's
-    quirk.
+    Where ``showNormal()`` is needed at all it must come first, and the order is
+    load-bearing. ``QWidget.setGeometry()`` clears ``Qt::WindowMaximized`` from
+    the widget's own state without telling the QWindow, so a ``showNormal()``
+    after it compares equal to the state the widget already believes it is in,
+    returns early, and the platform is never told to leave maximized -- leaving
+    the window manager owning the geometry of a window it still thinks is
+    maximized. Reproduced identically under the offscreen and minimal QPA
+    plugins, so this is QWidget behaviour rather than one backend's quirk.
     """
     if not geometry.isValid():
         window.showNormal()
         return
-    if not _GEOMETRY_ALONE_LEAVES_MAXIMIZED:
+    if not _geometry_alone_leaves_maximized():
         window.showNormal()
     window.setGeometry(geometry)
 
@@ -204,30 +241,3 @@ def toggle_maximized(window: QWidget) -> None:
     # About to maximize on purpose, so this is the size to come back to.
     remember_restore_geometry(window)
     window.showMaximized()
-
-
-def fills_the_screen(window: QWidget) -> bool:
-    """Whether ``window`` still occupies the whole usable screen area.
-
-    Asked before un-maximizing, because that only means "shrink a window that
-    fills the screen". A window the platform still calls maximized but which
-    no longer fills it has been resized by the user since -- macOS keeps a
-    native resize edge on a tiled window, which bypasses our own resize grips
-    entirely and leaves the window tiled at a size the user chose. Shrinking
-    it then throws that size away.
-
-    Stated in geometry we can see rather than in what the platform means by
-    its state flags, so it holds whatever the platform's tiling semantics turn
-    out to be.
-    """
-    screen = window.screen()
-    if screen is None:
-        # No screen to compare against. Assume the caller's reading of the
-        # window state rather than silently skipping a restore it wanted.
-        return True
-    available = screen.availableGeometry().size()
-    current = window.geometry().size()
-    return (
-        abs(current.width() - available.width()) <= _FILLS_THE_SCREEN_SLACK
-        and abs(current.height() - available.height()) <= _FILLS_THE_SCREEN_SLACK
-    )

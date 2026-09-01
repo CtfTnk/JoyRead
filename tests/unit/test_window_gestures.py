@@ -119,7 +119,7 @@ def test_a_press_alone_never_triggers_a_client_side_restore(monkeypatch) -> None
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
     window = _StubWindow(maximized=True)
     gesture = SystemMoveGesture()
 
@@ -182,7 +182,7 @@ def test_dragging_a_maximized_window_restores_it_first(qtbot, monkeypatch) -> No
     it was measured against a real cocoa window instead.
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
     window = QMainWindow()
     qtbot.addWidget(window)
     window.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
@@ -233,36 +233,35 @@ def test_a_compositor_that_restores_on_drag_is_left_to_do_it(qtbot, monkeypatch)
     assert window.normalGeometry() == remembered, "the remembered size must survive"
 
 
-def test_the_compositor_owns_the_restore_on_linux_only() -> None:
-    assert window_gestures._COMPOSITOR_RESTORES_ON_DRAG is sys.platform.startswith("linux")
+def test_the_move_anchor_workaround_follows_the_backend(monkeypatch) -> None:
+    # Driven from both sides, so a predicate hard-coded either way is caught on
+    # any machine -- comparing against sys.platform on the macOS box this suite
+    # usually runs on would read True is True and pass regardless.
+    for backend in (True, False):
+        monkeypatch.setattr(window_gestures, "on_cocoa", lambda backend=backend: backend)
+        assert window_gestures._move_loop_anchors_on_its_event() is backend
 
 
-def test_the_cocoa_workarounds_are_confined_to_macos() -> None:
-    """Every one of these was measured against AppKit, and only applies there.
-
-    Widening any of them to a platform whose ``showNormal()`` is the thing that
-    clears the state, whose move loop reads the live pointer rather than the
-    event, or whose ``normalGeometry()`` survives a maximize, breaks that
-    platform.
+def test_the_platform_move_rules_stay_on_their_own_platforms() -> None:
+    """The two rules that really are about the OS, not the backend.
 
     Re-imported under each platform rather than compared against
     ``sys.platform``: this suite's own machine is usually the macOS one, where
-    such a comparison reads ``True is True`` and passes just as happily for a
-    trait that was widened to every platform.
+    such a comparison passes just as happily for a rule widened to everything.
     """
     real = sys.platform
     try:
-        for platform, expected in (("darwin", True), ("linux", False), ("win32", False)):
+        for platform, starts_on_drag, compositor_restores in (
+            ("darwin", False, False),
+            ("linux", False, True),
+            ("win32", True, False),
+        ):
             sys.platform = platform
-            gestures = importlib.reload(window_gestures)
-            state = importlib.reload(window_state)
-            assert gestures._MOVE_ANCHORS_ON_ITS_EVENT is expected, platform
-            assert state._GEOMETRY_ALONE_LEAVES_MAXIMIZED is expected, platform
-            assert state._PLATFORM_OWNS_THE_ZOOM_STATE is expected, platform
-            assert state._PLATFORM_FORGETS_THE_RESTORE_SIZE is expected, platform
+            reloaded = importlib.reload(window_gestures)
+            assert reloaded._MOVE_STARTS_ON_DRAG is starts_on_drag, platform
+            assert reloaded._COMPOSITOR_RESTORES_ON_DRAG is compositor_restores, platform
     finally:
         sys.platform = real
-        importlib.reload(window_state)
         importlib.reload(window_gestures)
 
 
@@ -321,7 +320,7 @@ def test_only_a_maximized_window_is_restored_before_the_drag(monkeypatch) -> Non
     # The anchor arithmetic degenerates to identity when the window is already
     # its normal size, so geometry alone cannot show whether the restore ran.
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
     ordinary = _StubWindow()
     window_gestures.begin_system_move(ordinary)
     assert ordinary.calls == []
@@ -398,7 +397,7 @@ def test_the_maximized_state_is_cleared_before_the_window_is_placed(monkeypatch)
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
     window = _StubWindow(maximized=True)
 
     window_gestures.begin_system_move(window)
@@ -419,8 +418,7 @@ def test_the_restore_is_one_frame_change_where_geometry_clears_the_state(monkeyp
     monkeypatch.setattr(
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", True)
-    monkeypatch.setattr(window_state, "_PLATFORM_FORGETS_THE_RESTORE_SIZE", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: True)
     window = _StubWindow(maximized=True)
 
     window_gestures._restore_under_cursor(window)
@@ -441,7 +439,7 @@ def test_a_move_loop_that_anchors_on_its_event_is_handed_a_fresh_one(monkeypatch
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", True)
+    monkeypatch.setattr(window_gestures, "_move_loop_anchors_on_its_event", lambda: True)
     monkeypatch.setattr(
         window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
     )
@@ -465,7 +463,7 @@ def test_a_move_loop_that_reads_the_live_pointer_hands_over_at_once(monkeypatch)
     # delay the drag.
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", False)
+    monkeypatch.setattr(window_gestures, "_move_loop_anchors_on_its_event", lambda: False)
     started = _record_moves(monkeypatch)
     window = _StubWindow(maximized=True)
     gesture = SystemMoveGesture()
@@ -481,7 +479,7 @@ def test_an_ordinary_window_is_never_deferred_by_the_anchor_rule(monkeypatch) ->
     # dragging a normal window must still start from the press.
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
     monkeypatch.setattr(window_gestures, "_MOVE_STARTS_ON_DRAG", False)
-    monkeypatch.setattr(window_gestures, "_MOVE_ANCHORS_ON_ITS_EVENT", True)
+    monkeypatch.setattr(window_gestures, "_move_loop_anchors_on_its_event", lambda: True)
     started = _record_moves(monkeypatch)
     window = _StubWindow()
 
@@ -637,7 +635,6 @@ def test_a_resized_maximized_window_is_dragged_at_the_size_the_user_chose(monkey
     window snapping back to its pre-zoom size the instant it starts moving.
     """
     monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
-    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
     monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: True)
     window = _StubWindow(maximized=True)
     # Smaller than the stub's screen, as a window the user has resized is.
@@ -647,3 +644,19 @@ def test_a_resized_maximized_window_is_dragged_at_the_size_the_user_chose(monkey
 
     window_gestures.begin_system_move(window)
     assert window.calls == [], "the size the user chose must survive the drag"
+
+
+def test_a_restore_with_no_remembered_size_still_leaves_maximized(monkeypatch) -> None:
+    # Nowhere to put the window is not a reason to leave it maximized: the
+    # caller asked for a drag, and a full-screen window cannot be dragged.
+    monkeypatch.setattr(window_gestures, "_COMPOSITOR_RESTORES_ON_DRAG", False)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: False)
+    monkeypatch.setattr(window_gestures, "restore_geometry", lambda window: QRect())
+    monkeypatch.setattr(
+        window_gestures, "QCursor", SimpleNamespace(pos=lambda: QPoint(400, 10))
+    )
+    window = _StubWindow(maximized=True)
+
+    window_gestures._restore_under_cursor(window)
+
+    assert window.calls == ["showNormal"], "it must still stop being maximized"

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import sys
-
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QObject, QRect, Qt
+from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QMainWindow
 
 from joyread.ui.widgets import window_state
@@ -28,9 +27,14 @@ def _window(qtbot) -> QMainWindow:
     return window
 
 
-def _owns_the_size(monkeypatch) -> None:
-    """Pin the macOS shape: the platform forgets, so we remember."""
-    monkeypatch.setattr(window_state, "_PLATFORM_FORGETS_THE_RESTORE_SIZE", True)
+def _cocoa(monkeypatch, on: bool = True) -> None:
+    """Pin the macOS *behaviour*, without touching the AppKit safety gate.
+
+    Patching ``on_cocoa`` itself would also let ``_appkit_is_zoomed`` reach for
+    an NSWindow that an offscreen window does not have, which segfaults.
+    """
+    monkeypatch.setattr(window_state, "_platform_forgets_the_restore_size", lambda: on)
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: on)
 
 
 # --- the remembered restore size -------------------------------------------
@@ -45,7 +49,7 @@ def test_the_remembered_size_survives_a_maximize_animation(qtbot, monkeypatch) -
     memory of the size to restore to ends up being the maximized size. A
     latched value must not move when frames arrive.
     """
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     window = _window(qtbot)
     remember_restore_geometry(window)
 
@@ -61,14 +65,14 @@ def test_the_remembered_size_survives_a_maximize_animation(qtbot, monkeypatch) -
 def test_nothing_latched_yet_falls_back_to_qt(qtbot, monkeypatch) -> None:
     # A window maximized before it was ever dragged or resized. Qt's answer is
     # wrong only *after* an animation, so it is still the best guess here.
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     window = _window(qtbot)
 
     assert restore_geometry(window) == window.normalGeometry()
 
 
 def test_a_maximized_window_has_no_size_worth_remembering(qtbot, monkeypatch) -> None:
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     window = _window(qtbot)
     remember_restore_geometry(window)
     chosen = restore_geometry(window)
@@ -81,7 +85,7 @@ def test_a_maximized_window_has_no_size_worth_remembering(qtbot, monkeypatch) ->
 
 
 def test_each_window_remembers_its_own_size(qtbot, monkeypatch) -> None:
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     first = _window(qtbot)
     second = _window(qtbot)
     second.resize(500, 400)
@@ -94,7 +98,7 @@ def test_each_window_remembers_its_own_size(qtbot, monkeypatch) -> None:
 
 
 def test_latching_twice_keeps_the_later_size(qtbot, monkeypatch) -> None:
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     window = _window(qtbot)
     remember_restore_geometry(window)
     window.resize(700, 500)
@@ -107,7 +111,7 @@ def test_latching_twice_keeps_the_later_size(qtbot, monkeypatch) -> None:
 def test_a_platform_that_remembers_for_us_is_left_alone(qtbot, monkeypatch) -> None:
     # Off macOS ``normalGeometry()`` survives a maximize, and second-guessing it
     # would be a behaviour change on a platform none of this was measured on.
-    monkeypatch.setattr(window_state, "_PLATFORM_FORGETS_THE_RESTORE_SIZE", False)
+    _cocoa(monkeypatch, on=False)
     window = _window(qtbot)
     remember_restore_geometry(window)
     window.resize(640, 480)
@@ -127,7 +131,6 @@ def test_the_platform_answer_is_used_when_it_can_be_reached(qtbot, monkeypatch) 
     still has maximized -- which is what let a tiled window get stuck: the
     code stopped trying to restore it while AppKit went on refusing to move it.
     """
-    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
     monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: True)
     window = _window(qtbot)
 
@@ -138,7 +141,6 @@ def test_the_platform_answer_is_used_when_it_can_be_reached(qtbot, monkeypatch) 
 def test_an_unreachable_platform_falls_back_to_qt(qtbot, monkeypatch) -> None:
     # None, not False: an NSWindow we cannot read is not evidence the window is
     # unmaximized.
-    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
     monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: None)
     window = _window(qtbot)
     window.showMaximized()
@@ -153,7 +155,7 @@ def test_an_unreadable_nswindow_is_not_evidence_of_anything(qtbot, monkeypatch) 
     def boom(window):
         raise RuntimeError("no NSWindow")
 
-    monkeypatch.setattr(window_state, "_on_cocoa", lambda: True)
+    monkeypatch.setattr(window_state, "on_cocoa", lambda: True)
     monkeypatch.setattr(window_state, "_native_window", boom)
     window = _window(qtbot)
 
@@ -181,7 +183,7 @@ def test_toggle_remembers_the_size_before_maximizing(qtbot, monkeypatch) -> None
     # different from one that does. Comparing against the current size alone
     # cannot fail: the fallback returns normalGeometry(), which offscreen keeps
     # correct, so it would agree either way.
-    _owns_the_size(monkeypatch)
+    _cocoa(monkeypatch)
     window = _window(qtbot)
     remember_restore_geometry(window)
     assert restore_geometry(window).size() == QRect(0, 0, 900, 600).size()
@@ -198,8 +200,8 @@ def test_toggle_remembers_the_size_before_maximizing(qtbot, monkeypatch) -> None
 
 
 def test_toggle_returns_to_the_remembered_size(qtbot, monkeypatch) -> None:
-    _owns_the_size(monkeypatch)
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    _cocoa(monkeypatch)
+    _cocoa(monkeypatch, on=False)
     window = _window(qtbot)
     window.resize(760, 540)
     qtbot.wait(10)
@@ -215,7 +217,7 @@ def test_toggle_returns_to_the_remembered_size(qtbot, monkeypatch) -> None:
 
 def test_an_invalid_target_still_leaves_maximized(qtbot, monkeypatch) -> None:
     # Better a window at the wrong size than one stuck full screen.
-    monkeypatch.setattr(window_state, "_GEOMETRY_ALONE_LEAVES_MAXIMIZED", False)
+    _cocoa(monkeypatch, on=False)
     window = _window(qtbot)
     window.showMaximized()
     qtbot.wait(20)
@@ -228,11 +230,26 @@ def test_an_invalid_target_still_leaves_maximized(qtbot, monkeypatch) -> None:
     ), "the platform window, not just the widget, must have left maximized state"
 
 
-def test_the_traits_are_macos_only() -> None:
-    darwin = sys.platform == "darwin"
-    assert window_state._PLATFORM_OWNS_THE_ZOOM_STATE is darwin
-    assert window_state._PLATFORM_FORGETS_THE_RESTORE_SIZE is darwin
-    assert window_state._GEOMETRY_ALONE_LEAVES_MAXIMIZED is darwin
+def test_every_behaviour_predicate_follows_the_backend(monkeypatch) -> None:
+    """One source of truth, and it is the QPA backend rather than the OS.
+
+    macOS running the offscreen plugin behaves the X11 way for all of this, so
+    a predicate keyed off ``sys.platform`` would switch on workarounds that are
+    wrong there. Driven from both sides so a predicate hard-coded either way is
+    caught on any machine.
+    """
+    predicates = (
+        window_state._platform_forgets_the_restore_size,
+        window_state._geometry_alone_leaves_maximized,
+    )
+    for backend in (True, False):
+        monkeypatch.setattr(window_state, "on_cocoa", lambda backend=backend: backend)
+        for predicate in predicates:
+            assert predicate() is backend, predicate.__name__
+
+
+def test_the_backend_gate_reads_the_qpa_plugin() -> None:
+    assert window_state.on_cocoa() is (QGuiApplication.platformName() == "cocoa")
 
 
 # --- only shrink what is actually big ---------------------------------------
@@ -240,7 +257,6 @@ def test_the_traits_are_macos_only() -> None:
 
 def _looks_maximized(monkeypatch) -> None:
     """Make the platform claim the window is maximized, whatever its size."""
-    monkeypatch.setattr(window_state, "_PLATFORM_OWNS_THE_ZOOM_STATE", True)
     monkeypatch.setattr(window_state, "_appkit_is_zoomed", lambda window: True)
 
 
@@ -289,3 +305,45 @@ def test_no_screen_falls_back_to_restoring(qtbot, monkeypatch) -> None:
     monkeypatch.setattr(type(window), "screen", lambda self: None)
 
     assert fills_the_screen(window) is True
+
+
+# --- the ways out when there is nowhere to put the window -------------------
+
+
+class _Recorder(QObject):
+    """Records the calls the restore path makes, in order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls: list[str] = []
+
+    def showNormal(self) -> None:  # noqa: N802 - Qt API shape.
+        self.calls.append("showNormal")
+
+    def setGeometry(self, *args) -> None:  # noqa: N802 - Qt API shape.
+        self.calls.append("setGeometry")
+
+
+def test_an_invalid_target_leaves_maximized_without_placing_the_window(monkeypatch) -> None:
+    """Pinned in the Cocoa shape, which is the one that can go wrong.
+
+    There ``showNormal()`` is otherwise skipped, so dropping the guard would
+    leave ``setGeometry(QRect())`` as the only call -- placing the window
+    nowhere and never taking it out of maximized state.
+    """
+    monkeypatch.setattr(window_state, "_geometry_alone_leaves_maximized", lambda: True)
+    window = _Recorder()
+
+    leave_maximized(window, geometry=QRect())
+
+    assert window.calls == ["showNormal"], "the only way out when there is no rectangle"
+
+
+def test_a_window_with_no_nswindow_is_not_evidence_either(qtbot, monkeypatch) -> None:
+    # Same reasoning as an unreadable one: absence of an NSWindow is not proof
+    # the window is unmaximized.
+    monkeypatch.setattr(window_state, "on_cocoa", lambda: True)
+    monkeypatch.setattr(window_state, "_native_window", lambda window: None)
+    window = _window(qtbot)
+
+    assert window_state._appkit_is_zoomed(window) is None
