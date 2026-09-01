@@ -111,8 +111,6 @@ class NovelReaderShellWidget(ReaderShellBase):
         self.header = ReaderHeader(context.resources, self, show_custom_button=True)
         self.header.set_back_visible(show_back_button)
         self.panel_scrim.set_drag_handle(self.header)
-        self._sync_title_control_mode()
-        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
         # Direction/transition switches and spread shift are manga-only;
         # hide them so the novel footer matches Figma's stripped layout.

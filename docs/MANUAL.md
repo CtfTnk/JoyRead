@@ -217,7 +217,6 @@ password. It cannot be undone, and it asks you to type `delete` first.
 | Import book when opening | Off | Import every book you open, instead of opening it in place. |
 | Verify imported file integrity | On | Hash imported files so JoyRead can detect later corruption. |
 | Individual Read Window | Off | Open each book in its own window. |
-| Inspect Windows/Linux Title Control | Off | Draw the Windows/Linux window buttons on macOS, for checking that layout without a second machine. |
 | Import folder depth | 1 | How deep *Import Folder…* descends. |
 | Convert archives on import | Expensive and nested formats | See [Conversion on import](#conversion-on-import). |
 

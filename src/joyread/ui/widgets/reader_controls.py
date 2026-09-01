@@ -218,9 +218,10 @@ class ReaderHeader(QWidget):
         self._title_control_group.minimize_requested.connect(lambda: self.window().showMinimized())
         self._title_control_group.zoom_requested.connect(self._toggle_zoom)
         layout.addWidget(self._title_control_group, alignment=Qt.AlignmentFlag.AlignVCenter)
-        self.set_title_control_mode(
-            force_non_macos_title_controls=False,
-        )
+        show_non_macos_controls = self._platform_name != "darwin"
+        self._stoplight_controls.setVisible(not show_non_macos_controls)
+        self._title_control_group.setVisible(show_non_macos_controls)
+        self._position_title()
 
     def set_back_visible(self, visible: bool) -> None:
         self.back_button.setVisible(visible)
@@ -236,17 +237,6 @@ class ReaderHeader(QWidget):
 
     def set_bookmarks_enabled(self, enabled: bool) -> None:
         self.topic_button_group.set_bookmarks_enabled(enabled)
-
-    def set_title_control_mode(
-        self,
-        *,
-        force_non_macos_title_controls: bool,
-    ) -> None:
-        show_non_macos_controls = force_non_macos_title_controls or self._platform_name != "darwin"
-        show_stoplights = self._platform_name == "darwin" and not show_non_macos_controls
-        self._stoplight_controls.setVisible(show_stoplights)
-        self._title_control_group.setVisible(show_non_macos_controls)
-        self._position_title()
 
     def set_topic_active_mode(self, mode: ReaderTopicMode | None) -> None:
         logger.debug(

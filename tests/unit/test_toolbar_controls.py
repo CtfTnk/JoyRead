@@ -8,6 +8,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import FileFilter, SortField
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.menus import FigmaMenu, build_action_menu
 from joyread.ui.widgets.mode_switches import SortModeSwitchWidget
+from joyread.ui.widgets.reader_controls import ReaderHeader
 from joyread.ui.widgets.search_panel import SearchPanelWidget
 from joyread.ui.widgets.top_toolbar import TagFilterButton, TopToolbarWidget
 from tests.support.qt_events import flush_deferred_deletes
@@ -317,7 +318,7 @@ def test_title_bar_refresh_labels_translates_sort_display_and_keeps_canonical_si
     locale_service.load_language("English")
 
 
-def test_title_bar_switches_between_macos_and_forced_non_macos_controls(qtbot) -> None:
+def test_title_bar_uses_macos_controls_on_darwin(qtbot) -> None:
     apply_theme()
     title_bar = TitleBarWidget(ResourceLoader(), platform_name="darwin")
     qtbot.addWidget(title_bar)
@@ -333,21 +334,26 @@ def test_title_bar_switches_between_macos_and_forced_non_macos_controls(qtbot) -
     assert stoplights.isVisible()
     assert group.isHidden()
 
-    title_bar.set_title_control_mode(
-        force_non_macos_title_controls=True,
-    )
+
+def test_reader_header_selects_controls_from_the_runtime_platform(qtbot) -> None:
+    apply_theme()
+    darwin_header = ReaderHeader(ResourceLoader(), platform_name="darwin")
+    windows_header = ReaderHeader(ResourceLoader(), platform_name="win32")
+    qtbot.addWidget(darwin_header)
+    qtbot.addWidget(windows_header)
+    darwin_header.show()
+    windows_header.show()
     QApplication.processEvents()
 
-    assert stoplights.isHidden()
-    assert group.isVisible()
+    darwin_stoplights = darwin_header.findChild(StoplightControlsWidget)
+    darwin_group = darwin_header.findChild(TitleControlGroup, "TitleControlGroup")
+    windows_stoplights = windows_header.findChild(StoplightControlsWidget)
+    windows_group = windows_header.findChild(TitleControlGroup, "TitleControlGroup")
 
-    title_bar.set_title_control_mode(
-        force_non_macos_title_controls=False,
-    )
-    QApplication.processEvents()
-
-    assert stoplights.isVisible()
-    assert group.isHidden()
+    assert darwin_stoplights is not None and darwin_stoplights.isVisible()
+    assert darwin_group is not None and darwin_group.isHidden()
+    assert windows_stoplights is not None and windows_stoplights.isHidden()
+    assert windows_group is not None and windows_group.isVisible()
 
 
 def test_title_control_group_emits_window_action_signals(qtbot) -> None:

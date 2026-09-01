@@ -16,12 +16,10 @@ handling, cancellation -- deliberately stay with each shell.
 
 Subclasses must provide, by the time these methods can run:
 
-``_context``           the :class:`AppContext`, for ``settings_viewmodel``
 ``_drag``              a :class:`~joyread.ui.widgets.window_gestures.SystemMoveGesture`
 ``auto_hide``          an :class:`~joyread.ui.views.reader_chrome.AutoHideController`
 ``dialog_overlay``     the overlay used for input dialogs
 ``header``             the reader header, with ``clear_topic_active_mode()``
-                       and ``set_title_control_mode()``
 ``panel_scrim``        a :class:`~joyread.ui.views.floating_panel_scrim.FloatingPanelScrim`
                        shared by every floating panel in the shell
 ``topic_panel``        the contents/bookmarks/thumbnails panel
@@ -61,12 +59,6 @@ class ReaderShellBase(QWidget):
         if self.dialog_overlay.isVisible():
             return
         self.auto_hide.restart()
-
-    def _sync_title_control_mode(self) -> None:
-        settings_vm = self._context.settings_viewmodel
-        self.header.set_title_control_mode(
-            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
-        )
 
     def _position_topic_panel(self) -> None:
         width = min(Theme.reader_topic_panel_width, max(Theme.reader_topic_panel_min_width, self.width() - 32))

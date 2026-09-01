@@ -244,7 +244,6 @@ class MainWindow(QMainWindow):
         context.settings_viewmodel.hidden_space_changed.connect(self._handle_hidden_space_changed)
         context.settings_viewmodel.hidden_space_error.connect(self._show_hidden_space_error)
         context.settings_viewmodel.language_changed.connect(self._on_language_changed)
-        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         # Shelf clicks travel through the viewmodel (book_card →
         # shelf_view → vm.open_book) so every "open" is gated by
         # ``_refresh_book_state`` — that re-validates the
@@ -267,7 +266,6 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
-        self._sync_title_control_mode()
 
         # Launch-time Hidden Space gate. If the user closed the previous
         # session with "Show Collections" still on, the shelf is hidden
@@ -513,7 +511,6 @@ class MainWindow(QMainWindow):
         menu = FigmaMenu(self.shelf_view, width=240)
         menu.add_item(t("menu.import_files"), self._select_import_files)
         menu.add_item(t("menu.import_folder"), self._select_import_folder)
-        menu.add_item(t("menu.import_json"), self._select_import_manifest)
         menu.exec(QCursor.pos())
 
     def _select_import_files(self) -> None:
@@ -703,27 +700,6 @@ class MainWindow(QMainWindow):
                 t("dialog.open_import_failed_title"),
                 problem.message or t("dialog.open_import_unsupported"),
             )
-
-    def _select_import_manifest(self) -> None:
-        manifest_path, _selected_filter = QFileDialog.getOpenFileName(
-            self,
-            t("dialog.file_import_manifest_title"),
-            "",
-            t("dialog.file_filter_json_manifest"),
-        )
-        if not manifest_path:
-            return
-        settings = self._settings_for_import()
-        logger.info("Import manifest selected path=%s", manifest_path)
-        self._submit_import(
-            "import-manifest",
-            lambda emit: self._context.import_service.import_manifest(
-                manifest_path,
-                nested_archive_max_depth=settings.nested_archive_max_depth,
-                archive_global_file_max_depth=settings.archive_global_file_max_depth,
-                progress=emit,
-            ),
-        )
 
     def _submit_import(self, name: str, run) -> None:  # noqa: ANN001
         """Run an import off the UI thread with a live progress dialog.
@@ -1718,12 +1694,6 @@ class MainWindow(QMainWindow):
         self.chrome.set_sort(
             self._context.shelf_viewmodel.sort_field.value,
             self._context.shelf_viewmodel.sort_ascending,
-        )
-
-    def _sync_title_control_mode(self) -> None:
-        settings_vm = self._context.settings_viewmodel
-        self.title_bar.set_title_control_mode(
-            force_non_macos_title_controls=bool(settings_vm.inspect_non_native_title_control),
         )
 
     def _handle_books_deleted(self, _book_uuids: tuple[str, ...]) -> None:

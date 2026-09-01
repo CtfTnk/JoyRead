@@ -85,8 +85,6 @@ class ReaderShellWidget(ReaderShellBase):
         self.header = ReaderHeader(context.resources, self)
         self.header.set_back_visible(show_back_button)
         self.panel_scrim.set_drag_handle(self.header)
-        self._sync_title_control_mode()
-        context.settings_viewmodel.state_changed.connect(self._sync_title_control_mode)
         self.footer = ReaderFooter(context.resources, self)
         self.left_arrow = _side_button(context.resources, "icon_left.svg", self)
         self.right_arrow = _side_button(context.resources, "icon_right.svg", self)

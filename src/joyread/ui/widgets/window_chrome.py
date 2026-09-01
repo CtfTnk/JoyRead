@@ -110,9 +110,9 @@ class TitleBarWidget(QWidget):
             self._sort_dropdown,
             self._sort_mode_switch,
         )
-        self.set_title_control_mode(
-            force_non_macos_title_controls=False,
-        )
+        show_non_macos_controls = self._platform_name != "darwin"
+        self._stoplight_controls.setVisible(not show_non_macos_controls)
+        self._title_control_group.setVisible(show_non_macos_controls)
 
     def set_action_menu_factory(self, build_menu: Callable[[], FigmaMenu]) -> None:
         self._action_button.set_menu_factory(build_menu)
@@ -148,16 +148,6 @@ class TitleBarWidget(QWidget):
     def set_shelf_controls_visible(self, visible: bool) -> None:
         for control in self._shelf_controls:
             control.setVisible(visible)
-
-    def set_title_control_mode(
-        self,
-        *,
-        force_non_macos_title_controls: bool,
-    ) -> None:
-        show_non_macos_controls = force_non_macos_title_controls or self._platform_name != "darwin"
-        show_stoplights = self._platform_name == "darwin" and not show_non_macos_controls
-        self._stoplight_controls.setVisible(show_stoplights)
-        self._title_control_group.setVisible(show_non_macos_controls)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

@@ -267,7 +267,7 @@ class ImportService:
         """Import every entry in a JSON manifest file.
 
         Manifests are JoyRead's machine-readable batch import format used by
-        scripts and the "Import from manifest" UI option. The version field
+        scripts and internal tooling. The version field
         is checked because format v1 hard-codes the schema for ``items``;
         bumping the version is a deliberate breaking change and we'd rather
         fail loudly than silently misread an unfamiliar shape.

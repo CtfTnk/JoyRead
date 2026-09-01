@@ -27,7 +27,6 @@ from joyread.novel.ui.novel_reader_shell import NovelReaderShellWidget  # noqa: 
 from joyread.novel.ui.novel_reader_window import NovelReaderWindow  # noqa: E402
 from joyread.ui.views.reader_window import ReaderWindow  # noqa: E402
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode  # noqa: E402
-from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup  # noqa: E402
 
 from tests.support.epub_fixtures import write_tiny_epub  # noqa: E402
 
@@ -94,27 +93,6 @@ def test_novel_reader_window_chrome_matches_skeleton_layout(qtbot, tmp_path: Pat
     assert window.content_area.verticalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     # Custom panel exists but starts hidden.
     assert window.custom_panel.isHidden()
-
-    window.close()
-    context.close()
-
-
-def test_novel_reader_window_uses_shared_title_control_modes(qtbot, tmp_path: Path) -> None:
-    source = write_tiny_epub(tmp_path / "novel.epub")
-    context = create_app_context()
-    context.settings_viewmodel.set_inspect_non_native_title_control(True)
-    window = NovelReaderWindow(context, source)
-    qtbot.addWidget(window)
-    window.resize(Theme.reader_width, Theme.reader_height)
-    window.show()
-
-    title_controls = window.header.findChild(TitleControlGroup, "TitleControlGroup")
-    stoplights = window.header.findChild(StoplightControlsWidget)
-
-    assert title_controls is not None
-    assert stoplights is not None
-    assert title_controls.isVisible()
-    assert stoplights.isHidden()
 
     window.close()
     context.close()
