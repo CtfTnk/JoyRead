@@ -88,33 +88,39 @@ platform user log directory.
 python scripts/build_dmg.py
 ```
 
-Needs `create-dmg`:
+Needs the `release` extra, which carries `dmgbuild`:
 
 ```bash
-brew install create-dmg
+pip install -e ".[release]"
 ```
 
 Produces `dist/JoyRead-<version>-macos-arm64.dmg` containing the app and an
-`Applications` drop link, in a window with a set size, positioned icons, a
-volume icon and a background drawn by `packaging/dmg/background.py`.
+`Applications` symlink, in a window with a set size, positioned icons, a volume
+icon and a background drawn by `packaging/dmg/background.py`.
 
-`create-dmg` sets that layout by driving Finder over AppleScript, which has two
-consequences worth knowing. It needs a real GUI session, so this step cannot run
-headless or in CI -- `--skip-jenkins` exists for that and skips exactly the part
-worth having. And the AppleScript is the flaky part: `create-dmg` ships
-`--applescript-sleep-duration` (default 5s) to work around occasional
-`Can't get disk (-1728)` failures. Re-run if it trips.
+`dmgbuild` writes the Finder `.DS_Store` itself, through `ds_store` and
+`mac_alias`. That is the whole reason it is used: **the layout step touches
+Finder at nothing, so this runs headless and in CI.** The obvious alternative,
+`create-dmg`, can only set a layout by driving Finder over AppleScript, which
+needs a logged-in GUI session and is flaky enough that the tool ships a
+five-second sleep to work around `Can't get disk (-1728)`. Its `--skip-jenkins`
+escape hatch skips precisely the part worth having.
 
 The background is generated rather than checked in, because its size has to
-match `--window-size` -- Finder pins a background at its natural size and crops
-the rest -- and both numbers live in `background.py`. It is rendered at 1x and
-2x and paired into a HiDPI TIFF with `tiffutil -cathidpicheck`; a lone PNG
-would be resampled and soft on every Mac sold in the last decade. If `tiffutil`
-ever refuses, the script falls back to the 1x PNG and says so.
+match the window size -- Finder pins a background at its natural size and crops
+the rest -- and both numbers live together in `background.py`. It is rendered at
+1x and 2x; `dmgbuild` finds the `@2x` file beside the first and pairs them into
+a HiDPI TIFF itself, so a lone PNG never reaches a retina display.
 
-Before this, the DMG was built with plain `hdiutil`, which writes no `.DS_Store`
-at all: the window opened at whatever size Finder defaulted to, with the icons
-wherever it chose to put them.
+Two conventions worth knowing before editing the layout. `window_rect`'s
+position runs **bottom-to-top**, unlike `create-dmg`'s `--window-pos`, which is
+why that number looks large. Icon positions do *not*: `icon_locations` uses the
+same top-left origin, so the constants in `background.py` are shared with the
+drawing directly.
+
+Before any of this the DMG was built with plain `hdiutil`, which writes no
+`.DS_Store` at all: the window opened at whatever size Finder defaulted to, with
+the icons wherever it chose to put them.
 
 The script signs the bundle itself rather than letting PyInstaller do it, and
 that is load-bearing for an unsigned release. Setting

@@ -10,12 +10,13 @@ launch with "different Team IDs" before reaching Python. Hardened Runtime is
 only needed for notarization, which an ad-hoc build cannot do anyway -- so the
 app is built unsigned and sealed here without it.
 
-Layout comes from ``create-dmg`` (``brew install create-dmg``), which drives
-Finder over AppleScript to set the window size, icon positions and background.
-That step needs a real GUI session: it cannot run headless or in CI, and
-``--skip-jenkins`` would skip precisely the part worth having. Plain ``hdiutil``
-leaves no ``.DS_Store`` at all, which is why the window used to open at Finder's
-default size with the icons wherever it felt like putting them.
+The window layout comes from ``dmgbuild``, which writes the Finder ``.DS_Store``
+itself through ``ds_store`` and ``mac_alias``. That is the whole reason it is
+used in preference to ``create-dmg``: the layout is what makes a disk image look
+deliberate rather than like a dumped folder, and ``create-dmg`` can only set it
+by driving Finder over AppleScript -- which needs a logged-in GUI session, so it
+cannot run in CI, and which is flaky enough that the tool ships a five-second
+sleep to work around ``Can't get disk (-1728)``. Nothing here touches Finder.
 """
 
 from __future__ import annotations
@@ -23,7 +24,6 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import plistlib
-import shutil
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -42,27 +42,40 @@ def app_version() -> str:
     return str(plist["CFBundleShortVersionString"])
 
 
-def hidpi_background(workspace: Path) -> Path:
-    """Render the window background as a 1x/2x TIFF Finder can use.
+def dmg_settings(workspace: Path) -> dict:
+    """The window, as one dict shared with the drawing that fills it.
 
-    ``create-dmg`` copies the background through untouched, so anything the
-    Finder can display works -- and a plain PNG would be resampled and soft on
-    every Mac sold in the last decade. ``tiffutil -cathidpicheck`` is the
-    supported way to pair the two scales; a single PNG is the fallback if it
-    ever stops being.
+    ``background.py`` owns the size and the two icon centres because the
+    background has to be drawn to the same window it is displayed in -- Finder
+    pins a background at its natural size and crops whatever does not fit.
     """
+    # dmgbuild pairs a 1x and a 2x image into a HiDPI TIFF by itself, as long as
+    # the second sits beside the first under an ``@2x`` name.
     one = background.render(workspace / "background.png", scale=1)
-    two = background.render(workspace / "background@2x.png", scale=2)
-    combined = workspace / "background.tiff"
-    result = subprocess.run(
-        ["tiffutil", "-cathidpicheck", str(one), str(two), "-out", str(combined)],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0 and combined.is_file():
-        return combined
-    print(f"tiffutil declined ({result.stderr.strip()}); falling back to 1x", file=sys.stderr)
-    return one
+    background.render(workspace / "background@2x.png", scale=2)
+
+    settings = {
+        "format": "UDZO",
+        "files": [str(APP)],
+        "symlinks": {"Applications": "/Applications"},
+        "background": str(one),
+        # Where the window opens, in dmgbuild's coordinates -- which run
+        # bottom-to-top, unlike create-dmg's --window-pos. The number looks
+        # large for that reason: it places the title bar near the top of a
+        # laptop display rather than near the bottom. Any absolute position is
+        # a guess about someone else's screen; Finder clamps it to fit.
+        "window_rect": ((200, 460), (background.WIDTH, background.HEIGHT)),
+        "icon_size": 128,
+        "text_size": 12,
+        "icon_locations": {
+            APP.name: background.APP_CENTRE,
+            "Applications": background.APPLICATIONS_CENTRE,
+        },
+        "hide_extensions": [APP.name],
+    }
+    if VOLUME_ICON.is_file():
+        settings["icon"] = str(VOLUME_ICON)
+    return settings
 
 
 def main() -> int:
@@ -73,12 +86,20 @@ def main() -> int:
         help="codesign identity; '-' (default) is ad-hoc. A Developer ID here "
              "still will not notarize on its own -- see docs/PACKAGING.md.",
     )
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="write the image here instead of dist/JoyRead-<version>-macos-arm64.dmg.",
+    )
     args = parser.parse_args()
 
     if not APP.is_dir():
         raise SystemExit(f"No app bundle at {APP}. Run scripts/build_release.py first.")
-    if shutil.which("create-dmg") is None:
-        raise SystemExit("create-dmg is not installed. brew install create-dmg")
+    try:
+        import dmgbuild
+    except ImportError:  # pragma: no cover - a release-only dependency.
+        raise SystemExit("dmgbuild is missing. pip install -e '.[release]'") from None
 
     # Seal the bundle *without* --options runtime; see the module docstring.
     subprocess.run(
@@ -88,39 +109,15 @@ def main() -> int:
     subprocess.run(["codesign", "--verify", "--strict", str(APP)], check=True)
 
     version = app_version()
-    target = ROOT / "dist" / f"JoyRead-{version}-macos-arm64.dmg"
+    target = args.output or ROOT / "dist" / f"JoyRead-{version}-macos-arm64.dmg"
     target.unlink(missing_ok=True)
 
     with TemporaryDirectory(prefix="joyread-dmg-") as workspace_name:
-        workspace = Path(workspace_name)
-        # create-dmg copies everything in the source folder, so it holds the
-        # app and nothing else; the Applications link comes from the drop-link
-        # option rather than from a symlink we make ourselves.
-        source = workspace / "source"
-        source.mkdir()
-        shutil.copytree(APP, source / APP.name, symlinks=True)
-
-        command = [
-            "create-dmg",
-            "--volname", f"JoyRead {version}",
-            "--background", str(hidpi_background(workspace)),
-            "--window-pos", "200", "120",
-            "--window-size", str(background.WIDTH), str(background.HEIGHT),
-            "--icon-size", "128",
-            "--text-size", "12",
-            "--icon", APP.name, str(background.APP_CENTRE[0]), str(background.APP_CENTRE[1]),
-            "--app-drop-link",
-            str(background.APPLICATIONS_CENTRE[0]),
-            str(background.APPLICATIONS_CENTRE[1]),
-            "--hide-extension", APP.name,
-            # The download is a one-off; mounting and copying it automatically
-            # is a behaviour people find surprising rather than helpful.
-            "--no-internet-enable",
-        ]
-        if VOLUME_ICON.is_file():
-            command[1:1] = ["--volicon", str(VOLUME_ICON)]
-        command += [str(target), str(source)]
-        subprocess.run(command, check=True)
+        dmgbuild.build_dmg(
+            str(target),
+            f"JoyRead {version}",
+            settings=dmg_settings(Path(workspace_name)),
+        )
 
     subprocess.run(["hdiutil", "verify", str(target)], check=True)
     size_mb = target.stat().st_size / (1024 * 1024)

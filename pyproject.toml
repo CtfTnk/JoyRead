@@ -41,6 +41,10 @@ dev = [
 ]
 release = [
     "pyinstaller>=6.21,<7",
+    # The .dmg layout. Writes the Finder .DS_Store itself through ds_store and
+    # mac_alias rather than driving Finder over AppleScript, which is what lets
+    # the disk image be built headlessly.
+    "dmgbuild>=1.6.7,<2; sys_platform == 'darwin'",
 ]
 
 [project.scripts]
