@@ -9,6 +9,13 @@ executable's Team ID. An ad-hoc signature has no Team ID, so the app dies at
 launch with "different Team IDs" before reaching Python. Hardened Runtime is
 only needed for notarization, which an ad-hoc build cannot do anyway -- so the
 app is built unsigned and sealed here without it.
+
+Layout comes from ``create-dmg`` (``brew install create-dmg``), which drives
+Finder over AppleScript to set the window size, icon positions and background.
+That step needs a real GUI session: it cannot run headless or in CI, and
+``--skip-jenkins`` would skip precisely the part worth having. Plain ``hdiutil``
+leaves no ``.DS_Store`` at all, which is why the window used to open at Finder's
+default size with the icons wherever it felt like putting them.
 """
 
 from __future__ import annotations
@@ -21,14 +28,41 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "packaging" / "dmg"))
+
+import background  # noqa: E402 - resolved through the path insert above.
+
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "dist" / "JoyRead.app"
-NOTE = ROOT / "packaging" / "dmg" / "READ ME 请先阅读 お読みください.txt"
+VOLUME_ICON = ROOT / "src" / "joyread" / "ui" / "resources" / "icons" / "JoyRead.icns"
 
 
 def app_version() -> str:
     plist = plistlib.loads((APP / "Contents" / "Info.plist").read_bytes())
     return str(plist["CFBundleShortVersionString"])
+
+
+def hidpi_background(workspace: Path) -> Path:
+    """Render the window background as a 1x/2x TIFF Finder can use.
+
+    ``create-dmg`` copies the background through untouched, so anything the
+    Finder can display works -- and a plain PNG would be resampled and soft on
+    every Mac sold in the last decade. ``tiffutil -cathidpicheck`` is the
+    supported way to pair the two scales; a single PNG is the fallback if it
+    ever stops being.
+    """
+    one = background.render(workspace / "background.png", scale=1)
+    two = background.render(workspace / "background@2x.png", scale=2)
+    combined = workspace / "background.tiff"
+    result = subprocess.run(
+        ["tiffutil", "-cathidpicheck", str(one), str(two), "-out", str(combined)],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0 and combined.is_file():
+        return combined
+    print(f"tiffutil declined ({result.stderr.strip()}); falling back to 1x", file=sys.stderr)
+    return one
 
 
 def main() -> int:
@@ -43,8 +77,8 @@ def main() -> int:
 
     if not APP.is_dir():
         raise SystemExit(f"No app bundle at {APP}. Run scripts/build_release.py first.")
-    if not NOTE.is_file():
-        raise SystemExit(f"Missing the first-launch note: {NOTE}")
+    if shutil.which("create-dmg") is None:
+        raise SystemExit("create-dmg is not installed. brew install create-dmg")
 
     # Seal the bundle *without* --options runtime; see the module docstring.
     subprocess.run(
@@ -57,17 +91,36 @@ def main() -> int:
     target = ROOT / "dist" / f"JoyRead-{version}-macos-arm64.dmg"
     target.unlink(missing_ok=True)
 
-    with TemporaryDirectory(prefix="joyread-dmg-") as staging_name:
-        staging = Path(staging_name)
-        shutil.copytree(APP, staging / APP.name, symlinks=True)
-        (staging / "Applications").symlink_to("/Applications")
-        shutil.copy2(NOTE, staging / NOTE.name)
-        subprocess.run(
-            ["hdiutil", "create", "-volname", f"JoyRead {version}",
-             "-srcfolder", str(staging), "-ov", "-format", "UDZO",
-             "-quiet", str(target)],
-            check=True,
-        )
+    with TemporaryDirectory(prefix="joyread-dmg-") as workspace_name:
+        workspace = Path(workspace_name)
+        # create-dmg copies everything in the source folder, so it holds the
+        # app and nothing else; the Applications link comes from the drop-link
+        # option rather than from a symlink we make ourselves.
+        source = workspace / "source"
+        source.mkdir()
+        shutil.copytree(APP, source / APP.name, symlinks=True)
+
+        command = [
+            "create-dmg",
+            "--volname", f"JoyRead {version}",
+            "--background", str(hidpi_background(workspace)),
+            "--window-pos", "200", "120",
+            "--window-size", str(background.WIDTH), str(background.HEIGHT),
+            "--icon-size", "128",
+            "--text-size", "12",
+            "--icon", APP.name, str(background.APP_CENTRE[0]), str(background.APP_CENTRE[1]),
+            "--app-drop-link",
+            str(background.APPLICATIONS_CENTRE[0]),
+            str(background.APPLICATIONS_CENTRE[1]),
+            "--hide-extension", APP.name,
+            # The download is a one-off; mounting and copying it automatically
+            # is a behaviour people find surprising rather than helpful.
+            "--no-internet-enable",
+        ]
+        if VOLUME_ICON.is_file():
+            command[1:1] = ["--volicon", str(VOLUME_ICON)]
+        command += [str(target), str(source)]
+        subprocess.run(command, check=True)
 
     subprocess.run(["hdiutil", "verify", str(target)], check=True)
     size_mb = target.stat().st_size / (1024 * 1024)

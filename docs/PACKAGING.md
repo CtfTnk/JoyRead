@@ -88,9 +88,33 @@ platform user log directory.
 python scripts/build_dmg.py
 ```
 
-Produces `dist/JoyRead-<version>-macos-arm64.dmg` containing the app, an
-`Applications` symlink, and the trilingual first-launch note from
-`packaging/dmg/`.
+Needs `create-dmg`:
+
+```bash
+brew install create-dmg
+```
+
+Produces `dist/JoyRead-<version>-macos-arm64.dmg` containing the app and an
+`Applications` drop link, in a window with a set size, positioned icons, a
+volume icon and a background drawn by `packaging/dmg/background.py`.
+
+`create-dmg` sets that layout by driving Finder over AppleScript, which has two
+consequences worth knowing. It needs a real GUI session, so this step cannot run
+headless or in CI -- `--skip-jenkins` exists for that and skips exactly the part
+worth having. And the AppleScript is the flaky part: `create-dmg` ships
+`--applescript-sleep-duration` (default 5s) to work around occasional
+`Can't get disk (-1728)` failures. Re-run if it trips.
+
+The background is generated rather than checked in, because its size has to
+match `--window-size` -- Finder pins a background at its natural size and crops
+the rest -- and both numbers live in `background.py`. It is rendered at 1x and
+2x and paired into a HiDPI TIFF with `tiffutil -cathidpicheck`; a lone PNG
+would be resampled and soft on every Mac sold in the last decade. If `tiffutil`
+ever refuses, the script falls back to the 1x PNG and says so.
+
+Before this, the DMG was built with plain `hdiutil`, which writes no `.DS_Store`
+at all: the window opened at whatever size Finder defaulted to, with the icons
+wherever it chose to put them.
 
 The script signs the bundle itself rather than letting PyInstaller do it, and
 that is load-bearing for an unsigned release. Setting
@@ -110,8 +134,11 @@ bundle without it. Pass `--identity` once a Developer ID is available; section 5
 still covers notarization, which the script does not attempt.
 
 An ad-hoc build is quarantined on download and reports itself as *damaged*.
-That is what the note in the disk image explains, in English, Japanese and
-Simplified Chinese.
+The disk image no longer carries a note about that: instructions in a `.txt`
+inside a DMG arrive after the moment they were needed, since the error appears
+when the app is double-clicked and nobody has opened the text file by then.
+That guidance belongs on the release page, where someone can find it after
+hitting the error.
 
 ## 3b. Linux desktop integration
 
