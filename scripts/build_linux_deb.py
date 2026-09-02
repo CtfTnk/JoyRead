@@ -157,7 +157,10 @@ def _load_desktop_builder():
 
 def desktop_entry_text() -> str:
     builder = _load_desktop_builder()
-    return str(builder.render(f"/{INSTALL_PREFIX}/{APP_NAME}"))
+    # The desktop entry is installed on Linux even when its shape is unit-tested
+    # from another host. Keep the target path POSIX rather than inheriting the
+    # build host's path separator.
+    return str(builder.render(f"/{INSTALL_PREFIX.as_posix()}/{APP_NAME}"))
 
 
 def installed_size_kib(payload_root: Path) -> int:
@@ -272,8 +275,8 @@ def dpkg_deb_command(dpkg_deb: str, staging_root: Path, destination: Path) -> li
         "-Zxz",
         "-z6",
         "--build",
-        str(staging_root),
-        str(destination),
+        staging_root.as_posix(),
+        destination.as_posix(),
     ]
 
 

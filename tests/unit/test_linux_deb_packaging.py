@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import shutil
 import subprocess
 import sys
@@ -24,6 +24,13 @@ def _load_builder():
     return module
 
 
+def _assert_posix_mode(path: Path, expected: int) -> None:
+    """Assert Debian payload modes where the host can represent them."""
+
+    if sys.platform != "win32":
+        assert path.stat().st_mode & 0o777 == expected
+
+
 def _make_valid_app(builder, root: Path, architecture: str = "amd64") -> Path:
     app_dir = root / "app"
     for relative in builder.required_app_files(architecture):
@@ -34,7 +41,12 @@ def _make_valid_app(builder, root: Path, architecture: str = "amd64") -> Path:
     payload = app_dir / "_internal" / "payload.bin"
     payload.write_bytes(b"runtime")
     link = app_dir / "_internal" / "payload-link.bin"
-    link.symlink_to(payload.name)
+    # Symlink creation needs Developer Mode or elevated privileges on Windows.
+    # The Debian payload preserves symlinks on its native Linux build host, so
+    # exercise that branch there without making the cross-platform unit suite
+    # depend on a local Windows policy.
+    if sys.platform != "win32":
+        link.symlink_to(payload.name)
     return app_dir
 
 
@@ -72,11 +84,12 @@ def test_stage_package_installs_the_full_app_and_desktop_integration(tmp_path: P
 
     installed_app = staging_root / builder.INSTALL_PREFIX
     assert (installed_app / builder.APP_NAME).is_file()
-    assert (installed_app / builder.APP_NAME).stat().st_mode & 0o777 == 0o755
-    assert installed_app.stat().st_mode & 0o777 == 0o755
+    _assert_posix_mode(installed_app / builder.APP_NAME, 0o755)
+    _assert_posix_mode(installed_app, 0o755)
     assert (installed_app / "_internal/payload.bin").read_bytes() == b"runtime"
-    assert (installed_app / "_internal/payload.bin").stat().st_mode & 0o777 == 0o644
-    assert (installed_app / "_internal/payload-link.bin").is_symlink()
+    _assert_posix_mode(installed_app / "_internal/payload.bin", 0o644)
+    if sys.platform != "win32":
+        assert (installed_app / "_internal/payload-link.bin").is_symlink()
 
     desktop = (staging_root / builder.DESKTOP_PATH).read_text(encoding="utf-8")
     assert "Exec=/opt/joyread/JoyRead %F" in desktop
@@ -94,9 +107,9 @@ def test_stage_package_installs_the_full_app_and_desktop_integration(tmp_path: P
     assert "application/epub+zip" not in desktop
     assert (staging_root / builder.ICON_PATH).is_file()
     assert (staging_root / builder.DOC_DIRECTORY / "LICENSE").is_file()
-    assert (staging_root / builder.DOC_DIRECTORY / "LICENSE").stat().st_mode & 0o777 == 0o644
+    _assert_posix_mode(staging_root / builder.DOC_DIRECTORY / "LICENSE", 0o644)
     assert (staging_root / builder.DOC_DIRECTORY / "THIRD_PARTY_NOTICES.txt").is_file()
-    assert (staging_root / "usr/share/applications").stat().st_mode & 0o777 == 0o755
+    _assert_posix_mode(staging_root / "usr/share/applications", 0o755)
 
     control = (staging_root / "DEBIAN/control").read_text(encoding="utf-8")
     assert "Package: joyread" in control
@@ -128,8 +141,8 @@ def test_dpkg_command_builds_with_root_ownership() -> None:
     builder = _load_builder()
     command = builder.dpkg_deb_command(
         "/usr/bin/dpkg-deb",
-        Path("/tmp/staging"),
-        Path("/tmp/JoyRead.deb"),
+        PurePosixPath("/tmp/staging"),
+        PurePosixPath("/tmp/JoyRead.deb"),
     )
 
     assert command[0] == "/usr/bin/dpkg-deb"
