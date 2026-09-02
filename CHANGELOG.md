@@ -40,11 +40,13 @@ Supersedes the 1.0.0 list, which is left below as it stood at the time.
   ZIP is unaffected, being decrypted in-process.
 - Solid-RAR performance is unverified; no solid RAR fixture was available. The
   7z thread policy is applied to RAR by extrapolation.
-- **None of the three builds is code-signed.** macOS reports the app as damaged
-  until the quarantine attribute is removed; Windows SmartScreen warns before
-  running the installer. Unlike 1.0.0, the macOS disk image no longer carries a
-  note explaining this — the instructions are on the release page instead,
-  where someone meets them after hitting the error rather than before.
+- **None of the three builds is code-signed.** macOS blocks the first launch
+  with "Apple could not verify JoyRead is free of malware"; it is allowed
+  through System Settings → Privacy & Security → Open Anyway. Windows
+  SmartScreen warns before running the installer. Unlike 1.0.0, the macOS disk
+  image no longer carries a note explaining this — the instructions are on the
+  release page instead, where someone meets them after hitting the message
+  rather than before.
 - macOS ships for Apple Silicon only; there is no Intel build.
 
 ## [1.0.0] — 2026-08-27
