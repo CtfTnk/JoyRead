@@ -25,6 +25,28 @@ All notable changes to JoyRead are documented here. This project follows
 - Removed the development JSON-manifest picker from the production import menu;
   manifest import remains available to scripts and internal tooling.
 
+### Known limitations
+
+Supersedes the 1.0.0 list, which is left below as it stood at the time.
+
+- EPUB reading is present in the codebase but disabled; the novel reader is not
+  finished.
+- Pages extracted from encrypted archives are cached unencrypted. Settings →
+  Privacy → "Delete cached pages when closing" is on by default so they do not
+  outlive the session.
+- Archive passwords are passed to the bundled 7-Zip executable on its command
+  line and are therefore readable by same-user processes during extraction.
+  This covers 7z, RAR, and ZIP using the legacy ZipCrypto cipher. AES-encrypted
+  ZIP is unaffected, being decrypted in-process.
+- Solid-RAR performance is unverified; no solid RAR fixture was available. The
+  7z thread policy is applied to RAR by extrapolation.
+- **None of the three builds is code-signed.** macOS reports the app as damaged
+  until the quarantine attribute is removed; Windows SmartScreen warns before
+  running the installer. Unlike 1.0.0, the macOS disk image no longer carries a
+  note explaining this — the instructions are on the release page instead,
+  where someone meets them after hitting the error rather than before.
+- macOS ships for Apple Silicon only; there is no Intel build.
+
 ## [1.0.0] — 2026-08-27
 
 First public release.
