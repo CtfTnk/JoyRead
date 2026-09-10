@@ -187,6 +187,7 @@ class RarArchiveBackend:
         module = self._module_getter()
         rar_failure: Exception | None = None
         if module is not None and hasattr(module, "RarFile"):
+            charged_before = budget.used
             try:
                 with self._lock:
                     self._configure_rarfile_tools(module)
@@ -226,6 +227,13 @@ class RarArchiveBackend:
                         archive_path=source.display_name,
                     ) from exc
                 rar_failure = exc
+                # The stream charges as it reads, so a failure part-way leaves
+                # those bytes on the budget. The fallback below reads the same
+                # member again from the start; charging it twice can trip
+                # operation_bytes on a workload that never approached it. This
+                # is the double charge ``read_members_via_executable`` refuses
+                # to allow, honoured on the way into the slower path too.
+                budget.refund(budget.used - charged_before)
 
         try:
             return self._read_external(source, name, password, limits=limits, budget=budget)

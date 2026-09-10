@@ -213,3 +213,118 @@ def test_shared_thumbnail_cache_promotes_payloads_and_viewport_pins() -> None:
     assert reader.get(old) is None
     assert reader.get(target) == b"page"
     assert reader.pins == frozenset({target})
+
+
+def test_shared_thumbnail_cache_clear_preserves_live_viewport_pins() -> None:
+    cache = SharedThumbnailCache(max_bytes=4)
+    viewport = cache.issue_client("visible-window")
+    other = cache.issue_client("other-window")
+    first = ThumbnailCacheKey("book", 0, 100, 142)
+    second = ThumbnailCacheKey("book", 1, 100, 142)
+    viewport.set_pins(frozenset({first}))
+    viewport.put(first, b"aaaa")
+
+    cache.clear()
+    viewport.put(first, b"aaaa")
+    other.put(second, b"bbbb")
+
+    assert viewport.pins == frozenset({first})
+    assert viewport.get(first) == b"aaaa"
+    assert other.get(second) is None
+    assert cache.current_bytes == 4
+
+
+def test_dropped_thumbnail_client_releases_its_viewport_pins() -> None:
+    import gc
+
+    cache = SharedThumbnailCache(max_bytes=4)
+    abandoned = cache.issue_client("abandoned-window")
+    live = cache.issue_client("visible-window")
+    abandoned_key = ThumbnailCacheKey("book", 0, 100, 142)
+    live_key = ThumbnailCacheKey("book", 1, 100, 142)
+    abandoned.set_pins(frozenset({abandoned_key}))
+    live.set_pins(frozenset({live_key}))
+    abandoned.put(abandoned_key, b"aaaa")
+    live.put(live_key, b"bbbb")
+    assert cache.current_bytes == 8
+
+    del abandoned
+    gc.collect()
+
+    assert cache.current_bytes == 4
+    assert live.get(abandoned_key) is None
+    assert live.get(live_key) == b"bbbb"
+
+
+def test_reused_thumbnail_client_still_releases_its_new_pins_when_dropped() -> None:
+    import gc
+
+    cache = SharedThumbnailCache(max_bytes=4)
+    reused = cache.issue_client("reused-window")
+    live = cache.issue_client("visible-window")
+    reused_key = ThumbnailCacheKey("book", 0, 100, 142)
+    live_key = ThumbnailCacheKey("book", 1, 100, 142)
+    reused.release()
+    reused.set_pins(frozenset({reused_key}))
+    live.set_pins(frozenset({live_key}))
+    reused.put(reused_key, b"aaaa")
+    live.put(live_key, b"bbbb")
+    assert cache.current_bytes == 8
+
+    del reused
+    gc.collect()
+
+    assert cache.current_bytes == 4
+    assert live.get(reused_key) is None
+    assert live.get(live_key) == b"bbbb"
+
+
+def test_retired_thumbnail_client_cannot_release_replacement_clients_pins() -> None:
+    import gc
+
+    cache = SharedThumbnailCache(max_bytes=4)
+    old = cache.issue_client("detail-page")
+    old.release()
+    replacement = cache.issue_client("detail-page")
+    visible = ThumbnailCacheKey("book", 0, 100, 142)
+    other = ThumbnailCacheKey("book", 1, 100, 142)
+    replacement.set_pins(frozenset({visible}))
+    replacement.put(visible, b"aaaa")
+
+    # A cancelled task can retain the old controller until after the new
+    # viewport has registered interest, then drop its last reference.
+    old.release()
+    del old
+    gc.collect()
+    cache.put(other, b"bbbb")
+
+    assert replacement.client_id == "detail-page"
+    assert replacement.get(visible) == b"aaaa"
+    assert cache.get(other) is None
+
+
+def test_namespaced_page_cache_forgets_buckets_the_backing_cache_evicted() -> None:
+    """The backing cache evicts silently, so dead buckets have to self-heal."""
+
+    backing: BoundedByteCache = BoundedByteCache(max_bytes=8)
+    pages = NamespacedPageCache(backing, session_id="reader")
+    pages.put(0, b"aaaa", width=200, height=284)
+    pages.put(0, b"bbbb", width=100, height=142)
+    pages.put(1, b"cccc", width=400, height=568)  # Evicts the 200x284 variant.
+
+    # Lookups try the largest variant first, so the dead one is walked -- and
+    # dropped -- on the way to the one that is still cached.
+    assert pages.get(0) == b"bbbb"
+
+    assert pages._buckets[0] == {(100, 142)}  # noqa: SLF001
+
+
+def test_namespaced_page_cache_drops_a_page_whose_variants_are_all_gone() -> None:
+    backing: BoundedByteCache = BoundedByteCache(max_bytes=4)
+    pages = NamespacedPageCache(backing, session_id="reader")
+    pages.put(0, b"aaaa", width=100, height=142)
+    pages.put(1, b"bbbb", width=100, height=142)
+
+    assert pages.get(0) is None
+
+    assert 0 not in pages._buckets  # noqa: SLF001

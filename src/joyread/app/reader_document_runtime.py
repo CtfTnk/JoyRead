@@ -255,7 +255,10 @@ class ReaderDocumentRuntime:
                 limits=limits,
                 lease=lease,
             )
-        except Exception:
+        except BaseException:
+            # BaseException, not Exception: a lease that is only ever released
+            # by close() must not be left pinned by a KeyboardInterrupt or a
+            # SystemExit raised part-way through opening the document.
             if lease is not None:
                 lease.close()
             raise

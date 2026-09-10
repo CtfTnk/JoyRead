@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from enum import StrEnum
 import logging
 from threading import RLock
+from weakref import finalize
 
 from joyread.core.diagnostics import cache_identity_kind, reader_perf_event
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
@@ -18,6 +19,80 @@ logger = logging.getLogger(__name__)
 class ArchiveCacheScope(StrEnum):
     EPHEMERAL = "ephemeral"
     PERSISTENT = "persistent"
+
+
+class _PoolPin:
+    """The pool release one lease owes, held apart from the lease itself.
+
+    ``weakref.finalize`` must not close over the lease, or the lease could
+    never be collected and the safety net would never fire. Keeping the key
+    here as well is what lets ``promote`` retarget the release in place
+    instead of re-registering it.
+    """
+
+    __slots__ = ("_cache", "_key", "_scope", "_lock", "_released")
+
+    def __init__(
+        self,
+        cache: ArchiveExtractionCache,
+        key: str,
+        scope: ArchiveCacheScope,
+    ) -> None:
+        self._cache = cache
+        self._key = key
+        self._scope = scope
+        self._lock = RLock()
+        self._released = False
+
+    def retarget(self, key: str, scope: ArchiveCacheScope) -> None:
+        with self._lock:
+            self._key = key
+            self._scope = scope
+
+    def release(self, *, abandoned: bool = False) -> None:
+        """Give the pin back to the pool, at most once."""
+
+        with self._lock:
+            if self._released:
+                return
+            cache, key, scope = self._cache, self._key, self._scope
+            try:
+                if abandoned:
+                    logger.warning(
+                        "Archive cache lease was dropped without close()",
+                        extra={
+                            "event": "archive.cache_lease.abandoned",
+                            "category": "cache",
+                            "status": "failed",
+                            "identity_kind": cache_identity_kind(key),
+                            "scope": scope.value,
+                        },
+                    )
+                if scope == ArchiveCacheScope.EPHEMERAL:
+                    # An ephemeral identity is one whose bytes must not outlive it,
+                    # which is the same thing the privacy switch asks for on an
+                    # encrypted document -- so it is said the same way. The pool
+                    # deletes on the *last* release, so a second live lease on this
+                    # document keeps the bundle it is still reading.
+                    mark = getattr(cache, "mark_session_scoped", None)
+                    if callable(mark):
+                        mark(key)
+                    else:
+                        cache.purge(key)
+                release = getattr(cache, "release", None)
+                if callable(release):
+                    release(key)
+            except BaseException:
+                if not abandoned:
+                    # Explicit close is a recoverable lifecycle boundary: leave
+                    # the pin outstanding and let the caller retry or surface the
+                    # failure instead of silently leaking it for the process.
+                    raise
+                # A finalizer has no caller and may run while interpreter globals
+                # are unravelling, so its last-chance cleanup stays best-effort.
+                logger.debug("Archive cache lease finalizer release failed", exc_info=True)
+                return
+            self._released = True
 
 
 class ArchiveCacheLease:
@@ -43,9 +118,18 @@ class ArchiveCacheLease:
         self._scope = ArchiveCacheScope(scope)
         self._closed = False
         self._lock = RLock()
+        self._pin = _PoolPin(self._cache, self._key, self._scope)
         acquire = getattr(self._cache, "acquire", None)
         if callable(acquire):
             acquire(self._key)
+        # Registered only once the pin actually exists in the pool, and after
+        # ``acquire`` so a failure there releases nothing it never took.
+        #
+        # The pool's active count is the only thing holding a bundle back from
+        # eviction and the only thing that fires the session-scoped purge, and
+        # both leaked for the whole process lifetime whenever a caller dropped
+        # a lease instead of closing it -- which every failed archive open did.
+        self._finalizer = finalize(self, self._pin.release, abandoned=True)
         logger.debug(
             "Archive cache lease acquired",
             extra={
@@ -216,6 +300,9 @@ class ArchiveCacheLease:
             previous_kind = cache_identity_kind(self._key)
             self._key = target
             self._scope = ArchiveCacheScope.PERSISTENT
+            # The pool moved the pin with the bundle, so the release this lease
+            # still owes is now against the persistent identity.
+            self._pin.retarget(self._key, self._scope)
             reader_perf_event(
                 "archive.lease.promoted",
                 previous_identity_kind=previous_kind,
@@ -234,25 +321,21 @@ class ArchiveCacheLease:
             )
             return True
 
+    def __enter__(self) -> "ArchiveCacheLease":
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        self.close()
+
     def close(self) -> None:
         with self._lock:
             if self._closed:
                 return
-            if self._scope == ArchiveCacheScope.EPHEMERAL:
-                # An ephemeral identity is one whose bytes must not outlive it,
-                # which is the same thing the privacy switch asks for on an
-                # encrypted document -- so it is said the same way. The pool
-                # deletes on the *last* release, so a second live lease on this
-                # document keeps the bundle it is still reading.
-                mark = getattr(self._cache, "mark_session_scoped", None)
-                if callable(mark):
-                    mark(self._key)
-                else:
-                    self._cache.purge(self._key)
-            release = getattr(self._cache, "release", None)
-            if callable(release):
-                release(self._key)
+            self._pin.release()
+            # Commit the closed state only after the pool accepted the release.
+            # A failed explicit close remains retryable and keeps its finalizer.
             self._closed = True
+            self._finalizer.detach()
             reader_perf_event(
                 "archive.lease.closed",
                 scope=self._scope.value,

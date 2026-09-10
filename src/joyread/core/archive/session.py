@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 from threading import BoundedSemaphore, RLock
 from time import perf_counter
 from uuid import uuid4
+from weakref import finalize
 
 from PIL import Image, UnidentifiedImageError
 
@@ -109,6 +110,18 @@ CONVERSION_GROUP_TARGET_BYTES = 16 * 1024 * 1024
 CONVERSION_DECLARED_TOLERANCE = 1.25
 
 
+def _remove_spill_directories(spill_dirs: list[Path]) -> None:
+    """Remove every spilled nested archive tree, at most once.
+
+    Best-effort: the session is over either way, and a file still mapped by a
+    slow reader must not turn a completed close into an exception. Also runs
+    from a finalizer, where raising would be pointless.
+    """
+
+    while spill_dirs:
+        rmtree(spill_dirs.pop(), ignore_errors=True)
+
+
 class ArchiveImageSession:
     """Bounded, thread-safe access to image pages discovered in one archive."""
 
@@ -131,7 +144,13 @@ class ArchiveImageSession:
         # it. Removal therefore belongs in _finalize_close_locked, which runs
         # once reads have drained, and never in close(), which can return while
         # a read is still in flight.
-        self._spill_dir = spill_dir
+        # Held in a list the finalizer can reach, because ``weakref.finalize``
+        # must not close over the session itself. A session dropped without
+        # close() -- an exception on the way back to the reader, or a caller
+        # that simply lets it go -- used to leave its spilled nested archives
+        # in the system temp directory for good.
+        self._spill_dirs: list[Path] = [] if spill_dir is None else [spill_dir]
+        self._spill_finalizer = finalize(self, _remove_spill_directories, self._spill_dirs)
         self._pages = tuple(pages)
         self._read_entries = read_entries
         self._bulk_extract = bulk_extract
@@ -433,6 +452,11 @@ class ArchiveImageSession:
         # limit that bounds any single page.
         max_output_bytes = self._conversion_output_cap()
 
+        started = perf_counter()
+        result = ArchiveConversionResult(
+            ArchiveConversionStatus.FAILED, "incomplete", len(records)
+        )
+        caught_error: Exception | None = None
         with self._state_lock:
             if self._closing or self._closed:
                 # Lifecycle, not capability. The document is being torn down,
@@ -441,24 +465,22 @@ class ArchiveImageSession:
                     ArchiveConversionStatus.FAILED, "session_closing", self.page_count
                 )
             self._active_reads += 1
-        started = perf_counter()
-        result = ArchiveConversionResult(
-            ArchiveConversionStatus.FAILED, "incomplete", len(records)
-        )
-        caught_error: Exception | None = None
-        logger.info(
-            "Archive cache conversion started",
-            extra={
-                "event": "archive.conversion.started",
-                "category": "archive",
-                "status": "started",
-                "document_id": self._session_id,
-                "page_count": len(records),
-                "declared_bytes": self._declared_page_bytes()[0],
-                "identity_kind": self._cache_identity_kind(),
-            },
-        )
+        # Nothing may sit between the increment and the ``try``: the matching
+        # decrement is in the ``finally``, and a read counted but never
+        # released leaves the session unable to finish closing.
         try:
+            logger.info(
+                "Archive cache conversion started",
+                extra={
+                    "event": "archive.conversion.started",
+                    "category": "archive",
+                    "status": "started",
+                    "document_id": self._session_id,
+                    "page_count": len(records),
+                    "declared_bytes": self._declared_page_bytes()[0],
+                    "identity_kind": self._cache_identity_kind(),
+                },
+            )
             reader_perf_event(
                 "archive.convert.started",
                 pages=len(records),
@@ -576,13 +598,23 @@ class ArchiveImageSession:
             if not group:
                 return None
             payloads: dict[str, bytes] = {}
+            # One read per staged file, shared by every cache key it backs.
+            # ``group_bytes`` counts a duplicated member once, so reading it
+            # once per key allocated a copy per key and charged the budget
+            # again each time -- an 8 MB cover listed 60 times cost 480 MB
+            # against a group that believed it was holding 8.
+            by_path: dict[Path, bytes] = {}
             for cache_key, path in group.items():
-                payloads[cache_key] = read_file_bounded(
-                    path,
-                    path.name,
-                    max_item_bytes=self._limits.max_extracted_item_bytes,
-                    budget=budget,
-                )
+                payload = by_path.get(path)
+                if payload is None:
+                    payload = read_file_bounded(
+                        path,
+                        path.name,
+                        max_item_bytes=self._limits.max_extracted_item_bytes,
+                        budget=budget,
+                    )
+                    by_path[path] = payload
+                payloads[cache_key] = payload
             if not self._cache_lease.put_many(payloads):
                 return "cache_write_failed"
             # Verify from metadata before dropping our only other copy. This is
@@ -1022,12 +1054,8 @@ class ArchiveImageSession:
         return True, self._cache_lease
 
     def _discard_spilled_archives(self) -> None:
-        spill_dir, self._spill_dir = self._spill_dir, None
-        if spill_dir is None:
-            return
-        # Best-effort: the session is over either way, and a file still mapped
-        # by a slow reader must not turn a completed close into an exception.
-        rmtree(spill_dir, ignore_errors=True)
+        self._spill_finalizer.detach()
+        _remove_spill_directories(self._spill_dirs)
 
     def _cache_identity_kind(self) -> str:
         lease = self._cache_lease

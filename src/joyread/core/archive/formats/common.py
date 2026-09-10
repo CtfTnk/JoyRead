@@ -21,6 +21,19 @@ from joyread.core.archive.limits import ArchiveOperationBudget, ensure_item_size
 
 logger = logging.getLogger(__name__)
 
+#: How often the supervisor wakes to check cancellation and the deadline.
+_POLL_INTERVAL_SECONDS = 0.05
+#: Longest the supervisor will go without re-measuring the staging tree.
+_MAX_SCAN_INTERVAL_SECONDS = 2.0
+#: Hold the next tree walk off by this multiple of what the last one cost, so
+#: supervision stays a fixed fraction of a core rather than growing with the
+#: extraction it is supervising.
+_SCAN_DUTY_FACTOR = 10.0
+#: How long to wait for a pipe reader once its child is dead. Bounded because a
+#: grandchild can inherit the pipe and hold it open; the threads are daemons,
+#: so one that never finishes cannot keep the process alive.
+_PIPE_DRAIN_SECONDS = 5.0
+
 
 def looks_like_password_error(exc: Exception) -> bool:
     return looks_like_password_error_text(str(exc))
@@ -138,37 +151,42 @@ def run_archive_stdout_command(
     stdout_thread.start()
     stderr_thread.start()
     try:
-        returncode = process.wait(timeout=timeout_seconds)
-    except subprocess.TimeoutExpired as exc:
-        process.kill()
-        process.wait()
+        try:
+            returncode = process.wait(timeout=timeout_seconds)
+        except subprocess.TimeoutExpired as exc:
+            raise ArchiveResourceLimitError(
+                "external_command_timeout_seconds",
+                maximum=timeout_seconds,
+                subject=entry_name,
+            ) from exc
+        # Unbounded on purpose: this is the payload, and a short read here
+        # would silently truncate the page rather than fail it.
         stdout_thread.join()
-        stderr_thread.join()
-        raise ArchiveResourceLimitError(
-            "external_command_timeout_seconds",
-            maximum=timeout_seconds,
-            subject=entry_name,
-        ) from exc
-    stdout_thread.join()
-    stderr_thread.join()
-    if exceeded[0]:
-        raise ArchiveResourceLimitError(
-            limit_name,
-            actual=output_total,
-            maximum=output_limit,
-            subject=entry_name,
-        )
-    stderr_text = b"".join(stderr).decode("utf-8", errors="replace").strip()
-    if returncode != 0:
-        if password is not None and looks_like_password_error_text(stderr_text):
-            raise ArchivePasswordRejected(f"Password rejected for archive entry: {entry_name}")
-        logger.debug("Archive backend %s failed for entry=%s code=%d", command[0], entry_name, returncode)
-        raise ArchiveReadError(f"Archive backend could not extract entry: {entry_name}")
-    if not output:
-        raise ArchiveReadError(f"Archive backend returned no data for entry: {entry_name}")
-    payload = b"".join(output)
-    budget.consume(len(payload), entry_name)
-    return payload
+        stderr_thread.join(timeout=_PIPE_DRAIN_SECONDS)
+        if exceeded[0]:
+            raise ArchiveResourceLimitError(
+                limit_name,
+                actual=output_total,
+                maximum=output_limit,
+                subject=entry_name,
+            )
+        stderr_text = b"".join(stderr).decode("utf-8", errors="replace").strip()
+        if returncode != 0:
+            if password is not None and looks_like_password_error_text(stderr_text):
+                raise ArchivePasswordRejected(f"Password rejected for archive entry: {entry_name}")
+            logger.debug("Archive backend %s failed for entry=%s code=%d", command[0], entry_name, returncode)
+            raise ArchiveReadError(f"Archive backend could not extract entry: {entry_name}")
+        if not output:
+            raise ArchiveReadError(f"Archive backend returned no data for entry: {entry_name}")
+        payload = b"".join(output)
+        budget.consume(len(payload), entry_name)
+        return payload
+    except BaseException:
+        # Every exit that is not a returned payload leaves through here, so
+        # the child is reaped exactly once whether it timed out, blew a limit,
+        # or the caller was interrupted.
+        _terminate(process, stdout_thread, stderr_thread)
+        raise
 
 
 def run_archive_file_command(
@@ -189,7 +207,8 @@ def run_archive_file_command(
     ``timeout_seconds`` is a ceiling on total runtime. ``stall_seconds``, when
     given, additionally fails a run that stops making progress.
 
-    ``is_cancelled`` is polled on the same tick as the stall check. Cancelling
+    ``is_cancelled`` is polled on every supervision tick -- more often than the
+    byte total is measured, which is paced against its own cost. Cancelling
     kills and reaps the child and raises ``ArchiveCancelled``, which is a
     distinct outcome from a backend failure: it must never be retried through a
     slower path.
@@ -246,86 +265,109 @@ def run_archive_file_command(
     last_progress_at = started_at
     observed_bytes = 0
     observed_activity = 0
+    next_scan_at = started_at
 
-    def abandon(error: ArchiveResourceLimitError) -> None:
-        process.kill()
-        process.wait()
-        stderr_thread.join()
-        raise error
-
-    def abandon_cancelled() -> None:
-        process.kill()
-        process.wait()
-        stderr_thread.join()
-        raise ArchiveCancelled(f"Archive extraction cancelled: {entry_name}")
-
-    while True:
-        if is_cancelled is not None and is_cancelled():
-            abandon_cancelled()
-        wait_timeout = 0.05
-        if timeout_seconds is not None:
-            remaining = timeout_seconds - (time.monotonic() - started_at)
-            if remaining <= 0:
-                abandon(
-                    ArchiveResourceLimitError(
+    # Every path out of here reaps the child. Two of the calls in the poll loop
+    # -- the caller's cancellation hook and the walk over the staging tree --
+    # can raise on their own, and an escape without this left 7-Zip extracting
+    # with no timeout, no stall watchdog and no byte bound, into a temporary
+    # directory the caller was already deleting.
+    try:
+        while True:
+            if is_cancelled is not None and is_cancelled():
+                raise ArchiveCancelled(f"Archive extraction cancelled: {entry_name}")
+            wait_timeout = _POLL_INTERVAL_SECONDS
+            if timeout_seconds is not None:
+                remaining = timeout_seconds - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    raise ArchiveResourceLimitError(
                         "external_command_timeout_seconds",
                         maximum=timeout_seconds,
                         subject=entry_name,
                     )
+                wait_timeout = min(wait_timeout, remaining)
+            try:
+                returncode = process.wait(timeout=wait_timeout)
+                break
+            except subprocess.TimeoutExpired:
+                now = time.monotonic()
+                if is_cancelled is not None and is_cancelled():
+                    raise ArchiveCancelled(f"Archive extraction cancelled: {entry_name}")
+                # Cancellation and the deadline are checked every tick; the
+                # byte total is not. Measuring it walks the whole staging tree,
+                # which costs more the fuller the tree gets, so the next walk is
+                # held off by a multiple of what the last one took. Supervision
+                # then stays a small fraction of a core instead of growing with
+                # the extraction it is supervising.
+                if now < next_scan_at:
+                    continue
+                output_total = _directory_output_bytes(
+                    output_directory, stop_after=output_limit
                 )
-            wait_timeout = min(wait_timeout, remaining)
-        try:
-            returncode = process.wait(timeout=wait_timeout)
-            break
-        except subprocess.TimeoutExpired:
-            output_total = _directory_output_bytes(output_directory, stop_after=output_limit)
-            if output_limit is not None and output_total > output_limit:
-                abandon(
-                    ArchiveResourceLimitError(
+                scan_seconds = time.monotonic() - now
+                next_scan_at = time.monotonic() + min(
+                    _MAX_SCAN_INTERVAL_SECONDS,
+                    max(_POLL_INTERVAL_SECONDS, scan_seconds * _SCAN_DUTY_FACTOR),
+                )
+                if output_limit is not None and output_total > output_limit:
+                    raise ArchiveResourceLimitError(
                         limit_name,
                         actual=output_total,
                         maximum=output_limit,
                         subject=entry_name,
                     )
-                )
-            if is_cancelled is not None and is_cancelled():
-                abandon_cancelled()
-            now = time.monotonic()
-            current_activity = activity[0]
-            if output_total > observed_bytes or current_activity > observed_activity:
-                observed_bytes = max(observed_bytes, output_total)
-                observed_activity = current_activity
-                last_progress_at = now
-            elif stall_seconds is not None and now - last_progress_at >= stall_seconds:
-                logger.debug(
-                    "Archive backend %s stalled for %.1fs on entry=%s",
-                    command[0],
-                    now - last_progress_at,
-                    entry_name,
-                )
-                abandon(
-                    ArchiveResourceLimitError(
+                current_activity = activity[0]
+                if output_total > observed_bytes or current_activity > observed_activity:
+                    observed_bytes = max(observed_bytes, output_total)
+                    observed_activity = current_activity
+                    last_progress_at = now
+                elif stall_seconds is not None and now - last_progress_at >= stall_seconds:
+                    logger.debug(
+                        "Archive backend %s stalled for %.1fs on entry=%s",
+                        command[0],
+                        now - last_progress_at,
+                        entry_name,
+                    )
+                    raise ArchiveResourceLimitError(
                         "external_command_stall_seconds",
                         maximum=int(stall_seconds),
                         subject=entry_name,
                     )
-                )
-    stderr_thread.join()
-    output_total = _directory_output_bytes(output_directory, stop_after=output_limit)
-    if output_limit is not None and output_total > output_limit:
-        raise ArchiveResourceLimitError(
-            limit_name,
-            actual=output_total,
-            maximum=output_limit,
-            subject=entry_name,
-        )
-    if returncode != 0:
-        stderr_text = b"".join(stderr).decode("utf-8", errors="replace").strip()
-        if password is not None and looks_like_password_error_text(stderr_text):
-            raise ArchivePasswordRejected(f"Password rejected for archive entry: {entry_name}")
-        logger.debug("Archive backend %s failed for entry=%s code=%d", command[0], entry_name, returncode)
-        raise ArchiveReadError(f"Archive backend could not extract entry: {entry_name}")
-    return output_total
+        stderr_thread.join(timeout=_PIPE_DRAIN_SECONDS)
+        output_total = _directory_output_bytes(output_directory, stop_after=output_limit)
+        if output_limit is not None and output_total > output_limit:
+            raise ArchiveResourceLimitError(
+                limit_name,
+                actual=output_total,
+                maximum=output_limit,
+                subject=entry_name,
+            )
+        if returncode != 0:
+            stderr_text = b"".join(stderr).decode("utf-8", errors="replace").strip()
+            if password is not None and looks_like_password_error_text(stderr_text):
+                raise ArchivePasswordRejected(f"Password rejected for archive entry: {entry_name}")
+            logger.debug("Archive backend %s failed for entry=%s code=%d", command[0], entry_name, returncode)
+            raise ArchiveReadError(f"Archive backend could not extract entry: {entry_name}")
+        return output_total
+    except BaseException:
+        _terminate(process, stderr_thread)
+        raise
+
+
+def _terminate(process: subprocess.Popen, *threads: Thread) -> None:
+    """Kill and reap a child, then let its pipe readers finish.
+
+    ``kill`` on an already-reaped process is a no-op, so this is safe to call
+    on paths that have already abandoned the child themselves.
+    """
+
+    try:
+        process.kill()
+        process.wait()
+    except OSError as exc:
+        logger.debug("Could not reap archive backend process: %s", exc)
+    for thread in threads:
+        thread.join(timeout=_PIPE_DRAIN_SECONDS)
 
 
 def _remaining_output_limit(

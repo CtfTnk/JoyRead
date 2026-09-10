@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from shutil import rmtree
 from dataclasses import replace
-from tempfile import TemporaryDirectory, mkdtemp
+from tempfile import TemporaryDirectory
 from threading import RLock
 from time import perf_counter
 from typing import Callable, Sequence
@@ -72,6 +72,7 @@ from joyread.core.archive.canonical import (
     CbzWriter,
 )
 from joyread.core.archive.scanner import ArchiveScanContext as _ScanContext
+from joyread.core.archive.staging import create_spill_directory
 from joyread.core.archive.scanner import (
     IMAGE_EXTENSIONS,
     SCANNER_SCHEMA_VERSION,
@@ -963,12 +964,16 @@ class ArchiveImageService:
         self._assert_source_size(path, effective_limits)
 
         effective_lease = cache_lease
+        # A lease this method builds belongs to this method until the session
+        # takes it. One the caller passed in stays the caller's.
+        owned_lease: ArchiveCacheLease | None = None
         if effective_lease is None and allow_persistent_cache and document_cache_key and self._page_cache:
-            effective_lease = ArchiveCacheLease(
+            owned_lease = ArchiveCacheLease(
                 self._page_cache,
                 document_cache_key,
                 ArchiveCacheScope.PERSISTENT,
             )
+            effective_lease = owned_lease
 
         source = _ArchiveSource(
             label=path.name,
@@ -980,7 +985,7 @@ class ArchiveImageService:
         # what makes the 7-Zip helper reachable for them at all. Ownership
         # passes to the session on success; every path out before that has to
         # remove it, or an archive that fails to open leaks its nested bytes.
-        spill_dir = Path(mkdtemp(prefix="joyread-nested-"))
+        spill_dir = create_spill_directory()
         try:
             context = _ScanContext(
                 password_provider=password_provider,
@@ -1000,28 +1005,33 @@ class ArchiveImageService:
                     "No supported image pages found within the configured archive depth limits: "
                     f"{path}"
                 )
+            cache_signature = (
+                f"archive-pages:scanner-v{SCANNER_SCHEMA_VERSION}:"
+                f"{effective_limits.cache_signature()}"
+            )
+            # Inside the guard: the session constructor and the bulk-extract
+            # lookup can both fail, and until the session exists nothing else
+            # will ever hand back the spill tree or the pool pin.
+            return ArchiveImageSession(
+                pages,
+                lambda source, entries, budget: self._read_entries(
+                    source,
+                    entries,
+                    limits=effective_limits,
+                    budget=budget,
+                ),
+                contents,
+                bulk_extract=self._bulk_extract_for(source),
+                cache_lease=effective_lease,
+                cache_signature=cache_signature,
+                limits=effective_limits,
+                spill_dir=spill_dir,
+            )
         except BaseException:
             rmtree(spill_dir, ignore_errors=True)
+            if owned_lease is not None:
+                owned_lease.close()
             raise
-        cache_signature = (
-            f"archive-pages:scanner-v{SCANNER_SCHEMA_VERSION}:"
-            f"{effective_limits.cache_signature()}"
-        )
-        return ArchiveImageSession(
-            pages,
-            lambda source, entries, budget: self._read_entries(
-                source,
-                entries,
-                limits=effective_limits,
-                budget=budget,
-            ),
-            contents,
-            bulk_extract=self._bulk_extract_for(source),
-            cache_lease=effective_lease,
-            cache_signature=cache_signature,
-            limits=effective_limits,
-            spill_dir=spill_dir,
-        )
 
     def _bulk_extract_for(self, source: _ArchiveSource) -> BulkExtract | None:
         """The one-pass whole-document extractor for this container, if any.

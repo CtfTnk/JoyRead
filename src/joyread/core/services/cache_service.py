@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Callable, Generic, TypeVar
 from uuid import uuid4
+from weakref import finalize
 
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 
@@ -218,11 +219,26 @@ class NamespacedPageCache:
                 key=lambda size: size[0] * size[1],
                 reverse=True,
             )
+        found = None
+        stale: list[tuple[int, int]] = []
         for bucket_width, bucket_height in buckets:
-            value = self._backing.get(self._key(page_index, bucket_width, bucket_height))
-            if value is not None:
-                return value
-        return None
+            found = self._backing.get(self._key(page_index, bucket_width, bucket_height))
+            if found is not None:
+                break
+            stale.append((bucket_width, bucket_height))
+        if stale:
+            # The backing cache evicts without telling us, so a bucket that no
+            # longer resolves is bookkeeping for bytes that are already gone.
+            # Dropping the ones this lookup walked stops the map growing for
+            # the life of the session, at no cost beyond the work already done
+            # -- buckets past the first hit are simply left for a later miss.
+            with self._lock:
+                sizes = self._buckets.get(page_index)
+                if sizes is not None:
+                    sizes.difference_update(stale)
+                    if not sizes:
+                        self._buckets.pop(page_index, None)
+        return found
 
     def put(self, page_index: int, value: object, width: int = 0, height: int = 0) -> None:
         with self._lock:
@@ -339,6 +355,9 @@ class SharedThumbnailCache:
     def clear(self) -> None:
         with self._lock:
             self._items.clear()
+            # Pins describe current viewport interest, including entries that
+            # have not been rendered yet. Live clients keep that interest across
+            # invalidation so repopulated visible thumbnails stay protected.
             self._current_bytes = 0
 
     def purge(self, predicate: Callable[[ThumbnailCacheKey], bool]) -> int:
@@ -412,7 +431,13 @@ class ThumbnailCacheClient:
     def __init__(self, backing: SharedThumbnailCache, client_id: str) -> None:
         self._backing = backing
         self._client_id = client_id
+        # Display names can be reused when a controller is rebuilt while old
+        # task callbacks still retain its predecessor. Pins belong to instances.
+        self._pin_owner_id = uuid4().hex
         self._pins: frozenset[ThumbnailCacheKey] = frozenset()
+        # Keep the callback independent from this client so the finalizer does
+        # not accidentally retain the object whose abandoned pins it releases.
+        self._finalizer = finalize(self, backing.release_client, self._pin_owner_id)
 
     @property
     def client_id(self) -> str:
@@ -430,11 +455,15 @@ class ThumbnailCacheClient:
 
     def set_pins(self, keys: frozenset[ThumbnailCacheKey]) -> tuple[ThumbnailCacheKey, ...]:
         self._pins = keys
-        return self._backing.set_pins(self._client_id, keys)
+        return self._backing.set_pins(self._pin_owner_id, keys)
 
     def release(self) -> tuple[ThumbnailCacheKey, ...]:
+        evicted = self._backing.release_client(self._pin_owner_id)
         self._pins = frozenset()
-        return self._backing.release_client(self._client_id)
+        # Keep the idempotent finalizer armed. Existing clients are reusable
+        # after release(), and a later set_pins() must still be returned if the
+        # reused client is subsequently abandoned.
+        return evicted
 
     def promote_source(self, source_id: str, target_id: str) -> tuple[ThumbnailCacheKey, ...]:
         self._pins = frozenset(

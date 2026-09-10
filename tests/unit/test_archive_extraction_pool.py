@@ -613,7 +613,12 @@ def test_hidden_image_pool_clear_removes_nested_cache_files(tmp_path: Path) -> N
     pool.clear()
 
     assert pool.current_bytes == 0
-    assert not directory.exists()
+    # The directory comes back holding nothing but the schema marker: an
+    # unmarked cache directory reads as an older schema on the next launch,
+    # and reconciliation answers that by deleting everything in it.
+    assert [path.name for path in directory.iterdir()] == [
+        HiddenImageExtractionPool._SCHEMA_MARKER
+    ]
 
 
 def test_contains_many_verifies_without_reading_payloads(tmp_path: Path) -> None:
@@ -841,6 +846,21 @@ def test_usage_listener_stays_silent_when_nothing_changed(tmp_path: Path) -> Non
     assert seen == [], "a read that moves no bytes must not report"
 
 
+def test_clear_coalesces_multi_file_usage_into_one_final_notification(tmp_path: Path) -> None:
+    for pool in (
+        ArchiveExtractionPool(tmp_path / "bundles", 4096),
+        HiddenImageExtractionPool(tmp_path / "pages", 4096),
+    ):
+        pool.put("file:a", "page-001.jpg", b"a" * 128)
+        pool.put("file:b", "page-001.jpg", b"b" * 128)
+        seen: list[int] = []
+        pool.set_usage_listener(seen.append)
+
+        pool.clear()
+
+        assert seen == [0]
+
+
 def test_a_failing_usage_listener_cannot_break_the_pool(tmp_path: Path) -> None:
     pool = ArchiveExtractionPool(tmp_path / "pool", 4096)
 
@@ -962,3 +982,334 @@ def test_the_privacy_mark_survives_promotion_in_the_hidden_pool(tmp_path: Path) 
     pool.release("external:sha256:digest")
 
     assert pool.current_bytes == 0
+
+
+def test_clear_keeps_the_schema_marker_so_the_next_launch_keeps_its_cache(
+    tmp_path: Path,
+) -> None:
+    """Clearing must not look like a schema downgrade to the next launch."""
+
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=4096)
+    pool.put(_write_source(tmp_path, "first.7z"), "001.png", b"one")
+
+    pool.clear()
+
+    # Everything cached after the clear has to survive a restart.
+    pool.put(_write_source(tmp_path, "second.7z"), "001.png", b"two")
+    pool.put(_write_source(tmp_path, "third.7z"), "001.png", b"three")
+    restarted = ArchiveExtractionPool(directory, max_bytes=4096)
+
+    assert restarted.current_bytes > 0
+    assert restarted.get(_write_source(tmp_path, "second.7z"), "001.png") == b"two"
+    assert restarted.get(_write_source(tmp_path, "third.7z"), "001.png") == b"three"
+
+
+def test_clear_keeps_the_bookkeeping_of_leases_that_are_still_open(
+    tmp_path: Path,
+) -> None:
+    """A clear empties the cache; it does not end anyone's lease."""
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=64)
+    reader = ArchiveCacheLease(pool, "file:open", ArchiveCacheScope.PERSISTENT)
+    with reader.build_guard() as registered:
+        assert registered
+        reader.put("001.png", b"x" * 40)
+
+        pool.clear()
+
+        # Still pinned, so a competing document cannot evict it, and still
+        # guarded, so its partial bundle cannot be reclaimed.
+        reader.put("002.png", b"y" * 40)
+        competitor = ArchiveCacheLease(pool, "file:other", ArchiveCacheScope.PERSISTENT)
+        competitor.put("001.png", b"z" * 40)
+        assert reader.get("002.png") == b"y" * 40
+        assert not reader.purge_unpublished()
+        competitor.close()
+    reader.close()
+
+
+def test_zip_pool_clear_keeps_an_undeletable_bundle_indexed_and_accounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    source = _write_source(tmp_path)
+    pool.put(source, "001.png", b"page")
+    bytes_before = pool.current_bytes
+    bundle = next(path for path in (tmp_path / "cache").iterdir() if path.suffix == ".zip")
+    real_unlink = Path.unlink
+
+    def refuse_bundle(self: Path, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        if self == bundle:
+            raise PermissionError("bundle is in use")
+        real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_bundle)
+
+    pool.clear()
+
+    assert bundle.exists()
+    assert pool.current_bytes == bytes_before
+    assert pool.get(source, "001.png") == b"page"
+
+
+def test_hidden_pool_clear_keeps_undeletable_pages_indexed_and_accounted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = tmp_path / "hidden"
+    pool = HiddenImageExtractionPool(directory, max_bytes=4096)
+    source = _write_source(tmp_path)
+    pool.put(source, "001.png", b"page")
+    bytes_before = pool.current_bytes
+    page = next(directory.glob("*/*.jrcache"))
+    book_dir = page.parent
+    real_unlink = Path.unlink
+    real_rmtree = pool_module.shutil.rmtree
+
+    def refuse_page(self: Path, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+        if self == page:
+            raise PermissionError("page is in use")
+        real_unlink(self, *args, **kwargs)
+
+    def refuse_book(path, *args, **kwargs) -> None:  # noqa: ANN001, ANN002, ANN003
+        if Path(path) == book_dir:
+            raise PermissionError("book directory is in use")
+        real_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_page)
+    monkeypatch.setattr(pool_module.shutil, "rmtree", refuse_book)
+
+    pool.clear()
+
+    assert page.exists()
+    assert pool.current_bytes == bytes_before
+    assert pool.get(source, "001.png") == b"page"
+
+
+def test_a_release_with_no_acquire_is_not_the_last_holder_letting_go(
+    tmp_path: Path,
+) -> None:
+    """A stray release is a bookkeeping bug, not a document being finished."""
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    pool.put("session:reader", "001.png", b"page")
+    pool.mark_session_scoped("session:reader")
+
+    pool.release("session:reader")  # Nothing ever acquired this document.
+
+    assert pool.get("session:reader", "001.png") == b"page"
+    # And the promise still stands for whoever holds it next.
+    pool.acquire("session:reader")
+    pool.release("session:reader")
+    assert pool.get("session:reader", "001.png") is None
+
+
+def test_promotion_restates_the_manifest_under_the_new_identity(tmp_path: Path) -> None:
+    """A promoted book must read as published, not be reclaimed as a partial."""
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=1 << 20)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"page-one")
+    assert lease.mark_complete(1, "sig")
+
+    assert lease.promote("external:sha256:deadbeef")
+
+    assert lease.is_complete(1, "sig")
+    assert not lease.purge_unpublished()
+    assert lease.get("001.png") == b"page-one"
+    lease.close()
+
+
+def test_hidden_pool_promotion_restates_the_manifest(tmp_path: Path) -> None:
+    pool = HiddenImageExtractionPool(tmp_path / ".pages", max_bytes=1 << 20)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"page-one")
+    assert lease.mark_complete(1, "sig")
+
+    assert lease.promote("external:sha256:deadbeef")
+
+    assert lease.is_complete(1, "sig")
+    assert not lease.purge_unpublished()
+    lease.close()
+
+
+def test_promotion_forgets_a_source_bundle_that_vanished(tmp_path: Path) -> None:
+    """Phantom bytes drive eviction to discard bundles that are really there."""
+
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=1 << 20)
+    pool.put("session:reader", "001.png", b"x" * 5000)
+    charged = pool.current_bytes
+    assert charged > 0
+    for bundle in directory.glob("e-*"):
+        bundle.unlink()
+
+    assert pool.promote("session:reader", "external:sha256:deadbeef")
+
+    assert pool.current_bytes == 0
+
+
+def test_a_bundle_that_will_not_delete_keeps_its_bytes_accounted(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An untracked file on disk is one no eviction pass can ever reclaim."""
+
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=1 << 20)
+    pool.put(_write_source(tmp_path, "stuck.7z"), "001.png", b"x" * 500)
+    charged = pool.current_bytes
+
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, *args, **kwargs):  # noqa: ANN001, ANN202
+        if self.suffix == ".zip":
+            raise PermissionError("file is in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    # Shrinking to zero asks for everything to go; nothing can.
+    pool.resize(0)
+
+    assert pool.current_bytes == charged
+
+
+def test_eviction_gives_up_instead_of_spinning_on_an_undeletable_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=1 << 20)
+    pool.put(_write_source(tmp_path, "a.7z"), "001.png", b"a" * 400)
+    pool.put(_write_source(tmp_path, "b.7z"), "001.png", b"b" * 400)
+
+    real_unlink = Path.unlink
+
+    def refuse(self: Path, *args, **kwargs):  # noqa: ANN001, ANN202
+        if self.suffix == ".zip":
+            raise PermissionError("file is in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse)
+    pool.resize(0)  # Would not return at all if the loop retried a stuck key.
+
+    assert pool.current_bytes > 0
+
+
+def test_a_dropped_lease_gives_its_pool_pin_back(tmp_path: Path) -> None:
+    """close() is the contract; the finalizer is what makes a bug survivable."""
+
+    import gc
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    assert pool.active_lease_count == 1
+
+    del lease
+    gc.collect()
+
+    assert pool.active_lease_count == 0
+
+
+def test_a_dropped_ephemeral_lease_still_takes_its_bytes_with_it(
+    tmp_path: Path,
+) -> None:
+    import gc
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    source = _write_source(tmp_path)
+    lease = ArchiveCacheLease(pool, "session:reader", ArchiveCacheScope.EPHEMERAL)
+    lease.put("001.png", b"decrypted")
+    assert pool.current_bytes > 0
+
+    del lease
+    gc.collect()
+
+    assert pool.get(source, "001.png") is None
+    assert pool.current_bytes == 0
+
+
+def test_closing_a_lease_releases_exactly_once(tmp_path: Path) -> None:
+    import gc
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    held = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    transient = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    assert pool.active_lease_count == 2
+
+    transient.close()
+    del transient
+    gc.collect()
+
+    # The finalizer must not release a second time on top of close().
+    assert pool.active_lease_count == 1
+    held.close()
+    assert pool.active_lease_count == 0
+
+
+def test_a_lease_used_as_a_context_manager_closes_itself(tmp_path: Path) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+
+    with ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT) as lease:
+        assert not lease.is_closed
+
+    assert lease.is_closed
+    assert pool.active_lease_count == 0
+
+
+def test_a_failed_explicit_lease_release_remains_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=4096)
+    lease = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    real_release = pool.release
+    attempts = 0
+
+    def flaky_release(document_cache_key: str) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("temporary release failure")
+        real_release(document_cache_key)
+
+    monkeypatch.setattr(pool, "release", flaky_release)
+
+    with pytest.raises(OSError, match="temporary release failure"):
+        lease.close()
+
+    assert not lease.is_closed
+    assert lease._finalizer.alive  # noqa: SLF001 - verifies the fallback remains armed.
+    assert pool.active_lease_count == 1
+
+    lease.close()
+
+    assert lease.is_closed
+    assert not lease._finalizer.alive  # noqa: SLF001
+    assert pool.active_lease_count == 0
+
+
+def test_a_publish_that_loses_its_stat_leaves_no_untracked_bundle(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The rename can land and the stat still fail; the file is ours either way."""
+
+    directory = tmp_path / "cache"
+    pool = ArchiveExtractionPool(directory, max_bytes=1 << 20)
+    source = _write_source(tmp_path)
+    pool.put(source, "001.png", b"page")
+
+    real_stat = Path.stat
+    remaining = [1]  # Only the stat that follows the publish rename.
+
+    def refuse_published(self: Path, *args, **kwargs):  # noqa: ANN001, ANN202
+        if remaining[0] and self.name.endswith(".zip") and not self.name.endswith(".partial.zip"):
+            remaining[0] -= 1
+            raise OSError("the volume went away")
+        return real_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", refuse_published)
+    assert not pool.mark_complete(source, 1, "sig")
+    assert remaining == [0], "the publish never reached the stat this test targets"
+    monkeypatch.undo()
+
+    # Nothing indexed and nothing on disk: an untracked bundle would sit there
+    # for good, outside every eviction path.
+    assert pool.current_bytes == 0
+    assert list(directory.glob("*.zip")) == []

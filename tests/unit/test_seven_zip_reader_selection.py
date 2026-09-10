@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -733,3 +735,160 @@ def test_a_staged_file_that_cannot_be_made_readable_falls_back_cleanly(
     monkeypatch.setattr(command_module.os, "access", lambda *_args, **_kwargs: False)
 
     assert command_module.resolve_staged_targets(staging, ("page-001.jpg",)) is None
+
+
+def test_a_raising_cancel_hook_does_not_leave_the_child_running(tmp_path: Path) -> None:
+    """The poll loop calls out to the caller; the child is ours regardless."""
+
+    from joyread.core.archive.formats.common import run_archive_file_command
+
+    staging = tmp_path / "out"
+    staging.mkdir()
+    started = staging / "started.marker"
+    script = (
+        "import pathlib,time\n"
+        "pathlib.Path(%r).write_bytes(b'up')\n"
+        "time.sleep(10)\n" % str(started)
+    )
+    seen: list[object] = []
+
+    def cancel_hook() -> bool:
+        # Stands in for a Qt callback on a widget that has been deleted.
+        if started.exists():
+            raise RuntimeError("cancellation hook is gone")
+        return False
+
+    real_popen = subprocess.Popen
+
+    def remember(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        process = real_popen(*args, **kwargs)
+        seen.append(process)
+        return process
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(subprocess, "Popen", remember)
+        with pytest.raises(RuntimeError):
+            run_archive_file_command(
+                [sys.executable, "-c", script],
+                "page-001.jpg",
+                password=None,
+                timeout_seconds=60,
+                output_directory=staging,
+                max_output_bytes=None,
+                budget=ArchiveOperationBudget(maximum=None),
+                is_cancelled=cancel_hook,
+            )
+
+    assert len(seen) == 1
+    # Reaped, not merely signalled: a returncode means nothing is left behind
+    # decompressing into a directory the caller is about to delete.
+    assert seen[0].returncode is not None
+
+
+def test_a_raising_output_scan_does_not_leave_the_child_running(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The staging tree can disappear under the walk that measures it."""
+
+    from joyread.core.archive.formats import common as common_module
+
+    staging = tmp_path / "out"
+    staging.mkdir()
+    seen: list[object] = []
+
+    def exploding_scan(_directory, *, stop_after):  # noqa: ANN001, ANN202
+        raise ArchiveReadError("Could not inspect external archive extraction output.")
+
+    real_popen = subprocess.Popen
+
+    def remember(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        process = real_popen(*args, **kwargs)
+        seen.append(process)
+        return process
+
+    monkeypatch.setattr(common_module, "_directory_output_bytes", exploding_scan)
+    monkeypatch.setattr(subprocess, "Popen", remember)
+
+    with pytest.raises(ArchiveReadError):
+        common_module.run_archive_file_command(
+            [sys.executable, "-c", "import time; time.sleep(10)"],
+            "page-001.jpg",
+            password=None,
+            timeout_seconds=60,
+            output_directory=staging,
+            max_output_bytes=None,
+            budget=ArchiveOperationBudget(maximum=None),
+        )
+
+    assert len(seen) == 1
+    assert seen[0].returncode is not None
+
+
+def test_supervision_does_not_walk_the_staging_tree_on_every_tick(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The walk costs more the fuller the tree gets; it cannot run at 20 Hz."""
+
+    from joyread.core.archive.formats import common as common_module
+
+    staging = tmp_path / "out"
+    staging.mkdir()
+    scans = 0
+    real_scan = common_module._directory_output_bytes  # noqa: SLF001
+
+    def slow_scan(directory, *, stop_after):  # noqa: ANN001, ANN202
+        nonlocal scans
+        scans += 1
+        time.sleep(0.05)  # A big tree costs real time to walk.
+        return real_scan(directory, stop_after=stop_after)
+
+    monkeypatch.setattr(common_module, "_directory_output_bytes", slow_scan)
+    common_module.run_archive_file_command(
+        [sys.executable, "-c", "import time; time.sleep(1.0)"],
+        "page-001.jpg",
+        password=None,
+        timeout_seconds=60,
+        output_directory=staging,
+        max_output_bytes=None,
+        budget=ArchiveOperationBudget(maximum=None),
+    )
+
+    # At the bare 50 ms tick this would be ~20 walks over one second. Backing
+    # off by what the last walk cost keeps supervision a fraction of a core.
+    assert scans <= 6
+
+
+def test_a_product_is_claimed_by_the_name_py7zr_keyed_it_under() -> None:
+    """py7zr keys its factory by the sanitized output path, not the raw name.
+
+    A member stored with a leading ``./`` or ``/`` is decompressed in full and
+    then reported as missing, which makes the archive unreadable on any install
+    with no 7-Zip executable to fall back from.
+    """
+
+    from joyread.core.archive.formats.seven_zip_backend import _BudgetedBytesFactory
+
+    for stored, keyed in (
+        ("./ch01/001.jpg", "ch01/001.jpg"),
+        ("/ch01/001.jpg", "ch01/001.jpg"),
+        ("ch01//001.jpg", "ch01/001.jpg"),
+        ("ch01/./001.jpg", "ch01/001.jpg"),
+    ):
+        factory = _BudgetedBytesFactory(ArchiveOpenLimits(), ArchiveOperationBudget(None))
+        product = factory.create(keyed)
+        product.write(b"page")
+
+        assert factory.take(stored) is product
+        # Claimed exactly once, so a duplicate never steals another's payload.
+        assert factory.take(stored) is None
+
+
+def test_an_exact_member_name_still_wins_over_its_sanitized_form() -> None:
+    from joyread.core.archive.formats.seven_zip_backend import _BudgetedBytesFactory
+
+    factory = _BudgetedBytesFactory(ArchiveOpenLimits(), ArchiveOperationBudget(None))
+    sanitized = factory.create("a.jpg")
+    exact = factory.create("./a.jpg")
+
+    assert factory.take("./a.jpg") is exact
+    assert factory.take("./a.jpg") is sanitized

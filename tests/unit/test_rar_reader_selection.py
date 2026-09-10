@@ -310,3 +310,75 @@ def test_a_batch_that_produced_nothing_still_falls_back_per_entry(
     assert per_entry == ["a.jpg", "b.jpg"]
     assert payloads == {"a.jpg": b"per-entry", "b.jpg": b"per-entry"}
     assert budget.used == 0
+
+
+def test_a_partial_rarfile_read_is_refunded_before_the_fallback_recharges(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stream charges as it reads; the fallback re-reads from the start.
+
+    Charging both is charging the same bytes twice, and a few such members trip
+    ``operation_bytes`` on a workload that never approached the ceiling. It is
+    the same double charge ``read_members_via_executable`` refuses to allow.
+    """
+
+    from threading import RLock
+
+    class _Stream:
+        def __init__(self) -> None:
+            self._served = False
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_exc_info: object) -> None:
+            return None
+
+        def read(self, _size: int) -> bytes:
+            if self._served:
+                raise OSError("the rar helper died mid-stream")
+            self._served = True
+            return b"x" * 400
+
+    class _RarFile:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def __enter__(self):  # noqa: ANN204
+            return self
+
+        def __exit__(self, *_exc_info: object) -> None:
+            return None
+
+        def open(self, _name: str, pwd: str | None = None) -> _Stream:
+            return _Stream()
+
+    module = SimpleNamespace(
+        RarFile=_RarFile,
+        PasswordRequired=type("PasswordRequired", (Exception,), {}),
+        RarWrongPassword=type("RarWrongPassword", (Exception,), {}),
+        RarCannotExec=type("RarCannotExec", (Exception,), {}),
+        BadRarFile=type("BadRarFile", (Exception,), {}),
+    )
+
+    backend = RarArchiveBackend(
+        lambda: module, ExtractionBackendResolver(), RLock(), lambda *a, **k: ""
+    )
+    monkeypatch.setattr(backend, "_configure_rarfile_tools", lambda _module: None)
+    monkeypatch.setattr(backend, "_ensure_rar_backend", lambda _module: None)
+
+    def external(_source, name, _password, *, limits, budget):  # noqa: ANN001, ANN202
+        budget.consume(900, name)
+        return b"y" * 900
+
+    monkeypatch.setattr(backend, "_read_external", external)
+
+    budget = ArchiveOperationBudget(None)
+    source = ArchiveSource(label="book.cbr", suffix=".cbr", path=Path("book.cbr"))
+
+    payload = backend.read_entry(
+        source, "p.jpg", None, limits=ArchiveOpenLimits(), budget=budget
+    )
+
+    assert payload == b"y" * 900
+    assert budget.used == 900

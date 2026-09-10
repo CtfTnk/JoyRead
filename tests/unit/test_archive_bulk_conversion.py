@@ -350,3 +350,52 @@ def test_an_already_complete_cache_reports_success_without_extracting(tmp_path: 
     assert second.status is ArchiveConversionStatus.ALREADY_PUBLISHED
     assert second.is_published
     assert len(calls) == 1, "a converted document must not be converted again"
+
+
+def test_a_member_listed_twice_is_read_once_for_the_group(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The group's byte accounting counts it once; the read has to match.
+
+    Reading once per cache key allocated a separate copy per key and charged
+    the operation budget again each time -- an 8 MB cover listed 60 times cost
+    480 MB against a group that believed it was holding 8.
+    """
+
+    from joyread.core.archive import session as session_module
+
+    reads: list[str] = []
+    real_read = session_module.read_file_bounded
+
+    def counting_read(path, subject, **kwargs):  # noqa: ANN001, ANN003, ANN202
+        reads.append(subject)
+        return real_read(path, subject, **kwargs)
+
+    monkeypatch.setattr(session_module, "read_file_bounded", counting_read)
+
+    pool = ArchiveExtractionPool(tmp_path / "pool", 8 * 1024 * 1024)
+    lease = ArchiveCacheLease(pool, "file:book", ArchiveCacheScope.PERSISTENT)
+    source = _source(tmp_path)
+    records = [
+        PageRecord(
+            display_path=f"p{i}.jpg",
+            source=source,
+            name="cover.jpg",
+            password=None,
+            size=len(PAGE),
+        )
+        for i in range(6)
+    ]
+    session = ArchiveImageSession(
+        records,
+        lambda *_a, **_k: {},
+        bulk_extract=_staging_extract(),
+        cache_lease=lease,
+        cache_signature="sig",
+    )
+
+    assert session.convert_to_cache().is_published
+
+    assert reads == ["cover.jpg"]
+    keys = tuple(session._cache_page_key(i) for i in range(6))  # noqa: SLF001
+    assert lease.contains_many(keys) == frozenset(keys)

@@ -72,6 +72,21 @@ class ArchiveOperationBudget:
     def maximum(self) -> int | None:
         return self._maximum
 
+    def refund(self, count: int) -> None:
+        """Give back bytes charged for a read that produced nothing usable.
+
+        A streaming backend charges as it reads, so one that fails part-way
+        leaves its partial read on the budget. When an independent backend then
+        re-reads the same member from the start, both charges are for the same
+        bytes, and a workload well under the ceiling can trip it. Only the
+        caller that owns the abandoned read may call this, and only for the
+        bytes that read charged.
+        """
+
+        if count <= 0:
+            return
+        self._used = max(0, self._used - count)
+
     def consume(self, count: int, subject: str) -> None:
         if count <= 0:
             return

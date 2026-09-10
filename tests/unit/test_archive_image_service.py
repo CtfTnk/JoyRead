@@ -1594,3 +1594,63 @@ def test_archive_session_enforces_backend_read_concurrency(
 
     assert all(page is not None for page in results)
     assert maximum_active == expected_concurrency
+
+
+def test_a_failed_open_gives_back_its_pool_pin_and_spill_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An open that never produces a session must leave nothing pinned."""
+
+    import tempfile
+
+    from joyread.core.archive import staging as archive_staging
+
+    spill_root = tmp_path / "spill"
+    spill_root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(spill_root))
+
+    pool = ArchiveExtractionPool(tmp_path / "cache", max_bytes=1 << 20)
+    service = ArchiveImageService(extraction_pool=pool)
+    empty = tmp_path / "empty.cbz"
+    _write_zip(empty, {"readme.txt": b"no pages here"})
+
+    with pytest.raises(ArchiveEmptyError):
+        service.open(
+            empty,
+            document_cache_key="file:empty",
+            allow_persistent_cache=True,
+        )
+
+    assert pool.active_lease_count == 0
+    assert list(spill_root.iterdir()) == []
+    # The spill root really is where the service would have written.
+    assert archive_staging.create_spill_directory().parent == spill_root
+
+
+def test_a_session_that_is_dropped_still_removes_its_spilled_archives(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import gc
+    import tempfile
+
+    spill_root = tmp_path / "spill"
+    spill_root.mkdir()
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(spill_root))
+
+    nested = tmp_path / "outer.cbz"
+    _write_zip(
+        nested,
+        {
+            "001.png": _png_bytes((8, 8)),
+            "inner.cbz": _zip_bytes({"002.png": _png_bytes((8, 8))}),
+        },
+    )
+    service = ArchiveImageService()
+
+    session = service.open(nested)
+    assert list(spill_root.iterdir())  # The nested archive was spilled.
+
+    del session
+    gc.collect()
+
+    assert list(spill_root.iterdir()) == []

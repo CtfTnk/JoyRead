@@ -30,7 +30,8 @@ from __future__ import annotations
 
 import logging
 from collections import OrderedDict
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -136,6 +137,7 @@ class _UsageNotifier:
     _usage_listener: Callable[[int], None] | None = None
     _usage_value: int = 0
     _notified_usage: int = 0
+    _usage_notification_depth: int = 0
 
     def set_usage_listener(self, listener: Callable[[int], None] | None) -> None:
         """Report usage changes from this moment on.
@@ -155,16 +157,32 @@ class _UsageNotifier:
     @_current_bytes.setter
     def _current_bytes(self, value: int) -> None:
         self._usage_value = value
+        if self._usage_notification_depth == 0:
+            self._notify_usage_if_changed()
+
+    def _notify_usage_if_changed(self) -> None:
         listener = self._usage_listener
         # Compared against the last *reported* value, not the last one written,
         # so a sequence that nets out to no change stays silent.
-        if listener is None or value == self._notified_usage:
+        if listener is None or self._usage_value == self._notified_usage:
             return
-        self._notified_usage = value
+        self._notified_usage = self._usage_value
         try:
-            listener(value)
+            listener(self._usage_value)
         except Exception:  # A telemetry listener must never break the pool.
             logger.exception("Archive pool usage listener failed")
+
+    @contextmanager
+    def _coalesce_usage_notifications(self) -> Iterator[None]:
+        """Publish only the final value of one multi-file mutation."""
+
+        self._usage_notification_depth += 1
+        try:
+            yield
+        finally:
+            self._usage_notification_depth -= 1
+            if self._usage_notification_depth == 0:
+                self._notify_usage_if_changed()
 
 
 class ArchiveExtractionPool(_UsageNotifier):
@@ -472,7 +490,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                 stat = published_path.stat()
             except OSError as exc:
                 logger.warning("Archive cache publish lost its bundle key=%s: %s", book_key, exc)
-                self._forget_locked(book_key)
+                # Purge, not forget: the index still points at the staging
+                # name, and a rename that succeeded before the stat failed
+                # moved the bundle to the published one. Forgetting only the
+                # indexed path would leave the renamed file on disk with
+                # nothing tracking it -- bytes no eviction pass can reclaim.
+                self._purge_locked(book_key)
                 return False
             previous = self._index.pop(book_key, None)
             if previous is not None:
@@ -548,7 +571,10 @@ class ArchiveExtractionPool(_UsageNotifier):
             return
         with self._lock:
             count = self._building.get(book_key, 0)
-            if count <= 1:
+            if count <= 0:
+                logger.warning("Archive cache build end has no matching begin; ignoring it")
+                return
+            if count == 1:
                 self._building.pop(book_key, None)
             else:
                 self._building[book_key] = count - 1
@@ -582,17 +608,20 @@ class ArchiveExtractionPool(_UsageNotifier):
             self._session_scoped.add(book_key)
 
     def _purge_locked(self, book_key: str) -> None:
+        # The disk sweep runs first so ``_forget_locked`` finds nothing left to
+        # unlink: it now keeps an entry whose file it could not remove, and a
+        # purge that forgot first would leave that entry indexed against a
+        # bundle this method had already deleted.
+        if self._directory is not None:
+            for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}"):
+                candidate = self._directory / f"{book_key}{suffix}"
+                if candidate.is_symlink() or not candidate.is_file():
+                    continue
+                try:
+                    candidate.unlink(missing_ok=True)
+                except OSError as exc:
+                    logger.warning("Archive cache purge could not remove %s: %s", candidate, exc)
         self._forget_locked(book_key)
-        if self._directory is None:
-            return
-        for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}"):
-            candidate = self._directory / f"{book_key}{suffix}"
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            try:
-                candidate.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning("Archive cache purge could not remove %s: %s", candidate, exc)
 
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool:
         """Atomically adopt an ephemeral bundle under a persistent identity."""
@@ -607,6 +636,11 @@ class ArchiveExtractionPool(_UsageNotifier):
         with self._lock:
             source = self._index.get(source_key)
             if source is None or not source.path.exists():
+                # The bundle is gone but its accounting is not. Leaving the
+                # index entry behind keeps charging the budget for bytes that
+                # no longer exist, and eviction then discards real bundles to
+                # get under a limit that is already met.
+                self._forget_locked(source_key)
                 self._move_active_locked(source_key, target_key)
                 self._move_building_locked(source_key, target_key)
                 self._move_session_scope_locked(source_key, target_key)
@@ -631,6 +665,14 @@ class ArchiveExtractionPool(_UsageNotifier):
             if target is None:
                 try:
                     os.replace(source.path, target_path)
+                    # The manifest records the identity kind it was
+                    # published under, and both completion checks compare that
+                    # against the key being read. Adopting the bundle without
+                    # restating it leaves a complete book that reads as
+                    # unpublished for good -- and is then reclaimed as an
+                    # abandoned partial, destroying the very conversion this
+                    # promotion set out to keep.
+                    self._retarget_manifest_locked(target_path, target_key)
                     stat = target_path.stat()
                 except OSError as exc:
                     if service is not None:
@@ -707,7 +749,13 @@ class ArchiveExtractionPool(_UsageNotifier):
             return
         with self._lock:
             count = self._active.get(book_key, 0)
-            if count <= 1:
+            if count <= 0:
+                # A release with no matching acquire is a bookkeeping bug, not
+                # the last holder letting go, and acting on it ran the purge
+                # below out from under a live reader.
+                logger.warning("Archive cache release has no matching acquire; ignoring it")
+                return
+            if count == 1:
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
@@ -828,26 +876,36 @@ class ArchiveExtractionPool(_UsageNotifier):
         self._ensure_reconciled()
         bytes_before = self.current_bytes
         failures = 0
-        with self._lock:
-            for entry in list(self._index.values()):
+        with self._lock, self._coalesce_usage_notifications():
+            for book_key in tuple(self._index):
+                if not self._forget_locked(book_key):
+                    failures += 1
+            # ``_active`` and ``_building`` are deliberately left alone: they
+            # are live-lease bookkeeping, not cache content. Zeroing them left
+            # an open reader's bundle with no eviction protection and an
+            # in-flight build with no guard, and the counters could never
+            # resynchronize afterwards -- the matching release saw a count of
+            # zero and did nothing, so that document could not be pinned again
+            # for the rest of the process.
+            # Do not retry indexed survivors in the broad sweep: a transiently
+            # successful second unlink would leave their accounting behind.
+            survivors = {entry.path for entry in self._index.values()}
+            if self._directory is not None:
                 try:
-                    entry.path.unlink(missing_ok=True)
+                    for path in self._directory.iterdir():
+                        if path.name == self._SCHEMA_MARKER or path in survivors:
+                            continue
+                        if not path.is_symlink() and path.is_file():
+                            path.unlink(missing_ok=True)
                 except OSError as exc:
                     failures += 1
-                    logger.warning("Archive cache clear could not remove %s: %s", entry.path, exc)
-            self._index.clear()
-            self._active.clear()
-            self._building.clear()
-            self._current_bytes = 0
-            self._strict_eviction_pending = False
-        if self._directory is not None:
-            try:
-                for path in self._directory.iterdir():
-                    if not path.is_symlink() and path.is_file():
-                        path.unlink(missing_ok=True)
-            except OSError as exc:
-                failures += 1
-                logger.warning("Archive cache clear could not sweep its directory: %s", exc)
+                    logger.warning("Archive cache clear could not sweep its directory: %s", exc)
+                # Sweeping the marker made the next launch read this directory
+                # as a schema mismatch and delete every bundle cached after the
+                # clear, so every clear leaves/restores it in place.
+                self._write_schema_marker()
+            self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            bytes_after = self._current_bytes
         logger.log(
             logging.WARNING if failures else logging.INFO,
             "Archive cache clear finished",
@@ -856,10 +914,28 @@ class ArchiveExtractionPool(_UsageNotifier):
                 "category": "cache",
                 "status": "completed_with_errors" if failures else "finished",
                 "strategy": "zip_bundle",
-                "reclaimed_bytes": bytes_before,
+                "reclaimed_bytes": max(0, bytes_before - bytes_after),
                 "failed_count": failures,
             },
         )
+
+    def _write_schema_marker(self) -> None:
+        """Stamp the on-disk layout version this pool writes.
+
+        A directory with no marker is indistinguishable from one written by an
+        older schema, and reconciliation answers that by deleting everything in
+        it. Every path that empties the directory has to put the marker back.
+        """
+
+        if self._directory is None:
+            return
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+            (self._directory / self._SCHEMA_MARKER).write_text(
+                self._SCHEMA_VERSION, encoding="ascii"
+            )
+        except OSError as exc:
+            logger.warning("Archive cache schema marker write failed: %s", exc)
 
     def _ensure_reconciled(self) -> None:
         """Lazily index the cache directory on first use.
@@ -875,7 +951,14 @@ class ArchiveExtractionPool(_UsageNotifier):
             self._reconciled = True
             if self._directory is None:
                 return
-            self._directory.mkdir(parents=True, exist_ok=True)
+            try:
+                self._directory.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # A volume we cannot even create the directory on is a cache we
+                # do not have. Degrading to "no cache" is the honest outcome;
+                # letting this out would fail the page read that triggered it.
+                logger.warning("Archive cache could not create its directory: %s", exc)
+                return
             marker = self._directory / self._SCHEMA_MARKER
             try:
                 marker_version = marker.read_text(encoding="ascii").strip() if marker.exists() else ""
@@ -885,17 +968,19 @@ class ArchiveExtractionPool(_UsageNotifier):
             if marker_version != self._SCHEMA_VERSION:
                 # Cache storage keys and manifests changed in v3 to encode
                 # managed, external-content, and ephemeral identity kinds.
-                for path in self._directory.iterdir():
+                try:
+                    children = tuple(self._directory.iterdir())
+                except OSError as exc:
+                    logger.warning("Archive cache schema cleanup could not list directory: %s", exc)
+                    children = ()
+                for path in children:
                     if path == marker or path.is_symlink() or not path.is_file():
                         continue
                     try:
                         path.unlink(missing_ok=True)
                     except OSError as exc:
                         logger.warning("Archive cache schema cleanup failed: %s", exc)
-                try:
-                    marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
-                except OSError as exc:
-                    logger.warning("Archive cache schema marker write failed: %s", exc)
+                self._write_schema_marker()
             scanned: list[tuple[str, _PoolEntry]] = []
             try:
                 entries = list(self._directory.iterdir())
@@ -978,10 +1063,15 @@ class ArchiveExtractionPool(_UsageNotifier):
                 if previous is not None:
                     # A crash between publish and cleanup can leave both. Keep
                     # the newest snapshot and discard the stale sibling.
-                    if previous[1].mtime >= stat.st_mtime:
-                        path.unlink(missing_ok=True)
+                    stale = path if previous[1].mtime >= stat.st_mtime else previous[1].path
+                    try:
+                        stale.unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning(
+                            "Archive cache reconcile could not remove a stale sibling: %s", exc
+                        )
+                    if stale == path:
                         continue
-                    previous[1].path.unlink(missing_ok=True)
                     scanned.remove(previous)
                 scanned.append((book_key, _PoolEntry(path, stat.st_size, stat.st_mtime)))
             scanned.sort(key=lambda item: item[1].mtime)
@@ -1052,6 +1142,27 @@ class ArchiveExtractionPool(_UsageNotifier):
             except OSError as exc:
                 logger.warning("Archive cache manifest temp cleanup failed: %s", exc)
 
+    def _retarget_manifest_locked(self, bundle_path: Path, target_key: str) -> None:
+        """Restate a promoted bundle's manifest under its new identity."""
+
+        try:
+            with ZipFile(bundle_path, "r") as archive:
+                if self._MANIFEST_ENTRY not in archive.namelist():
+                    return
+                payload = archive.read(self._MANIFEST_ENTRY)
+        except (BadZipFile, KeyError, OSError) as exc:
+            logger.warning("Archive cache promotion could not read the manifest: %s", exc)
+            return
+        retargeted = _retarget_manifest(payload, target_key)
+        if retargeted is None:
+            return
+        try:
+            self._rewrite_manifest_locked(bundle_path, {self._MANIFEST_ENTRY: retargeted})
+        except (BadZipFile, OSError) as exc:
+            # The pages survive either way; the book just reads as unpublished
+            # and is converted again rather than being served from here.
+            logger.warning("Archive cache promotion could not restate the manifest: %s", exc)
+
     @classmethod
     def _merge_bundles_locked(
         cls,
@@ -1075,15 +1186,29 @@ class ArchiveExtractionPool(_UsageNotifier):
                         with archive.open(info, "r") as reader, output.open(info.filename, "w") as writer:
                             shutil.copyfileobj(reader, writer, length=1024 * 1024)
 
-    def _forget_locked(self, book_key: str) -> None:
+    def _forget_locked(self, book_key: str) -> bool:
+        """Drop one bundle from the index and from disk.
+
+        Returns whether the bytes were actually reclaimed. A file that could
+        not be removed -- a sharing violation on Windows, a permissions or I/O
+        error anywhere -- still occupies the budget, so its entry and its bytes
+        stay in the index rather than being written off. Forgetting both would
+        leave a file no eviction pass can ever see again, and the directory
+        would then grow past ``max_bytes`` with nothing able to reclaim it.
+        """
+
         entry = self._index.pop(book_key, None)
         if entry is None:
-            return
-        self._current_bytes -= entry.size
+            return True
         try:
             entry.path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("Archive cache eviction could not remove %s: %s", entry.path, exc)
+            self._index[book_key] = entry
+            self._index.move_to_end(book_key, last=False)
+            return False
+        self._current_bytes -= entry.size
+        return True
 
     def _move_active_locked(self, source_key: str, target_key: str) -> None:
         count = self._active.pop(source_key, 0)
@@ -1107,6 +1232,9 @@ class ArchiveExtractionPool(_UsageNotifier):
     def _evict_locked(self, *, protect_key: str | None = None) -> None:
         before = self._current_bytes
         evicted = 0
+        # A bundle whose file survived its unlink keeps both its entry and its
+        # bytes, so without this the loop would keep choosing the same key.
+        stuck: set[str] = set()
         while self._current_bytes > self._max_bytes and self._index:
             oldest_key = next(
                 (
@@ -1114,6 +1242,7 @@ class ArchiveExtractionPool(_UsageNotifier):
                     for key in self._index
                     if (
                         key != protect_key
+                        and key not in stuck
                         and self._active.get(key, 0) == 0
                         and self._building.get(key, 0) == 0
                     )
@@ -1122,8 +1251,10 @@ class ArchiveExtractionPool(_UsageNotifier):
             )
             if oldest_key is None:
                 break
-            self._forget_locked(oldest_key)
-            evicted += 1
+            if self._forget_locked(oldest_key):
+                evicted += 1
+            else:
+                stuck.add(oldest_key)
         if evicted or self._current_bytes > self._max_bytes:
             reader_perf_event(
                 "archive.pool.evict",
@@ -1369,7 +1500,10 @@ class HiddenImageExtractionPool(_UsageNotifier):
             return
         with self._lock:
             count = self._building.get(book_key, 0)
-            if count <= 1:
+            if count <= 0:
+                logger.warning("Archive cache build end has no matching begin; ignoring it")
+                return
+            if count == 1:
                 self._building.pop(book_key, None)
             else:
                 self._building[book_key] = count - 1
@@ -1411,6 +1545,11 @@ class HiddenImageExtractionPool(_UsageNotifier):
             source_dir = self._directory / source_key
             target_dir = self._directory / target_key
             if not source_dir.is_dir() or source_dir.is_symlink():
+                # The bundle is gone but its accounting is not. Leaving the
+                # index entry behind keeps charging the budget for bytes that
+                # no longer exist, and eviction then discards real bundles to
+                # get under a limit that is already met.
+                self._forget_book_locked(source_key)
                 self._move_active_locked(source_key, target_key)
                 self._move_building_locked(source_key, target_key)
                 self._move_session_scope_locked(source_key, target_key)
@@ -1432,6 +1571,10 @@ class HiddenImageExtractionPool(_UsageNotifier):
             except OSError as exc:
                 logger.warning("Hidden archive cache promotion failed: %s", exc)
                 return False
+            # See ``ArchiveExtractionPool.promote``: a manifest that keeps the
+            # identity kind it was published under reads as unpublished for
+            # good, and is then reclaimed as an abandoned partial.
+            self._retarget_manifest_locked(target_key)
 
             for key in tuple(self._index):
                 if key[0] in {source_key, target_key}:
@@ -1476,7 +1619,13 @@ class HiddenImageExtractionPool(_UsageNotifier):
             return
         with self._lock:
             count = self._active.get(book_key, 0)
-            if count <= 1:
+            if count <= 0:
+                # A release with no matching acquire is a bookkeeping bug, not
+                # the last holder letting go, and acting on it ran the purge
+                # below out from under a live reader.
+                logger.warning("Archive cache release has no matching acquire; ignoring it")
+                return
+            if count == 1:
                 self._active.pop(book_key, None)
             else:
                 self._active[book_key] = count - 1
@@ -1609,36 +1758,35 @@ class HiddenImageExtractionPool(_UsageNotifier):
         self._ensure_reconciled()
         bytes_before = self.current_bytes
         failures = 0
-        with self._lock:
-            for entry in list(self._index.values()):
+        with self._lock, self._coalesce_usage_notifications():
+            book_keys = tuple(dict.fromkeys(key[0] for key in self._index))
+            for book_key in book_keys:
+                if not self._forget_book_locked(book_key):
+                    failures += 1
+            # ``_active`` and ``_building`` are deliberately left alone; see
+            # ``ArchiveExtractionPool.clear``.
+            survivor_books = {key[0] for key in self._index}
+            if self._directory is not None:
                 try:
-                    entry.path.unlink(missing_ok=True)
+                    children = tuple(self._directory.iterdir())
                 except OSError as exc:
                     failures += 1
-                    logger.warning("Hidden image cache clear could not remove %s: %s", entry.path, exc)
-            self._index.clear()
-            self._active.clear()
-            self._building.clear()
-            self._current_bytes = 0
-            self._strict_eviction_pending = False
-        if self._directory is not None:
-            # onerror keeps rmtree walking past a failing entry instead of
-            # aborting the whole removal at the first one (the previous
-            # ignore_errors=True did this too, but silently -- this keeps the
-            # best-effort behavior and adds visibility into what survived).
-            # It also fires for a missing top-level directory (FileNotFoundError
-            # from the initial lstat), so no separate try/except is needed.
-            directory_failures = 0
-
-            def _on_rmtree_error(_func, path, excinfo) -> None:
-                nonlocal directory_failures
-                if isinstance(excinfo[1], FileNotFoundError):
-                    return
-                directory_failures += 1
-                logger.warning("Hidden image cache clear could not remove %s: %s", path, excinfo[1])
-
-            shutil.rmtree(self._directory, onerror=_on_rmtree_error)
-            failures += directory_failures
+                    logger.warning("Hidden image cache clear could not list its directory: %s", exc)
+                    children = ()
+                for child in children:
+                    if child.name == self._SCHEMA_MARKER or child.name in survivor_books:
+                        continue
+                    try:
+                        if child.is_dir() and not child.is_symlink():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink(missing_ok=True)
+                    except OSError as exc:
+                        failures += 1
+                        logger.warning("Hidden image cache clear could not remove %s: %s", child, exc)
+                self._write_schema_marker()
+            self._strict_eviction_pending = self._current_bytes > self._max_bytes
+            bytes_after = self._current_bytes
         logger.log(
             logging.WARNING if failures else logging.INFO,
             "Hidden image cache clear finished",
@@ -1647,10 +1795,28 @@ class HiddenImageExtractionPool(_UsageNotifier):
                 "category": "cache",
                 "status": "completed_with_errors" if failures else "finished",
                 "strategy": "hidden_images",
-                "reclaimed_bytes": bytes_before,
+                "reclaimed_bytes": max(0, bytes_before - bytes_after),
                 "failed_count": failures,
             },
         )
+
+    def _write_schema_marker(self) -> None:
+        """Stamp the on-disk layout version this pool writes.
+
+        A directory with no marker is indistinguishable from one written by an
+        older schema, and reconciliation answers that by deleting everything in
+        it. Every path that empties the directory has to put the marker back.
+        """
+
+        if self._directory is None:
+            return
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+            (self._directory / self._SCHEMA_MARKER).write_text(
+                self._SCHEMA_VERSION, encoding="ascii"
+            )
+        except OSError as exc:
+            logger.warning("Hidden image cache schema marker write failed: %s", exc)
 
     def _ensure_reconciled(self) -> None:
         with self._lock:
@@ -1687,10 +1853,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
                             child.unlink(missing_ok=True)
                     except OSError as exc:
                         logger.warning("Hidden image cache schema cleanup failed: %s", exc)
-                try:
-                    marker.write_text(self._SCHEMA_VERSION, encoding="ascii")
-                except OSError as exc:
-                    logger.warning("Hidden image cache schema marker write failed: %s", exc)
+                self._write_schema_marker()
             scanned: list[tuple[tuple[str, str], _PoolEntry]] = []
             try:
                 book_dirs = list(self._directory.iterdir())
@@ -1735,6 +1898,24 @@ class HiddenImageExtractionPool(_UsageNotifier):
             newest_key = scanned[-1][0] if scanned else None
             self._evict_locked(protect_key=newest_key)
 
+    def _retarget_manifest_locked(self, target_key: str) -> None:
+        """Restate a promoted document's manifest under its new identity."""
+
+        if self._directory is None:
+            return
+        manifest_path = self._entry_path(target_key, self._entry_key_for(self._MANIFEST_ENTRY))
+        if not manifest_path.is_file() or manifest_path.is_symlink():
+            return
+        try:
+            retargeted = _retarget_manifest(manifest_path.read_bytes(), target_key)
+            if retargeted is None:
+                return
+            manifest_path.write_bytes(retargeted)
+        except OSError as exc:
+            logger.warning(
+                "Hidden image cache promotion could not restate the manifest: %s", exc
+            )
+
     def _entry_path(self, book_key: str, entry_key: str) -> Path:
         assert self._directory is not None
         return self._directory / book_key / f"{entry_key}{self._PAGE_SUFFIX}"
@@ -1744,40 +1925,56 @@ class HiddenImageExtractionPool(_UsageNotifier):
         safe_name = PurePosixPath(entry_name.replace("\\", "/")).as_posix().lstrip("/")
         return hashlib.sha256(safe_name.encode("utf-8")).hexdigest()
 
-    def _forget_locked(self, key: tuple[str, str]) -> None:
+    def _drop_entry_locked(self, key: tuple[str, str]) -> bool:
+        """Remove one page file and its accounting. False if the file stayed.
+
+        See ``ArchiveExtractionPool._forget_locked``: bytes are written off
+        only once the file is really gone, or the pool loses sight of a file
+        that still fills the budget.
+        """
+
         entry = self._index.pop(key, None)
         if entry is None:
-            return
-        self._current_bytes -= entry.size
+            return True
         try:
             entry.path.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("Hidden image cache eviction could not remove %s: %s", entry.path, exc)
+            self._index[key] = entry
+            self._index.move_to_end(key, last=False)
+            return False
+        self._current_bytes -= entry.size
+        return True
+
+    def _forget_locked(self, key: tuple[str, str]) -> bool:
+        reclaimed = self._drop_entry_locked(key)
         manifest_key = (key[0], self._entry_key_for(self._MANIFEST_ENTRY))
         if key != manifest_key:
-            manifest = self._index.pop(manifest_key, None)
-            if manifest is not None:
-                self._current_bytes -= manifest.size
+            # A missing page means the document is no longer complete, so its
+            # ready manifest must not outlive it.
+            reclaimed = self._drop_entry_locked(manifest_key) and reclaimed
+        return reclaimed
+
+    def _forget_book_locked(self, book_key: str) -> bool:
+        """Evict one document as a unit, including its ready manifest.
+
+        Returns whether every byte was reclaimed. The directory goes first so
+        the per-entry removals find their files already gone; whatever
+        survives keeps its accounting, and an eviction pass must not retry it.
+        """
+
+        if self._directory is not None:
+            book_dir = self._directory / book_key
+            if book_dir.is_dir() and not book_dir.is_symlink():
                 try:
-                    manifest.path.unlink(missing_ok=True)
+                    shutil.rmtree(book_dir)
                 except OSError as exc:
-                    logger.warning("Hidden image cache manifest eviction failed: %s", exc)
-
-    def _forget_book_locked(self, book_key: str) -> None:
-        """Evict one document as a unit, including its ready manifest."""
-
+                    logger.warning("Hidden image cache book eviction failed: %s", exc)
+        reclaimed = True
         for key in tuple(self._index):
             if key[0] == book_key:
-                self._forget_locked(key)
-        if self._directory is None:
-            return
-        book_dir = self._directory / book_key
-        if book_dir.is_symlink() or not book_dir.is_dir():
-            return
-        try:
-            shutil.rmtree(book_dir)
-        except OSError as exc:
-            logger.warning("Hidden image cache book eviction failed: %s", exc)
+                reclaimed = self._forget_locked(key) and reclaimed
+        return reclaimed
 
     def _move_active_locked(self, source_key: str, target_key: str) -> None:
         count = self._active.pop(source_key, 0)
@@ -1802,6 +1999,9 @@ class HiddenImageExtractionPool(_UsageNotifier):
         protect_book_key = protect_key[0] if protect_key is not None else None
         before = self._current_bytes
         evicted_books = 0
+        # Documents whose files survived removal keep their bytes, so without
+        # this the loop would keep choosing the same one.
+        stuck: set[str] = set()
         while self._current_bytes > self._max_bytes and self._index:
             oldest_key = next(
                 (
@@ -1809,6 +2009,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
                     for key in self._index
                     if (
                         key[0] != protect_book_key
+                        and key[0] not in stuck
                         and self._active.get(key[0], 0) == 0
                         and self._building.get(key[0], 0) == 0
                     )
@@ -1817,8 +2018,10 @@ class HiddenImageExtractionPool(_UsageNotifier):
             )
             if oldest_key is None:
                 break
-            self._forget_book_locked(oldest_key[0])
-            evicted_books += 1
+            if self._forget_book_locked(oldest_key[0]):
+                evicted_books += 1
+            else:
+                stuck.add(oldest_key[0])
         if evicted_books or self._current_bytes > self._max_bytes:
             reader_perf_event(
                 "archive.pool.evict",
@@ -1914,20 +2117,33 @@ def _manifest_matches(
     )
 
 
-def _ready_manifest_is_publishable(payload: bytes | None, storage_key: str) -> bool:
-    """Recognize a completed staging bundle without knowing current limits."""
+def _identity_kind_for_storage_key(storage_key: str) -> str | None:
+    """Invert the identity-kind prefix ``archive_cache_storage_key`` writes."""
 
-    if payload is None:
-        return False
-    try:
-        manifest = json.loads(payload.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
-        return False
-    identity_kind = {
+    return {
         "e": "ephemeral",
         "x": "external",
         "m": "managed",
-    }.get(storage_key.partition("-")[0])
+    }.get(str(storage_key).partition("-")[0])
+
+
+def _decoded_manifest(payload: bytes | None) -> dict[str, object] | None:
+    if payload is None:
+        return None
+    try:
+        manifest = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        return None
+    return manifest if isinstance(manifest, dict) else None
+
+
+def _ready_manifest_is_publishable(payload: bytes | None, storage_key: str) -> bool:
+    """Recognize a completed staging bundle without knowing current limits."""
+
+    manifest = _decoded_manifest(payload)
+    if manifest is None:
+        return False
+    identity_kind = _identity_kind_for_storage_key(storage_key)
     return (
         identity_kind is not None
         and manifest.get("schema") == _MANIFEST_SCHEMA_VERSION
@@ -1938,6 +2154,33 @@ def _ready_manifest_is_publishable(payload: bytes | None, storage_key: str) -> b
         and manifest.get("identity_kind") == identity_kind
         and manifest.get("build_state") == "ready"
     )
+
+
+def _retarget_manifest(payload: bytes | None, storage_key: str) -> bytes | None:
+    """Restate a ready manifest under the identity kind of ``storage_key``.
+
+    ``None`` means there is nothing to write: either the manifest already
+    names this identity, or it is not a ready manifest this pool can restate.
+    """
+
+    manifest = _decoded_manifest(payload)
+    if manifest is None:
+        return None
+    identity_kind = _identity_kind_for_storage_key(storage_key)
+    page_count = manifest.get("page_count")
+    signature = manifest.get("signature")
+    if (
+        identity_kind is None
+        or manifest.get("identity_kind") == identity_kind
+        or manifest.get("schema") != _MANIFEST_SCHEMA_VERSION
+        or manifest.get("build_state") != "ready"
+        or not isinstance(page_count, int)
+        or page_count < 0
+        or not isinstance(signature, str)
+        or not signature
+    ):
+        return None
+    return _manifest_bytes(page_count, signature, identity_kind)
 
 
 def _bundle_has_publishable_manifest(

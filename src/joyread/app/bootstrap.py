@@ -222,6 +222,15 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
         settings_store=environment.settings_store,
     )
     context.paths.ensure_directories()
+    # Collect what a crashed or killed launch left in the system temp
+    # directory. Deferred to a daemon thread and deliberately not part of any
+    # startup gate: it touches nothing this launch needs, and the whole point
+    # is that a machine which has been crashing does not accumulate extraction
+    # debris forever. The import is local so it stays off the module-scope
+    # startup cost a secondary process pays.
+    from joyread.core.archive.staging import sweep_orphaned_staging_in_background
+
+    sweep_orphaned_staging_in_background()
     startup_trace.mark("context_ready")
 
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))

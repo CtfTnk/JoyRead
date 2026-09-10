@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from io import BytesIO
 import logging
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from time import perf_counter
 
 from joyread.core.archive.backends import ExtractionBackendResolver
@@ -163,7 +163,7 @@ class SevenZipArchiveBackend:
                 archive.extract(targets=targets, factory=factory)
             payloads: dict[str, bytes] = {}
             for name in targets:
-                product = factory.products.pop(name, None)
+                product = factory.take(name)
                 if product is None:
                     continue
                 payload = product.take_bytes()
@@ -366,9 +366,38 @@ class _BudgetedBytesFactory:
         self.products[filename] = product
         return product
 
+    def take(self, entry_name: str) -> "_BudgetedBytesIO | None":
+        """Claim the product py7zr built for one archive entry.
+
+        py7zr keys the factory by the *output path* it sanitised the member
+        name into, not by the name the archive stores. A member written with a
+        leading ``/`` or ``./`` therefore decompresses in full and is then
+        reported as missing, which makes the whole archive unreadable on any
+        install with no 7-Zip executable to fall back from.
+        """
+
+        product = self.products.pop(entry_name, None)
+        if product is not None:
+            return product
+        return self.products.pop(_sanitized_member_name(entry_name), None)
+
     def _record_write(self, byte_count: int) -> None:
         self.buffered_bytes += max(0, int(byte_count))
         self.peak_buffered_bytes = max(self.peak_buffered_bytes, self.buffered_bytes)
+
+
+def _sanitized_member_name(entry_name: str) -> str:
+    """The output path py7zr derives from an archive member name.
+
+    Mirrors ``py7zr.helpers.get_sanitized_output_path`` for the in-memory case:
+    the leading separator goes, and ``PurePosixPath`` collapses ``./`` and
+    repeated separators exactly as ``pathlib`` does inside py7zr. Backslashes
+    are deliberately left alone -- py7zr does not translate them either, and a
+    member whose name really contains one must not be matched to a different
+    product.
+    """
+
+    return PurePosixPath(entry_name.lstrip("/")).as_posix()
 
 
 class _BudgetedBytesIO:

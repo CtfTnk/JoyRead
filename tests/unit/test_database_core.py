@@ -16,7 +16,10 @@ from joyread.core.operation_context import bind_operation, create_operation, cur
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.reader import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
-from joyread.core.services.archive_extraction_pool import HiddenImageExtractionPool
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionPool,
+    HiddenImageExtractionPool,
+)
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
 from joyread.core.services.storage_migration_service import (
@@ -1324,7 +1327,11 @@ def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeyp
     assert isinstance(context.archive_extraction_pool, HiddenImageExtractionPool)
     assert context.archive_extraction_pool.directory is not None
     assert context.archive_extraction_pool.directory.name == ".archive_image_pages"
-    assert not any(path.is_file() for path in old_directory.rglob("*"))
+    # The bundles are gone. The schema marker stays: an unmarked directory
+    # reads as an older cache layout, and the pool answers that by deleting
+    # everything written into it afterwards.
+    survivors = {path.name for path in old_directory.rglob("*") if path.is_file()}
+    assert survivors == {ArchiveExtractionPool._SCHEMA_MARKER}
     context.close()
 
 
