@@ -544,3 +544,19 @@ follow OS language. System language changes are picked up on next launch.
 
 Desktop-native checks and fresh 1.0.2 installer builds remain pending until run
 on their target platforms; source/offscreen tests do not certify those behaviors.
+
+## Manual cloud packages (no Release)
+
+`Build packages` (`.github/workflows/build-packages.yml`) runs only through
+`workflow_dispatch`; pushes continue to run Tests without packaging. Once the
+workflow is on main, open Actions → Build packages → Run workflow, select a
+branch and `all`, `macos`, `windows`, or `ubuntu`. Ubuntu builds both amd64 and
+arm64. Every matrix job checks out the dispatch SHA, tests the shipping
+configuration, builds the app, and invokes the existing platform installer script.
+
+Cloud builds use Python 3.12.9 from Miniforge and dependencies from
+`pyproject.toml`; Windows installs checksum-verified Inno Setup 7.1.0. Each
+successful job uploads its installer, `SHA256SUMS`, and `build-info.json` (version,
+commit, target, Python) to Actions Artifacts for 14 days. There are no release,
+tag, or repository-write steps. macOS uses the existing ad-hoc signing workflow;
+these artifacts are candidates for desktop validation, not notarized releases.
