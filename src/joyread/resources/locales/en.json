@@ -61,7 +61,8 @@
     "btn_clear": "Clear",
     "canonical_import_never": "Never",
     "canonical_import_expensive": "Expensive and nested formats",
-    "canonical_import_always": "Always"
+    "canonical_import_always": "Always",
+    "language_system": "Follow system"
   },
   "menu": {
     "read": "Read",
@@ -99,7 +100,15 @@
     "no_search_match": "No tags match that search.",
     "selection_none": "None selected",
     "selection_one": "1 tag selected",
-    "selection_many": "{count} tags selected"
+    "selection_many": "{count} tags selected",
+    "create_title": "Create Tag",
+    "rename_title": "Rename Tag",
+    "delete_title": "Delete Tag",
+    "delete_failed": "Some tags could not be deleted:\n{detail}",
+    "deleted_one": "Tag '{name}' deleted ({count} books unlinked).",
+    "deleted_many": "Deleted {count} tags ({books} books unlinked).",
+    "created": "Tag '{name}' created.",
+    "renamed": "Tag renamed to '{name}'."
   },
   "state": {
     "no_books_title": "No books yet",
@@ -139,13 +148,13 @@
     "btn_keep": "Keep",
     "btn_later": "Later",
     "long_path_title": "Windows Path Too Long",
-    "long_path_disabled_msg": "JoyRead cannot access this item because its full path is {length} characters and Windows long-path support is disabled.\n\nEnable Win32 long paths, restart JoyRead, and try again. You can also move the file or Library to a shorter folder.",
+    "long_path_disabled_msg": "{app_name} cannot access this item because its full path is {length} characters and Windows long-path support is disabled.\n\nEnable Win32 long paths, restart {app_name}, and try again. You can also move the file or Library to a shorter folder.",
     "long_path_unsupported_msg": "Windows long-path support is already enabled or could not be verified, but this operation still cannot access a {length}-character path.\n\nMove the file or Library to a shorter folder and try again.",
     "long_path_view_instructions": "View Instructions",
     "delete_book_title": "Delete Book",
     "delete_books_title": "Delete Books",
-    "delete_book_msg": "Delete '{title}' from JoyRead?\n\nThis removes its library record, collections, progress, bookmarks, recent history, and the app-managed copied file.",
-    "delete_books_msg": "Delete {count} books from JoyRead?\n\nThis removes their library records, collections, progress, bookmarks, recent history, and app-managed copied files.",
+    "delete_book_msg": "Delete '{title}' from {app_name}?\n\nThis removes its library record, collections, progress, bookmarks, recent history, and the app-managed copied file.",
+    "delete_books_msg": "Delete {count} books from {app_name}?\n\nThis removes their library records, collections, progress, bookmarks, recent history, and app-managed copied files.",
     "new_collection_title": "New Collection",
     "collection_name_header": "Collection Name",
     "rename_collection_title": "Rename Collection",
@@ -154,10 +163,10 @@
     "add_to_collection_title": "Add to Collection",
     "no_collection_msg": "Create a collection before adding books.",
     "missing_file_title": "Missing File",
-    "missing_file_msg": "\"{title}\" cannot be found on disk.\n\nDelete it from JoyRead, or keep it in your library?",
+    "missing_file_msg": "\"{title}\" cannot be found on disk.\n\nDelete it from {app_name}, or keep it in your library?",
     "missing_file_not_found": "The selected book is no longer available.",
     "unavailable_file_title": "Book Unavailable",
-    "unavailable_file_msg": "\"{title}\" is present but cannot be opened safely after a library integrity check.\n\nYou can remove it from JoyRead from its More menu.",
+    "unavailable_file_msg": "\"{title}\" is present but cannot be opened safely after a library integrity check.\n\nYou can remove it from {app_name} from its More menu.",
     "library_audit_title": "Library Verification",
     "library_audit_clean_msg": "Your managed library is consistent. No changes are needed.",
     "library_audit_plan_msg": "Changed files: {changed}\nDuplicate files: {merged}\nMissing files: {missing}\nUnavailable files: {unavailable}\nRecovered entries: {repaired}\nOrphan book files: {orphan_files}\nOrphan cache files: {orphan_cache}\nSpace to reclaim: {reclaimable}\n\nApply these changes?",
@@ -178,7 +187,7 @@
     "export_item_failed": "Export failed.",
     "export_more_failures": "...and {count} more.",
     "open_read_only_title": "Open Read Only",
-    "open_read_only_msg": "JoyRead won't import this file because it is encrypted or contains encrypted archives.\n\nYou can still open it for reading.",
+    "open_read_only_msg": "{app_name} won't import this file because it is encrypted or contains encrypted archives.\n\nYou can still open it for reading.",
     "hidden_space_title": "Hidden Space",
     "set_password_title": "Set Hidden Space Password",
     "unlock_title": "Unlock Hidden Space",
@@ -187,7 +196,7 @@
     "reset_hidden_title": "Reset Hidden Space",
     "reset_hidden_msg": "This will permanently delete every hidden book from disk, delete every hidable collection, and clear the Hidden Space password.\n\nThis cannot be undone.",
     "reset_library_title": "Reset Library",
-    "reset_library_msg": "This permanently deletes all books, covers, reading progress, and data in the current JoyRead library. This cannot be undone.",
+    "reset_library_msg": "This permanently deletes all books, covers, reading progress, and data in the current {app_name} library. This cannot be undone.",
     "type_delete_header": "Type delete to confirm",
     "type_delete_error": "Type delete to confirm.",
     "storage_quiesce_readers": "Changing the library location closes everything reading from it.\n\nOpen readers will close ({count}). Your place in each book is saved first.",
@@ -195,9 +204,9 @@
     "storage_quiesce_readers_and_cover": "Changing the library location closes everything reading from it.\n\nOpen readers will close ({count}), and the cover you are editing will be discarded. Your place in each book is saved first.",
     "storage_quiesce_timeout": "Background work would not stop, so the library was left where it is.\n\nTry again in a moment.",
     "storage_transition_busy": "A library change is already in progress.",
-    "storage_updated_msg": "Your JoyRead library has been updated.",
-    "storage_invalid_default": "The selected folder is not a usable JoyRead library.",
-    "storage_invalid_location": "That folder cannot be used as a JoyRead library.\n\n{message}",
+    "storage_updated_msg": "Your {app_name} library has been updated.",
+    "storage_invalid_default": "The selected folder is not a usable {app_name} library.",
+    "storage_invalid_location": "That folder cannot be used as a {app_name} library.\n\n{message}",
     "incorrect_password": "Incorrect password.",
     "password_updated": "Password updated.",
     "hidden_reverted_msg": "All hidden books and hidable collections have been reverted to normal.",
@@ -249,7 +258,7 @@
     "file_choose_import_folder_title": "Choose Import Folder",
     "file_choose_export_folder_title": "Choose Export Folder",
     "file_choose_library_parent_title": "Choose a parent folder for JoyRead-Library",
-    "file_select_existing_library_title": "Select an existing JoyRead library",
+    "file_select_existing_library_title": "Select an existing {app_name} library",
     "file_import_cover_image_title": "Import Cover Image",
     "file_filter_images": "Images (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
     "drop_read_title": "Read",
@@ -269,7 +278,8 @@
     "import_progress_inspecting": "Checking contents…",
     "import_progress_converting": "Converting page {done} of {total}",
     "import_progress_recording": "Adding to library…",
-    "import_progress_extracting": "Extracting pages…"
+    "import_progress_extracting": "Extracting pages…",
+    "btn_hide": "Hide"
   },
   "detail": {
     "author_prefix": "Author: ",
@@ -316,7 +326,12 @@
     "actions": "Actions",
     "close": "Close",
     "minimize": "Minimize",
-    "maximize": "Maximize"
+    "maximize": "Maximize",
+    "list_mode": "List mode",
+    "grid_mode": "Grid mode",
+    "sort_ascending": "Sort ascending",
+    "sort_descending": "Sort descending",
+    "filter_all": "ALL"
   },
   "reader": {
     "contents": "Contents",
@@ -380,10 +395,39 @@
     "no_readable_pages": "No readable pages.",
     "opening_epub": "Opening EPUB…",
     "loading": "Loading…",
-    "loading_page": "Loading page {index}…"
+    "loading_page": "Loading page {index}…",
+    "encrypted_no_password": "Could not load images because the archive is encrypted and no password was provided.",
+    "encrypted_skipped": "No readable images. Encrypted archives were skipped.",
+    "open_failed": "Could not open reader: {detail}",
+    "password_for": "Password required for {name}.",
+    "password_incorrect_for": "Incorrect password for {name}. Please try again."
   },
   "about": {
     "intro": "A personal project, made for the pleasure of making it.\n\nIt started as a way to properly practise three things: designing with Figma MCP, building alongside vibe-coding agents, and shipping the same app across platforms. Along the way it became the thing it set out to be — a comfortable place to keep and read a local manga library.\n\nIf you enjoy it, a star on the project would mean a lot. Thank you.",
-    "version": "Version {version}"
+    "version": "Version {version}",
+    "title": "About {app_name}"
+  },
+  "app": {
+    "name": "JoyRead"
+  },
+  "startup": {
+    "library_unavailable": "{app_name} Library Unavailable",
+    "cannot_open_library": "{app_name} can't open your library.",
+    "recovery_body": "Location:\n{path}\n\n{detail}\n\nInitialize creates a new default JoyRead-Library. Select switches to an existing {app_name} library.",
+    "initialize": "Initialize",
+    "select": "Select",
+    "select_library": "Select an existing {app_name} library",
+    "failed": "Could not start {app_name}.\n\n{detail}"
+  },
+  "error": {
+    "operation_failed": "The operation could not be completed.\n\n{detail}",
+    "book_unavailable": "The selected book is no longer available."
+  },
+  "password_error": {
+    "already_setup": "Hidden Space is already set up.",
+    "not_setup": "Hidden Space has not been set up yet.",
+    "incorrect_current": "Current password is incorrect.",
+    "mismatch": "Passwords do not match.",
+    "rules": "Password must be at least 4 characters and contain only letters and digits."
   }
 }

@@ -11,6 +11,8 @@ down the right edge that jumps to a bucket.
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from collections.abc import Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
@@ -45,7 +47,7 @@ class _SectionHeader(QWidget):
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Theme.tag_browser_section_gap)
-        self._label = QLabel(text)
+        self._label = LocalizedLabel(text)
         self._label.setProperty("class", "TagBrowserSectionLabel")
         layout.addWidget(self._label)
         rule = QFrame()
@@ -53,15 +55,15 @@ class _SectionHeader(QWidget):
         rule.setFixedHeight(1)
         rule.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(rule, stretch=1)
-        self._trailing = QLabel("")
+        self._trailing = LocalizedLabel("")
         self._trailing.setProperty("class", "TagBrowserSectionLabel")
         layout.addWidget(self._trailing)
 
     def set_text(self, text: str) -> None:
-        self._label.setText(text)
+        set_localized(self._label, "setText", text)
 
     def set_trailing(self, text: str) -> None:
-        self._trailing.setText(text)
+        set_localized(self._trailing, "setText", text)
 
 
 class _LetterRail(QLabel):
@@ -157,7 +159,7 @@ class TagBrowserWidget(QWidget):
         )
         layout.setSpacing(Theme.tag_browser_search_gap)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setPixmap(
             _faded_pixmap(
                 str(self._resources.icon_path("icon_search.svg")),
@@ -170,7 +172,7 @@ class TagBrowserWidget(QWidget):
 
         self._search_field = QLineEdit()
         self._search_field.setObjectName("TagBrowserSearchField")
-        self._search_field.setPlaceholderText(t("tags.search_placeholder"))
+        set_localized(self._search_field, "setPlaceholderText", t("tags.search_placeholder"))
         self._search_field.setFrame(False)
         # Typing only updates the clear affordance; the pool rebuilds when the
         # query is committed. Rebuilding per keystroke costs the whole library
@@ -180,7 +182,7 @@ class TagBrowserWidget(QWidget):
         self._search_field.returnPressed.connect(self._apply_query)
         layout.addWidget(self._search_field, stretch=1)
 
-        self._clear_button = QLabel()
+        self._clear_button = LocalizedLabel()
         self._clear_button.setObjectName("TagBrowserSearchClear")
         self._clear_button.setPixmap(
             _faded_pixmap(
@@ -337,7 +339,7 @@ class TagBrowserWidget(QWidget):
         self.set_selected_tag_ids(())
 
     def refresh_labels(self) -> None:
-        self._search_field.setPlaceholderText(t("tags.search_placeholder"))
+        set_localized(self._search_field, "setPlaceholderText", t("tags.search_placeholder"))
         self._tray_header.set_text(t("tags.tray_header"))
         language_changed = False
         if self._follows_active_locale:
@@ -395,7 +397,7 @@ class TagBrowserWidget(QWidget):
 
         groups = group_tags(self._tags, han_language=self._han_language, query=self._query)
         if not groups:
-            empty = QLabel(
+            empty = LocalizedLabel(
                 t("tags.no_search_match") if self._query else t("dialog.no_tags_hint")
             )
             empty.setObjectName("TagBrowserEmptyHint")
@@ -481,7 +483,7 @@ class TagBrowserWidget(QWidget):
             t("tags.tray_count", count=str(len(selected)), total=str(len(self._tags)))
         )
         if not selected:
-            hint = QLabel(t("tags.tray_empty_hint"))
+            hint = LocalizedLabel(t("tags.tray_empty_hint"))
             hint.setObjectName("TagBrowserTrayEmptyHint")
             hint.setFixedHeight(Theme.tag_chip_height)
             self._tray_flow.addWidget(hint)

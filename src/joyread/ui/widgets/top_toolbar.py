@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
@@ -39,7 +41,7 @@ class TopToolbarWidget(QWidget):
         )
         layout.setSpacing(10)
 
-        self._title = QLabel(t("sidebar.all"))
+        self._title = LocalizedLabel(t("sidebar.all"))
         self._title.setObjectName("PageTitle")
         layout.addWidget(self._title)
         layout.addStretch(1)
@@ -55,6 +57,7 @@ class TopToolbarWidget(QWidget):
             [filter_name.value for filter_name in FileFilter],
             width=Theme.file_filter_width,
             initial_value=FileFilter.ALL.value,
+            label_for_value=lambda value: t("toolbar.filter_all") if value == FileFilter.ALL.value else value,
             tooltip=t("toolbar.filter_tooltip"),
         )
         self._filter_dropdown.value_changed.connect(self.filter_changed.emit)
@@ -71,12 +74,12 @@ class TopToolbarWidget(QWidget):
         its tooltips (set in ``__init__``) would otherwise stay in the old
         language. Called from ``MainWindow._on_language_changed``.
         """
-        self._filter_dropdown.setToolTip(t("toolbar.filter_tooltip"))
-        self._tag_filter_button.setToolTip(t("toolbar.tag_filter_tooltip"))
+        set_localized(self._filter_dropdown, "setToolTip", t("toolbar.filter_tooltip"))
+        set_localized(self._tag_filter_button, "setToolTip", t("toolbar.tag_filter_tooltip"))
         self._search_panel.refresh_labels()
 
     def set_title(self, title: str) -> None:
-        self._title.setText(title)
+        set_localized(self._title, "setText", title)
 
     def set_filter(self, filter_name: str) -> None:
         self._filter_dropdown.set_value(filter_name)
@@ -98,7 +101,7 @@ class TagFilterButton(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(t("toolbar.tag_filter_tooltip"))
+        set_localized(self, "setToolTip", t("toolbar.tag_filter_tooltip"))
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setFixedSize(Theme.toolbar_button_size, Theme.toolbar_button_size)
 
@@ -117,7 +120,7 @@ class TagFilterButton(QFrame):
         )
         layout.setSpacing(0)
 
-        self._icon = QLabel()
+        self._icon = LocalizedLabel()
         self._icon.setObjectName("TagFilterButtonIcon")
         self._icon.setFixedSize(Theme.icon_size, Theme.icon_size)
         layout.addWidget(self._icon, alignment=Qt.AlignmentFlag.AlignCenter)

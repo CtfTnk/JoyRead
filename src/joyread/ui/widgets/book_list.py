@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
@@ -166,10 +168,10 @@ class BookListRowWidget(QFrame):
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         info_layout.addWidget(title)
 
-        author = QLabel(book.author or t("detail.unknown_author"))
+        author = LocalizedLabel(book.author or t("detail.unknown_author"))
         author.setProperty("class", "BookAuthor")
         author.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        author.setToolTip(author.text())
+        set_localized(author, "setToolTip", author.text())
         info_layout.addWidget(author)
 
         info_layout.addStretch(1)
@@ -196,7 +198,7 @@ class BookListRowWidget(QFrame):
         self._progress = BookProgressBar(book.progress_percent)
         progress_unit_layout.addWidget(self._progress)
 
-        self._progress_percent_label = QLabel(f"{book.progress_percent}%")
+        self._progress_percent_label = LocalizedLabel(f"{book.progress_percent}%")
         self._progress_percent_label.setProperty("class", "BookProgressPercent")
         progress_unit_layout.addWidget(self._progress_percent_label)
 
@@ -242,8 +244,8 @@ class BookListRowWidget(QFrame):
         self.update()
 
     def refresh_labels(self) -> None:
-        self._detail_button.setToolTip(t("menu.detail"))
-        self._option_button.setToolTip(t("detail.more_options"))
+        set_localized(self._detail_button, "setToolTip", t("menu.detail"))
+        set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
     def set_cover_path(self, path: Path) -> None:
         self._cover.set_pixmap_from_path(path)

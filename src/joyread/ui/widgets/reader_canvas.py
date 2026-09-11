@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 import logging
 from dataclasses import dataclass
 from time import perf_counter
@@ -575,13 +577,11 @@ class ReaderCanvas(QWidget):
 
     def _refresh_status_tooltip(self) -> None:
         if self._layout_result is not None:
-            self.setToolTip("")
+            set_localized(self, "setToolTip", "")
             return
-        self.setToolTip(
-            self._status_text
+        set_localized(self, "setToolTip", self._status_text
             if _status_text_is_clipped(self.fontMetrics(), QRectF(self.rect()), self._status_text)
-            else ""
-        )
+            else "")
 
 
 def _draw_placeholder_page(painter: QPainter, rect: QRectF, spinner_phase: float) -> None:

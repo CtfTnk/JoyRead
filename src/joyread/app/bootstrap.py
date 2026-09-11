@@ -22,6 +22,9 @@ except in the startup profile.
 
 from __future__ import annotations
 
+from joyread.infrastructure.i18n import locale_service
+from joyread.infrastructure.i18n.locale_service import t, app_display_name
+
 import logging
 import platform
 import sys
@@ -78,8 +81,7 @@ from joyread.infrastructure.logging import (
 )
 
 if TYPE_CHECKING:
-    # Annotations only. `from __future__ import annotations` makes these
-    # strings at runtime, so naming them here costs a secondary process nothing.
+    # Postponed annotations keep primary runtime imports off secondary startup.
     from joyread.app.app_context import AppContext
     from joyread.app.launch.coordinator import LaunchCoordinator
     from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
@@ -182,6 +184,8 @@ def _prepare_startup_environment(
     settings_store = create_environment_settings_store(config.app_name, config.app_author)
     app.setApplicationName(config.app_name)
     app.setOrganizationName(config.app_author)
+    # Before arbitration, use system locale without reading/writing settings.
+    locale_service.init(locale_service.default_bundled_locale_dir(), None, "System")
     # Links a running window back to `packaging/linux/joyread.desktop`, which is
     # what lets the desktop show the real icon instead of a generic one and stops
     # a second taskbar entry appearing beside the launcher. Wayland derives the
@@ -391,7 +395,7 @@ def _prompt_storage_recovery(current: str, message: str) -> StorageRecoveryPromp
         if result == StorageRecoveryDialogResult.SELECT:
             directory = QFileDialog.getExistingDirectory(
                 None,
-                "Select an existing JoyRead library",
+                t("startup.select_library"),
                 current,
             )
             if directory:
@@ -612,7 +616,7 @@ def _broker_intent_handler(
 
 
 def _show_startup_error(message: str) -> None:
-    QMessageBox.critical(None, "JoyRead", message)
+    QMessageBox.critical(None, app_display_name(), t("startup.failed", detail=message))
 
 
 def _dispose_file_open_router(app: QApplication) -> None:

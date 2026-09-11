@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel
+
 from enum import StrEnum
 
 from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
@@ -120,7 +122,7 @@ class ReaderTopicPanel(QFrame):
         """Populate CONTENTS mode with a TOC list. Empty tuple = placeholder."""
         _clear_layout(self._contents_layout)
         if not items:
-            placeholder = QLabel(t("reader.toc_unavailable"))
+            placeholder = LocalizedLabel(t("reader.toc_unavailable"))
             placeholder.setObjectName("ReaderTopicEmptyText")
             placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
             placeholder.setWordWrap(True)
@@ -323,7 +325,7 @@ class _TopicContentsRow(QFrame):
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label)
 
-        index = QLabel(t("reader.page_index", index=str(item.page_index + 1)))
+        index = LocalizedLabel(t("reader.page_index", index=str(item.page_index + 1)))
         index.setProperty("class", "ReaderTopicItemIndex")
         index.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout.addWidget(index)
@@ -375,7 +377,7 @@ class _TopicBookmarkRow(QFrame):
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(self._label)
 
-        index = QLabel(t("reader.page_index", index=str(bookmark.page_index + 1)))
+        index = LocalizedLabel(t("reader.page_index", index=str(bookmark.page_index + 1)))
         index.setProperty("class", "ReaderTopicItemIndex")
         index.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         layout.addWidget(index)
@@ -426,7 +428,7 @@ class _NewBookmarkRow(QFrame):
         )
         layout.setSpacing(Theme.reader_topic_item_label_gap)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setFixedSize(Theme.reader_topic_add_icon_size, Theme.reader_topic_add_icon_size)
         icon.setPixmap(
             QIcon(str(resources.icon_path("icon_add.svg"))).pixmap(
@@ -435,7 +437,7 @@ class _NewBookmarkRow(QFrame):
         )
         layout.addWidget(icon)
 
-        label = QLabel(t("reader.new_bookmark"))
+        label = LocalizedLabel(t("reader.new_bookmark"))
         label.setProperty("class", "ReaderTopicItemLabel")
         layout.addWidget(label, stretch=1)
 

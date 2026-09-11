@@ -35,7 +35,7 @@ class AppSettings:
     # first successful startup writes it.
     last_good_storage_location: str | None = None
     hash_algorithm: str = "sha256"
-    language: str = "English"
+    language: str = "System"
     import_book_when_opening: bool = False
     # When enabled, the source is hashed before copy and the staging copy must
     # produce the same digest. Disabling it avoids a separate source pass while
@@ -130,6 +130,20 @@ class SettingsStore:
     def settings_path(self) -> Path:
         return self.config_dir / self._FILENAME
 
+    def read_language_preference(self) -> str:
+        """Read only the presentation preference before storage recovery UI.
+
+        Do not create a settings file: its existence distinguishes first run
+        from daily recovery. Corrupt settings are still handled by normal load.
+        """
+        if not self.settings_path.is_file():
+            return "System"
+        try:
+            raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            return str(raw.get("language") or "System")
+        except (OSError, ValueError, AttributeError):
+            return "System"
+
     def load(self) -> AppSettings:
         with operation_scope(
             logger,
@@ -157,7 +171,7 @@ class SettingsStore:
             storage_location=str(raw.get("storage_location") or self._default_storage_root),
             last_good_storage_location=_coerce_optional_str(raw.get("last_good_storage_location")),
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
-            language=str(raw.get("language") or "English"),
+            language=str(raw.get("language") or "System"),
             import_book_when_opening=bool(raw.get("import_book_when_opening", False)),
             verify_imported_file_integrity=bool(raw.get("verify_imported_file_integrity", True)),
             individual_read_window=bool(raw.get("individual_read_window", False)),

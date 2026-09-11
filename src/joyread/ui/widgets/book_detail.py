@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import logging
 from collections.abc import Iterable
 from math import ceil
@@ -26,7 +28,7 @@ from PySide6.QtWidgets import (
 
 from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
-from joyread.infrastructure.i18n.locale_service import book_language_display_name, t
+from joyread.infrastructure.i18n.locale_service import book_language_display_name, t, join_translated
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -72,7 +74,7 @@ class DetailReadButton(QFrame):
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setObjectName("DetailReadIcon")
         icon.setFixedSize(Theme.icon_size, Theme.icon_size)
         icon.setPixmap(
@@ -80,7 +82,7 @@ class DetailReadButton(QFrame):
         )
         layout.addWidget(icon)
 
-        self._label = QLabel()
+        self._label = LocalizedLabel()
         self._label.setProperty("class", "DetailReadButtonText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -88,8 +90,8 @@ class DetailReadButton(QFrame):
         self.refresh_labels()
 
     def refresh_labels(self) -> None:
-        self._label.setText(t("menu.read"))
-        self.setToolTip(t("menu.read"))
+        set_localized(self._label, "setText", t("menu.read"))
+        set_localized(self, "setToolTip", t("menu.read"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -253,7 +255,7 @@ class BookDetailPanel(QFrame):
         self._author_field.set_value(book.author or "None", display_value=book.author or t("detail.none"))
         self._tag_box.set_tags(tags)
         self._progress.set_progress(book.progress_percent)
-        self._progress_percent_label.setText(f"{book.progress_percent}%")
+        set_localized(self._progress_percent_label, "setText", f"{book.progress_percent}%")
         self._favourite_button.setIcon(
             QIcon(
                 str(
@@ -277,7 +279,7 @@ class BookDetailPanel(QFrame):
     def refresh_labels(self) -> None:
         """Re-apply translated labels after a runtime locale change."""
         self._read_button.refresh_labels()
-        self._cover.setToolTip(t("detail.edit_cover"))
+        set_localized(self._cover, "setToolTip", t("detail.edit_cover"))
         self._author_field.set_display_prefix(t("detail.author_prefix"))
         self._refresh_metadata_labels()
 
@@ -327,7 +329,7 @@ class BookDetailPanel(QFrame):
         cover_layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
 
         self._cover = DetailCoverWidget(QSize(Theme.detail_cover_width, Theme.detail_cover_height))
-        self._cover.setToolTip(t("detail.edit_cover"))
+        set_localized(self._cover, "setToolTip", t("detail.edit_cover"))
         self._cover.double_clicked.connect(self._emit_cover_edit_requested)
         # Figma's cover panel is `items-center`; per-item alignment is needed
         # because the progress unit is narrower than the cover.
@@ -345,7 +347,7 @@ class BookDetailPanel(QFrame):
         progress_layout.addWidget(self._progress)
         progress_layout.addStretch(1)
 
-        self._progress_percent_label = QLabel("0%")
+        self._progress_percent_label = LocalizedLabel("0%")
         self._progress_percent_label.setProperty("class", "BookDetailProgressPercent")
         progress_layout.addWidget(self._progress_percent_label)
         cover_layout.addWidget(progress_unit, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -377,7 +379,7 @@ class BookDetailPanel(QFrame):
         name_author_layout.setContentsMargins(0, 0, 0, 0)
         name_author_layout.setSpacing(Theme.detail_meta_name_gap)
 
-        self._title_field = InlineEditableText("Book Name", label_class="BookDetailTitle", max_lines=2)
+        self._title_field = InlineEditableText("", label_class="BookDetailTitle", max_lines=2)
         self._title_field.committed.connect(self._emit_title_change_requested)
         name_author_layout.addWidget(self._title_field)
         self._author_field = InlineEditableText(
@@ -409,7 +411,7 @@ class BookDetailPanel(QFrame):
         self._language_pill = _attribute_pill(self._language_label)
         self._language_pill.setCursor(Qt.CursorShape.PointingHandCursor)
         attributes_layout.addWidget(self._language_pill)
-        self._book_type_label = QLabel("")
+        self._book_type_label = LocalizedLabel("")
         attributes_layout.addWidget(_attribute_pill(self._book_type_label))
         attributes_layout.addStretch(1)
         meta_layout.addWidget(attributes)
@@ -461,7 +463,7 @@ class BookDetailPanel(QFrame):
         self._option_button.setIcon(QIcon(str(self._resources.icon_path("icon_more_option.svg"))))
         self._option_button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
         self._option_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._option_button.setToolTip(t("detail.more_options"))
+        set_localized(self._option_button, "setToolTip", t("detail.more_options"))
         self._option_button.setFixedSize(Theme.detail_button_size, Theme.detail_button_size)
         self._option_button.clicked.connect(
             lambda _checked=False, button=self._option_button: self._emit_menu_requested(button)
@@ -541,22 +543,20 @@ class BookDetailPanel(QFrame):
     def _refresh_metadata_labels(self) -> None:
         book = self._book
         if book is None:
-            self._language_label.setText(_attribute_text(t("detail.language"), t("language_name.und")))
-            self._book_type_label.setText(_attribute_text(t("detail.book_type"), t("detail.book_type_unknown")))
-            self._favourite_button.setToolTip(t("menu.favourite"))
+            set_localized(self._language_label, "setText", _attribute_text(t("detail.language"), t("language_name.und")))
+            set_localized(self._book_type_label, "setText", _attribute_text(t("detail.book_type"), t("detail.book_type_unknown")))
+            set_localized(self._favourite_button, "setToolTip", t("menu.favourite"))
             if hasattr(self, "_option_button"):
-                self._option_button.setToolTip(t("detail.more_options"))
+                set_localized(self._option_button, "setToolTip", t("detail.more_options"))
             return
         self._author_field.set_display_prefix(t("detail.author_prefix"))
         if not book.author:
             self._author_field.set_value("None", display_value=t("detail.none"))
-        self._language_label.setText(
-            _attribute_text(t("detail.language"), book_language_display_name(book.language_tag, book.language_name))
-        )
-        self._book_type_label.setText(_attribute_text(t("detail.book_type"), self._book_type_display_name(book)))
-        self._favourite_button.setToolTip(t("menu.unfavourite") if book.is_favourite else t("menu.favourite"))
+        set_localized(self._language_label, "setText", _attribute_text(t("detail.language"), book_language_display_name(book.language_tag, book.language_name)))
+        set_localized(self._book_type_label, "setText", _attribute_text(t("detail.book_type"), self._book_type_display_name(book)))
+        set_localized(self._favourite_button, "setToolTip", t("menu.unfavourite") if book.is_favourite else t("menu.favourite"))
         if hasattr(self, "_option_button"):
-            self._option_button.setToolTip(t("detail.more_options"))
+            set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
     def _apply_description_layout(self, narrow: bool) -> None:
         if narrow == self._description_narrow:
@@ -641,13 +641,13 @@ class InlineEditableText(QWidget):
     def set_value(self, value: str, *, display_value: str | None = None) -> None:
         self._value = value
         self._display_value = display_value or value
-        self._label.setText(f"{self._display_prefix}{self._display_value}")
-        self._editor.setText(value)
+        set_localized(self._label, "setText", join_translated((self._display_prefix, self._display_value), separator=""))
+        set_localized(self._editor, "setText", value)
         self._stack.setCurrentWidget(self._label)
 
     def set_display_prefix(self, prefix: str) -> None:
         self._display_prefix = prefix
-        self._label.setText(f"{self._display_prefix}{self._display_value}")
+        set_localized(self._label, "setText", join_translated((self._display_prefix, self._display_value), separator=""))
 
     @property
     def display_line_count(self) -> int:
@@ -663,7 +663,7 @@ class InlineEditableText(QWidget):
         return super().eventFilter(watched, event)
 
     def _begin_edit(self) -> None:
-        self._editor.setText(self._value)
+        set_localized(self._editor, "setText", self._value)
         self._stack.setCurrentWidget(self._editor)
         self._editor.setFocus(Qt.FocusReason.MouseFocusReason)
         self._editor.selectAll()
@@ -675,7 +675,7 @@ class InlineEditableText(QWidget):
         self.committed.emit(value)
 
     def _cancel_edit(self) -> None:
-        self._editor.setText(self._value)
+        set_localized(self._editor, "setText", self._value)
         self._stack.setCurrentWidget(self._label)
 
 

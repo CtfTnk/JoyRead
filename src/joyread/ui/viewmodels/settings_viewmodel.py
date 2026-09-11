@@ -265,13 +265,13 @@ class SettingsViewModel:
         self.state_changed.emit()
 
     def set_language(self, language: str) -> None:
-        if language == self.language:
+        if language == self.language and language != "System":
             return
         self.language = language
         self._persist(language=language)
         locale_service.load_language(language)
+        # Language has its own presentation event: a generic rebuild loses edits.
         self.language_changed.emit()
-        self.state_changed.emit()
 
     def set_import_book_when_opening(self, enabled: bool) -> None:
         if enabled == self.import_book_when_opening:
@@ -535,7 +535,7 @@ class SettingsViewModel:
         try:
             service.initialize(password, confirm, hint)
         except HiddenSpacePasswordError as exc:
-            self.hidden_space_error.emit(str(exc))
+            self.hidden_space_error.emit(_hidden_password_error_text(exc))
             return False
         self._refresh_hidden_space_state()
         self.hidden_space_changed.emit()
@@ -560,7 +560,7 @@ class SettingsViewModel:
         try:
             service.change_password(old_password, new_password, confirm, hint)
         except HiddenSpacePasswordError as exc:
-            self.hidden_space_error.emit(str(exc))
+            self.hidden_space_error.emit(_hidden_password_error_text(exc))
             return False
         self._refresh_hidden_space_state()
         self.hidden_space_changed.emit()
@@ -662,3 +662,15 @@ def _depth_to_core_limit(value: int) -> int | None:
     """Convert the settings-only ``-1`` sentinel at the core boundary."""
 
     return None if value == UNLIMITED_DEPTH else value
+
+
+def _hidden_password_error_text(error: HiddenSpacePasswordError) -> str:
+    keys = {
+        "already_setup": "password_error.already_setup",
+        "not_setup": "password_error.not_setup",
+        "incorrect_current": "password_error.incorrect_current",
+        "mismatch": "password_error.mismatch",
+        "rules": "password_error.rules",
+    }
+    key = keys.get(error.code)
+    return locale_service.t(key) if key else locale_service.t("error.operation_failed", detail=str(error))

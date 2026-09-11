@@ -357,3 +357,24 @@ Open an issue at
 [github.com/CtfTnk/JoyRead/issues](https://github.com/CtfTnk/JoyRead/issues).
 Your macOS version, the JoyRead version from Settings → About, and the format of
 the book involved make a report much easier to act on.
+
+
+## Application language (1.0.2)
+
+In Settings → General → Language, choose Follow system, English, 中文, or 日本語.
+New installations follow the system UI language preferences on Windows, macOS,
+and Ubuntu/Linux. If none is supported, English is used. Chinese regional and
+script variants currently share Simplified Chinese. Existing saved selections
+are preserved during upgrade. Follow system detects at launch and when selected;
+restart to pick up later operating-system language changes.
+
+Language changes apply to open application windows and their controls. The
+in-app name is 欣阅 in Chinese, JoyRead in English, and ジョイヨミ in Japanese.
+Installed shortcuts, application filenames and library/configuration directories
+keep their existing names. System-native file dialog buttons may use OS language.
+
+Custom JSON translations in the stable `Config/locales` directory override
+individual keys. Omitted/empty entries keep the bundled language; missing bundled
+translations fall back to English. Broken override files are ignored and logged.
+User-entered titles, tags, hints, paths and technical diagnostic details remain
+unchanged.

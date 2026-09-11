@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import re
 from collections.abc import Callable
 
@@ -137,11 +139,11 @@ class SectionBanner(QFrame):
         )
         layout.setSpacing(0)
 
-        label = QLabel(text)
+        label = LocalizedLabel(text)
         label.setProperty("class", "ReaderSettingsSectionText")
         layout.addWidget(label, stretch=1)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setFixedSize(Theme.reader_settings_section_arrow_size, Theme.reader_settings_section_arrow_size)
         icon.setPixmap(
             QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(
@@ -188,7 +190,7 @@ class SettingRow(QFrame):
             0,
         )
         name_layout.setSpacing(0)
-        text = QLabel(label)
+        text = LocalizedLabel(label)
         text.setProperty("class", "ReaderSettingsLabel")
         name_layout.addWidget(text)
         layout.addWidget(name, stretch=1)
@@ -300,12 +302,12 @@ class _FitModeButton(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._label = QLabel(_fit_mode_label(ReaderFitMode.AUTO))
+        self._label = LocalizedLabel(_fit_mode_label(ReaderFitMode.AUTO))
         self._label.setProperty("class", "ReaderSettingsControlText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label, stretch=1)
 
-        indicator = QLabel()
+        indicator = LocalizedLabel()
         indicator.setFixedSize(Theme.settings_dropdown_indicator_width, Theme.reader_settings_option_height)
         indicator.setPixmap(
             QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(
@@ -323,7 +325,7 @@ class _FitModeButton(QFrame):
         if value == self._value:
             return
         self._value = value
-        self._label.setText(_fit_mode_label(value))
+        set_localized(self._label, "setText", _fit_mode_label(value))
         if emit:
             self.value_changed.emit(value)
 
@@ -417,7 +419,7 @@ class SpinButton(QFrame):
         self.set_value(value)
 
     def _refresh_label(self) -> None:
-        self._field.setText(f"{self._value}{self._suffix}")
+        set_localized(self._field, "setText", f"{self._value}{self._suffix}")
 
 
 class _ZoomButton(QFrame):
@@ -456,14 +458,14 @@ class _ZoomButton(QFrame):
             self._slider.blockSignals(True)
             self._slider.setValue(value)
             self._slider.blockSignals(False)
-        self._field.setText(f"{value} %")
+        set_localized(self._field, "setText", f"{value} %")
         if emit:
             self.value_changed.emit(value)
 
     def commit_text(self) -> None:
         value = _parse_numeric_text(self._field.text())
         if value is None:
-            self._field.setText(f"{self._slider.value()} %")
+            set_localized(self._field, "setText", f"{self._slider.value()} %")
             return
         self.set_value(value)
 

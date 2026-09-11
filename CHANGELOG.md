@@ -3,6 +3,29 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.2] — Unreleased
+
+### Localization
+
+- Added Follow system as the default language preference on Windows, macOS,
+  and Ubuntu/Linux. Supported UI language preferences resolve in order to
+  English, Simplified Chinese, or Japanese, with English fallback. Existing
+  explicit language selections are preserved.
+- Localized the in-app display name: 欣阅, JoyRead, and ジョイヨミ. Internal
+  identifiers, user-data paths, executable names, and desktop/installer names
+  remain unchanged.
+- Fixed untranslated Hidden Space startup controls, storage-recovery UI,
+  tag-operation results, reader password/error messages, and view/sort tooltips.
+- Retranslate open controls, dialogs, menus, and Readers in place without
+  replacing password input, user text, reading state, or active tasks.
+- Merge custom locale files per key over bundled translations and retain
+  English fallback. Include Qt standard-widget translations for Chinese/Japanese.
+
+### Validation
+
+- Platform-native integration and packaged installers require the 1.0.2 release
+  checks in `docs/PACKAGING.md`; this entry does not claim a published release.
+
 ## [1.0.1] — 2026-09-01
 
 ### Bug Fixes

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 import logging
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
@@ -90,10 +92,10 @@ class SearchPanelWidget(QFrame):
 
     def refresh_labels(self) -> None:
         """Re-apply translated placeholder and tooltips after a locale change."""
-        self._input.setPlaceholderText(t("toolbar.search_placeholder"))
-        self._collapse_button.setToolTip(t("toolbar.search_collapse"))
-        self._expand_button.setToolTip(t("toolbar.search_expand"))
-        self._submit_button.setToolTip(t("toolbar.search_submit"))
+        set_localized(self._input, "setPlaceholderText", t("toolbar.search_placeholder"))
+        set_localized(self._collapse_button, "setToolTip", t("toolbar.search_collapse"))
+        set_localized(self._expand_button, "setToolTip", t("toolbar.search_expand"))
+        set_localized(self._submit_button, "setToolTip", t("toolbar.search_submit"))
 
     def submit(self) -> None:
         query = self.query
@@ -126,7 +128,7 @@ class SearchPanelWidget(QFrame):
 
         self._input = QLineEdit()
         self._input.setObjectName("FigmaSearchInput")
-        self._input.setPlaceholderText(t("toolbar.search_placeholder"))
+        set_localized(self._input, "setPlaceholderText", t("toolbar.search_placeholder"))
         self._input.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._input.setFixedHeight(Theme.search_input_height)
         self._input.setMinimumWidth(Theme.search_input_text_width)
@@ -154,7 +156,7 @@ class SearchPanelWidget(QFrame):
         button.setProperty("class", css_class)
         button.setIcon(QIcon(str(self._resources.icon_path(icon_name))))
         button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        button.setToolTip(tooltip)
+        set_localized(button, "setToolTip", tooltip)
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setFixedSize(Theme.toolbar_button_size, Theme.toolbar_button_size)
         return button

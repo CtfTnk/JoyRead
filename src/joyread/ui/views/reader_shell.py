@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -257,13 +259,13 @@ class ReaderShellWidget(ReaderShellBase):
             self._topic_page_count = self.viewmodel.page_count
             self.topic_panel.reset_thumbnails(self.viewmodel.page_count)
         if self.viewmodel.error_message:
-            self.canvas.set_status_text(self.viewmodel.error_message)
+            set_localized(self.canvas, "set_status_text", self.viewmodel.error_message)
         elif self.viewmodel.is_loading:
-            self.canvas.set_status_text(t("reader.loading"))
+            set_localized(self.canvas, "set_status_text", t("reader.loading"))
         elif self.viewmodel.loading_page_index is not None:
-            self.canvas.set_status_text(t("reader.loading_page", index=self.viewmodel.loading_page_index + 1))
+            set_localized(self.canvas, "set_status_text", t("reader.loading_page", index=self.viewmodel.loading_page_index + 1))
         elif self.viewmodel.page_count <= 0:
-            self.canvas.set_status_text(t("reader.no_readable_pages"))
+            set_localized(self.canvas, "set_status_text", t("reader.no_readable_pages"))
 
     def _sync_layout(self, _result) -> None:  # noqa: ANN001 - signal carries the layout dataclass.
         self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x)
@@ -273,7 +275,7 @@ class ReaderShellWidget(ReaderShellBase):
 
     def _show_reader_error(self, message: str | None) -> None:
         if message:
-            self.canvas.set_status_text(message)
+            set_localized(self.canvas, "set_status_text", message)
 
     def _show_password_dialog(self, prompt: ReaderPasswordPrompt) -> None:
         self.dialog_overlay.show_password_input(

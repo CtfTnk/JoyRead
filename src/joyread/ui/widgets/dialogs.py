@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import logging
 from collections.abc import Callable
 
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
 from joyread.core.models.collection import Collection
 from joyread.core.models.tag import Tag
 from joyread.infrastructure.i18n.locale_service import t
+from joyread.infrastructure.i18n.qt_locale import language_events
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
@@ -66,7 +69,7 @@ class DialogTextButton(QFrame):
         )
         layout.setSpacing(0)
 
-        self._label = QLabel(text)
+        self._label = LocalizedLabel(text)
         self._label.setProperty("class", "DialogTextButtonText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
@@ -125,7 +128,7 @@ class DialogMessageContent(QWidget):
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._label = QLabel(message)
+        self._label = LocalizedLabel(message)
         self._label.setProperty("class", "JoyReadDialogContent")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setWordWrap(True)
@@ -139,7 +142,7 @@ class DialogMessageContent(QWidget):
         widget each time would reset the panel's size and make it jitter.
         """
 
-        self._label.setText(message)
+        set_localized(self._label, "setText", message)
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
@@ -256,14 +259,14 @@ class DialogInputContent(QWidget):
         input_layout.addWidget(self.field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
 
-        self._detail_label = QLabel(detail_text or "")
+        self._detail_label = LocalizedLabel(detail_text or "")
         self._detail_label.setObjectName("DialogDetailPrompt")
         self._detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._detail_label.setWordWrap(True)
         self._detail_label.setVisible(bool(detail_text))
         layout.addWidget(self._detail_label)
 
-        self._state_label = QLabel("")
+        self._state_label = LocalizedLabel("")
         self._state_label.setObjectName("DialogStatePrompt")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._state_label.setWordWrap(True)
@@ -275,7 +278,7 @@ class DialogInputContent(QWidget):
         return self.field.value
 
     def set_state_prompt(self, message: str) -> None:
-        self._state_label.setText(message)
+        set_localized(self._state_label, "setText", message)
         self._state_label.setVisible(bool(message))
         self.updateGeometry()
 
@@ -294,12 +297,14 @@ class DialogPasswordContent(QWidget):
 
     def __init__(
         self,
-        headers: tuple[str, ...] = ("Old Password", "New Password", "Confirm New Password"),
+        headers: tuple[str, ...] | None = None,
         echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogPasswordContent")
+        if headers is None:
+            headers = (t("dialog.current_password_header"), t("dialog.new_password_header"), t("dialog.confirm_new_password_header"))
         if echo_modes is None:
             echo_modes = tuple(QLineEdit.EchoMode.Password for _ in headers)
         if len(echo_modes) != len(headers):
@@ -334,7 +339,7 @@ class DialogPasswordContent(QWidget):
             input_layout.addWidget(field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
 
-        self._state_label = QLabel("")
+        self._state_label = LocalizedLabel("")
         self._state_label.setObjectName("DialogStatePrompt")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._state_label)
@@ -344,7 +349,7 @@ class DialogPasswordContent(QWidget):
         return tuple(field.value for field in self.fields)
 
     def set_state_prompt(self, message: str) -> None:
-        self._state_label.setText(message)
+        set_localized(self._state_label, "setText", message)
         self.updateGeometry()
 
     def set_available_width(self, width: int) -> None:
@@ -387,7 +392,7 @@ class DialogCollectionChoiceRow(QFrame):
         layout.setSpacing(Theme.sidebar_item_icon_text_gap)
 
         if resources is not None:
-            icon = QLabel()
+            icon = LocalizedLabel()
             icon.setObjectName("DialogCollectionChoiceIcon")
             icon.setFixedSize(Theme.icon_size, Theme.icon_size)
             # Match the sidebar treatment: hidable collections show the
@@ -399,7 +404,7 @@ class DialogCollectionChoiceRow(QFrame):
             )
             layout.addWidget(icon)
 
-        label = QLabel(collection.name)
+        label = LocalizedLabel(collection.name)
         label.setObjectName("DialogCollectionChoiceLabel")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
@@ -680,7 +685,7 @@ class JoyReadDialogPanel(QFrame):
         self._title_layout.setContentsMargins(0, 0, 0, 0)
         self._title_layout.setSpacing(0)
 
-        self._title_label = QLabel("Title")
+        self._title_label = LocalizedLabel("")
         self._title_label.setProperty("class", "JoyReadDialogTitle")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         # A leading stretch centres the title for every ordinary dialog. The
@@ -692,7 +697,7 @@ class JoyReadDialogPanel(QFrame):
         self._title_layout.addSpacerItem(self._title_leading_stretch)
         self._title_layout.addWidget(self._title_label)
         self._title_layout.addStretch(1)
-        self._title_count = QLabel("")
+        self._title_count = LocalizedLabel("")
         self._title_count.setProperty("class", "JoyReadDialogTitleCount")
         self._title_count.hide()
         self._title_layout.addWidget(self._title_count)
@@ -859,11 +864,11 @@ class JoyReadDialogPanel(QFrame):
     def set_title_count(self, text: str) -> None:
         """Show the selection count beside the title (wide tag layout only)."""
 
-        self._title_count.setText(text)
+        set_localized(self._title_count, "setText", text)
         self._title_count.setVisible(bool(text))
 
     def _set_title(self, title: str, *, destructive: bool = False, count: str | None = None) -> None:
-        self._title_label.setText(title)
+        set_localized(self._title_label, "setText", title)
         # Centre the title unless a count shares the row, in which case the
         # leading stretch collapses so the pair reads left-title/right-count.
         self._title_leading_stretch.changeSize(
@@ -993,6 +998,11 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept: Callable[[], bool] | None = None
 
         self._panel = JoyReadDialogPanel(self)
+        events = language_events()
+        if events is not None:
+            # Run after child bindings have updated; measure without rebuilding
+            # the panel or changing its password/text/selection state.
+            events.changed.connect(self._refresh_translation_layout, Qt.ConnectionType.QueuedConnection)
         self._panel.accepted.connect(self._accept)
         self._panel.rejected.connect(self._reject)
         self._panel.skipped.connect(self._skip)
@@ -1009,6 +1019,10 @@ class JoyReadDialogOverlay(QWidget):
         self._before_accept = None
         self._panel.set_info(title, message, button_text or t("dialog.btn_confirm"))
         self._show_centered()
+
+    def _refresh_translation_layout(self) -> None:
+        self._panel._refresh_size()
+        self._position_panel()
 
     def show_progress(self, title: str, message: str) -> None:
         """Show an undismissable progress dialog. Close it with :meth:`close_progress`."""

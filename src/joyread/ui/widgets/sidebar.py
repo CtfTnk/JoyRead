@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QContextMenuEvent, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
@@ -244,20 +246,20 @@ class SidebarItemWidget(QFrame):
         )
         layout.setSpacing(Theme.sidebar_item_icon_text_gap)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setObjectName("SidebarItemIcon")
         icon.setFixedSize(Theme.icon_size, Theme.icon_size)
         icon.setPixmap(QIcon(str(resources.icon_path(icon_name))).pixmap(QSize(Theme.icon_size, Theme.icon_size)))
         layout.addWidget(icon)
 
-        self._label = QLabel(label)
+        self._label = LocalizedLabel(label)
         self._label.setObjectName("SidebarItemLabel")
         self._label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._label)
         layout.addStretch(1)
 
     def set_label(self, label: str) -> None:
-        self._label.setText(label)
+        set_localized(self._label, "setText", label)
 
     def set_navigation_key(self, key: str) -> None:
         self.navigation_key = key

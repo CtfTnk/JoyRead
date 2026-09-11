@@ -8,6 +8,8 @@ reveals the normal shelf — books stay marked hidden in the DB).
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import logging
 from typing import Callable
 
@@ -23,6 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
 
 
@@ -84,17 +87,17 @@ class HiddenSpaceLockOverlay(QWidget):
         panel_layout.setSpacing(Theme.spacing_md)
         panel_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        title_label = QLabel("Hidden Space")
+        title_label = LocalizedLabel(t("dialog.hidden_space_title"))
         title_label.setProperty("class", "JoyReadDialogTitle")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_layout.addWidget(title_label)
 
-        self._hint_label = QLabel("")
+        self._hint_label = LocalizedLabel("")
         self._hint_label.setObjectName("HiddenSpaceLockHint")
         self._hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._hint_label.setWordWrap(True)
         if hint:
-            self._hint_label.setText(f"Hint: {hint}")
+            set_localized(self._hint_label, "setText", t("dialog.hint_prefix", hint=hint))
         else:
             self._hint_label.setVisible(False)
         panel_layout.addWidget(self._hint_label)
@@ -105,12 +108,12 @@ class HiddenSpaceLockOverlay(QWidget):
         self._password = QLineEdit()
         self._password.setProperty("class", "DialogInputField")
         self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._password.setPlaceholderText("Password")
+        set_localized(self._password, "setPlaceholderText", t("dialog.password_header"))
         self._password.setFixedHeight(Theme.dialog_input_field_height)
         self._password.returnPressed.connect(self._on_verify_clicked)
         panel_layout.addWidget(self._password)
 
-        self._state_label = QLabel("")
+        self._state_label = LocalizedLabel("")
         self._state_label.setObjectName("HiddenSpaceLockState")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._state_label.setVisible(False)
@@ -121,11 +124,11 @@ class HiddenSpaceLockOverlay(QWidget):
         button_layout.setContentsMargins(0, 0, 0, 0)
         button_layout.setSpacing(Theme.spacing_md)
 
-        self._hide_button = _HiddenSpaceLockButton("Hide")
+        self._hide_button = _HiddenSpaceLockButton(t("dialog.btn_hide"))
         self._hide_button.clicked.connect(self._on_hide_clicked)
         button_layout.addWidget(self._hide_button)
 
-        self._verify_button = _HiddenSpaceLockButton("Verify")
+        self._verify_button = _HiddenSpaceLockButton(t("dialog.btn_verify"))
         self._verify_button.clicked.connect(self._on_verify_clicked)
         button_layout.addWidget(self._verify_button)
 
@@ -145,7 +148,7 @@ class HiddenSpaceLockOverlay(QWidget):
             logger.warning("HiddenSpaceLockOverlay verify callable failed: %s", exc)
             ok = False
         if not ok:
-            self._state_label.setText("Incorrect password.")
+            set_localized(self._state_label, "setText", t("dialog.incorrect_password"))
             self._state_label.setVisible(True)
             self._password.selectAll()
             self._password.setFocus(Qt.FocusReason.OtherFocusReason)
@@ -195,7 +198,7 @@ class _HiddenSpaceLockButton(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self._label = QLabel(text)
+        self._label = LocalizedLabel(text)
         self._label.setProperty("class", "HiddenSpaceLockButtonText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label)

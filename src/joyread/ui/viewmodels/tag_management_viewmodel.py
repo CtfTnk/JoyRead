@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.infrastructure.i18n.locale_service import t
+
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -174,20 +176,19 @@ class TagManagementViewModel:
             self.operation_result.emit(
                 TagOperationResult(
                     success=False,
-                    title="Delete Tag",
-                    message="Some tags could not be deleted:\n" + "\n".join(failed_names),
+                    title=t("tags.delete_title"),
+                    message=t("tags.delete_failed", detail="\n".join(failed_names)),
                 )
             )
             return
         if len(targets) == 1:
-            message = f"Tag '{targets[0].name}' deleted ({total_unlinked} books unlinked)."
+            message = t("tags.deleted_one", name=targets[0].name, count=total_unlinked)
         else:
             message = (
-                f"Deleted {len(targets)} tags "
-                f"({total_unlinked} books unlinked)."
+                t("tags.deleted_many", count=len(targets), books=total_unlinked)
             )
         self.operation_result.emit(
-            TagOperationResult(success=True, title="Delete Tag", message=message)
+            TagOperationResult(success=True, title=t("tags.delete_title"), message=message)
         )
 
     def _submit_create(self, text: str) -> None:
@@ -195,18 +196,18 @@ class TagManagementViewModel:
             tag = self._service.create(text)
         except ValueError as exc:
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Create Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.create_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         except TagNameConflictError as exc:
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Create Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.create_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         except Exception as exc:
             logger.exception("Tag create failed")
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Create Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.create_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         self.input_mode = TagInputMode.BUTTONS
@@ -215,8 +216,8 @@ class TagManagementViewModel:
         self.operation_result.emit(
             TagOperationResult(
                 success=True,
-                title="Create Tag",
-                message=f"Tag '{tag.name}' created.",
+                title=t("tags.create_title"),
+                message=t("tags.created", name=tag.name),
             )
         )
 
@@ -228,23 +229,23 @@ class TagManagementViewModel:
             tag = self._service.rename(tag_id, text)
         except ValueError as exc:
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Rename Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.rename_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         except TagNameConflictError as exc:
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Rename Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.rename_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         except TagNotFoundError as exc:
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Rename Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.rename_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         except Exception as exc:
             logger.exception("Tag rename failed")
             self.operation_result.emit(
-                TagOperationResult(success=False, title="Rename Tag", message=str(exc))
+                TagOperationResult(success=False, title=t("tags.rename_title"), message=t("error.operation_failed", detail=str(exc)))
             )
             return
         self.input_mode = TagInputMode.BUTTONS
@@ -253,8 +254,8 @@ class TagManagementViewModel:
         self.operation_result.emit(
             TagOperationResult(
                 success=True,
-                title="Rename Tag",
-                message=f"Tag renamed to '{tag.name}'.",
+                title=t("tags.rename_title"),
+                message=t("tags.renamed", name=tag.name),
             )
         )
 

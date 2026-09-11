@@ -14,6 +14,8 @@ constructor.
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
@@ -50,13 +52,13 @@ class SectionBanner(QFrame):
         )
         layout.setSpacing(0)
 
-        self._label = QLabel(title)
+        self._label = LocalizedLabel(title)
         self._label.setObjectName(label_object_name)
         self._label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._label, stretch=1)
 
         if show_indicator:
-            arrow = QLabel()
+            arrow = LocalizedLabel()
             arrow.setObjectName(indicator_object_name)
             arrow.setFixedSize(Theme.sidebar_section_arrow_size, Theme.sidebar_section_arrow_size)
             arrow.setPixmap(
@@ -68,7 +70,7 @@ class SectionBanner(QFrame):
 
     def set_title(self, title: str) -> None:
         """Update the displayed title text (called on language change)."""
-        self._label.setText(title)
+        set_localized(self._label, "setText", title)
 
 
 # Backward-compatible alias retained for the sidebar so existing imports and

@@ -61,7 +61,8 @@
     "btn_clear": "クリア",
     "canonical_import_never": "変換しない",
     "canonical_import_expensive": "低速・入れ子形式のみ",
-    "canonical_import_always": "常に変換"
+    "canonical_import_always": "常に変換",
+    "language_system": "システムに従う"
   },
   "menu": {
     "read": "読む",
@@ -99,7 +100,15 @@
     "no_search_match": "該当するタグはありません。",
     "selection_none": "未選択",
     "selection_one": "1 個のタグを選択中",
-    "selection_many": "{count} 個のタグを選択中"
+    "selection_many": "{count} 個のタグを選択中",
+    "create_title": "タグを作成",
+    "rename_title": "タグ名を変更",
+    "delete_title": "タグを削除",
+    "delete_failed": "一部のタグを削除できませんでした：\n{detail}",
+    "deleted_one": "タグ「{name}」を削除しました（{count} 冊の関連付けを解除）。",
+    "deleted_many": "{count} 個のタグを削除しました（{books} 冊の関連付けを解除）。",
+    "created": "タグ「{name}」を作成しました。",
+    "renamed": "タグ名を「{name}」に変更しました。"
   },
   "state": {
     "no_books_title": "書籍がありません",
@@ -139,13 +148,13 @@
     "btn_keep": "保持",
     "btn_later": "後で",
     "long_path_title": "Windows のパスが長すぎます",
-    "long_path_disabled_msg": "完全なパスが {length} 文字あり、Windows の長いパスのサポートが無効なため、JoyRead はこの項目にアクセスできません。\n\nWin32 の長いパスを有効にし、JoyRead を再起動してからもう一度お試しください。ファイルまたは Library を短いフォルダーへ移動する方法もあります。",
+    "long_path_disabled_msg": "完全なパスが {length} 文字あり、Windows の長いパスのサポートが無効なため、{app_name} はこの項目にアクセスできません。\n\nWin32 の長いパスを有効にし、{app_name} を再起動してからもう一度お試しください。ファイルまたは Library を短いフォルダーへ移動する方法もあります。",
     "long_path_unsupported_msg": "Windows の長いパスのサポートは有効、または状態を確認できませんでしたが、この操作では {length} 文字のパスにアクセスできません。\n\nファイルまたは Library を短いフォルダーへ移動してから、もう一度お試しください。",
     "long_path_view_instructions": "有効化手順を見る",
     "delete_book_title": "書籍を削除",
     "delete_books_title": "書籍を削除",
-    "delete_book_msg": "JoyRead から「{title}」を削除しますか？\n\nライブラリ記録、コレクション、進捗、ブックマーク、最近の履歴、およびアプリが管理するコピーファイルが削除されます。",
-    "delete_books_msg": "JoyRead から {count} 冊の書籍を削除しますか？\n\nライブラリ記録、コレクション、進捗、ブックマーク、最近の履歴、およびアプリが管理するコピーファイルが削除されます。",
+    "delete_book_msg": "{app_name} から「{title}」を削除しますか？\n\nライブラリ記録、コレクション、進捗、ブックマーク、最近の履歴、およびアプリが管理するコピーファイルが削除されます。",
+    "delete_books_msg": "{app_name} から {count} 冊の書籍を削除しますか？\n\nライブラリ記録、コレクション、進捗、ブックマーク、最近の履歴、およびアプリが管理するコピーファイルが削除されます。",
     "new_collection_title": "新規コレクション",
     "collection_name_header": "コレクション名",
     "rename_collection_title": "コレクション名を変更",
@@ -154,10 +163,10 @@
     "add_to_collection_title": "コレクションに追加",
     "no_collection_msg": "書籍を追加する前にコレクションを作成してください。",
     "missing_file_title": "ファイルが見つかりません",
-    "missing_file_msg": "「{title}」がディスク上に見つかりません。\n\nJoyRead から削除しますか、それともライブラリに保持しますか？",
+    "missing_file_msg": "「{title}」がディスク上に見つかりません。\n\n{app_name} から削除しますか、それともライブラリに保持しますか？",
     "missing_file_not_found": "選択した書籍は利用できなくなりました。",
     "unavailable_file_title": "書籍を利用できません",
-    "unavailable_file_msg": "\"{title}\" は存在しますが、ライブラリ整合性チェックの後、安全に開くことができません。\n\nその他メニューから JoyRead から削除できます。",
+    "unavailable_file_msg": "\"{title}\" は存在しますが、ライブラリ整合性チェックの後、安全に開くことができません。\n\nその他メニューから {app_name} から削除できます。",
     "library_audit_title": "ライブラリ検証",
     "library_audit_clean_msg": "管理対象ライブラリは整合しています。変更は不要です。",
     "library_audit_plan_msg": "変更されたファイル：{changed}\n重複ファイル：{merged}\n欠落ファイル：{missing}\n利用できないファイル：{unavailable}\n復旧可能な項目：{repaired}\n孤立した書籍ファイル：{orphan_files}\n孤立したキャッシュファイル：{orphan_cache}\n解放可能な容量：{reclaimable}\n\nこれらの変更を適用しますか？",
@@ -178,7 +187,7 @@
     "export_item_failed": "エクスポートに失敗しました。",
     "export_more_failures": "...ほか {count} 件。",
     "open_read_only_title": "読み取り専用で開く",
-    "open_read_only_msg": "このファイルは暗号化されているか、暗号化されたアーカイブが含まれているため、JoyRead はインポートできません。\n\n読み取り専用として開くことはできます。",
+    "open_read_only_msg": "このファイルは暗号化されているか、暗号化されたアーカイブが含まれているため、{app_name} はインポートできません。\n\n読み取り専用として開くことはできます。",
     "hidden_space_title": "非表示スペース",
     "set_password_title": "非表示スペースのパスワードを設定",
     "unlock_title": "非表示スペースのロック解除",
@@ -187,7 +196,7 @@
     "reset_hidden_title": "非表示スペースをリセット",
     "reset_hidden_msg": "ディスク上のすべての非表示書籍を完全に削除し、すべての非表示可能コレクションを削除し、非表示スペースのパスワードをクリアします。\n\nこの操作は元に戻せません。",
     "reset_library_title": "ライブラリのリセット",
-    "reset_library_msg": "現在の JoyRead ライブラリ内のすべての書籍、カバー、読書進捗、およびデータを完全に削除します。この操作は元に戻せません。",
+    "reset_library_msg": "現在の {app_name} ライブラリ内のすべての書籍、カバー、読書進捗、およびデータを完全に削除します。この操作は元に戻せません。",
     "type_delete_header": "「delete」と入力して確認",
     "type_delete_error": "「delete」と入力すると、削除を行います。",
     "storage_quiesce_readers": "ライブラリの場所を変更すると、そこを読み込んでいるウィンドウはすべて閉じられます。\n\n開いているリーダー {count} 件を閉じます。各本の読書位置は先に保存されます。",
@@ -195,9 +204,9 @@
     "storage_quiesce_readers_and_cover": "ライブラリの場所を変更すると、そこを読み込んでいるウィンドウはすべて閉じられます。\n\n開いているリーダー {count} 件を閉じ、編集中の表紙は破棄されます。各本の読書位置は先に保存されます。",
     "storage_quiesce_timeout": "バックグラウンド処理を停止できなかったため、ライブラリはそのままです。\n\n少し時間をおいてから再試行してください。",
     "storage_transition_busy": "ライブラリの変更をすでに実行中です。",
-    "storage_updated_msg": "JoyRead ライブラリが更新されました。",
-    "storage_invalid_default": "選択したフォルダは使用可能な JoyRead ライブラリではありません。",
-    "storage_invalid_location": "そのフォルダは JoyRead ライブラリとして使用できません。\n\n{message}",
+    "storage_updated_msg": "{app_name} ライブラリが更新されました。",
+    "storage_invalid_default": "選択したフォルダは使用可能な {app_name} ライブラリではありません。",
+    "storage_invalid_location": "そのフォルダは {app_name} ライブラリとして使用できません。\n\n{message}",
     "incorrect_password": "パスワードが正しくありません。",
     "password_updated": "パスワードが更新されました。",
     "hidden_reverted_msg": "すべての非表示書籍と非表示可能コレクションが通常の状態に戻されました。",
@@ -249,7 +258,7 @@
     "file_choose_import_folder_title": "インポートフォルダを選択",
     "file_choose_export_folder_title": "エクスポートフォルダを選択",
     "file_choose_library_parent_title": "JoyRead-Library の親フォルダを選択",
-    "file_select_existing_library_title": "既存の JoyRead ライブラリを選択",
+    "file_select_existing_library_title": "既存の {app_name} ライブラリを選択",
     "file_import_cover_image_title": "カバー画像をインポート",
     "file_filter_images": "画像 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
     "drop_read_title": "読む",
@@ -269,7 +278,8 @@
     "import_progress_inspecting": "内容を確認中…",
     "import_progress_converting": "{total} ページ中 {done} ページを変換中",
     "import_progress_recording": "ライブラリに追加中…",
-    "import_progress_extracting": "ページを展開中…"
+    "import_progress_extracting": "ページを展開中…",
+    "btn_hide": "非表示"
   },
   "detail": {
     "author_prefix": "著者：",
@@ -316,7 +326,12 @@
     "actions": "アクション",
     "close": "閉じる",
     "minimize": "最小化",
-    "maximize": "最大化"
+    "maximize": "最大化",
+    "list_mode": "リスト表示",
+    "grid_mode": "グリッド表示",
+    "sort_ascending": "昇順",
+    "sort_descending": "降順",
+    "filter_all": "すべて"
   },
   "reader": {
     "contents": "目次",
@@ -380,10 +395,39 @@
     "no_readable_pages": "読み込めるページがありません。",
     "opening_epub": "EPUB を開いています…",
     "loading": "読み込み中…",
-    "loading_page": "{index} ページ目を読み込み中…"
+    "loading_page": "{index} ページ目を読み込み中…",
+    "encrypted_no_password": "アーカイブが暗号化されており、パスワードがないため画像を読み込めません。",
+    "encrypted_skipped": "読み取れる画像がありません。暗号化されたアーカイブをスキップしました。",
+    "open_failed": "リーダーを開けませんでした：{detail}",
+    "password_for": "{name} のパスワードが必要です。",
+    "password_incorrect_for": "{name} のパスワードが正しくありません。もう一度入力してください。"
   },
   "about": {
     "intro": "趣味で作っている個人プロジェクトです。\n\nきっかけは、三つのことをきちんと試してみたかったから——Figma MCP を使った設計、vibe coding エージェントとの協働、そして同じアプリを複数のプラットフォームに届けること。作っているうちに、当初の目標そのもの——ローカルの漫画を気持ちよく管理して読める場所——になっていきました。\n\n気に入っていただけましたら、リポジトリに Star をいただけると励みになります。ありがとうございます。",
-    "version": "バージョン {version}"
+    "version": "バージョン {version}",
+    "title": "{app_name}について"
+  },
+  "app": {
+    "name": "ジョイヨミ"
+  },
+  "startup": {
+    "library_unavailable": "{app_name}のライブラリを開けません",
+    "cannot_open_library": "{app_name}でライブラリを開けません。",
+    "recovery_body": "場所：\n{path}\n\n{detail}\n\n初期化すると既定の JoyRead-Library を作成します。選択すると既存の{app_name}ライブラリに切り替えます。",
+    "initialize": "初期化",
+    "select": "選択",
+    "select_library": "既存の{app_name}ライブラリを選択",
+    "failed": "{app_name}を起動できませんでした。\n\n{detail}"
+  },
+  "error": {
+    "operation_failed": "操作を完了できませんでした。\n\n{detail}",
+    "book_unavailable": "選択した本は利用できなくなりました。"
+  },
+  "password_error": {
+    "already_setup": "非表示スペースは設定済みです。",
+    "not_setup": "非表示スペースはまだ設定されていません。",
+    "incorrect_current": "現在のパスワードが正しくありません。",
+    "mismatch": "パスワードが一致しません。",
+    "rules": "パスワードは半角英数字で4文字以上にしてください。"
   }
 }

@@ -34,7 +34,11 @@ _SALT_BYTES = 16
 
 
 class HiddenSpacePasswordError(ValueError):
-    """User-visible error from password setup, verify, or change."""
+    """Password failure with a stable reason for presentation-layer localization."""
+
+    def __init__(self, message: str, *, code: str = "unknown") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class HiddenSpaceService:
@@ -63,7 +67,7 @@ class HiddenSpaceService:
 
     def initialize(self, password: str, confirm: str, hint: str | None) -> None:
         if self.is_initialized:
-            raise HiddenSpacePasswordError("Hidden Space is already set up.")
+            raise HiddenSpacePasswordError("Hidden Space is already set up.", code="already_setup")
         self._validate_pair(password, confirm)
         salt = secrets.token_bytes(_SALT_BYTES)
         digest = _hash_password(password, salt)
@@ -99,9 +103,9 @@ class HiddenSpaceService:
         hint: str | None = None,
     ) -> None:
         if not self.is_initialized:
-            raise HiddenSpacePasswordError("Hidden Space has not been set up yet.")
+            raise HiddenSpacePasswordError("Hidden Space has not been set up yet.", code="not_setup")
         if not self.verify(old_password):
-            raise HiddenSpacePasswordError("Current password is incorrect.")
+            raise HiddenSpacePasswordError("Current password is incorrect.", code="incorrect_current")
         self._validate_pair(new_password, confirm)
         salt = secrets.token_bytes(_SALT_BYTES)
         digest = _hash_password(new_password, salt)
@@ -169,10 +173,11 @@ class HiddenSpaceService:
     def _validate_pair(self, password: str, confirm: str) -> None:
         if not _PASSWORD_RE.fullmatch(password or ""):
             raise HiddenSpacePasswordError(
-                "Password must be at least 4 characters and contain only letters and digits."
+                "Password must be at least 4 characters and contain only letters and digits.",
+                code="rules",
             )
         if password != confirm:
-            raise HiddenSpacePasswordError("Passwords do not match.")
+            raise HiddenSpacePasswordError("Passwords do not match.", code="mismatch")
 
 
 def _hash_password(password: str, salt: bytes) -> str:

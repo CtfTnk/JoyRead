@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from collections.abc import Iterable
 
 from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
@@ -21,7 +23,8 @@ from PySide6.QtWidgets import (
 from joyread import __version__
 from joyread.core.archive.limits import GIB
 from joyread.infrastructure.i18n.locale_service import (
-    LANGUAGE_DISPLAY_OPTIONS,
+    language_display_options,
+    TranslatedText,
     language_display_name,
     language_value_from_display,
     t,
@@ -79,8 +82,8 @@ class SettingsPageWidget(QFrame):
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
     # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
-    tag_operation_completed = QtSignal(bool, str, str)
-    tag_delete_requested = QtSignal(str, str)
+    tag_operation_completed = QtSignal(bool, object, object)
+    tag_delete_requested = QtSignal(object, object)
 
     def __init__(
         self,
@@ -94,6 +97,7 @@ class SettingsPageWidget(QFrame):
         self._viewmodel = viewmodel
         self._resources = resources
         self._tag_viewmodel = tag_viewmodel
+        self._language_dropdown = None
         self._tag_page = None  # cached TagManagementPage, lazily created
         self._archive_pool_usage_item: SettingsCacheStatusItem | None = None
         self._disposed = False
@@ -124,6 +128,7 @@ class SettingsPageWidget(QFrame):
         layout.addWidget(self._content, stretch=1)
 
         self._viewmodel.state_changed.connect(self.render)
+        self._viewmodel.language_changed.connect(self.refresh_labels)
         self._viewmodel.archive_pool_usage_changed.connect(self._refresh_archive_pool_usage)
         self.destroyed.connect(self._handle_destroyed)
         self.render()
@@ -136,6 +141,7 @@ class SettingsPageWidget(QFrame):
             return
         self._disposed = True
         self._viewmodel.state_changed.disconnect(self.render)
+        self._viewmodel.language_changed.disconnect(self.refresh_labels)
         self._viewmodel.archive_pool_usage_changed.disconnect(self._refresh_archive_pool_usage)
         if self._tag_page is not None:
             self._tag_page.dispose()
@@ -144,6 +150,7 @@ class SettingsPageWidget(QFrame):
     def render(self) -> None:
         if self._disposed:
             return
+        self._language_dropdown = None
         self._sidebar.set_active(self._viewmodel.current_section)
         # Leaving the Tags section clears any chip selection so revisiting
         # the page starts in a clean state (and the inline rename input,
@@ -175,11 +182,14 @@ class SettingsPageWidget(QFrame):
         )
 
     def refresh_labels(self) -> None:
-        """Refresh static labels and rebuild current content after a language change."""
+        """Refresh labels in place so open editors and selections survive."""
         self._sidebar.refresh_labels()
         if self._tag_page is not None:
             self._tag_page.refresh_labels()
-        self.render()
+        for dropdown in self.findChildren(SettingsDropdownButton):
+            dropdown.refresh_labels()
+        if self._language_dropdown is not None:
+            self._language_dropdown.set_value(language_display_name(self._viewmodel.language), emit=False)
 
     def _handle_destroyed(self, _obj: object | None = None) -> None:
         self.dispose()
@@ -204,7 +214,7 @@ class SettingsPageWidget(QFrame):
         cleared the content panel and showed nothing at all.
         """
 
-        banner = SectionBanner(t("settings.section_about"), self._resources)
+        banner = SectionBanner(t("about.title"), self._resources)
         intro = SettingsAboutText(t("about.intro"))
         version = SettingsVersionLabel(t("about.version", version=__version__))
         return [banner, intro, version]
@@ -329,9 +339,10 @@ class SettingsPageWidget(QFrame):
         language = SettingsDropdownItem(
             t("settings.language"),
             language_display_name(self._viewmodel.language),
-            LANGUAGE_DISPLAY_OPTIONS,
+            language_display_options(),
             self._resources,
         )
+        self._language_dropdown = language.dropdown
         language.value_changed.connect(lambda label: self._viewmodel.set_language(language_value_from_display(label)))
 
         import_switch = SettingsSwitchItem(
@@ -593,7 +604,7 @@ class SettingsAboutText(QFrame):
             Theme.settings_about_padding,
         )
         layout.setSpacing(0)
-        self._label = QLabel(body)
+        self._label = LocalizedLabel(body)
         self._label.setObjectName("SettingsAboutText")
         self._label.setWordWrap(True)
         self._label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
@@ -618,7 +629,7 @@ class SettingsVersionLabel(QFrame):
         # The stretch is what puts it on the right; the panel lays items out
         # top-down and would otherwise left-align it like every other row.
         layout.addStretch(1)
-        self._label = QLabel(text_value)
+        self._label = LocalizedLabel(text_value)
         self._label.setObjectName("SettingsVersionText")
         self._label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self._label)
@@ -715,14 +726,14 @@ class SettingsSidebarItem(QFrame):
         )
         layout.setSpacing(0)
 
-        self._text = QLabel(label)
+        self._text = LocalizedLabel(label)
         self._text.setProperty("class", "SettingsSidebarItemText")
         self._text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(self._text)
         layout.addStretch(1)
 
     def set_label(self, label: str) -> None:
-        self._text.setText(label)
+        set_localized(self._text, "setText", label)
 
     def set_checked(self, checked: bool) -> None:
         self.setProperty("selected", "true" if checked else "false")
@@ -971,7 +982,7 @@ def _dropdown_width(options: tuple[str, ...]) -> int:
     clipped ("...sive and nested fo...") grows.
     """
 
-    metrics = QFontMetrics(QLabel().font())
+    metrics = QFontMetrics(LocalizedLabel().font())
     widest = max((metrics.horizontalAdvance(option) for option in options), default=0)
     needed = widest + Theme.settings_dropdown_indicator_width + _DROPDOWN_TEXT_PADDING
     return max(Theme.settings_dropdown_width, needed)
@@ -1006,7 +1017,7 @@ class SettingsDropdownButton(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._label = QLabel(value)
+        self._label = LocalizedLabel(value)
         self._label.setProperty("class", "SettingsControlText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label, stretch=1)
@@ -1017,7 +1028,7 @@ class SettingsDropdownButton(QFrame):
         icon_layout = QHBoxLayout(icon_frame)
         icon_layout.setContentsMargins(0, 0, 0, 0)
         icon_layout.setSpacing(0)
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setFixedSize(Theme.settings_dropdown_icon_size, Theme.settings_dropdown_icon_size)
         icon.setPixmap(
             QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(
@@ -1031,12 +1042,18 @@ class SettingsDropdownButton(QFrame):
     def value(self) -> str:
         return self._value
 
-    def set_value(self, value: str) -> None:
+    def refresh_labels(self) -> None:
+        self.setFixedWidth(_dropdown_width(tuple(
+            value.resolve() if isinstance(value, TranslatedText) else value for value in self._options
+        )))
+
+    def set_value(self, value: str, *, emit: bool = True) -> None:
         if value == self._value:
             return
         self._value = value
-        self._label.setText(value)
-        self.value_changed.emit(value)
+        set_localized(self._label, "setText", value)
+        if emit:
+            self.value_changed.emit(value)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -1059,7 +1076,7 @@ class SettingsDropdownButton(QFrame):
     def _show_menu(self) -> None:
         menu = FigmaMenu(self, width=self.width())
         for option in self._options:
-            menu.add_item(option, lambda selected=option: self.set_value(selected))
+            menu.add_item(option, lambda selected=option: self.set_value(selected.resolve() if isinstance(selected, TranslatedText) else selected))
         menu.exec(self.mapToGlobal(QPoint(0, self.height())))
 
 
@@ -1067,7 +1084,7 @@ class SettingsPushButton(QToolButton):
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setProperty("class", "SettingsPushButton")
-        self.setText(text)
+        set_localized(self, "setText", text)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.settings_push_button_width, Theme.settings_push_button_height)
 
@@ -1154,7 +1171,7 @@ class _SettingsNameCell(QWidget):
         )
         layout.setSpacing(0)
 
-        label = QLabel(text)
+        label = LocalizedLabel(text)
         label.setProperty("class", "SettingsItemNameText")
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
@@ -1250,7 +1267,7 @@ class SettingsSpinButtonSmall(QFrame):
             self._value_editor.setInputMethodHints(Qt.InputMethodHint.ImhDigitsOnly)
         self._value_editor.returnPressed.connect(self._commit_editor_value)
         self._value_editor.editingFinished.connect(self._refresh_label)
-        self._unit_label = QLabel(unit)
+        self._unit_label = LocalizedLabel(unit)
         self._unit_label.setProperty("class", "SettingsSpinValueText")
         self._unit_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         text_layout.addWidget(self._value_editor)
@@ -1318,7 +1335,7 @@ class SettingsSpinButtonSmall(QFrame):
         return button
 
     def _refresh_label(self) -> None:
-        self._value_editor.setText(str(self._value))
+        set_localized(self._value_editor, "setText", str(self._value))
 
     def _commit_editor_value(self) -> None:
         try:
@@ -1365,7 +1382,7 @@ class SettingsCacheStatusItem(QFrame):
         option_layout.setContentsMargins(0, 0, Theme.settings_address_option_padding_right, 0)
         option_layout.setSpacing(Theme.settings_address_option_gap)
 
-        self._usage_label = QLabel(_format_usage_label(current_bytes, budget_bytes))
+        self._usage_label = LocalizedLabel(_format_usage_label(current_bytes, budget_bytes))
         self._usage_label.setObjectName("SettingsCacheUsageLabel")
         self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         option_layout.addWidget(self._usage_label, stretch=1)
@@ -1377,7 +1394,7 @@ class SettingsCacheStatusItem(QFrame):
         layout.addWidget(option)
 
     def set_usage(self, current_bytes: int, budget_bytes: int) -> None:
-        self._usage_label.setText(_format_usage_label(current_bytes, budget_bytes))
+        set_localized(self._usage_label, "setText", _format_usage_label(current_bytes, budget_bytes))
 
 
 def _format_usage_label(current_bytes: int, budget_bytes: int) -> str:

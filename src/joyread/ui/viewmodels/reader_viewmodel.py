@@ -18,6 +18,7 @@ from joyread.app.reader_page_pipeline import (
 
 from joyread.core.archive import (
     ArchiveError,
+    ArchiveEmptyError,
     ArchiveOpenLimits,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
@@ -67,7 +68,7 @@ def _archive_error_message(error: ArchiveError) -> str:
 
     if isinstance(error, ArchiveResourceLimitError):
         return t("reader.archive_resource_limit_exceeded")
-    return str(error)
+    return t("reader.open_failed", detail=str(error))
 
 
 class ReaderViewModel:
@@ -410,7 +411,7 @@ class ReaderViewModel:
         self.loading_page_index = None
         self._layout_waiting_for_pages = ()
         self._layout_result = None
-        self.error_message = "Could not load images because the archive is encrypted and no password was provided."
+        self.error_message = t("reader.encrypted_no_password")
         self.error_changed.emit(self.error_message)
         self._emit_state()
 
@@ -422,7 +423,7 @@ class ReaderViewModel:
             self._archive_passwords.pop(archive_path, None)
             self._skipped_archives.add(archive_path)
         if source_path is None:
-            self.error_message = "No readable images. Encrypted archives were skipped."
+            self.error_message = t("reader.encrypted_skipped")
             self.error_changed.emit(self.error_message)
             self._emit_state()
             return
@@ -983,9 +984,11 @@ class ReaderViewModel:
         self.is_loading = False
         self._set_contents(())
         if isinstance(error, ArchiveError):
-            self.error_message = _archive_error_message(error)
+            self.error_message = (t("reader.encrypted_skipped") if isinstance(error, ArchiveEmptyError) and self._skipped_archives
+                                  else t("reader.no_readable_pages") if isinstance(error, ArchiveEmptyError)
+                                  else _archive_error_message(error))
         else:
-            self.error_message = f"Could not open reader: {error}"
+            self.error_message = t("reader.open_failed", detail=str(error))
         self.error_changed.emit(self.error_message)
         self._emit_state()
 
@@ -1039,14 +1042,14 @@ class ReaderViewModel:
             prompt = ReaderPasswordPrompt(
                 archive_path=archive_path,
                 display_name=display_name,
-                message=f"Incorrect password for {display_name}. Please try again.",
+                message=t("reader.password_incorrect_for", name=display_name),
                 is_retry=True,
             )
         else:
             prompt = ReaderPasswordPrompt(
                 archive_path=archive_path,
                 display_name=display_name,
-                message=f"Password required for {display_name}.",
+                message=t("reader.password_for", name=display_name),
                 is_retry=False,
             )
         self.error_message = prompt.message

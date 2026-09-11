@@ -157,6 +157,17 @@ datas = [
         "joyread/resources/extractors/7zip",
     ),
 ]
+# Qt standard widget strings must follow the app language in frozen builds.
+from PySide6.QtCore import QLibraryInfo
+from PyInstaller.utils.hooks.qt import pyside6_library_info
+qt_translation_destination = str(Path(pyside6_library_info.qt_rel_dir) / "translations")
+qt_translation_dir = Path(QLibraryInfo.path(QLibraryInfo.LibraryPath.TranslationsPath))
+for locale_code in ("zh_CN", "ja"):
+    translation = qt_translation_dir / f"qtbase_{locale_code}.qm"
+    if not translation.is_file():
+        raise SystemExit(f"Missing Qt translation: {translation}")
+    datas.append((str(translation), qt_translation_destination))
+
 hiddenimports = collect_submodules("py7zr")
 if sys.platform == "darwin":
     hiddenimports.extend(["objc", "Foundation", "AppKit"])

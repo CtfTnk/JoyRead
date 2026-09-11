@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, LocalizedPushButton, set_localized
+
 from enum import IntEnum
+from joyread.infrastructure.i18n.locale_service import t
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
@@ -19,24 +22,20 @@ class StorageRecoveryDialogResult(IntEnum):
 class StorageRecoveryDialog(QDialog):
     def __init__(self, current: str, message: str, parent: QDialog | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("JoyRead Library Unavailable")
+        set_localized(self, "setWindowTitle", t("startup.library_unavailable"))
         self.setMinimumWidth(STORAGE_RECOVERY_DIALOG_MIN_WIDTH)
 
-        title = QLabel("JoyRead can't open your library.")
+        title = LocalizedLabel(t("startup.cannot_open_library"))
         title.setObjectName("StorageRecoveryTitle")
 
-        body = QLabel(
-            f"Location:\n{current}\n\n{message}\n\n"
-            "Initialize creates a new default JoyRead-Library. "
-            "Select switches to an existing JoyRead library."
-        )
+        body = LocalizedLabel(t("startup.recovery_body", path=current, detail=message))
         body.setWordWrap(True)
         body.setTextInteractionFlags(
             body.textInteractionFlags() | Qt.TextInteractionFlag.TextSelectableByMouse
         )
 
-        initialize = QPushButton("Initialize")
-        select = QPushButton("Select")
+        initialize = LocalizedPushButton(t("startup.initialize"))
+        select = LocalizedPushButton(t("startup.select"))
         select.setDefault(True)
 
         initialize.clicked.connect(

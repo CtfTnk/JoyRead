@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from math import ceil
 
 from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
@@ -238,10 +240,10 @@ class CoverEditorWidget(QFrame):
 
     def refresh_labels(self) -> None:
         self._import_button.set_text(t("cover_editor.import_image"))
-        self._import_button.setToolTip(t("cover_editor.import_image"))
-        self._browse_button.setToolTip(t("cover_editor.browse_pages"))
-        self._cancel_button.setToolTip(t("cover_editor.cancel"))
-        self._confirm_button.setToolTip(t("cover_editor.confirm"))
+        set_localized(self._import_button, "setToolTip", t("cover_editor.import_image"))
+        set_localized(self._browse_button, "setToolTip", t("cover_editor.browse_pages"))
+        set_localized(self._cancel_button, "setToolTip", t("cover_editor.cancel"))
+        set_localized(self._confirm_button, "setToolTip", t("cover_editor.confirm"))
 
     def _sync_zoom_range(self) -> None:
         self.zoom_spin.set_range(
@@ -315,7 +317,7 @@ class CoverThumbnailPickerWidget(QFrame):
         self.refresh_labels()
 
     def refresh_labels(self) -> None:
-        self._back_button.setToolTip(t("cover_editor.back"))
+        set_localized(self._back_button, "setToolTip", t("cover_editor.back"))
 
     def reset(self) -> None:
         self._grid.set_thumbnail_count(self._page_count, reset=True)
@@ -598,13 +600,13 @@ class _CoverTextButton(QFrame):
         layout.setContentsMargins(Theme.spacing_xs, Theme.spacing_xs, Theme.spacing_xs, Theme.spacing_xs)
         layout.setSpacing(0)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._label = QLabel(text)
+        self._label = LocalizedLabel(text)
         self._label.setObjectName("CoverEditorImportText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label)
 
     def set_text(self, text: str) -> None:
-        self._label.setText(text)
+        set_localized(self._label, "setText", text)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

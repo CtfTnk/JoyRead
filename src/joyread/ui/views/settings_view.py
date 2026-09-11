@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class SettingsView(QWidget):
     close_requested = QtSignal()
-    info_requested = QtSignal(str, str)
+    info_requested = QtSignal(object, object)
     storage_move_requested = QtSignal()
     storage_select_requested = QtSignal()
     storage_reset_requested = QtSignal()
@@ -31,8 +31,8 @@ class SettingsView(QWidget):
     hidden_space_change_password_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
-    tag_operation_completed = QtSignal(bool, str, str)
-    tag_delete_requested = QtSignal(str, str)
+    tag_operation_completed = QtSignal(bool, object, object)
+    tag_delete_requested = QtSignal(object, object)
 
     def __init__(
         self,

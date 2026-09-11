@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 from PySide6.QtCore import Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
@@ -43,8 +45,8 @@ class _TagInputLineEdit(QLineEdit):
 class TagManagementPage(QWidget):
     """The container body inside the Settings page for the Tags surface."""
 
-    tag_operation_completed = QtSignal(bool, str, str)
-    tag_delete_requested = QtSignal(str, str)
+    tag_operation_completed = QtSignal(bool, object, object)
+    tag_delete_requested = QtSignal(object, object)
 
     def __init__(self, viewmodel: TagManagementViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -116,7 +118,7 @@ class TagManagementPage(QWidget):
         self._line_edit = _TagInputLineEdit()
         self._line_edit.setProperty("class", "TagInputField")
         self._line_edit.setMaxLength(MAX_TAG_NAME_LENGTH)
-        self._line_edit.setPlaceholderText(t("tags.placeholder_tag_name"))
+        set_localized(self._line_edit, "setPlaceholderText", t("tags.placeholder_tag_name"))
         self._line_edit.setFixedSize(Theme.tag_input_field_width, Theme.tag_control_button_height)
         self._line_edit.returnPressed.connect(self._handle_submit_clicked)
         self._line_edit.escape_pressed.connect(self._viewmodel.cancel_input)
@@ -163,10 +165,10 @@ class TagManagementPage(QWidget):
     def refresh_labels(self) -> None:
         """Re-apply translated control labels after a runtime language change."""
         self._browser.refresh_labels()
-        self._rename_button.setText(t("tags.btn_rename"))
-        self._delete_button.setText(t("tags.btn_delete"))
-        self._confirm_button.setText(t("tags.btn_confirm"))
-        self._line_edit.setPlaceholderText(t("tags.placeholder_tag_name"))
+        set_localized(self._rename_button, "setText", t("tags.btn_rename"))
+        set_localized(self._delete_button, "setText", t("tags.btn_delete"))
+        set_localized(self._confirm_button, "setText", t("tags.btn_confirm"))
+        set_localized(self._line_edit, "setPlaceholderText", t("tags.placeholder_tag_name"))
 
     def dispose(self) -> None:
         if self._disposed:
@@ -187,7 +189,7 @@ class TagManagementPage(QWidget):
         in_input_mode = self._viewmodel.input_mode != TagInputMode.BUTTONS
         if in_input_mode:
             self._control_stack.setCurrentWidget(self._input_bar)
-            self._line_edit.setText(self._viewmodel.input_initial_text)
+            set_localized(self._line_edit, "setText", self._viewmodel.input_initial_text)
             self._line_edit.setFocus(Qt.FocusReason.OtherFocusReason)
             self._line_edit.selectAll()
         else:

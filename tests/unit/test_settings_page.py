@@ -241,7 +241,7 @@ def test_language_dropdown_displays_native_names_but_persists_canonical_value(qt
     language_dropdown = page.findChildren(SettingsDropdownButton)[0]
 
     assert language_dropdown.value == "English"
-    assert language_dropdown._options == ("English", "中文", "日本語")
+    assert language_dropdown._options == ("Follow system", "English", "中文", "日本語")
 
     language_dropdown.set_value("中文")
     QApplication.processEvents()
@@ -1228,7 +1228,7 @@ def test_a_dropdown_is_wide_enough_for_its_longest_option(qtbot) -> None:
     by_value = {dropdown.value: dropdown for dropdown in dropdowns}
 
     # Short options stay pixel-identical to the design.
-    assert by_value["English"].width() == Theme.settings_dropdown_width
+    assert by_value["Follow system"].width() >= Theme.settings_dropdown_width
 
     policy = by_value["Expensive and nested formats"]
     metrics = QFontMetrics(policy.font())

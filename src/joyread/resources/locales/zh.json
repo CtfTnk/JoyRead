@@ -61,7 +61,8 @@
     "btn_clear": "清除",
     "canonical_import_never": "从不转换",
     "canonical_import_expensive": "仅低速与嵌套格式",
-    "canonical_import_always": "始终转换"
+    "canonical_import_always": "始终转换",
+    "language_system": "跟随系统"
   },
   "menu": {
     "read": "阅读",
@@ -99,7 +100,15 @@
     "no_search_match": "没有匹配的标签。",
     "selection_none": "未选择",
     "selection_one": "已选择 1 个标签",
-    "selection_many": "已选择 {count} 个标签"
+    "selection_many": "已选择 {count} 个标签",
+    "create_title": "创建标签",
+    "rename_title": "重命名标签",
+    "delete_title": "删除标签",
+    "delete_failed": "部分标签无法删除：\n{detail}",
+    "deleted_one": "已删除标签“{name}”（已解除 {count} 本书的关联）。",
+    "deleted_many": "已删除 {count} 个标签（已解除 {books} 本书的关联）。",
+    "created": "已创建标签“{name}”。",
+    "renamed": "标签已重命名为“{name}”。"
   },
   "state": {
     "no_books_title": "暂无书籍",
@@ -139,13 +148,13 @@
     "btn_keep": "保留",
     "btn_later": "稍后",
     "long_path_title": "Windows 路径过长",
-    "long_path_disabled_msg": "JoyRead 无法访问此项目：完整路径为 {length} 个字符，而 Windows 长路径支持尚未开启。\n\n请开启 Win32 长路径、重启 JoyRead 后重试。也可以将文件或 Library 移到更短的目录。",
+    "long_path_disabled_msg": "{app_name} 无法访问此项目：完整路径为 {length} 个字符，而 Windows 长路径支持尚未开启。\n\n请开启 Win32 长路径、重启 {app_name} 后重试。也可以将文件或 Library 移到更短的目录。",
     "long_path_unsupported_msg": "Windows 长路径支持已开启或无法确认，但此操作仍无法访问长度为 {length} 个字符的路径。\n\n请将文件或 Library 移到更短的目录后重试。",
     "long_path_view_instructions": "查看开启方法",
     "delete_book_title": "删除书籍",
     "delete_books_title": "删除书籍",
-    "delete_book_msg": "从 JoyRead 中删除「{title}」？\n\n这将删除其书库记录、书单、阅读进度、书签、最近历史记录及应用管理的文件副本。",
-    "delete_books_msg": "从 JoyRead 中删除 {count} 本书籍？\n\n这将删除它们的书库记录、书单、阅读进度、书签、最近历史记录及应用管理的文件副本。",
+    "delete_book_msg": "从 {app_name} 中删除「{title}」？\n\n这将删除其书库记录、书单、阅读进度、书签、最近历史记录及应用管理的文件副本。",
+    "delete_books_msg": "从 {app_name} 中删除 {count} 本书籍？\n\n这将删除它们的书库记录、书单、阅读进度、书签、最近历史记录及应用管理的文件副本。",
     "new_collection_title": "新建书单",
     "collection_name_header": "书单名称",
     "rename_collection_title": "重命名书单",
@@ -154,10 +163,10 @@
     "add_to_collection_title": "加入书单",
     "no_collection_msg": "请先创建书单再添加书籍。",
     "missing_file_title": "文件丢失",
-    "missing_file_msg": "「{title}」在磁盘上找不到。\n\n是否从 JoyRead 中删除，还是保留在书库中？",
+    "missing_file_msg": "「{title}」在磁盘上找不到。\n\n是否从 {app_name} 中删除，还是保留在书库中？",
     "missing_file_not_found": "所选书籍已不存在。",
     "unavailable_file_title": "书籍不可用",
-    "unavailable_file_msg": "\"{title}\" 文件仍存在，但在书库完整性检查后无法安全打开。\n\n你可以通过其更多菜单将它从 JoyRead 中移除。",
+    "unavailable_file_msg": "\"{title}\" 文件仍存在，但在书库完整性检查后无法安全打开。\n\n你可以通过其更多菜单将它从 {app_name} 中移除。",
     "library_audit_title": "书库验证",
     "library_audit_clean_msg": "受管书库状态正常，无需进行更改。",
     "library_audit_plan_msg": "已变更文件：{changed}\n重复文件：{merged}\n缺失文件：{missing}\n不可用文件：{unavailable}\n可恢复条目：{repaired}\n孤儿书籍文件：{orphan_files}\n孤儿缓存文件：{orphan_cache}\n可释放空间：{reclaimable}\n\n要应用这些更改吗？",
@@ -178,7 +187,7 @@
     "export_item_failed": "导出失败。",
     "export_more_failures": "...还有 {count} 项。",
     "open_read_only_title": "以只读方式打开",
-    "open_read_only_msg": "JoyRead 无法导入此文件，因为它已加密或包含加密压缩包。\n\n您仍可将其作为只读文件打开阅读。",
+    "open_read_only_msg": "{app_name} 无法导入此文件，因为它已加密或包含加密压缩包。\n\n您仍可将其作为只读文件打开阅读。",
     "hidden_space_title": "隐藏空间",
     "set_password_title": "设置隐藏空间密码",
     "unlock_title": "解锁隐藏空间",
@@ -187,7 +196,7 @@
     "reset_hidden_title": "重置隐藏空间",
     "reset_hidden_msg": "这将永久删除磁盘上的所有隐藏书籍，删除所有可隐藏书单，并清除隐藏空间密码。\n\n此操作无法撤销。",
     "reset_library_title": "重置书库",
-    "reset_library_msg": "这将永久删除当前 JoyRead 书库中的所有书籍、封面、阅读进度和数据。此操作无法撤销。",
+    "reset_library_msg": "这将永久删除当前 {app_name} 书库中的所有书籍、封面、阅读进度和数据。此操作无法撤销。",
     "type_delete_header": "输入 delete 以确认",
     "type_delete_error": "请输入 delete 以确认。",
     "storage_quiesce_readers": "更改书库位置会关闭所有正在读取它的窗口。\n\n将关闭 {count} 个已打开的阅读器。系统会先保存每本书的阅读进度。",
@@ -195,9 +204,9 @@
     "storage_quiesce_readers_and_cover": "更改书库位置会关闭所有正在读取它的窗口。\n\n将关闭 {count} 个已打开的阅读器，正在编辑的封面将被丢弃。系统会先保存每本书的阅读进度。",
     "storage_quiesce_timeout": "后台任务未能停止，书库位置保持不变。\n\n请稍后重试。",
     "storage_transition_busy": "书库变更正在进行中。",
-    "storage_updated_msg": "您的 JoyRead 书库已更新。",
-    "storage_invalid_default": "所选文件夹不是可用的 JoyRead 书库。",
-    "storage_invalid_location": "该文件夹不能作为 JoyRead 书库使用。\n\n{message}",
+    "storage_updated_msg": "您的 {app_name} 书库已更新。",
+    "storage_invalid_default": "所选文件夹不是可用的 {app_name} 书库。",
+    "storage_invalid_location": "该文件夹不能作为 {app_name} 书库使用。\n\n{message}",
     "incorrect_password": "密码错误。",
     "password_updated": "密码已更新。",
     "hidden_reverted_msg": "所有隐藏书籍和可隐藏书单已还原为普通状态。",
@@ -249,7 +258,7 @@
     "file_choose_import_folder_title": "选择导入文件夹",
     "file_choose_export_folder_title": "选择导出文件夹",
     "file_choose_library_parent_title": "选择 JoyRead-Library 的父文件夹",
-    "file_select_existing_library_title": "选择已有 JoyRead 书库",
+    "file_select_existing_library_title": "选择已有 {app_name} 书库",
     "file_import_cover_image_title": "导入封面图片",
     "file_filter_images": "图片 (*.png *.jpg *.jpeg *.webp *.gif *.bmp *.tif *.tiff)",
     "drop_read_title": "阅读",
@@ -269,7 +278,8 @@
     "import_progress_inspecting": "正在检查内容…",
     "import_progress_converting": "正在转换第 {done} 页，共 {total} 页",
     "import_progress_recording": "正在加入书库…",
-    "import_progress_extracting": "正在解压页面…"
+    "import_progress_extracting": "正在解压页面…",
+    "btn_hide": "隐藏"
   },
   "detail": {
     "author_prefix": "作者：",
@@ -316,7 +326,12 @@
     "actions": "操作",
     "close": "关闭",
     "minimize": "最小化",
-    "maximize": "最大化"
+    "maximize": "最大化",
+    "list_mode": "列表模式",
+    "grid_mode": "网格模式",
+    "sort_ascending": "升序排列",
+    "sort_descending": "降序排列",
+    "filter_all": "全部"
   },
   "reader": {
     "contents": "目录",
@@ -380,10 +395,39 @@
     "no_readable_pages": "没有可阅读的页面。",
     "opening_epub": "正在打开 EPUB…",
     "loading": "加载中…",
-    "loading_page": "正在加载第 {index} 页…"
+    "loading_page": "正在加载第 {index} 页…",
+    "encrypted_no_password": "压缩包已加密且未提供密码，无法加载图片。",
+    "encrypted_skipped": "没有可读图片。已跳过加密压缩包。",
+    "open_failed": "无法打开阅读器：{detail}",
+    "password_for": "{name} 需要密码。",
+    "password_incorrect_for": "{name} 的密码错误，请重试。"
   },
   "about": {
     "intro": "这是一个兴趣使然的个人项目。\n\n最初是想认真实践三件事：基于 Figma MCP 的设计开发、与 vibe coding agents 的协作，以及同一个应用的跨平台交付。做着做着，它也逐渐长成了最初设想的样子——一个更顺手的本地漫画管理与阅读工具。\n\n如果您喜欢它，欢迎为项目点一个 star，不胜感激。",
-    "version": "版本 {version}"
+    "version": "版本 {version}",
+    "title": "关于{app_name}"
+  },
+  "app": {
+    "name": "欣阅"
+  },
+  "startup": {
+    "library_unavailable": "{app_name}书库不可用",
+    "cannot_open_library": "无法打开{app_name}书库。",
+    "recovery_body": "位置：\n{path}\n\n{detail}\n\n初始化会创建默认的 JoyRead-Library 书库。选择可切换到现有的{app_name}书库。",
+    "initialize": "初始化",
+    "select": "选择",
+    "select_library": "选择现有的{app_name}书库",
+    "failed": "无法启动{app_name}。\n\n{detail}"
+  },
+  "error": {
+    "operation_failed": "操作未能完成。\n\n{detail}",
+    "book_unavailable": "所选书籍已不可用。"
+  },
+  "password_error": {
+    "already_setup": "隐藏空间已设置。",
+    "not_setup": "尚未设置隐藏空间。",
+    "incorrect_current": "当前密码错误。",
+    "mismatch": "两次输入的密码不一致。",
+    "rules": "密码须至少为 4 位，且只能包含英文字母和数字。"
   }
 }

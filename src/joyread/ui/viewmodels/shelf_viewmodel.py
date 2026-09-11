@@ -378,7 +378,7 @@ class ShelfViewModel:
             return
         book = self._book_by_uuid(book_uuid)
         if book is None:
-            self.book_tags_failed.emit("The selected book is no longer available.")
+            self.book_tags_failed.emit(t("error.book_unavailable"))
             return
         normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
         if normalized_ids == self.tag_ids_for_book(book_uuid):

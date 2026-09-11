@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QFontMetrics, QKeyEvent, QMouseEvent, QPixmap
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QWidget
@@ -67,7 +69,7 @@ class TagChipWidget(QFrame):
         if is_add_chip:
             # Special "+" entry: a plain QLabel keeps the centre glyph
             # crisp at any chip width.
-            self._label: QLabel = QLabel(name)
+            self._label: QLabel = LocalizedLabel(name)
             self._label.setProperty("class", "TagChipLabel")
             self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         else:
@@ -87,7 +89,7 @@ class TagChipWidget(QFrame):
 
         if self._remove_pixmap is not None:
             layout.setSpacing(Theme.tag_browser_tray_gap)
-            glyph = QLabel()
+            glyph = LocalizedLabel()
             glyph.setProperty("class", "TagChipRemoveGlyph")
             glyph.setPixmap(self._remove_pixmap)
             glyph.setFixedSize(
@@ -133,9 +135,9 @@ class TagChipWidget(QFrame):
     def set_name(self, name: str) -> None:
         self._name = name
         if isinstance(self._label, ElidedLabel):
-            self._label.set_full_text(name)
+            set_localized(self._label, "set_full_text", name)
         else:
-            self._label.setText(name)
+            set_localized(self._label, "setText", name)
         self.updateGeometry()
 
     def sizeHint(self) -> QSize:  # noqa: N802 - Qt API override.

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import sys
 from collections.abc import Callable
 
@@ -138,8 +140,8 @@ class TitleBarWidget(QWidget):
 
     def refresh_labels(self) -> None:
         """Refresh translated tooltips and display labels after a locale change."""
-        self._sidebar_button.setToolTip(t("toolbar.sidebar_toggle"))
-        self._sort_dropdown.setToolTip(t("toolbar.sort_by"))
+        set_localized(self._sidebar_button, "setToolTip", t("toolbar.sidebar_toggle"))
+        set_localized(self._sort_dropdown, "setToolTip", t("toolbar.sort_by"))
         self._action_button.refresh_tooltip()
         self._stoplight_controls.refresh_tooltips()
         self._title_control_group.refresh_tooltips()
@@ -216,9 +218,9 @@ class StoplightControlsWidget(QWidget):
         layout.addWidget(self.zoom_button)
 
     def refresh_tooltips(self) -> None:
-        self.close_button.setToolTip(t("toolbar.close"))
-        self.minimize_button.setToolTip(t("toolbar.minimize"))
-        self.zoom_button.setToolTip(t("toolbar.maximize"))
+        set_localized(self.close_button, "setToolTip", t("toolbar.close"))
+        set_localized(self.minimize_button, "setToolTip", t("toolbar.minimize"))
+        set_localized(self.zoom_button, "setToolTip", t("toolbar.maximize"))
 
 
 class TitleControlGroup(QWidget):
@@ -259,9 +261,9 @@ class TitleControlGroup(QWidget):
         layout.addWidget(self.close_button)
 
     def refresh_tooltips(self) -> None:
-        self.minimize_button.setToolTip(t("toolbar.minimize"))
-        self.zoom_button.setToolTip(t("toolbar.maximize"))
-        self.close_button.setToolTip(t("toolbar.close"))
+        set_localized(self.minimize_button, "setToolTip", t("toolbar.minimize"))
+        set_localized(self.zoom_button, "setToolTip", t("toolbar.maximize"))
+        set_localized(self.close_button, "setToolTip", t("toolbar.close"))
 
 
 class TitleControlButton(QToolButton):
@@ -272,7 +274,7 @@ class TitleControlButton(QToolButton):
         self.setObjectName(object_name)
         self.setIcon(icon)
         self.setIconSize(QSize(Theme.title_control_button_size, Theme.title_control_button_size))
-        self.setToolTip(tooltip)
+        set_localized(self, "setToolTip", tooltip)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.title_control_button_size, Theme.title_control_button_size)
 
@@ -316,7 +318,7 @@ class ActionMenuButton(QFrame):
         super().__init__(parent)
         self._build_menu: Callable[[], FigmaMenu] | None = None
         self.setProperty("class", "ActionMenuButton")
-        self.setToolTip(t("toolbar.actions"))
+        set_localized(self, "setToolTip", t("toolbar.actions"))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.action_button_width, Theme.action_button_height)
 
@@ -330,14 +332,14 @@ class ActionMenuButton(QFrame):
         layout.setContentsMargins(4, 4, 3, 4)
         layout.setSpacing(1)
 
-        action_icon = QLabel()
+        action_icon = LocalizedLabel()
         action_icon.setFixedSize(Theme.icon_size, Theme.icon_size)
         action_icon.setPixmap(QIcon(str(resources.icon_path("icon_action.svg"))).pixmap(_icon_qsize()))
         layout.addWidget(action_icon, alignment=Qt.AlignmentFlag.AlignVCenter)
 
         layout.addStretch(1)
 
-        dropout_icon = QLabel()
+        dropout_icon = LocalizedLabel()
         dropout_icon.setFixedSize(Theme.action_button_indicator_size, Theme.action_button_indicator_size)
         dropout_icon.setPixmap(
             QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(
@@ -353,7 +355,7 @@ class ActionMenuButton(QFrame):
         self._build_menu = build_menu
 
     def refresh_tooltip(self) -> None:
-        self.setToolTip(t("toolbar.actions"))
+        set_localized(self, "setToolTip", t("toolbar.actions"))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self._build_menu is not None:
@@ -399,7 +401,7 @@ def _sort_field_from_value(value: str) -> SortField:
 def _traffic_button(object_name: str, tooltip: str) -> QToolButton:
     button = QToolButton()
     button.setObjectName(object_name)
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setFixedSize(Theme.traffic_light_size, Theme.traffic_light_size)
 
     # gpt fix
@@ -413,7 +415,7 @@ def _chrome_button(icon: QIcon, size: tuple[int, int], tooltip: str) -> QToolBut
     button.setProperty("class", "ChromeButton")
     button.setIcon(icon)
     button.setIconSize(_icon_qsize())
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setFixedSize(*size)
     return button
 

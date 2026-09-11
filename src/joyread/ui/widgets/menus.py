@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel
+
 from collections.abc import Callable, Sequence
 
 import shiboken6
@@ -52,7 +54,7 @@ class MenuItem(QFrame):
         )
         layout.setSpacing(Theme.menu_item_text_gap)
 
-        label = QLabel(text)
+        label = LocalizedLabel(text)
         label.setProperty("class", "FigmaMenuItemText")
         label.setProperty("destructive", "true" if destructive else "false")
         label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
@@ -351,7 +353,7 @@ class LanguageDropdownMenu(_PopupMenu):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        icon = QLabel()
+        icon = LocalizedLabel()
         icon.setFixedSize(Theme.language_menu_indicator_icon_size, Theme.language_menu_indicator_icon_size)
         pixmap = QIcon(str(self._resources.icon_path("icon_dropout.svg"))).pixmap(
             QSize(Theme.language_menu_indicator_icon_size, Theme.language_menu_indicator_icon_size)

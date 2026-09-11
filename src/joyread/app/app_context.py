@@ -696,6 +696,13 @@ def _create_app_context_bound(
     storage_recovery_service = StorageRecoveryService(
         settings_store, storage_validation_service, storage_migration_service
     )
+    # Recovery can display a dialog before the paths/database exist. This
+    # read-only preference lookup preserves the service's first-run sentinel.
+    resources = ResourceLoader()
+    locale_service.init(
+        resources.locale_dir(), settings_store.locales_dir,
+        settings_store.read_language_preference(),
+    )
     startup = storage_recovery_service.prepare(recovery_prompt)
     settings = startup.settings
     paths = _create_path_service(config, settings_store, settings)

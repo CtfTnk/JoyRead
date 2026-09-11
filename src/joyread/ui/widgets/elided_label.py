@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QFontMetrics, QResizeEvent, QTextLayout, QTextOption
 from PySide6.QtWidgets import QLabel, QSizePolicy, QWidget
@@ -32,7 +34,7 @@ class ElidedLabel(QLabel):
         # word-wrap on top of that produces a phantom 3rd row during resize
         # whenever its actual paint width disagrees with our measurement.
         self.setWordWrap(False)
-        self.set_full_text(text)
+        set_localized(self, "set_full_text", text)
 
     @property
     def full_text(self) -> str:
@@ -43,7 +45,7 @@ class ElidedLabel(QLabel):
         return self._max_lines
 
     def setText(self, text: str) -> None:  # noqa: N802 - Qt API override.
-        self.set_full_text(text)
+        set_localized(self, "set_full_text", text)
 
     def set_full_text(self, text: str) -> None:
         self._full_text = text
@@ -78,7 +80,7 @@ class ElidedLabel(QLabel):
         QLabel.setText(self, display_text)
         # Only show the hint when there is hidden content. This keeps short
         # titles from producing redundant hover chrome.
-        self.setToolTip(self._full_text if is_clipped else "")
+        set_localized(self, "setToolTip", self._full_text if is_clipped else "")
 
     def _sync_fixed_height(self, metrics: QFontMetrics, used_lines: int) -> None:
         guard = Theme.elided_label_clip_guard if self._max_lines > 1 else 0

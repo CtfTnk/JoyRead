@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal as QtSignal
@@ -33,7 +35,7 @@ class ReaderWindow(QMainWindow):
     ) -> None:
         super().__init__(parent)
         self.setObjectName("ReaderWindow")
-        self.setWindowTitle(title or (book.title if book is not None else Path(source_path).stem))
+        set_localized(self, "setWindowTitle", title or (book.title if book is not None else Path(source_path).stem))
         # Inherited from QApplication::windowIcon(); see MainWindow for why
         # re-reading the icon file per window was worth removing.
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)

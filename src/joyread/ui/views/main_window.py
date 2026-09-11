@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 import logging
 from collections.abc import Callable, Iterable
 from pathlib import Path
@@ -25,7 +27,7 @@ from joyread.app.windows.novel_provider import EmbeddedReaderShell, NovelReaderP
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.core.file_types import EPUB_EXTENSIONS
 from joyread.core.models.book import Book
-from joyread.infrastructure.i18n.locale_service import t
+from joyread.infrastructure.i18n.locale_service import t, join_translated
 from joyread.infrastructure.logging import log_event
 from joyread.core.models.tag import Tag
 # `core.file_types`, not the `core.reader` re-export: this module already needs
@@ -105,7 +107,7 @@ class MainWindow(QMainWindow):
             self._invalidate_archive_thumbnail_sources
         )
         self.setObjectName("MainWindow")
-        self.setWindowTitle("JoyRead")
+        set_localized(self, "setWindowTitle", t("app.name"))
         # No setWindowIcon: Qt falls back to QApplication::windowIcon(), which
         # the composition root already set. Re-reading the file here decoded the
         # same image a second time on the startup path -- 53-69 ms for the .icns
@@ -395,7 +397,7 @@ class MainWindow(QMainWindow):
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
             ),
             on_success=self._handle_open_and_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), t("error.operation_failed", detail=str(error))),
         )
 
     def _select_reader_file(self, import_mode: bool) -> None:
@@ -724,7 +726,7 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.update_progress(_import_progress_message(event))
 
     def _handle_import_failed(self, error: Exception) -> None:
-        self.dialog_overlay.show_info(t("dialog.import_failed_title"), str(error))
+        self.dialog_overlay.show_info(t("dialog.import_failed_title"), t("error.operation_failed", detail=str(error)))
 
     def _handle_import_finished(self, result) -> None:  # noqa: ANN001
         logger.info(
@@ -871,7 +873,7 @@ class MainWindow(QMainWindow):
             "export-books",
             lambda: self._context.export_service.export_books(target_ids, directory),
             on_success=self._handle_export_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.export_failed_title"), str(error)),
+            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.export_failed_title"), t("error.operation_failed", detail=str(error))),
         )
 
     def _handle_export_finished(self, result) -> None:  # noqa: ANN001
@@ -894,7 +896,7 @@ class MainWindow(QMainWindow):
                 lines.append(f"{label}: {item.message or t('dialog.export_item_failed')}")
             if len(failures) > 5:
                 lines.append(t("dialog.export_more_failures", count=str(len(failures) - 5)))
-        self.dialog_overlay.show_info(t("dialog.export_finished_title"), "\n".join(lines))
+        self.dialog_overlay.show_info(t("dialog.export_finished_title"), join_translated(lines))
 
     def _confirm_delete_books(self, book_uuids: tuple[str, ...]) -> None:
         target_ids = tuple(dict.fromkeys(book_uuids))
@@ -1224,7 +1226,7 @@ class MainWindow(QMainWindow):
             self._context.finish_storage_transition(transition)
         except Exception as error:
             logger.warning("Storage transition reload failed: %s", error, exc_info=True)
-            self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
+            self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(error)))
             return
         finally:
             # Background work stays sealed until the services around it have
@@ -1243,7 +1245,7 @@ class MainWindow(QMainWindow):
                 error_type=type(transition.error).__name__,
                 reason=str(transition.error),
             )
-            self.dialog_overlay.show_info(t("dialog.storage_title"), str(transition.error))
+            self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(transition.error)))
             return
         result = transition.result
         if result is not None and not getattr(result, "ok", True):
@@ -1302,7 +1304,7 @@ class MainWindow(QMainWindow):
             self._context.resume_after_storage_transition()
             self._storage_transition.acknowledge()
         if rebuild_error is not None:
-            self.dialog_overlay.show_info(t("dialog.storage_title"), str(rebuild_error))
+            self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(rebuild_error)))
             return
         log_event(
             logger,
@@ -1314,7 +1316,7 @@ class MainWindow(QMainWindow):
             error_type=type(error).__name__,
             reason=str(error),
         )
-        self.dialog_overlay.show_info(t("dialog.storage_title"), str(error))
+        self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(error)))
 
     def _handle_navigation(self, key: str) -> None:
         if key == "new_collection":
@@ -1665,11 +1667,10 @@ class MainWindow(QMainWindow):
     def _on_language_changed(self) -> None:
         """Refresh all static labels after the locale has been reloaded."""
         self.sidebar.refresh_labels()
-        self.settings_view.refresh_labels()
         self.chrome.refresh_labels()
         self.shelf_view.toolbar.refresh_labels()
         self.cover_editor_overlay.refresh_labels()
-        self.shelf_view.render()
+        # Bound text properties update in place; rebuilding the shelf loses inline edits.
 
     def _handle_hidden_space_changed(self) -> None:
         settings_vm = self._context.settings_viewmodel
@@ -1878,4 +1879,4 @@ def _import_progress_message(event: ImportProgress) -> str:
         )
     else:
         detail = t(_IMPORT_STAGE_KEYS.get(event.stage, "dialog.import_progress_preparing"))
-    return f"{position}\n{name}\n{detail}"
+    return join_translated((position, name, detail))

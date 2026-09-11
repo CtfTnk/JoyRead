@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
+from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent
@@ -35,9 +37,11 @@ class FigmaDropdownButton(QFrame):
         width: int,
         initial_value: str,
         tooltip: str,
+        label_for_value: Callable[[str], str] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
+        self._label_for_value = label_for_value or (lambda value: value)
         if initial_value not in options:
             raise ValueError(f"Initial dropdown value {initial_value!r} is not in options.")
 
@@ -49,7 +53,7 @@ class FigmaDropdownButton(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_Hover, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip(tooltip)
+        set_localized(self, "setToolTip", tooltip)
         self.setFixedSize(width, Theme.toolbar_control_height)
 
         shadow = QGraphicsDropShadowEffect(self)
@@ -69,7 +73,7 @@ class FigmaDropdownButton(QFrame):
         )
         layout.setSpacing(Theme.control_gap)
 
-        self._label = QLabel(initial_value)
+        self._label = LocalizedLabel(self._label_for_value(initial_value))
         self._label.setProperty("class", "FigmaDropdownText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setFixedHeight(Theme.control_text_height)
@@ -87,7 +91,7 @@ class FigmaDropdownButton(QFrame):
         inner_layout.setContentsMargins(0, 0, 0, 0)
         inner_layout.setSpacing(0)
 
-        icon_label = QLabel()
+        icon_label = LocalizedLabel()
         icon_label.setFixedSize(Theme.icon_size, Theme.icon_size)
         icon_label.setPixmap(QIcon(str(resources.icon_path("icon_dropout.svg"))).pixmap(_icon_qsize()))
         inner_layout.addWidget(icon_label, alignment=Qt.AlignmentFlag.AlignCenter)
@@ -102,7 +106,7 @@ class FigmaDropdownButton(QFrame):
             raise ValueError(f"Unknown dropdown value: {value}")
         changed = value != self._value
         self._value = value
-        self._label.setText(value)
+        set_localized(self._label, "setText", self._label_for_value(value))
         if changed and emit:
             self.value_changed.emit(value)
 
@@ -116,7 +120,7 @@ class FigmaDropdownButton(QFrame):
             raise ValueError(f"update_options: new_value {new_value!r} not in options")
         self._options = tuple(options)
         self._value = new_value
-        self._label.setText(new_value)
+        set_localized(self._label, "setText", self._label_for_value(new_value))
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -137,7 +141,7 @@ class FigmaDropdownButton(QFrame):
         menu = FigmaMenu(self, width=self.width())
         menu.closed.connect(self._finish_menu_interaction)
         for option in self._options:
-            menu.add_item(option, lambda value=option: self.set_value(value, emit=True))
+            menu.add_item(self._label_for_value(option), lambda value=option: self.set_value(value, emit=True))
         self._finish_menu_interaction()
         menu.exec(self.mapToGlobal(QPoint(0, self.height())))
 

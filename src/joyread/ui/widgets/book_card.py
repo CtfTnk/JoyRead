@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import set_localized
+
 from functools import lru_cache
 from pathlib import Path
 
@@ -121,7 +123,7 @@ class BookCardWidget(QFrame):
 
     def set_book(self, book: Book) -> None:
         self.book = book
-        self._title.set_full_text(book.title)
+        set_localized(self._title, "set_full_text", book.title)
         self._progress.set_progress(book.progress_percent)
         missing = "true" if book.is_missing else "false"
         unavailable = "true" if book.is_unavailable else "false"
@@ -134,8 +136,8 @@ class BookCardWidget(QFrame):
         self.refresh_labels()
 
     def refresh_labels(self) -> None:
-        self._detail_button.setToolTip(t("menu.detail"))
-        self._option_button.setToolTip(t("detail.more_options"))
+        set_localized(self._detail_button, "setToolTip", t("menu.detail"))
+        set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", "true" if selected else "false")

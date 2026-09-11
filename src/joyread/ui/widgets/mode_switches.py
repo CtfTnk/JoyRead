@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from joyread.infrastructure.i18n.locale_service import t
+
+from joyread.ui.widgets.localized_text import set_localized
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -29,7 +33,7 @@ class FigmaSwitchOptionButton(QToolButton):
         self.setProperty("class", "FigmaSwitchOption")
         self.setIcon(icon)
         self.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-        self.setToolTip(tooltip)
+        set_localized(self, "setToolTip", tooltip)
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.switch_option_size, Theme.switch_option_size)
@@ -173,8 +177,8 @@ class ListModeSwitchWidget(FigmaSwitchWidget):
         super().__init__(
             resources=resources,
             options=(
-                SwitchOption(ViewMode.LIST.value, "icon_list_detailMode.svg", "List mode"),
-                SwitchOption(ViewMode.GRID.value, "icon_list_cardMode.svg", "Grid mode"),
+                SwitchOption(ViewMode.LIST.value, "icon_list_detailMode.svg", t("toolbar.list_mode")),
+                SwitchOption(ViewMode.GRID.value, "icon_list_cardMode.svg", t("toolbar.grid_mode")),
             ),
             initial_value=initial_value,
             parent=parent,
@@ -194,8 +198,8 @@ class SortModeSwitchWidget(FigmaSwitchWidget):
         super().__init__(
             resources=resources,
             options=(
-                SwitchOption(self.ASCENDING, "icon_sort_a-z.svg", "Sort ascending"),
-                SwitchOption(self.DESCENDING, "icon_sort_z-a.svg", "Sort descending"),
+                SwitchOption(self.ASCENDING, "icon_sort_a-z.svg", t("toolbar.sort_ascending")),
+                SwitchOption(self.DESCENDING, "icon_sort_z-a.svg", t("toolbar.sort_descending")),
             ),
             initial_value=initial_value,
             parent=parent,

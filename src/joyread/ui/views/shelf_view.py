@@ -31,13 +31,13 @@ logger = logging.getLogger(__name__)
 
 
 class ShelfView(QWidget):
-    info_requested = QtSignal(str, str)
+    info_requested = QtSignal(object, object)
     import_requested = QtSignal()
     delete_books_requested = QtSignal(tuple)
     add_to_collection_requested = QtSignal(tuple)
     export_books_requested = QtSignal(tuple)
     tag_filter_requested = QtSignal()
-    detail_tag_filter_requested = QtSignal(str, str)
+    detail_tag_filter_requested = QtSignal(object, object)
     detail_tag_allocation_requested = QtSignal(str)
     cover_edit_requested = QtSignal(str)
     # ``read_book_*`` decisions are emitted by ShelfViewModel directly

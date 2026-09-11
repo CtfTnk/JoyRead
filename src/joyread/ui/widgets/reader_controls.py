@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 import logging
 import sys
 from collections.abc import Callable
@@ -162,7 +164,7 @@ class ReaderHeader(QWidget):
         self.setObjectName("ReaderHeader")
         self.setMouseTracking(True)
         self.setFixedHeight(Theme.reader_banner_height)
-        self._full_title = "Place Holder - Book Name"
+        self._full_title = ""
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(18, 8, 8, 8)
@@ -190,7 +192,7 @@ class ReaderHeader(QWidget):
         layout.addWidget(self.topic_button_group)
 
         layout.addStretch(1)
-        self.title = QLabel("Place Holder - Book Name", self)
+        self.title = LocalizedLabel("", self)
         self.title.setObjectName("ReaderTitle")
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.title.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -288,8 +290,8 @@ class ReaderHeader(QWidget):
             return
         metrics = QFontMetrics(self.title.font())
         self.title.setFixedWidth(available)
-        self.title.setText(metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, available))
-        self.title.setToolTip(self._full_title if self.title.text() != self._full_title else "")
+        set_localized(self.title, "setText", metrics.elidedText(self._full_title, Qt.TextElideMode.ElideRight, available))
+        set_localized(self.title, "setToolTip", self._full_title if self.title.text() != self._full_title else "")
         self.title.move((self.width() - self.title.width()) // 2, (self.height() - self.title.height()) // 2)
         self.title.raise_()
         self.title.show()
@@ -398,7 +400,7 @@ class ReaderFooter(QWidget):
         self.slider.sliderReleased.connect(lambda: self.seek_requested.emit(self.slider.value()))
         progress_layout.addWidget(self.slider)
 
-        self.page_indicator = QLabel("0/0")
+        self.page_indicator = LocalizedLabel("0/0")
         self.page_indicator.setObjectName("ReaderProgressIndicator")
         self.page_indicator.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.page_indicator.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -471,21 +473,21 @@ class ReaderFooter(QWidget):
         self.slider.setMaximum(maximum_index)
         self.slider.setValue(safe_index)
         self.slider.blockSignals(False)
-        self.page_indicator.setText("0/0" if page_count <= 0 else f"{safe_index + 1}/{page_count}")
+        set_localized(self.page_indicator, "setText", "0/0" if page_count <= 0 else f"{safe_index + 1}/{page_count}")
 
     def set_direction(self, direction: ReaderDirection) -> None:
         self.direction_switch.set_value(direction)
         self.slider.set_reading_direction(direction)
         if direction == ReaderDirection.RIGHT_TO_LEFT:
-            self.left_outer_button.setToolTip(t("reader.jump_to_end"))
-            self.left_inner_button.setToolTip(t("reader.next_page"))
-            self.right_inner_button.setToolTip(t("reader.previous_page"))
-            self.right_outer_button.setToolTip(t("reader.jump_to_start"))
+            set_localized(self.left_outer_button, "setToolTip", t("reader.jump_to_end"))
+            set_localized(self.left_inner_button, "setToolTip", t("reader.next_page"))
+            set_localized(self.right_inner_button, "setToolTip", t("reader.previous_page"))
+            set_localized(self.right_outer_button, "setToolTip", t("reader.jump_to_start"))
         else:
-            self.left_outer_button.setToolTip(t("reader.jump_to_start"))
-            self.left_inner_button.setToolTip(t("reader.previous_page"))
-            self.right_inner_button.setToolTip(t("reader.next_page"))
-            self.right_outer_button.setToolTip(t("reader.jump_to_end"))
+            set_localized(self.left_outer_button, "setToolTip", t("reader.jump_to_start"))
+            set_localized(self.left_inner_button, "setToolTip", t("reader.previous_page"))
+            set_localized(self.right_inner_button, "setToolTip", t("reader.next_page"))
+            set_localized(self.right_outer_button, "setToolTip", t("reader.jump_to_end"))
 
     def set_transition_mode(self, mode: ReaderTransitionMode) -> None:
         self.effect_switch.set_value(mode)
@@ -642,7 +644,7 @@ def reader_button(
     button.setProperty("iconName", icon_name)
     button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_control_size, Theme.reader_control_size)
     if callback is not None:
@@ -661,7 +663,7 @@ def reader_step_button(
     button.setProperty("iconName", icon_name)
     button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_control_size, Theme.reader_control_size)
     if callback is not None:
@@ -676,7 +678,7 @@ def switch_option(resources: ResourceLoader, icon_name: str, tooltip: str) -> QT
     button.setCheckable(True)
     button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_switch_option_size, Theme.reader_switch_option_size)
     return button
@@ -690,7 +692,7 @@ def topic_button(resources: ResourceLoader, icon_name: str, tooltip: str) -> QTo
     button.setCheckable(False)
     button.setIcon(_reader_icon(resources, icon_name))
     button.setIconSize(QSize(Theme.icon_size, Theme.icon_size))
-    button.setToolTip(tooltip)
+    set_localized(button, "setToolTip", tooltip)
     button.setCursor(Qt.CursorShape.PointingHandCursor)
     button.setFixedSize(Theme.reader_topic_button_size, Theme.reader_topic_button_size)
     return button

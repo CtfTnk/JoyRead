@@ -29,7 +29,7 @@ def test_load_language_switches_to_bundled_chinese_and_japanese() -> None:
     assert locale_service.active_language_code() == "ja"
 
 
-def test_missing_active_key_falls_back_to_english(tmp_path) -> None:
+def test_partial_override_keeps_bundled_current_language(tmp_path) -> None:
     user_locales = tmp_path / "locales"
     user_locales.mkdir()
     (user_locales / "zh.json").write_text(
@@ -40,7 +40,7 @@ def test_missing_active_key_falls_back_to_english(tmp_path) -> None:
     locale_service.init(ResourceLoader().locale_dir(), user_locales, "Chinese")
 
     assert locale_service.t("menu.read") == "OVERRIDE READ"
-    assert locale_service.t("sidebar.all") == "All"
+    assert locale_service.t("sidebar.all") == "全部"
 
 
 def test_user_locale_override_wins_over_bundled_locale(tmp_path) -> None:
@@ -64,7 +64,7 @@ def test_interpolation_and_bad_interpolation_are_safe() -> None:
 
 
 def test_language_metadata_maps_canonical_values_to_native_display_names() -> None:
-    assert locale_service.LANGUAGE_VALUES == ("English", "Chinese", "Japanese")
+    assert locale_service.LANGUAGE_VALUES == ("System", "English", "Chinese", "Japanese")
     assert locale_service.LANGUAGE_DISPLAY_OPTIONS == ("English", "中文", "日本語")
     assert locale_service.language_display_name("Chinese") == "中文"
     assert locale_service.language_value_from_display("日本語") == "Japanese"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
@@ -15,11 +17,11 @@ class StateView(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.setSpacing(8)
 
-        self._title_label = QLabel(title)
+        self._title_label = LocalizedLabel(title)
         self._title_label.setProperty("class", "StateTitle")
         self._title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        self._body_label = QLabel(body)
+        self._body_label = LocalizedLabel(body)
         self._body_label.setProperty("class", "StateBody")
         self._body_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._body_label.setWordWrap(True)
@@ -28,5 +30,5 @@ class StateView(QWidget):
         layout.addWidget(self._body_label)
 
     def set_text(self, title: str, body: str) -> None:
-        self._title_label.setText(title)
-        self._body_label.setText(body)
+        set_localized(self._title_label, "setText", title)
+        set_localized(self._body_label, "setText", body)
