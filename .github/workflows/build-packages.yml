@@ -62,13 +62,15 @@ jobs:
     env:
       QT_QPA_PLATFORM: offscreen
       PYTHONUTF8: '1'
-      JOYREAD_RUNTIME_DIR: ${{ runner.temp }}/joyread-build-runtime
     steps:
       - uses: actions/checkout@v4
         with:
           # All jobs build the dispatch SHA, even if the branch advances.
           ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Isolate runtime data
+        run: echo "JOYREAD_RUNTIME_DIR=$RUNNER_TEMP/joyread-build-runtime" >> "$GITHUB_ENV"
 
       - uses: conda-incubator/setup-miniconda@v3
         with:
