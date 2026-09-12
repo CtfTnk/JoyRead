@@ -104,10 +104,11 @@ test_set/
 # repeated once per vendored platform.
 src/joyread/resources/extractors/7zip/*/MANUAL/
 
-# Internal working files. These are the canonical copies in the private
-# CtfTnk/JoyRead-internal repository, kept here so local tooling can read them
-# and ignored so they can never reach the public repository. Nothing in this
-# block is required to build, run, or test JoyRead.
+# Internal working copies. Canonical history belongs to the private
+# CtfTnk/JoyRead-internal repository. Its tools/sync_internal.py transfers an
+# explicit subset between the checkouts; ignoring paths does not synchronize
+# them or prevent force-adding them. Nothing in this block is required to
+# build, run, or test JoyRead.
 .agent.md
 .claude/
 .codex/
