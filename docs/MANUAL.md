@@ -24,7 +24,10 @@ Download the package for your system from the
 [Releases](https://github.com/CtfTnk/JoyRead/releases) page: a DMG for macOS
 Apple Silicon, an EXE installer for Windows x64, or a DEB for Ubuntu amd64/arm64.
 On macOS, open the DMG and drag JoyRead into Applications. On Windows, run the
-installer; on Ubuntu, use the software installer or `sudo apt install ./package.deb`.
+installer. On Ubuntu, install from the terminal only: open a terminal in the
+download folder and run `sudo apt install ./package.deb`, replacing `package.deb`
+with the downloaded filename. The graphical installer gets stuck at
+**“Preparing”**; this issue has not been fixed.
 See the release notes for signing and platform validation status. On first
 launch JoyRead creates an empty library and shows the shelf.
 
