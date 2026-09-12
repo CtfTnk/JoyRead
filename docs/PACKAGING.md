@@ -567,3 +567,7 @@ Database shutdown now waits for release; an explicitly supplied timeout raises
 instead of reporting success. Storage reset/move must never proceed after a
 close timeout. `tests/unit/test_database_shutdown.py` covers slow release and
 retrying a timed-out close in addition to the real storage-reset regression.
+
+The Windows spec retains the installed libffi DLL basename (`ffi.dll`,
+`ffi-*.dll`, or `libffi*.dll`) so both defaults-based Conda and conda-forge /
+Miniforge environments are supported. SQLite's `sqlite3.dll` remains required.

@@ -134,14 +134,19 @@ if platform_key() == "windows":
     # otherwise-successful build omits them and fails when ctypes or SQLite is
     # first imported on a clean machine.
     conda_runtime_directory = Path(sys.prefix) / "Library" / "bin"
-    for runtime_name in ("ffi.dll", "sqlite3.dll"):
-        runtime_path = conda_runtime_directory / runtime_name
-        if not runtime_path.is_file():
+    # defaults and conda-forge use different libffi DLL names. Keep the
+    # actual basename so the interpreter's imports resolve in either build.
+    for patterns in (("ffi.dll", "ffi-*.dll", "libffi*.dll"), ("sqlite3.dll",)):
+        runtime_paths = sorted({
+            path for pattern in patterns
+            for path in conda_runtime_directory.glob(pattern) if path.is_file()
+        })
+        if not runtime_paths:
             raise SystemExit(
-                f"Missing Windows Conda runtime DLL: {runtime_path}. "
-                "Build with the repository's .conda/joyread-py312 environment."
+                f"Missing Windows Conda runtime DLL ({patterns}) in {conda_runtime_directory}. "
+                "Build with a Conda Python environment."
             )
-        binaries.append((str(runtime_path), "."))
+        binaries.extend((str(path), ".") for path in runtime_paths)
 
 datas = [
     (str(ROOT / "LICENSE"), "."),
