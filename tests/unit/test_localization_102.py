@@ -44,15 +44,15 @@ def test_settings_compatibility_and_read_only_startup(tmp_path):
     assert not store.settings_path.exists()
     assert store.load().language == "System"
     for saved, expected in [("Chinese", "Chinese"), ("English", "English"), ("Japanese", "Japanese"), (None, "System")]:
-        raw = json.loads(store.settings_path.read_text())
+        raw = json.loads(store.settings_path.read_text(encoding="utf-8"))
         if saved is None:
             raw.pop("language")
         else:
             raw["language"] = saved
-        store.settings_path.write_text(json.dumps(raw))
+        store.settings_path.write_text(json.dumps(raw), encoding="utf-8")
         assert store.read_language_preference() == expected
         assert store.load().language == expected
-    store.settings_path.write_text("{broken")
+    store.settings_path.write_text("{broken", encoding="utf-8")
     assert store.read_language_preference() == "System"
 
 
@@ -85,14 +85,14 @@ def test_system_preference_remains_system_and_can_be_reselected(monkeypatch, tmp
 def test_override_merge_empty_invalid_and_english_fallback(tmp_path):
     bundled, user = tmp_path / "bundled", tmp_path / "user"
     bundled.mkdir(); user.mkdir()
-    (bundled / "en.json").write_text(json.dumps({"a":"English", "b":"Fallback"}))
-    (bundled / "zh.json").write_text(json.dumps({"a":"中文", "c":"原文"}))
-    (user / "zh.json").write_text(json.dumps({"a":"覆盖", "c":"", "d":5}))
+    (bundled / "en.json").write_text(json.dumps({"a":"English", "b":"Fallback"}), encoding="utf-8")
+    (bundled / "zh.json").write_text(json.dumps({"a":"中文", "c":"原文"}), encoding="utf-8")
+    (user / "zh.json").write_text(json.dumps({"a":"覆盖", "c":"", "d":5}), encoding="utf-8")
     service = locale.LocaleService(bundled, user)
     service.load("Chinese")
     assert [service.t(k) for k in ("a", "b", "c", "missing")] == ["覆盖", "Fallback", "原文", "missing"]
     for bad in ("{broken", "[]"):
-        (user / "zh.json").write_text(bad)
+        (user / "zh.json").write_text(bad, encoding="utf-8")
         service.load("Chinese")
         assert service.t("a") == "中文"
 
@@ -100,7 +100,7 @@ def test_override_merge_empty_invalid_and_english_fallback(tmp_path):
 def test_catalogue_keys_and_parameters_match():
     tables = {}
     for code in ("en", "zh", "ja"):
-        data = json.loads((ResourceLoader().locale_dir() / f"{code}.json").read_text())
+        data = json.loads((ResourceLoader().locale_dir() / f"{code}.json").read_text(encoding="utf-8"))
         flat = {}; locale._flatten(data, "", flat)
         tables[code] = flat
     def fields(text):
@@ -174,7 +174,7 @@ def test_user_visible_text_sinks_do_not_introduce_english_literals():
     allowed = {"!", "px"}  # symbols/units; no translated prose exemptions
     failures = []
     for path in root.rglob("*.py"):
-        for node in ast.walk(ast.parse(path.read_text())):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             if not isinstance(node, ast.Call): continue
             name = node.func.id if isinstance(node.func, ast.Name) else node.func.attr if isinstance(node.func, ast.Attribute) else ""
             if name not in {"QLabel", "LocalizedLabel", "QPushButton", "LocalizedPushButton", "set_localized", "setToolTip", "setPlaceholderText", "setWindowTitle"}: continue
