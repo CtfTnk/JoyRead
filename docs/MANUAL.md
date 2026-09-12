@@ -20,10 +20,13 @@ account to create and nothing is sent anywhere.
 
 ## Getting started
 
-Download `JoyRead.app` from the
-[Releases](https://github.com/CtfTnk/JoyRead/releases) page and drag it to your
-Applications folder. On first launch JoyRead creates an empty library and shows
-the shelf.
+Download the package for your system from the
+[Releases](https://github.com/CtfTnk/JoyRead/releases) page: a DMG for macOS
+Apple Silicon, an EXE installer for Windows x64, or a DEB for Ubuntu amd64/arm64.
+On macOS, open the DMG and drag JoyRead into Applications. On Windows, run the
+installer; on Ubuntu, use the software installer or `sudo apt install ./package.deb`.
+See the release notes for signing and platform validation status. On first
+launch JoyRead creates an empty library and shows the shelf.
 
 The window is split into a sidebar on the left and the shelf on the right. The
 sidebar holds **Book Shelf** (with **All**, **Recent**, **Favourites**, and
@@ -47,8 +50,28 @@ folder, so moving or deleting the original afterwards does not affect it.
 *Import Folder…* only descends one level by default. Raise **Import folder
 depth** in Settings → General if your books are nested more deeply.
 
+You can also drag supported files onto the Library window: drop onto **Read**
+to open directly, or **Import** to add managed copies. Your operating system's
+**Open With** menu can select JoyRead once its file associations are registered.
+
 If you would rather every book you open be imported automatically, turn on
 **Import book when opening** in Settings → General.
+
+Encrypted comics can be read with a password, but cannot be imported, including
+when import-on-open is enabled.
+
+### Metadata and book details
+
+Imported comic archives containing supported `meta.json` or `ComicInfo.xml`
+metadata can supply titles, authors, tags, and languages. JoyRead uses the
+recognised fields, falling back to the filename or defaults when information is
+missing or unreadable. This is embedded metadata import, not an online lookup.
+
+In **Detail**, double-click the title or author to edit and press Enter to save;
+Escape or moving focus away cancels. Double-click the language to select it,
+and double-click the cover to open the cover editor. Cover edits are stored
+separately from the source book. Use the toolbar's card/list toggle to choose
+between cover browsing and a compact shelf.
 
 ### Conversion on import
 

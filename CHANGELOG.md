@@ -3,7 +3,9 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.2] — Unreleased
+## [1.0.2] — 2026-09-12
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.0.2.md)
 
 ### Localization
 
@@ -23,8 +25,21 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Validation
 
-- Platform-native integration and packaged installers require the 1.0.2 release
-  checks in `docs/PACKAGING.md`; this entry does not claim a published release.
+- Build packages run `34670838470` built all four installers from `88ff97e`:
+  macOS arm64 (1553 tests passed, 11 skipped), Windows x64 (1544/20), Linux
+  amd64 and arm64 (1554/10 each). These are shipping-configuration offscreen
+  checks; native desktop validation remains pending as listed in the release notes.
+
+### Fixes and packaging
+
+- Improved archive cache ownership, staging, and resource cleanup.
+- Wait for SQLite to release its files before resetting the library, fixing
+  the Windows shutdown/reset race.
+- Added manual CI package builds for macOS arm64, Windows x64, and Linux
+  amd64/arm64, with source provenance and installer checksums.
+- Fixed UTF-8 locale fixture loading and Miniforge libffi DLL packaging on Windows.
+- Reworked the README with the app icon, download links, illustrated usage,
+  and English, Chinese, and Japanese introductions.
 
 ## [1.0.1] — 2026-09-01
 

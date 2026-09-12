@@ -542,8 +542,16 @@ unchanged taskbar/dock grouping and storage paths. Confirm standard Qt widget
 translations are present in each frozen artifact. OS-owned dialog buttons may
 follow OS language. System language changes are picked up on next launch.
 
-Desktop-native checks and fresh 1.0.2 installer builds remain pending until run
-on their target platforms; source/offscreen tests do not certify those behaviors.
+Build packages run [34670838470](https://github.com/CtfTnk/JoyRead/actions/runs/34670838470)
+built the 1.0.2 installers from `88ff97e2e386ab749f5a024ab65fe1c7f662f826`
+on all four targets. Shipping-configuration tests passed: macOS arm64 1553
+(11 skipped), Windows x64 1544 (20 skipped), and Linux amd64/arm64 1554 each
+(10 skipped each). Installer SHA-256 hashes were verified against CI manifests.
+See the [three-language release notes](releases/v1.0.2.md).
+
+Desktop-native checks remain pending; successful builds and source/offscreen
+tests do not certify those behaviors. The macOS artifact is ad-hoc signed,
+not Apple-notarized; the Windows installer has no trusted code signature.
 
 ## Manual cloud packages (no Release)
 
