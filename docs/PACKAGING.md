@@ -560,3 +560,10 @@ successful job uploads its installer, `SHA256SUMS`, and `build-info.json` (versi
 commit, target, Python) to Actions Artifacts for 14 days. There are no release,
 tag, or repository-write steps. macOS uses the existing ad-hoc signing workflow;
 these artifacts are candidates for desktop validation, not notarized releases.
+
+Windows CD exposed a storage-reset shutdown race: database close previously
+returned after a five-second join even with the SQLite actor still alive.
+Database shutdown now waits for release; an explicitly supplied timeout raises
+instead of reporting success. Storage reset/move must never proceed after a
+close timeout. `tests/unit/test_database_shutdown.py` covers slow release and
+retrying a timed-out close in addition to the real storage-reset regression.

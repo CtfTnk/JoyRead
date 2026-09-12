@@ -109,30 +109,33 @@ class DatabaseInterpreter:
         self.start()
         return self.submit(callback, priority).result(timeout=timeout)
 
-    def close(self) -> None:
-        if self._closed:
-            return
-        logger.info(
-            "DatabaseInterpreter closing (path=%s, pending=%d)",
-            self.database_path,
-            self._queue.qsize(),
-        )
-        self._closed = True
-        # Sentinel "stop running" marker for the interpreter thread: a
-        # callback of `None` plus an effectively-infinite priority means the
-        # worker can drain any pre-queued real work first and only then
-        # encounter this entry and break out of its run loop.
-        self._queue.put(
-            _QueuedDatabaseRequest(
-                priority=1_000_000,
-                sequence=next(self._sequence),
-                callback=None,
-                future=None,
-                callback_label="<stop>",
+    def close(self, timeout: float | None = None) -> None:
+        """Drain requests and wait until the actor releases its SQLite handle.
+
+        Storage move/reset treats return from this method as a release barrier.
+        A best-effort five-second join used to let it delete an open database on
+        Windows. Default shutdown waits for completion; callers that explicitly
+        choose a deadline receive TimeoutError and must not mutate storage.
+        A subsequent close can finish waiting after such a timeout.
+        """
+        if not self._closed:
+            logger.info(
+                "DatabaseInterpreter closing (path=%s, pending=%d)",
+                self.database_path,
+                self._queue.qsize(),
             )
-        )
+            self._closed = True
+            self._queue.put(
+                _QueuedDatabaseRequest(
+                    priority=1_000_000,
+                    sequence=next(self._sequence),
+                    callback=None,
+                    future=None,
+                    callback_label="<stop>",
+                )
+            )
         if self._thread.is_alive():
-            self._thread.join(timeout=5)
+            self._thread.join(timeout=timeout)
         timed_out = self._thread.is_alive()
         log_event(
             logger,
@@ -143,6 +146,8 @@ class DatabaseInterpreter:
             status="timed_out" if timed_out else "finished",
             count=self._queue.qsize(),
         )
+        if timed_out:
+            raise TimeoutError(f"DatabaseInterpreter still owns {self.database_path}")
 
     def _run(self) -> None:
         connection = open_sqlite_connection(self.database_path)
