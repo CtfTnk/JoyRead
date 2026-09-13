@@ -28,6 +28,9 @@ NOTICES_SOURCE = ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt"
 
 APP_NAME = "JoyRead"
 PACKAGE_NAME = "joyread"
+# Rebuild the Linux package without changing the cross-platform app version.
+# APT must distinguish this Ubuntu 22.04 build from the original 1.0.2 DEB.
+PACKAGE_REVISION = 1
 INSTALL_PREFIX = Path("opt/joyread")
 DESKTOP_PATH = Path("usr/share/applications/joyread.desktop")
 ICON_PATH = Path("usr/share/icons/hicolor/512x512/apps/joyread.png")
@@ -48,7 +51,7 @@ MACHINE_ARCHITECTURES = {
 # These are the host libraries PySide6's Linux wheels still link dynamically.
 # The remaining Python, Qt, and archive runtime is carried by the onedir itself.
 RUNTIME_DEPENDENCIES = (
-    "libc6",
+    "libc6 (>= 2.35)",
     "libdbus-1-3",
     "libegl1",
     "libfontconfig1",
@@ -125,7 +128,6 @@ def required_app_files(architecture: str) -> tuple[Path, ...]:
         Path("_internal/LICENSE"),
         Path("_internal/THIRD_PARTY_NOTICES.txt"),
         Path("_internal/PySide6/Qt/plugins/platforms/libqxcb.so"),
-        Path("_internal/PySide6/Qt/plugins/platforms/libqwayland.so"),
         Path(f"_internal/joyread/resources/extractors/7zip/{extractor_directory}/7zz"),
     )
 
@@ -141,6 +143,10 @@ def validate_app_dir(app_dir: Path, architecture: str) -> None:
     missing = [str(path) for path in required_app_files(architecture) if not (app_dir / path).is_file()]
     if missing:
         raise SystemExit(f"Incomplete PyInstaller app directory at {app_dir}; missing {missing}.")
+    # Qt 6.8 uses the -generic name; newer Qt releases use libqwayland.so.
+    platforms = app_dir / "_internal/PySide6/Qt/plugins/platforms"
+    if not any((platforms / name).is_file() for name in ("libqwayland.so", "libqwayland-generic.so")):
+        raise SystemExit(f"Incomplete PyInstaller app directory at {app_dir}; missing Wayland platform plugin.")
     executable = app_dir / APP_NAME
     if not os.access(executable, os.X_OK):
         raise SystemExit(f"PyInstaller launcher is not executable: {executable}.")
@@ -333,7 +339,7 @@ def main(argv: list[str] | None = None) -> int:
         stage_package(
             staging_root,
             app_dir=app_dir,
-            version=version,
+            version=f"{version}-{PACKAGE_REVISION}",
             architecture=architecture,
         )
         build_deb(staging_root, destination)

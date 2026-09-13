@@ -38,8 +38,8 @@ jobs:
           targets = [
               {'platform': 'macos', 'os': 'macos-14', 'label': 'macos-arm64'},
               {'platform': 'windows', 'os': 'windows-latest', 'label': 'windows-x86_64'},
-              {'platform': 'ubuntu', 'os': 'ubuntu-24.04', 'label': 'linux-amd64'},
-              {'platform': 'ubuntu', 'os': 'ubuntu-24.04-arm', 'label': 'linux-arm64'},
+              {'platform': 'ubuntu', 'os': 'ubuntu-22.04', 'label': 'linux-amd64'},
+              {'platform': 'ubuntu', 'os': 'ubuntu-22.04-arm', 'label': 'linux-arm64'},
           ]
           selected = [t for t in targets if os.environ['TARGET'] in ('all', t['platform'])]
           if not selected:
@@ -129,6 +129,12 @@ jobs:
         if: runner.os == 'Linux'
         run: python scripts/build_linux_deb.py --skip-app-build
 
+      - name: Verify installed Ubuntu package
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get install -y ./dist/*.deb
+          python scripts/verify_linux_package.py /opt/joyread
+
       - name: Record version, commit and checksums
         env:
           BUILD_TARGET: ${{ matrix.label }}
@@ -141,6 +147,10 @@ jobs:
           if len(packages) != 1:
               raise SystemExit(f'Expected exactly one installer, found {packages}')
           metadata = {'version': version, 'commit': os.environ['GITHUB_SHA'], 'target': os.environ['BUILD_TARGET'], 'python': platform.python_version()}
+          if platform.system() == 'Linux':
+              import subprocess
+              from importlib.metadata import version as dependency_version
+              metadata.update(os=platform.freedesktop_os_release()['PRETTY_NAME'], glibc=platform.libc_ver()[1], pyside6=dependency_version('PySide6'), debian_version=subprocess.check_output(['dpkg-deb', '-f', str(packages[0]), 'Version'], text=True).strip())
           checksums = []
           for package in packages:
               with package.open('rb') as source:
