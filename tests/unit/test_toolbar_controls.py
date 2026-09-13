@@ -1,4 +1,5 @@
-from PySide6.QtCore import QEvent, QTimer, Qt
+from PySide6.QtCore import QEvent, QPointF, QTimer, Qt
+from PySide6.QtGui import QEnterEvent
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QLineEdit, QToolButton, QWidget
 
 from joyread.infrastructure.i18n import locale_service
@@ -53,7 +54,7 @@ def test_figma_dropdown_button_has_fixed_figma_size_and_value_signal(qtbot) -> N
     assert inner_button is not None
     assert inner_button.property("hovered") == "false"
 
-    QApplication.sendEvent(button, QEvent(QEvent.Type.Enter))
+    QApplication.sendEvent(button, QEnterEvent(QPointF(), QPointF(), QPointF()))
     assert inner_button.property("hovered") == "true"
     QApplication.sendEvent(button, QEvent(QEvent.Type.Leave))
     assert inner_button.property("hovered") == "false"

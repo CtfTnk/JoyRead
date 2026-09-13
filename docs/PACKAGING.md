@@ -577,6 +577,9 @@ ARM64 Shiboken 6.11 needs GLIBC_2.38 and cannot start on Ubuntu 22.04's glibc
 release with manylinux_2_31 ARM64 wheels; later wheels require manylinux_2_39.
 Other platforms retain their existing dependency requirement. Refresh the
 release environment after changing dependencies.
+The cover editor forwards signals through Qt signal-to-signal connections so
+Qt 6.8 disconnects them with the receiver during teardown. UI tests send a
+real `QEnterEvent` rather than a generic event with the Enter type.
 
 Linux source tests and packaging set `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` so
 Qt and Conda SQLite/ICU use the same C++ runtime. Otherwise Qt can load the

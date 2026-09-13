@@ -59,7 +59,7 @@ def verify_startup(app_dir: Path) -> None:
                 while time.monotonic() < deadline:
                     if process.poll() is not None:
                         break
-                    if any('JoyRead primary runtime is ready' in p.read_text(errors='replace') for p in (runtime / 'Logs').rglob('*') if p.is_file()):
+                    if 'JoyRead primary runtime is ready' in (runtime / 'console.log').read_text(errors='replace'):
                         print('Installed executable reached process.ready with an isolated library.', flush=True)
                         return
                     time.sleep(0.2)

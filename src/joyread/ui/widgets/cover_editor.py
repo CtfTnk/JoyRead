@@ -69,14 +69,16 @@ class CoverEditorOverlay(QWidget):
         self._stack.addWidget(self.editor)
         self._stack.addWidget(self.picker)
 
-        self.editor.import_requested.connect(self.import_requested.emit)
+        # Signal-to-signal connections let Qt track the receiver lifetime.
+        # Bound .emit callables can outlive the overlay during Qt 6.8 teardown.
+        self.editor.import_requested.connect(self.import_requested)
         self.editor.browse_requested.connect(self._show_picker)
         self.editor.cancel_requested.connect(self.hide)
         self.editor.confirm_requested.connect(self._emit_save_requested)
         self.picker.back_requested.connect(self._show_editor)
-        self.picker.thumbnail_interest_changed.connect(self.thumbnail_interest_changed.emit)
-        self.picker.thumbnail_interest_released.connect(self.thumbnail_interest_released.emit)
-        self.picker.thumbnail_selected.connect(self.thumbnail_selected.emit)
+        self.picker.thumbnail_interest_changed.connect(self.thumbnail_interest_changed)
+        self.picker.thumbnail_interest_released.connect(self.thumbnail_interest_released)
+        self.picker.thumbnail_selected.connect(self.thumbnail_selected)
         self.hide()
 
     def refresh_labels(self) -> None:
