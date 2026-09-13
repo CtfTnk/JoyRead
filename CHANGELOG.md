@@ -7,6 +7,18 @@ All notable changes to JoyRead are documented here. This project follows
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.0.2.md)
 
+### Linux packaging rebuild — 2026-09-13
+
+- Rebuilt amd64 and arm64 packages on Ubuntu 22.04 as Debian version `1.0.2-1`;
+  the application version remains `1.0.2`.
+- Use Ubuntu 22.04-compatible ARM64 PySide6 wheels and bundle the matching
+  Conda C++ runtime to resolve GLIBC_2.38 and CXXABI_1.3.15 startup failures.
+- Fix cover-editor signal forwarding during teardown on Qt 6.8 and use a
+  correctly typed Qt enter event in the UI test.
+- Both architectures passed 1557 tests (10 skipped), APT installation, glibc
+  baseline validation, and installed-executable startup in run `34746301590`.
+- The graphical installer Preparing issue remains unresolved; use APT.
+
 ### Localization
 
 - Added Follow system as the default language preference on Windows, macOS,

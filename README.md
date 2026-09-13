@@ -32,8 +32,8 @@ JoyRead is a local manga, comic, and PDF reader with a desktop library for **mac
 | --- | --- | --- |
 | macOS 13+ · Apple Silicon | [Download DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-macos-arm64.dmg) | Open the disk image and drag JoyRead into Applications. |
 | Windows · x64 | [Download EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-windows-x86_64-setup.exe) | Run the installer and follow the setup prompts. |
-| Ubuntu/Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb`. |
-| Ubuntu/Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb`. |
+| Ubuntu 22.04+ / Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb`. |
+| Ubuntu 22.04+ / Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb`. |
 
 **Ubuntu: install from the terminal only.** The graphical installer gets stuck at **“Preparing”**; this issue has not been fixed. Open a terminal in the download folder and run the command for your package above.
 

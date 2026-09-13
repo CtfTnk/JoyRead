@@ -603,6 +603,13 @@ Conda's Python or Shiboken. This validates the frozen package's loader/startup,
 not interactive reading or desktop integration. Build metadata includes the
 Ubuntu release, glibc, PySide6, and Debian package versions.
 
+Candidate run [34746301590](https://github.com/CtfTnk/JoyRead/actions/runs/34746301590)
+validated source `ab9e82cf5cd4f39530758d642f9e59c709dfa5d9`: both architectures
+passed 1557 tests (10 skipped), APT installation, and isolated installed startup.
+All 292 amd64 and 291 arm64 ELF files satisfied the glibc 2.35 baseline.
+This is package-level automated validation; interactive desktop checks remain
+separate.
+
 For a same-version rebuild, preserve macOS/Windows assets and the existing tag.
 Replace Linux assets only after both target jobs pass, and update the combined
 `SHA256SUMS`, per-target `build-info.json`, and dated release notes together.
