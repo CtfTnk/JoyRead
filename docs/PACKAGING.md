@@ -578,6 +578,13 @@ release with manylinux_2_31 ARM64 wheels; later wheels require manylinux_2_39.
 Other platforms retain their existing dependency requirement. Refresh the
 release environment after changing dependencies.
 
+Linux source tests and packaging set `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` so
+Qt and Conda SQLite/ICU use the same C++ runtime. Otherwise Qt can load the
+host's older `libstdc++` first, causing ICU to fail with `CXXABI_1.3.15 not found`.
+The spec explicitly bundles Conda's `libstdc++.so.6` and `libgcc_s.so.1`.
+The installed-package smoke check removes this environment override and must
+resolve the bundled runtime on its own.
+
 The Debian package revision is `1` (for example, package version `1.0.2-1`),
 while the app version and download filenames remain `1.0.2`. This lets APT
 upgrade the original package without a new cross-platform app release.

@@ -90,6 +90,10 @@ jobs:
             libfontconfig1 libfreetype6 libwayland-client0 libwayland-cursor0 \
             libxcb-cursor0 desktop-file-utils shared-mime-info fakeroot
 
+      - name: Select the Conda C++ runtime for Linux builds
+        if: runner.os == 'Linux'
+        run: echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib" >> "$GITHUB_ENV"
+
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
