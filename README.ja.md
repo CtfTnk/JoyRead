@@ -22,8 +22,8 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 | --- | --- | --- |
 | macOS 13+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-macos-arm64.dmg) | ディスクイメージを開き、JoyRead を Applications にドラッグします。 |
 | Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-windows-x86_64-setup.exe) | インストーラーの案内に従います。 |
-| Ubuntu/Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb` を使います。 |
-| Ubuntu/Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb` を使います。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb` を使います。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb` を使います。 |
 
 **Ubuntu ではターミナルからインストールしてください。** GUI インストーラーは **「Preparing」** で停止するため使用できません。この問題は未修正です。ダウンロード先のフォルダーでターミナルを開き、上の表にあるパッケージに対応するコマンドを実行してください。
 

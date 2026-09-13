@@ -559,7 +559,7 @@ not Apple-notarized; the Windows installer has no trusted code signature.
 `workflow_dispatch`; pushes continue to run Tests without packaging. Once the
 workflow is on main, open Actions → Build packages → Run workflow, select a
 branch and `all`, `macos`, `windows`, or `ubuntu`. Ubuntu builds both amd64 and
-arm64. Every matrix job checks out the dispatch SHA, tests the shipping
+arm64 on Ubuntu **22.04** runners, the Linux compatibility baseline. Every matrix job checks out the dispatch SHA, tests the shipping
 configuration, builds the app, and invokes the existing platform installer script.
 
 Cloud builds use Python 3.12.9 from Miniforge and dependencies from
@@ -568,6 +568,52 @@ successful job uploads its installer, `SHA256SUMS`, and `build-info.json` (versi
 commit, target, Python) to Actions Artifacts for 14 days. There are no release,
 tag, or repository-write steps. macOS uses the existing ad-hoc signing workflow;
 these artifacts are candidates for desktop validation, not notarized releases.
+
+### Ubuntu 22.04 compatibility rebuild
+
+The original 1.0.2 Linux packages were built on Ubuntu 24.04. In particular,
+ARM64 Shiboken 6.11 needs GLIBC_2.38 and cannot start on Ubuntu 22.04's glibc
+2.35. ARM64 PySide6 is constrained to 6.8.0.2 in `pyproject.toml`, the last
+release with manylinux_2_31 ARM64 wheels; later wheels require manylinux_2_39.
+Other platforms retain their existing dependency requirement. Refresh the
+release environment after changing dependencies.
+The cover editor forwards signals through Qt signal-to-signal connections so
+Qt 6.8 disconnects them with the receiver during teardown. UI tests send a
+real `QEnterEvent` rather than a generic event with the Enter type.
+
+Linux source tests and packaging set `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` so
+Qt and Conda SQLite/ICU use the same C++ runtime. Otherwise Qt can load the
+host's older `libstdc++` first, causing ICU to fail with `CXXABI_1.3.15 not found`.
+The spec explicitly bundles Conda's `libstdc++.so.6` and `libgcc_s.so.1`.
+The installed-package smoke check removes this environment override and must
+resolve the bundled runtime on its own.
+
+The Debian package revision is `1` (for example, package version `1.0.2-1`),
+while the app version and download filenames remain `1.0.2`. This lets APT
+upgrade the original package without a new cross-platform app release.
+The package declares `libc6 (>= 2.35)`; building on a newer distribution does
+not by itself preserve that baseline.
+
+After packaging, CI installs the DEB with APT and runs
+`python scripts/verify_linux_package.py /opt/joyread`. The verifier rejects ELF
+libraries requiring glibc newer than 2.35 and launches the installed executable
+with an isolated temporary library until it logs `process.ready`. It removes
+build-environment library overrides, so the check cannot accidentally use
+Conda's Python or Shiboken. This validates the frozen package's loader/startup,
+not interactive reading or desktop integration. Build metadata includes the
+Ubuntu release, glibc, PySide6, and Debian package versions.
+
+Candidate run [34746301590](https://github.com/CtfTnk/JoyRead/actions/runs/34746301590)
+validated source `ab9e82cf5cd4f39530758d642f9e59c709dfa5d9`: both architectures
+passed 1557 tests (10 skipped), APT installation, and isolated installed startup.
+All 292 amd64 and 291 arm64 ELF files satisfied the glibc 2.35 baseline.
+This is package-level automated validation; interactive desktop checks remain
+separate.
+
+For a same-version rebuild, preserve macOS/Windows assets and the existing tag.
+Replace Linux assets only after both target jobs pass, and update the combined
+`SHA256SUMS`, per-target `build-info.json`, and dated release notes together.
+Retain each platform's actual source commit in that metadata.
 
 Windows CD exposed a storage-reset shutdown race: database close previously
 returned after a five-second join even with the SQLite actor still alive.

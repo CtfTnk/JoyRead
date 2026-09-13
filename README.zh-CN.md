@@ -22,8 +22,8 @@
 | --- | --- | --- |
 | macOS 13+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-macos-arm64.dmg) | 打开磁盘映像，将 JoyRead 拖入 Applications。 |
 | Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-windows-x86_64-setup.exe) | 运行安装程序，按提示安装。 |
-| Ubuntu/Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb`。 |
-| Ubuntu/Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb`。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.0.2-linux-amd64.deb`。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.0.2/JoyRead-1.0.2-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.0.2-linux-arm64.deb`。 |
 
 **Ubuntu 请仅通过命令行安装。** 图形安装器会卡在 **“Preparing”**，此问题尚未修复。请在下载目录打开终端，运行上表中对应安装包的命令。
 

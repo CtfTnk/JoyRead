@@ -37,6 +37,7 @@ def _make_valid_app(builder, root: Path, architecture: str = "amd64") -> Path:
         path = app_dir / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    (app_dir / "_internal/PySide6/Qt/plugins/platforms/libqwayland.so").touch()
     (app_dir / builder.APP_NAME).chmod(0o755)
     payload = app_dir / "_internal" / "payload.bin"
     payload.write_bytes(b"runtime")
@@ -180,3 +181,28 @@ def test_dpkg_deb_accepts_the_staged_package(tmp_path: Path) -> None:
     assert "Package: joyread" in fields
     assert "Version: 1.2.3" in fields
     assert "Architecture: amd64" in fields
+
+
+def test_validate_app_accepts_qt68_wayland_plugin(tmp_path: Path) -> None:
+    builder = _load_builder()
+    app_dir = _make_valid_app(builder, tmp_path)
+    plugin = app_dir / '_internal/PySide6/Qt/plugins/platforms/libqwayland.so'
+    plugin.rename(plugin.with_name('libqwayland-generic.so'))
+    builder.validate_app_dir(app_dir, 'amd64')
+
+
+def test_validate_app_requires_wayland_plugin(tmp_path: Path) -> None:
+    builder = _load_builder()
+    app_dir = _make_valid_app(builder, tmp_path)
+    (app_dir / '_internal/PySide6/Qt/plugins/platforms/libqwayland.so').unlink()
+    with pytest.raises(SystemExit, match='Wayland'):
+        builder.validate_app_dir(app_dir, 'amd64')
+
+
+def test_glibc_requirements_distinguish_versions_and_ignore_glibcxx() -> None:
+    spec = importlib.util.spec_from_file_location('verify_linux_package', REPO_ROOT / 'scripts/verify_linux_package.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    requirements = module.required_glibc_versions('Name: GLIBC_2.9\nName: GLIBC_2.35\nName: GLIBC_2.38\nName: GLIBCXX_3.4.30')
+    assert max(requirements) == (2, 38)
+    assert {v for v in requirements if v > module.MAX_GLIBC} == {(2, 38)}

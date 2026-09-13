@@ -12,7 +12,10 @@ license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
     "Pillow>=11.0",
-    "PySide6>=6.7",
+    "PySide6>=6.7; sys_platform != 'linux' or platform_machine != 'aarch64'",
+    # Newer ARM64 wheels require glibc 2.39 (Ubuntu 24.04). This is the last
+    # PySide6 release with manylinux_2_31 ARM64 wheels, usable on Ubuntu 22.04.
+    "PySide6==6.8.0.2; sys_platform == 'linux' and platform_machine == 'aarch64'",
     "py7zr>=1.1",
     "pyzipper>=0.3",
     "platformdirs>=4.2",

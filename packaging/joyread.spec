@@ -162,6 +162,14 @@ datas = [
         "joyread/resources/extractors/7zip",
     ),
 ]
+if platform_key() == "linux":
+    # Qt can load the host's older C++ runtime before Conda SQLite loads ICU.
+    # Ship one runtime capable of satisfying both, independent of import order.
+    for name in ("libstdc++.so.6", "libgcc_s.so.1"):
+        runtime = Path(sys.prefix) / "lib" / name
+        if not runtime.is_file():
+            raise SystemExit(f"Missing Linux Conda runtime: {runtime}")
+        binaries.append((str(runtime), "."))
 # Qt standard widget strings must follow the app language in frozen builds.
 from PySide6.QtCore import QLibraryInfo
 from PyInstaller.utils.hooks.qt import pyside6_library_info
