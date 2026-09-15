@@ -489,6 +489,9 @@ class Theme:
     reader_radius = 18
     reader_banner_height = 52
     reader_footer_height = 104
+    # White chrome overlay: opaque at the window edge, translucent inward.
+    reader_chrome_outer_opacity = 1.0
+    reader_chrome_inner_opacity = 0.15
     reader_footer_padding_horizontal = 6
     reader_footer_padding_vertical = 8
     reader_footer_row_height = 40

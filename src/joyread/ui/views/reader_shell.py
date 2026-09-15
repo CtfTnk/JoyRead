@@ -232,6 +232,7 @@ class ReaderShellWidget(ReaderShellBase):
             delay_ms=Theme.reader_auto_hide_delay_ms,
             interaction_predicate=lambda: self._control_interaction_active(),
             on_after_show=lambda: self._raise_settings_panel_if_visible(),
+            retained_controls=lambda: self._retained_controls(),
         )
         # Header still needs the shell as an event filter for window-drag,
         # so install the shell on it directly. Other control widgets only
@@ -342,31 +343,25 @@ class ReaderShellWidget(ReaderShellBase):
             self._show_controls((self.right_arrow,), reset_timer=True)
 
     def _control_interaction_active(self) -> bool:
-        if (
+        # Overlays obscure the controls, so keep the existing modal protection.
+        return (
             self.dialog_overlay.isVisible()
-            or self.footer.is_slider_active()
             or self.panel_scrim.isVisible()
-        ):
-            # panel_scrim now sits above header/footer/arrows whenever a
-            # floating panel is open, so widgetAt() below would otherwise
-            # never resolve to those widgets even while the cursor is
-            # sitting right over them -- treat any open panel as active so
-            # auto-hide doesn't pull the chrome out from under it.
-            return True
+        )
+
+    def _retained_controls(self) -> tuple[QWidget, ...]:
+        # Bars form one retention group, but paddles are independent. Returning
+        # both bars only protects visible members; it never wakes the other bar.
+        if self.footer.is_slider_active():
+            return (self.header, self.footer)
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:
-            if widget in {
-                self.header,
-                self.footer,
-                self.left_arrow,
-                self.right_arrow,
-                self.settings_panel,
-                self.topic_panel,
-                self.dialog_overlay,
-            }:
-                return True
+            if widget in (self.header, self.footer):
+                return (self.header, self.footer)
+            if widget in (self.left_arrow, self.right_arrow):
+                return (widget,)
             widget = widget.parentWidget()
-        return False
+        return ()
 
     def _activate_left_outer(self) -> None:
         if self.viewmodel.is_right_to_left:

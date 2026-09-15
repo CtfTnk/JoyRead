@@ -261,10 +261,7 @@ class ReaderHeader(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        gradient = QLinearGradient(0, self.height(), 0, 0)
-        gradient.setColorAt(0.0, QColor(255, 255, 255, 51))
-        gradient.setColorAt(0.5, QColor(255, 255, 255, 204))
-        gradient.setColorAt(1.0, QColor(255, 255, 255, 204))
+        gradient = _reader_chrome_gradient(self.height(), top=True)
         painter.fillPath(_top_rounded_path(self.rect()), gradient)
         painter.end()
 
@@ -503,10 +500,7 @@ class ReaderFooter(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        gradient = QLinearGradient(0, 0, 0, self.height())
-        gradient.setColorAt(0.0, QColor(255, 255, 255, 38))
-        gradient.setColorAt(0.55, QColor(255, 255, 255, 188))
-        gradient.setColorAt(1.0, QColor(255, 255, 255, 210))
+        gradient = _reader_chrome_gradient(self.height(), top=False)
         painter.fillPath(_bottom_rounded_path(self.rect()), gradient)
         painter.end()
 
@@ -722,6 +716,21 @@ def _spacer(height: int) -> QFrame:
     frame.setFixedSize(Theme.toolbar_spacer_width, height)
     frame.setFrameShape(QFrame.Shape.NoFrame)
     return frame
+
+
+def _reader_chrome_gradient(height: int, *, top: bool) -> QLinearGradient:
+    gradient = QLinearGradient(0, height if top else 0, 0, 0 if top else height)
+    inner = Theme.reader_chrome_inner_opacity
+    outer = Theme.reader_chrome_outer_opacity
+    # Qt interpolates stops linearly. Sample smoothstep over the full height
+    # to soften both ends without the old mid-panel plateau and slope break.
+    segments = 32
+    for step in range(segments + 1):
+        position = step / segments
+        eased = position * position * (3.0 - 2.0 * position)
+        alpha = round(255 * (inner + (outer - inner) * eased))
+        gradient.setColorAt(position, QColor(255, 255, 255, alpha))
+    return gradient
 
 
 def _top_rounded_path(rect) -> QPainterPath:  # noqa: ANN001

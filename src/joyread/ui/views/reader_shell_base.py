@@ -48,9 +48,9 @@ class ReaderShellBase(QWidget):
     """
 
     def _show_controls(self, widgets: tuple[QWidget, ...] | None = None, *, reset_timer: bool) -> None:
-        self.auto_hide.show(widgets, reset_timer=False)
-        if reset_timer:
-            self._start_hide_timer_if_allowed()
+        self.auto_hide.show(
+            widgets, reset_timer=reset_timer and not self.dialog_overlay.isVisible()
+        )
 
     def _hide_inactive_controls(self) -> None:
         self.auto_hide.hide_inactive()
