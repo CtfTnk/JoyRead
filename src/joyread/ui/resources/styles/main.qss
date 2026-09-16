@@ -482,6 +482,7 @@ QWidget#ShelfContent {
 }
 
 QWidget#ShelfContent[sidebarVisible="false"] {
+    border-top-left-radius: 0;
     border-bottom-left-radius: __WINDOW_RADIUS__;
 }
 

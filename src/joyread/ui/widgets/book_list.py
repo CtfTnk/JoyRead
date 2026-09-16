@@ -48,6 +48,8 @@ class BookListWidget(QScrollArea):
         self.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.viewport().installEventFilter(self)
         self._rows: dict[str, BookListRowWidget] = {}
+        self._book_ids: tuple[str, ...] = ()
+        self._selected_ids: set[str] = set()
         self._cover_paths: dict[str, Path] = {}
 
         self._content = QWidget()
@@ -71,34 +73,57 @@ class BookListWidget(QScrollArea):
         selected_ids: set[str],
         cover_paths: dict[str, Path] | None = None,
     ) -> None:
-        self._cover_paths = dict(cover_paths or {})
-        self._rows.clear()
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
+        next_cover_paths = dict(cover_paths or {})
+        book_ids = tuple(book.uuid for book in books)
+        wanted = set(book_ids)
+        order_changed = self._book_ids != book_ids
+        for book_uuid in self._rows.keys() - wanted:
+            row = self._rows.pop(book_uuid)
+            self._layout.removeWidget(row)
+            row.hide()
+            row.deleteLater()
         for book in books:
-            row = BookListRowWidget(book, self._resources)
-            row.set_selected(book.uuid in selected_ids)
-            cover_path = self._cover_paths.get(book.uuid)
+            row = self._rows.get(book.uuid)
+            if row is None:
+                row = BookListRowWidget(book, self._resources)
+                row.book_selected.connect(self.book_selected.emit)
+                row.book_opened.connect(self.book_opened.emit)
+                row.detail_requested.connect(self.detail_requested.emit)
+                row.menu_requested.connect(self.menu_requested.emit)
+                self._rows[book.uuid] = row
+                row.set_selected(book.uuid in selected_ids)
+            elif row.book != book:
+                row.set_book(book)
+            cover_path = next_cover_paths.get(book.uuid)
             if cover_path is not None:
-                row.set_cover_path(cover_path)
-            row.book_selected.connect(self.book_selected.emit)
-            row.book_opened.connect(self.book_opened.emit)
-            row.detail_requested.connect(self.detail_requested.emit)
-            row.menu_requested.connect(self.menu_requested.emit)
-            self._layout.addWidget(row)
-            self._rows[book.uuid] = row
-        self._layout.addStretch(1)
+                if cover_path != self._cover_paths.get(book.uuid) or not row.has_cover_path(cover_path):
+                    row.set_cover_path(cover_path)
+            elif book.uuid in self._cover_paths:
+                row.clear_cover()
+        self.set_selected_ids(selected_ids)
+        self._cover_paths = next_cover_paths
+        self._book_ids = book_ids
+        if order_changed:
+            # Detach layout items, not their widgets. Children retain ownership,
+            # images and signal connections while being put in the new order.
+            while self._layout.count():
+                self._layout.takeAt(self._layout.count() - 1)
+            for book_uuid in book_ids:
+                self._layout.addWidget(self._rows[book_uuid])
+            self._layout.addStretch(1)
+
+    def set_selected_ids(self, selected_ids: set[str]) -> None:
+        for book_uuid in self._selected_ids ^ selected_ids:
+            row = self._rows.get(book_uuid)
+            if row is not None:
+                row.set_selected(book_uuid in selected_ids)
+        self._selected_ids = set(selected_ids)
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
         self._cover_paths[book_uuid] = path
         row = self._rows.get(book_uuid)
         if row is not None:
-            row.set_cover_path(path)
+            row.set_cover_path(path, force=True)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:
@@ -125,16 +150,7 @@ class BookListRowWidget(QFrame):
         self.setMinimumWidth(Theme.book_list_row_width)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        if not book.is_available:
-            opacity = QGraphicsOpacityEffect(self)
-            opacity.setOpacity(Theme.missing_book_opacity)
-            self.setGraphicsEffect(opacity)
-        else:
-            shadow = QGraphicsDropShadowEffect(self)
-            shadow.setBlurRadius(4)
-            shadow.setOffset(0, 4)
-            shadow.setColor(QColor(0, 0, 0, 64))
-            self.setGraphicsEffect(shadow)
+        self._apply_availability(book.is_available)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(
@@ -163,15 +179,15 @@ class BookListRowWidget(QFrame):
         )
         info_layout.setSpacing(0)
 
-        title = ElidedLabel(book.title, max_lines=2)
+        self._title = title = ElidedLabel(book.title, max_lines=2)
         title.setProperty("class", "BookTitle")
         title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         info_layout.addWidget(title)
 
-        author = LocalizedLabel(book.author or t("detail.unknown_author"))
+        self._author = author = LocalizedLabel(book.author or t("detail.unknown_author"))
         author.setProperty("class", "BookAuthor")
         author.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        set_localized(author, "setToolTip", author.text())
+        set_localized(author, "setToolTip", book.author or t("detail.unknown_author"))
         info_layout.addWidget(author)
 
         info_layout.addStretch(1)
@@ -237,8 +253,37 @@ class BookListRowWidget(QFrame):
         info_layout.addWidget(control_bar_frame)
         layout.addWidget(content, stretch=1)
 
+    def set_book(self, book: Book) -> None:
+        previous = self.book
+        self.book = book
+        if previous.title != book.title:
+            set_localized(self._title, "set_full_text", book.title)
+        if previous.author != book.author:
+            author = book.author or t("detail.unknown_author")
+            set_localized(self._author, "setText", author)
+            set_localized(self._author, "setToolTip", author)
+        if previous.progress_percent != book.progress_percent:
+            self._progress.set_progress(book.progress_percent)
+            set_localized(self._progress_percent_label, "setText", f"{book.progress_percent}%")
+        if previous.is_available != book.is_available:
+            self._apply_availability(book.is_available)
+
+    def _apply_availability(self, available: bool) -> None:
+        if not available:
+            effect = QGraphicsOpacityEffect(self)
+            effect.setOpacity(Theme.missing_book_opacity)
+        else:
+            effect = QGraphicsDropShadowEffect(self)
+            effect.setBlurRadius(4)
+            effect.setOffset(0, 4)
+            effect.setColor(QColor(0, 0, 0, 64))
+        self.setGraphicsEffect(effect)
+
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", "true" if selected else "false")
+        value = "true" if selected else "false"
+        if self.property("selected") == value:
+            return
+        self.setProperty("selected", value)
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
@@ -247,8 +292,14 @@ class BookListRowWidget(QFrame):
         set_localized(self._detail_button, "setToolTip", t("menu.detail"))
         set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
-    def set_cover_path(self, path: Path) -> None:
-        self._cover.set_pixmap_from_path(path)
+    def has_cover_path(self, path: Path) -> bool:
+        return self._cover.loaded_path == path
+
+    def clear_cover(self) -> None:
+        self._cover.set_pixmap(_placeholder_cover())
+
+    def set_cover_path(self, path: Path, *, force: bool = False) -> None:
+        self._cover.set_pixmap_from_path(path, force=force)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

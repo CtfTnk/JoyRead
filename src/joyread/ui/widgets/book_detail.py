@@ -285,7 +285,7 @@ class BookDetailPanel(QFrame):
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
-            self._cover.set_pixmap_from_path(path)
+            self._cover.set_pixmap_from_path(path, force=True)
 
     def set_page_thumbnail(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._book is not None and self._book.uuid == book_uuid:

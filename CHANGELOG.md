@@ -3,6 +3,17 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+
+- Reuse bookshelf cards and list rows when sorting or changing search results;
+  create/remove controls only for books entering/leaving the result.
+- Update only changed metadata and selection styling instead of refreshing all
+  card contents and covers after each click.
+- Reuse displayed cover pixmaps, while explicitly refreshing same-path cover
+  edits; coalesce cover resolution requests for changed books.
+
 ## [1.0.2] — 2026-09-12
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.0.2.md)

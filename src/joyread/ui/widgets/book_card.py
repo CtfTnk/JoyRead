@@ -17,7 +17,6 @@ from PySide6.QtGui import (
     QPainterPath,
     QPaintEvent,
     QPixmap,
-    QPixmapCache,
 )
 from PySide6.QtWidgets import (
     QFrame,
@@ -34,6 +33,7 @@ from PySide6.QtWidgets import (
 from joyread.core.models.book import Book
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
+from joyread.infrastructure.resources.pixmaps import load_thumbnail_pixmap
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
@@ -122,31 +122,39 @@ class BookCardWidget(QFrame):
         layout.addWidget(control_bar_frame)
 
     def set_book(self, book: Book) -> None:
+        previous = self.book
         self.book = book
-        set_localized(self._title, "set_full_text", book.title)
-        self._progress.set_progress(book.progress_percent)
-        missing = "true" if book.is_missing else "false"
-        unavailable = "true" if book.is_unavailable else "false"
-        state_changed = (
-            self.property("missing") != missing or self.property("unavailable") != unavailable
-        )
-        self.setProperty("missing", missing)
-        self.setProperty("unavailable", unavailable)
-        self._apply_unavailable_state(not book.is_available, force=state_changed)
-        self.refresh_labels()
+        if previous.title != book.title:
+            set_localized(self._title, "set_full_text", book.title)
+        if previous.progress_percent != book.progress_percent:
+            self._progress.set_progress(book.progress_percent)
+        state_changed = (previous.is_missing, previous.is_unavailable) != (book.is_missing, book.is_unavailable)
+        if state_changed:
+            self.setProperty("missing", "true" if book.is_missing else "false")
+            self.setProperty("unavailable", "true" if book.is_unavailable else "false")
+            self._apply_unavailable_state(not book.is_available, force=True)
 
     def refresh_labels(self) -> None:
         set_localized(self._detail_button, "setToolTip", t("menu.detail"))
         set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
     def set_selected(self, selected: bool) -> None:
-        self.setProperty("selected", "true" if selected else "false")
+        value = "true" if selected else "false"
+        if self.property("selected") == value:
+            return
+        self.setProperty("selected", value)
         self.style().unpolish(self)
         self.style().polish(self)
         self.update()
 
-    def set_cover_path(self, path: Path) -> None:
-        self._cover.set_pixmap_from_path(path)
+    def has_cover_path(self, path: Path) -> bool:
+        return self._cover.loaded_path == path
+
+    def clear_cover(self) -> None:
+        self._cover.set_pixmap(_placeholder_cover())
+
+    def set_cover_path(self, path: Path, *, force: bool = False) -> None:
+        self._cover.set_pixmap_from_path(path, force=force)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -192,6 +200,7 @@ class BookCoverWidget(QFrame):
     def __init__(self, pixmap: QPixmap, size: QSize, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pixmap = pixmap
+        self._loaded_path: Path | None = None
         self.setObjectName("BookCover")
         self.setFixedSize(size)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -200,12 +209,20 @@ class BookCoverWidget(QFrame):
         if pixmap.isNull():
             return
         self._pixmap = pixmap
+        self._loaded_path = None
         self.update()
 
-    def set_pixmap_from_path(self, path: Path) -> None:
-        QPixmapCache.remove(str(path))
-        pixmap = QPixmap(str(path))
-        self.set_pixmap(pixmap)
+    @property
+    def loaded_path(self) -> Path | None:
+        return self._loaded_path
+
+    def set_pixmap_from_path(self, path: Path, *, force: bool = False) -> None:
+        if not force and self._loaded_path == path:
+            return
+        pixmap = load_thumbnail_pixmap(path)
+        if not pixmap.isNull():
+            self.set_pixmap(pixmap)
+            self._loaded_path = path
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from PySide6.QtCore import QPoint, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
@@ -60,11 +61,14 @@ class ShelfView(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
         self._resources = resources
-        # Streaming thumbnail/cover updates are paused while a popup
-        # (context menu, dialog) is open and replayed on close. Live grid
-        # mutations during a popup interaction cause jank — items reflow
-        # while the user is mid-click — so we coalesce updates here and
-        # flush them once the depth counter returns to zero.
+        self._cover_request_books: dict[str, Book] = {}
+        self._known_cover_paths: dict[str, Path] = {}
+        self._pending_cover_requests: set[str] = set()
+        self._cover_request_timer = QTimer(self)
+        self._cover_request_timer.setSingleShot(True)
+        self._cover_request_timer.timeout.connect(self._request_pending_covers)
+        # Detail thumbnails pause during a popup and refresh their interest on
+        # close. Cover-ready updates are independent and affect one book only.
         self._popup_interaction_depth = 0
 
         layout = QVBoxLayout(self)
@@ -149,20 +153,24 @@ class ShelfView(QWidget):
         self.toolbar.set_tag_filter_active(self._viewmodel.tag_filter_active)
 
         if self._viewmodel.is_loading:
+            self._sync_cover_requests([], {})
             self.stack.setCurrentWidget(self.loading_state)
             self._render_detail_panel()
             return
         if self._viewmodel.error_message:
+            self._sync_cover_requests([], {})
             self.stack.setCurrentWidget(self.error_state)
             self._render_detail_panel()
             return
         if self._viewmodel.is_importing:
+            self._sync_cover_requests([], {})
             self.stack.setCurrentWidget(self.importing_state)
             self._render_detail_panel()
             return
 
         books = self._viewmodel.visible_books
         if not books:
+            self._sync_cover_requests([], {})
             self._update_empty_state_copy()
             self.stack.setCurrentWidget(self.empty_state)
             self._render_detail_panel()
@@ -176,9 +184,34 @@ class ShelfView(QWidget):
         else:
             self.list_view.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.list_view)
-        visible_ids = tuple(book.uuid for book in books)
-        QTimer.singleShot(0, lambda visible_ids=visible_ids: self._viewmodel.request_covers_for_books(visible_ids))
+        self._sync_cover_requests(books, cover_paths)
         self._render_detail_panel()
+
+    def _sync_cover_requests(self, books: list[Book], cover_paths: dict[str, Path]) -> None:
+        """Resolve covers for changed entries, coalescing rapid shelf changes.
+
+        Selection and reordering leave the book snapshots equal and enqueue no
+        filesystem work. Clearing the VM's cover map (e.g. a library switch)
+        invalidates entries even when their book metadata is unchanged.
+        """
+        current = {book.uuid: book for book in books}
+        changed = {key for key, book in current.items() if self._cover_request_books.get(key) != book}
+        changed.update((self._known_cover_paths.keys() - cover_paths.keys()) & current.keys())
+        self._cover_request_books = current
+        self._known_cover_paths = dict(cover_paths)
+        self._pending_cover_requests.update(changed)
+        self._pending_cover_requests.intersection_update(current)
+        if self._pending_cover_requests:
+            if not self._cover_request_timer.isActive():
+                self._cover_request_timer.start(0)
+        else:
+            self._cover_request_timer.stop()
+
+    def _request_pending_covers(self) -> None:
+        pending = self._pending_cover_requests
+        self._pending_cover_requests = set()
+        if pending:
+            self._viewmodel.request_covers_for_books(tuple(pending))
 
     def _show_book_menu(self, book_uuid: str, global_pos: QPoint) -> None:
         book = self._book_by_uuid(book_uuid)
@@ -346,7 +379,9 @@ class ShelfView(QWidget):
         height = max(0, self.height() - top)
         self.detail_panel.setGeometry(left, top, width, height)
 
-    def _handle_cover_ready(self, book_uuid: str, path) -> None:
+    def _handle_cover_ready(self, book_uuid: str, path: Path) -> None:
+        if book_uuid in self._cover_request_books:
+            self._known_cover_paths[book_uuid] = path
         self.grid.set_cover_path(book_uuid, path)
         self.list_view.set_cover_path(book_uuid, path)
         self.detail_panel.set_cover_path(book_uuid, path)

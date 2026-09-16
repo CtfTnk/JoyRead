@@ -64,49 +64,60 @@ class BookGridWidget(QScrollArea):
         cover_paths: dict[str, Path] | None = None,
     ) -> None:
         self._books = list(books)
-        self._selected_ids = set(selected_ids)
-        self._cover_paths = dict(cover_paths or {})
-        book_ids = tuple(book.uuid for book in self._books)
-        if self._book_ids == book_ids:
-            for book in self._books:
-                card = self._cards[book.uuid]
+        next_cover_paths = dict(cover_paths or {})
+        book_ids = tuple(book.uuid for book in books)
+        wanted = set(book_ids)
+        order_changed = self._book_ids != book_ids
+
+        # Remove only entries no longer in this result. Reordering must not
+        # recreate cards, their pixmaps, or the widgets owning an active menu.
+        for book_uuid in self._cards.keys() - wanted:
+            card = self._cards.pop(book_uuid)
+            self._layout.removeWidget(card)
+            card.hide()
+            card.deleteLater()
+        for book in books:
+            card = self._cards.get(book.uuid)
+            if card is None:
+                card = BookCardWidget(book, self._resources)
+                card.book_selected.connect(self.book_selected.emit)
+                card.book_opened.connect(self.book_opened.emit)
+                card.detail_requested.connect(self.detail_requested.emit)
+                card.menu_requested.connect(self.menu_requested.emit)
+                self._layout.addWidget(card)
+                self._cards[book.uuid] = card
+                card.set_selected(book.uuid in selected_ids)
+            elif card.book != book:
                 card.set_book(book)
-                card.set_selected(book.uuid in self._selected_ids)
-                cover_path = self._cover_paths.get(book.uuid)
-                if cover_path is not None:
-                    card.set_cover_path(cover_path)
-            return
-
-        self._book_ids = book_ids
-        while self._layout.count():
-            item = self._layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
-        self._cards.clear()
-        for index, book in enumerate(self._books):
-            card = BookCardWidget(book, self._resources)
-            card.set_selected(book.uuid in self._selected_ids)
-            cover_path = self._cover_paths.get(book.uuid)
+            cover_path = next_cover_paths.get(book.uuid)
             if cover_path is not None:
-                card.set_cover_path(cover_path)
-            card.book_selected.connect(self.book_selected.emit)
-            card.book_opened.connect(self.book_opened.emit)
-            card.detail_requested.connect(self.detail_requested.emit)
-            card.menu_requested.connect(self.menu_requested.emit)
-            self._layout.addWidget(card)
-            self._cards[book.uuid] = card
+                # The cover widget ignores the already loaded source. Keeping
+                # this call on newly created cards also restores filtered books.
+                if cover_path != self._cover_paths.get(book.uuid) or not card.has_cover_path(cover_path):
+                    card.set_cover_path(cover_path)
+            elif book.uuid in self._cover_paths:
+                card.clear_cover()
 
-        self._layout.invalidate()
-        self._content.updateGeometry()
+        self.set_selected_ids(selected_ids)
+        self._cover_paths = next_cover_paths
+        self._book_ids = book_ids
+        if order_changed:
+            self._layout.set_widget_order([self._cards[key] for key in book_ids])
+            self._content.updateGeometry()
+
+    def set_selected_ids(self, selected_ids: set[str]) -> None:
+        for book_uuid in self._selected_ids ^ selected_ids:
+            card = self._cards.get(book_uuid)
+            if card is not None:
+                card.set_selected(book_uuid in selected_ids)
+        self._selected_ids = set(selected_ids)
 
     def set_cover_path(self, book_uuid: str, path: Path) -> None:
+        """Apply an explicit cover-ready notification, including same-path edits."""
         self._cover_paths[book_uuid] = path
         card = self._cards.get(book_uuid)
         if card is not None:
-            card.set_cover_path(path)
+            card.set_cover_path(path, force=True)
 
     def _calculate_columns(self) -> int:
         return self._calculate_columns_for_width(self._available_row_width())
@@ -139,6 +150,11 @@ class JustifiedBookGridLayout(QLayout):
 
     def addItem(self, item: QLayoutItem) -> None:
         self._items.append(item)
+
+    def set_widget_order(self, widgets: list[QWidget]) -> None:
+        items = {item.widget(): item for item in self._items}
+        self._items = [items[widget] for widget in widgets]
+        self.invalidate()
 
     def count(self) -> int:
         return len(self._items)
