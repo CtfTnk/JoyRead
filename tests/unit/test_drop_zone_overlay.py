@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QPoint, Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter, qGray
 from PySide6.QtWidgets import QWidget
 
 from joyread.app.launch.intent import classify_drop_paths
@@ -23,6 +23,7 @@ from joyread.ui.widgets.drop_zone_overlay import (
     IMPORT_ZONE,
     READ_ZONE,
     DropZoneOverlay,
+    _blurred,
 )
 
 
@@ -387,12 +388,106 @@ def test_confirming_deepens_the_blur_as_well_as_the_scrim(overlay, qtbot, tmp_pa
     assert widget._backdrop.toImage() != dragging_image
 
 
+def test_the_confirm_transition_eases_rather_than_snapping(overlay, qtbot, tmp_path) -> None:
+    """Confirm deepens the scrim and the blur on top of the drag's own state.
+
+    Both are drawn from ``_confirm_progress``, so a progress that jumps straight
+    to 1.0 means the deeper state snaps in on the frame the drop commits.
+    """
+
+    widget = overlay()
+    widget.set_content_area(_striped_source(qtbot))
+    widget.begin(classify_drop_paths([_cbz(tmp_path, "a.cbz")]))
+
+    widget.show_import_confirmation(1)
+
+    # Mid-flight: the discrete state has flipped, the drawn value has not.
+    assert widget.is_confirming
+    assert widget._confirm_progress < 1.0
+    # The drag's lighter blur is still held, to fade the deeper one in over.
+    assert widget._backdrop_previous is not None
+
+    qtbot.waitUntil(
+        lambda: widget._confirm_progress == 1.0,
+        timeout=Theme.drop_scrim_confirm_transition_ms + 2000,
+    )
+
+    # Cross-fade done: the second full-size pixmap is handed back.
+    assert widget._backdrop_previous is None
+
+
+def test_the_confirm_scrim_is_drawn_between_the_two_states(overlay, tmp_path) -> None:
+    """A frame drawn mid-transition has to sit between the drag scrim and the
+    confirm scrim, which is what makes the deepening read as a fade.
+
+    Without a content area the sampled corner is the scrim over white and
+    nothing else, and the zones and the pill both miss it.
+    """
+
+    widget = overlay()
+    widget.begin(classify_drop_paths([_cbz(tmp_path, "a.cbz")]))
+    widget._opacity = 1.0
+
+    def corner(progress: float) -> QColor:
+        widget._confirm_progress = progress
+        return _rendered(widget).pixelColor(4, 4)
+
+    dragging, middle, confirming = corner(0.0), corner(0.5), corner(1.0)
+
+    assert dragging != confirming
+    for channel in ("red", "green", "blue"):
+        low, high = sorted(
+            (getattr(dragging, channel)(), getattr(confirming, channel)())
+        )
+        assert low < getattr(middle, channel)() < high, channel
+
+
+def test_the_blur_radius_is_logical_pixels_like_the_rest_of_the_theme(qtbot) -> None:
+    """The same snapshot tagged HiDPI has to blur over twice the device radius.
+
+    The theme's radii are logical pixels, so reading one as a device radius
+    halves the softness on exactly the screens the design was drawn for.
+    """
+
+    source = _striped_source(qtbot)
+
+    def blurred(ratio: float) -> QImage:
+        snapshot = source.grab()
+        snapshot.setDevicePixelRatio(ratio)
+        return _blurred(snapshot, Theme.drop_scrim_blur_radius).toImage()
+
+    plain = _edge_energy(blurred(1.0))
+    retina = _edge_energy(blurred(2.0))
+
+    assert retina < plain * 0.75, (plain, retina)
+
+
 def _striped_source(qtbot, width: int = 400, height: int = 300) -> QWidget:
     source = _StripedWidget()
     qtbot.addWidget(source)
     source.resize(width, height)
     source.show()
     return source
+
+
+def _edge_energy(image: QImage) -> float:
+    """Mean absolute step between neighbouring pixels, sampled coarsely.
+
+    Stands in for "how much of the stripes survived": a blurred image has
+    softer edges, so a lower number here means more blur.
+    """
+
+    total = 0
+    samples = 0
+    for y in range(0, image.height(), 17):
+        previous: int | None = None
+        for x in range(0, image.width(), 2):
+            value = qGray(image.pixel(x, y))
+            if previous is not None:
+                total += abs(value - previous)
+                samples += 1
+            previous = value
+    return total / samples
 
 
 def test_re_entering_one_drag_reuses_the_snapshot(overlay, qtbot, tmp_path) -> None:
@@ -430,3 +525,67 @@ def test_resizing_mid_drag_recaptures_the_snapshot(overlay, qtbot, tmp_path) -> 
 
     assert widget._snapshot is not first
     assert widget._snapshot.width() == 600
+
+
+def test_paint_reentry_and_confirmation_reuse_cached_blurs(overlay, qtbot, tmp_path, monkeypatch):
+    import joyread.ui.widgets.drop_zone_overlay as module
+    calls = []
+    blur = module._blurred
+    monkeypatch.setattr(module, "_blurred", lambda *args: (calls.append(args[1]), blur(*args))[1])
+    widget = overlay()
+    widget.set_content_area(_striped_source(qtbot))
+    payload = classify_drop_paths([_cbz(tmp_path, "cached.cbz")])
+    widget.begin(payload)
+    assert len(calls) == 2
+    widget._fade.stop()
+    for opacity in (0.01, 0.3, 0.8, 1.0):
+        widget._opacity = opacity
+        _rendered(widget)
+    widget.begin(payload)
+    widget.show_import_confirmation(1)
+    widget._confirm_animation.stop()
+    for progress in (0.0, 0.3, 0.5, 1.0):
+        widget._confirm_progress = progress
+        _rendered(widget)
+    widget.end()
+    _rendered(widget)
+    assert len(calls) == 2
+    widget._opacity = 0.0
+    widget._handle_fade_finished()
+    assert not widget._backdrop_cache and widget._snapshot is None
+
+
+@pytest.mark.parametrize("opacity", [0.25, 0.6, 1.0])
+def test_equal_backdrops_do_not_brighten_during_confirmation(overlay, tmp_path, monkeypatch, opacity):
+    from PySide6.QtGui import QPixmap
+    monkeypatch.setattr(Theme, "color_drop_scrim_rgba", (0, 0, 0, 0))
+    monkeypatch.setattr(Theme, "color_drop_scrim_confirming_rgba", (0, 0, 0, 0))
+    widget = overlay()
+    widget.begin(classify_drop_paths([_cbz(tmp_path, "blend.cbz")]))
+    widget._fade.stop()
+    widget._opacity = opacity
+    grey = QPixmap(widget.size()); grey.fill(QColor(100, 100, 100))
+    widget._backdrop = grey
+    widget._backdrop_previous = grey
+    values = []
+    for progress in (0.0, 0.1, 0.5, 0.9, 1.0):
+        widget._confirm_progress = progress
+        values.append(_rendered(widget).pixelColor(4, 4).red())
+    assert max(values) - min(values) <= 2, values
+
+
+def test_early_confirmation_and_dismissal_preserve_animation_state(overlay, qtbot, tmp_path):
+    widget = overlay()
+    widget.set_content_area(_striped_source(qtbot))
+    widget.begin(classify_drop_paths([_cbz(tmp_path, "early.cbz")]))
+    widget._fade.stop()
+    widget._opacity = 0.2
+    showing = widget._backdrop
+    widget.show_import_confirmation(1)
+    widget._confirm_animation.stop()
+    assert widget._backdrop_previous is showing
+    assert widget._opacity == 0.2 and widget._confirm_progress == 0.0
+    widget._confirm_progress = 0.4
+    widget.end()
+    assert widget._confirm_progress == 0.4
+    assert widget._confirm_animation.state() == widget._confirm_animation.State.Stopped

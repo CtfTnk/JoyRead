@@ -1695,6 +1695,8 @@ class MainWindow(QMainWindow):
         self.chrome.set_sort(
             self._context.shelf_viewmodel.sort_field.value,
             self._context.shelf_viewmodel.sort_ascending,
+            scope=self._context.shelf_viewmodel.current_shelf,
+            saving=self._context.shelf_viewmodel.sort_saving,
         )
 
     def _handle_books_deleted(self, _book_uuids: tuple[str, ...]) -> None:

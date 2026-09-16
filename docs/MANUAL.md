@@ -112,10 +112,43 @@ Delete is permanent and asks first. Remove is not — it only drops JoyRead's
 record of the book.
 
 **Search** sits in the toolbar and matches titles and authors. **Sort by** sorts
-on Add Time, Title, or Author, ascending or descending. The **filter** button
+on Add Time, Title, or Author, ascending or descending, or uses **Custom** order.
+The **filter** button
 narrows the shelf to one file type (CBZ, CBR, ZIP, RAR, 7Z, PDF), and the tag
 button filters by tag. Your sort, filter, and search choices persist between
 launches.
+
+### Custom order and selection
+
+All, Favourites, Hidden Space, and each collection remember their own sort
+preference and custom order. Recent always uses reading time. Choosing Custom
+for the first time starts with newest library additions first; returning to it
+restores your order. The ascending/descending button is disabled in Custom.
+New members go at the front. Removing and later re-adding a favourite or
+collection member also puts it at the front. Search, filters, and privacy
+visibility do not erase saved positions.
+
+Click a book to select it alone. Shift-click adds a book or removes it from the
+selection. Click blank shelf space to clear selection; Shift-clicking blank
+space keeps it. Drag from blank space to draw a selection rectangle. Shift-drag
+starts a rectangle even on a book and adds intersecting books to the selection
+you had when you started; it never starts reordering. You can use
+the wheel while drawing; Esc restores the selection from before the gesture.
+
+In Custom order, clear search, format, and tag filters to enable reordering.
+Drag a selected card or list row to move the whole selection in its displayed
+order. Drag an unselected book to move it alone. Release Shift before dragging
+books to reorder them. One dashed placeholder shows where the group will land. The pointer
+preview shows up to three cards and the total selection count.
+
+Only the top and bottom 15% of the shelf auto-scroll during dragging, with speed
+increasing toward the edge. The preview uses 40% card size and sits 5 px from
+the pointer. The wheel also works. Release inside the book viewport to save the
+order; release outside, press Esc, or right-click while holding the left button
+to cancel. Leaving the viewport temporarily permits returning before release.
+Switching shelves, sorting, or view mode, deactivating the window, or a background
+membership/order change cancels the gesture. Saving briefly disables further
+reordering; if it fails, JoyRead restores the last saved order and shows an error.
 
 ## Collections
 

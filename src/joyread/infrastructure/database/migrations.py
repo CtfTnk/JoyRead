@@ -482,6 +482,32 @@ MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
     ),
     (12, _migrate_book_files_v12),
     (13, _migrate_book_files_v13),
+    (14, """
+        CREATE TABLE shelf_sort_preferences (
+            scope TEXT PRIMARY KEY,
+            collection_id TEXT REFERENCES collections(collection_id) ON DELETE CASCADE,
+            sort_field TEXT NOT NULL,
+            ascending INTEGER NOT NULL DEFAULT 0,
+            initialized INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE shelf_book_order (
+            scope TEXT NOT NULL REFERENCES shelf_sort_preferences(scope) ON DELETE CASCADE,
+            book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            position INTEGER NOT NULL,
+            PRIMARY KEY(scope, book_id)
+        );
+        CREATE TRIGGER shelf_order_unfavourite AFTER UPDATE OF is_favourite ON books
+        WHEN NEW.is_favourite = 0 BEGIN
+            DELETE FROM shelf_book_order WHERE scope = 'favourites' AND book_id = NEW.book_id;
+        END;
+        CREATE TRIGGER shelf_order_unhide AFTER UPDATE OF is_hidden ON books
+        WHEN NEW.is_hidden = 0 BEGIN
+            DELETE FROM shelf_book_order WHERE scope = 'hidden' AND book_id = NEW.book_id;
+        END;
+        CREATE TRIGGER shelf_order_collection_remove AFTER DELETE ON collection_books BEGIN
+            DELETE FROM shelf_book_order WHERE scope = 'collection:' || OLD.collection_id AND book_id = OLD.book_id;
+        END;
+    """),
 )
 
 

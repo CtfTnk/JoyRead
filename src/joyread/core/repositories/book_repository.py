@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.core.models.shelf_order import ShelfOrder
+
 from typing import Protocol
 
 from joyread.core.models.book import Book
@@ -13,6 +15,10 @@ from joyread.core.reader.models import ReaderProgress, ReaderSettings
 
 
 class BookRepository(Protocol):
+    def list_shelf_orders(self) -> dict[str, ShelfOrder]: ...
+
+    def save_shelf_order(self, state: ShelfOrder) -> None: ...
+
     def list_books(self) -> list[Book]:
         ...
 

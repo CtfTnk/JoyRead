@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.core.models.shelf_order import ShelfOrder
+
 import logging
 
 from joyread.core.models.book import Book
@@ -26,6 +28,12 @@ class LibraryService:
     def __init__(self, book_repository: BookRepository) -> None:
         self._book_repository = book_repository
 
+    def list_shelf_orders(self) -> dict[str, ShelfOrder]:
+        return self._book_repository.list_shelf_orders()
+
+    def save_shelf_order(self, state: ShelfOrder) -> None:
+        self._book_repository.save_shelf_order(state)
+
     def list_books(self) -> list[Book]:
         books = self._book_repository.list_books()
         logger.debug("LibraryService.list_books count=%d", len(books))
@@ -48,17 +56,21 @@ class LibraryService:
 
     def set_favourite(self, book_uuid: str, is_favourite: bool) -> None:
         self._book_repository.set_favourite(book_uuid, is_favourite)
+        self._book_repository.list_shelf_orders()
 
     def set_favourites(self, book_uuids: tuple[str, ...], is_favourite: bool) -> None:
         for book_uuid in book_uuids:
-            self.set_favourite(book_uuid, is_favourite)
+            self._book_repository.set_favourite(book_uuid, is_favourite)
+        self._book_repository.list_shelf_orders()
 
     def set_book_hidden(self, book_uuid: str, hidden: bool) -> None:
         self._book_repository.set_book_hidden(book_uuid, hidden)
+        self._book_repository.list_shelf_orders()
 
     def set_books_hidden(self, book_uuids: tuple[str, ...], hidden: bool) -> None:
         for book_uuid in book_uuids:
-            self.set_book_hidden(book_uuid, hidden)
+            self._book_repository.set_book_hidden(book_uuid, hidden)
+        self._book_repository.list_shelf_orders()
 
     def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
         self._book_repository.set_collection_hidable(collection_uuid, hidable)
@@ -109,6 +121,7 @@ class LibraryService:
     def add_books_to_collection(self, book_uuids: tuple[str, ...], collection_uuid: str) -> None:
         for book_uuid in book_uuids:
             self._book_repository.add_book_to_collection(book_uuid, collection_uuid)
+        self._book_repository.list_shelf_orders()
 
     def remove_books_from_collection(self, book_uuids: tuple[str, ...], collection_uuid: str) -> None:
         for book_uuid in book_uuids:

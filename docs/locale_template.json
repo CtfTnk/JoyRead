@@ -277,7 +277,10 @@
   "sort": {
     "add_time": "Add Time",
     "title": "Title",
-    "author": "Author"
+    "author": "Author",
+    "custom": "Custom",
+    "save_failed": "Could not save the order. The saved order has been restored.\n\n{detail}",
+    "dialog_title": "Custom Order"
   },
   "toolbar": {
     "filter_tooltip": "Filter by file type",

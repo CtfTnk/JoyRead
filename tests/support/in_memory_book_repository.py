@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.core.models.shelf_order import ShelfOrder
+
 from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +27,7 @@ class InMemoryBookRepository:
     )
 
     def __init__(self, books: list[Book] | None = None, collections: list[Collection] | None = None) -> None:
+        self._shelf_orders: dict[str, ShelfOrder] = {}
         self._collections = collections if collections is not None else [
             Collection(
                 uuid="collection-a",
@@ -38,6 +41,12 @@ class InMemoryBookRepository:
         self._progress: dict[tuple[str, str], ReaderProgress] = {}
         self._reader_settings: dict[tuple[str, str], ReaderSettings] = {}
         self._bookmarks: dict[tuple[str, str], list[Bookmark]] = {}
+
+    def list_shelf_orders(self) -> dict[str, ShelfOrder]:
+        return dict(self._shelf_orders)
+
+    def save_shelf_order(self, state: ShelfOrder) -> None:
+        self._shelf_orders[state.scope] = state
 
     def list_books(self) -> list[Book]:
         return list(self._books)

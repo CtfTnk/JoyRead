@@ -4,6 +4,23 @@ from __future__ import annotations
 
 
 class Theme:
+    # Bookshelf selection and manual-reorder presentation
+    shelf_drag_scale = 0.40
+    shelf_drag_opacity = 0.65
+    shelf_drag_offset = 5
+    shelf_drag_angles = (0, -6, 6)
+    shelf_drag_stack_offset = 9
+    shelf_drag_badge_diameter = 28
+    shelf_drag_badge_font_size = 14
+    shelf_drag_blur_radius = 4.0
+    shelf_drag_placeholder_opacity = 0.25
+    shelf_drag_animation_ms = 140
+    shelf_drag_scroll_max_speed = 120.0
+    shelf_drag_scroll_edge_ratio = 0.15
+    shelf_drag_scroll_interval_ms = 16
+    shelf_drag_wheel_pause_ms = 300
+    shelf_selection_fill_alpha = 45
+
     # Typography
     font_files = (
         "NotoSansSC-Regular.otf",
@@ -668,9 +685,11 @@ class Theme:
     drop_confirm_hold_ms = 1400
 
     drop_scrim_fade_ms = 160
+    drop_scrim_confirm_transition_ms = 180
     drop_zone_transition_ms = 140
     # Qt has no backdrop-filter. The overlay blurs one snapshot of what is
-    # underneath instead of the live widget; these are the design's CSS radii.
+    # underneath instead of the live widget; radii are logical pixels and the
+    # shared blur helper scales them for the snapshot device pixel ratio.
     drop_scrim_blur_radius = 3.0
     drop_scrim_blur_radius_confirming = 4.0
 

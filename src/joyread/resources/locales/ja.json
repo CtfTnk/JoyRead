@@ -312,7 +312,10 @@
   "sort": {
     "add_time": "追加日時",
     "title": "タイトル",
-    "author": "著者"
+    "author": "著者",
+    "custom": "カスタム",
+    "save_failed": "順序を保存できませんでした。保存済みの順序に戻しました。\n\n{detail}",
+    "dialog_title": "カスタム順序"
   },
   "toolbar": {
     "filter_tooltip": "ファイルタイプでフィルター",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.core.models.shelf_order import ShelfOrder
+
 import logging
 import sqlite3
 from dataclasses import dataclass
@@ -120,6 +122,14 @@ class SqliteBookRepository(BookRepository):
         self._resolver = resolver or _resolver_from_database(database)
         self._managed_books_root = managed_books_root.resolve() if managed_books_root is not None else None
         self._thumbnails_root = thumbnails_root.resolve() if thumbnails_root is not None else None
+
+    def list_shelf_orders(self) -> dict[str, ShelfOrder]:
+        from joyread.core.repositories.shelf_order_sql import list_shelf_orders
+        return self._database.execute(list_shelf_orders, DatabasePriority.HIGH)
+
+    def save_shelf_order(self, state: ShelfOrder) -> None:
+        from joyread.core.repositories.shelf_order_sql import save_shelf_order
+        self._database.execute(lambda connection: save_shelf_order(connection, state), DatabasePriority.NORMAL)
 
     def list_books(self) -> list[Book]:
         # State refresh runs only on the user-action ``get_book`` path

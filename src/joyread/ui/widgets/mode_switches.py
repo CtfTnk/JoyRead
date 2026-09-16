@@ -52,8 +52,10 @@ class FigmaSwitchOptionButton(QToolButton):
 
         is_selected = self.isChecked()
         if not self.isEnabled():
-            background = QColor(Theme.color_button_edge)
-            draw_border = is_selected
+            # Retain the chosen value, but show neither option as selected
+            # while the switch is unavailable (for example in Custom sorting).
+            background = QColor(Theme.color_switch_background)
+            draw_border = False
         elif is_selected:
             background = QColor(Theme.color_window)
             draw_border = True

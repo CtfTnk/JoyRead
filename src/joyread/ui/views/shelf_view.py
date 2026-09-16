@@ -14,6 +14,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, ViewMode
 from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
+from joyread.ui.views.shelf_gestures import ShelfGestureController
 from joyread.ui.widgets.book_grid import BookGridWidget
 from joyread.ui.widgets.book_list import BookListWidget
 from joyread.ui.widgets.book_detail import BookDetailPanel
@@ -142,12 +143,18 @@ class ShelfView(QWidget):
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._escape_shortcut.activated.connect(self._viewmodel.hide_detail)
 
+        self.gestures = ShelfGestureController(self, viewmodel, (self.grid, self.list_view), resources)
+        self._viewmodel.sort_failed.connect(self._show_sort_error)
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
         self._viewmodel.detail_thumbnail_source_ready.connect(self.detail_panel.set_thumbnail_page_count)
 
+    def _show_sort_error(self, message: str) -> None:
+        self.info_requested.emit(t("sort.dialog_title"), message)
+
     def render(self) -> None:
+        self.gestures.synchronize()
         self.toolbar.set_title(_localized_page_title(self._viewmodel))
         self.toolbar.set_filter(self._viewmodel.file_filter.value)
         self.toolbar.set_tag_filter_active(self._viewmodel.tag_filter_active)
@@ -184,6 +191,7 @@ class ShelfView(QWidget):
         else:
             self.list_view.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.list_view)
+        self.gestures.bind_controls()
         self._sync_cover_requests(books, cover_paths)
         self._render_detail_panel()
 

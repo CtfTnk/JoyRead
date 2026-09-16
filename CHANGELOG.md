@@ -5,6 +5,29 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Share a downsampled Pillow Gaussian approximation between the file-drop
+  background and book-card/list-row drag placeholders,
+  with logical-pixel radii that remain consistent on HiDPI screens.
+- Cache the normal and confirming blur states once per snapshot; painting,
+  hover, re-entry, and fade-out do not rerun image filtering.
+- Smoothly blend the backdrop and confirmation scrim without exposing the sharp
+  shelf midway through the transition. Preserve opacity on an early drop and
+  freeze the current mix when dismissing.
+
+### Library
+
+- Add Custom sorting with independent saved order and sort preferences for All,
+  Favourites, Hidden Space, and each collection. Recent keeps reading-time order.
+- Add rectangle selection and single/multiple book dragging in both grid and
+  list views, with a cached card-stack preview, one insertion placeholder,
+  scrolling, and cancellation without changing saved order.
+- Save order atomically in SQLite migration 14; retain legacy sort defaults,
+  prepend newly added members, and restore the committed order if saving fails.
+- Translate the new sorting controls and failure message into English, Chinese,
+  and Japanese. Native Windows/Linux gesture validation remains pending.
+
 ### Performance
 
 - Reuse bookshelf cards and list rows when sorting or changing search results;

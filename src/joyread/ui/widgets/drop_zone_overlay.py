@@ -44,6 +44,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QColor,
     QFont,
+    QImage,
     QPainter,
     QPainterPath,
     QPaintEvent,
@@ -55,6 +56,10 @@ from PySide6.QtWidgets import QWidget
 from joyread.app.launch.intent import DropPayload, ReadUnavailable, classify_drop_paths
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
+from joyread.infrastructure.resources.pixmaps import (
+    blurred_pixmap as _blurred,
+    downsample_for_blur as _downsample,
+)
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.icon_paint import tinted_pixmap
 
@@ -101,6 +106,9 @@ class DropZoneOverlay(QWidget):
         self._confirm_count = 0
         self._snapshot: QPixmap | None = None
         self._backdrop: QPixmap | None = None
+        self._backdrop_previous: QPixmap | None = None
+        self._backdrop_small: QImage | None = None
+        self._backdrop_cache: dict[bool, QPixmap] = {}
         self._content_area: QWidget | None = None
 
         self._read_glyph = tinted_pixmap(
@@ -145,6 +153,16 @@ class DropZoneOverlay(QWidget):
         self._fade.valueChanged.connect(self._handle_fade_value)
         self._fade.finished.connect(self._handle_fade_finished)
         self._opacity = 0.0
+
+        # The confirm state deepens the scrim and the blur on top of the drag's
+        # own. Both are drawn from this progress, so the deeper state eases in
+        # instead of snapping on the frame the drop commits.
+        self._confirm_progress = 0.0
+        self._confirm_animation = QVariantAnimation(self)
+        self._confirm_animation.setDuration(Theme.drop_scrim_confirm_transition_ms)
+        self._confirm_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._confirm_animation.valueChanged.connect(self._handle_confirm_value)
+        self._confirm_animation.finished.connect(self._handle_confirm_finished)
 
         self._confirm_timer = QTimer(self)
         self._confirm_timer.setSingleShot(True)
@@ -222,8 +240,11 @@ class DropZoneOverlay(QWidget):
         if not payload.can_import:
             return
         self._confirm_timer.stop()
+        self._confirm_animation.stop()
         self._confirming = False
+        self._confirm_progress = 0.0
         self._confirm_count = 0
+        self._backdrop_previous = None
         self._payload = payload
         self._active = True
         self._hover_zone = None
@@ -246,6 +267,7 @@ class DropZoneOverlay(QWidget):
         """
 
         self._confirm_timer.stop()
+        self._confirm_animation.stop()  # Freeze the visible mix during dismissal.
         self._active = False
         self._hover_zone = None
         self._animate_to(0.0)
@@ -258,16 +280,24 @@ class DropZoneOverlay(QWidget):
         announcing it would be talking about something already on screen.
         """
 
-        self._confirming = True
         self._confirm_count = max(1, count)
         # The drop is spent: nothing else may commit against this payload.
         self._active = False
         self._hover_zone = None
-        # The design deepens both the scrim and the blur on confirm. Re-blurring
-        # the snapshot is why it is kept: the alternative is grabbing the panel
-        # a second time, which costs a full render for an image that has not
-        # changed.
+        # The entrance fade continues at its current opacity. Confirmation
+        # changes only the cached backdrop mix, so an early drop has no jump.
+        on_screen = self._backdrop
+        self._confirming = True
+        self._backdrop_previous = on_screen
         self._refresh_backdrop()
+        if self._backdrop_previous is self._backdrop:
+            # Nothing to cross-fade from: either there is no backdrop at all,
+            # or the copy in hand is already blurred at the deeper radius.
+            self._backdrop_previous = None
+        self._confirm_animation.stop()
+        self._confirm_animation.setStartValue(float(self._confirm_progress))
+        self._confirm_animation.setEndValue(1.0)
+        self._confirm_animation.start()
         self.update()
         self._confirm_timer.start()
 
@@ -385,7 +415,10 @@ class DropZoneOverlay(QWidget):
         source = self._content_area
         if source is None or source.width() <= 0 or source.height() <= 0:
             self._snapshot = None
+            self._backdrop_cache.clear()
+            self._backdrop_small = None
             self._backdrop = None
+            self._backdrop_previous = None
             return
         if self._snapshot is not None and self._snapshot.size() == source.size() * (
             self._snapshot.devicePixelRatio() or 1.0
@@ -396,7 +429,10 @@ class DropZoneOverlay(QWidget):
             self._refresh_backdrop()
             return
         self._snapshot = None
+        self._backdrop_cache.clear()
+        self._backdrop_small = None
         self._backdrop = None
+        self._backdrop_previous = None
         # QWidget.grab draws children too. The host points this at a sibling, so
         # the overlay is not in that subtree today -- but a later re-parenting
         # would have it photograph itself and blur its own zones into the
@@ -415,20 +451,27 @@ class DropZoneOverlay(QWidget):
         if grabbed.isNull():
             return
         self._snapshot = grabbed
+        self._backdrop_small = _downsample(grabbed)
         self._refresh_backdrop()
 
     def _refresh_backdrop(self) -> None:
-        """Re-blur the held snapshot at the radius the current state wants."""
-
+        """Prepare the two immutable blur states once per captured image."""
         if self._snapshot is None:
             self._backdrop = None
+            self._backdrop_previous = None
             return
-        radius = (
-            Theme.drop_scrim_blur_radius_confirming
-            if self._confirming
-            else Theme.drop_scrim_blur_radius
-        )
-        self._backdrop = _blurred(self._snapshot, radius)
+        if not self._backdrop_cache:
+            for confirming, radius in (
+                (False, Theme.drop_scrim_blur_radius),
+                (True, Theme.drop_scrim_blur_radius_confirming),
+            ):
+                self._backdrop_cache[confirming] = _blurred(
+                    self._snapshot, radius, self._backdrop_small)
+        self._backdrop = self._backdrop_cache[self._confirming]
+        # Resizing invalidates both cached images. Resume the same mix using
+        # the replacement snapshot rather than flashing the final blur state.
+        if self._confirming and self._confirm_progress < 1.0:
+            self._backdrop_previous = self._backdrop_cache[False]
 
     # ------------------------------------------------------------------
     # Fade
@@ -449,10 +492,23 @@ class DropZoneOverlay(QWidget):
             return
         # Now that nothing is on screen, it is safe to forget what was.
         self._snapshot = None
+        self._backdrop_cache.clear()
+        self._backdrop_small = None
         self._backdrop = None
+        self._backdrop_previous = None
+        self._confirm_animation.stop()
+        self._confirm_progress = 0.0
         self._confirming = False
         self._payload = DropPayload()
         self.hide()
+
+    def _handle_confirm_value(self, value: object) -> None:
+        self._confirm_progress = float(value)  # type: ignore[arg-type]
+        self.update()
+
+    def _handle_confirm_finished(self) -> None:
+        # Keep the cache for a re-entry; release all images when the fade ends.
+        self._backdrop_previous = None
 
     # ------------------------------------------------------------------
     # Painting
@@ -468,18 +524,35 @@ class DropZoneOverlay(QWidget):
         # The overlay runs to the window's bottom edge, which is rounded. A
         # square scrim there paints over the corner and squares off the window.
         outline = _bottom_rounded_path(self.rect(), Theme.window_corner_radius)
-        if self._backdrop is not None:
+        progress = self._confirm_progress
+        backdrop = self._backdrop
+        if backdrop is not None:
             painter.setClipPath(outline)
-            painter.drawPixmap(self.rect(), self._backdrop)
+            if self._backdrop_previous is not None and progress < 1.0:
+                # SourceOver is not additive: two half-opacity draws reveal
+                # 25% of the sharp shelf. Compensate the first draw so the
+                # final weights are opacity*(1-progress), opacity*progress,
+                # and 1-opacity for the underlying shelf, throughout the fade.
+                top_alpha = self._opacity * progress
+                previous_alpha = self._opacity * (1.0 - progress) / (1.0 - top_alpha)
+                painter.setOpacity(previous_alpha)
+                painter.drawPixmap(self.rect(), self._backdrop_previous)
+                painter.setOpacity(self._opacity * progress)
+            else:
+                painter.setOpacity(self._opacity)
+            painter.drawPixmap(self.rect(), backdrop)
+            painter.setOpacity(self._opacity)
             painter.setClipping(False)
-        scrim = (
-            Theme.color_drop_scrim_confirming_rgba
-            if self._confirming
-            else Theme.color_drop_scrim_rgba
-        )
         # fillPath rather than fillRect: clipping is one-bit, so the scrim needs
         # to draw its own antialiased curve or the corner comes out stepped.
-        painter.fillPath(outline, QColor(*scrim))
+        painter.fillPath(
+            outline,
+            _blend(
+                Theme.color_drop_scrim_rgba,
+                Theme.color_drop_scrim_confirming_rgba,
+                progress,
+            ),
+        )
 
         if self._confirming:
             self._paint_confirmation(painter)
@@ -727,32 +800,6 @@ def _draw_centered_pixmap(painter: QPainter, within: QRectF, pixmap: QPixmap) ->
         pixmap,
         QRectF(pixmap.rect()),
     )
-
-
-def _blurred(source: QPixmap, radius: float) -> QPixmap:
-    """Approximate a Gaussian blur by downsampling and scaling back up.
-
-    ``QGraphicsBlurEffect`` cannot be applied to a bare pixmap without staging a
-    ``QGraphicsScene`` around it. A smooth round trip through a smaller pixmap
-    reads the same behind a scrim at these radii and is a fraction of the code.
-    """
-
-    if radius <= 0 or source.isNull():
-        return source
-    shrink = max(1, int(radius * 2))
-    small = source.scaled(
-        max(1, source.width() // shrink),
-        max(1, source.height() // shrink),
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    blurred = small.scaled(
-        source.size(),
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
-    blurred.setDevicePixelRatio(source.devicePixelRatio())
-    return blurred
 
 
 def _count_text(count: int) -> str:

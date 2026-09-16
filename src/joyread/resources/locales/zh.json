@@ -312,7 +312,10 @@
   "sort": {
     "add_time": "添加时间",
     "title": "书名",
-    "author": "作者"
+    "author": "作者",
+    "custom": "自定义",
+    "save_failed": "无法保存排序，已恢复已保存的顺序。\n\n{detail}",
+    "dialog_title": "自定义排序"
   },
   "toolbar": {
     "filter_tooltip": "按文件类型筛选",

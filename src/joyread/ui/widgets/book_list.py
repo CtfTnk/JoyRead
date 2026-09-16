@@ -40,6 +40,8 @@ class BookListWidget(QScrollArea):
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._reorder_placeholder = None
+        self._reorder_moving: set[str] = set()
         self._resources = resources
         self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
@@ -66,6 +68,37 @@ class BookListWidget(QScrollArea):
         self._layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.setWidget(self._content)
         self._scroll_handle = AutoHideScrollHandle(self)
+
+    @property
+    def book_controls(self):
+        return self._rows
+
+    def show_reorder_preview(self, moving: tuple[str, ...], index: int, placeholder: QWidget) -> None:
+        self._reorder_placeholder = placeholder
+        self._reorder_moving = set(moving)
+        widgets = [self._rows[key] for key in self._book_ids if key not in self._reorder_moving]
+        widgets.insert(index, placeholder)
+        for key in moving:
+            self._rows[key].hide()
+        self._arrange_preview_widgets(widgets)
+        placeholder.show()
+
+    def clear_reorder_preview(self) -> None:
+        if self._reorder_placeholder is None:
+            return
+        self._reorder_placeholder = None
+        self._reorder_moving.clear()
+        self._arrange_preview_widgets([self._rows[key] for key in self._book_ids])
+        for widget in self._rows.values():
+            widget.show()
+
+    def _arrange_preview_widgets(self, widgets: list[QWidget]) -> None:
+        while self._layout.count():
+            self._layout.takeAt(self._layout.count() - 1)
+        for widget in widgets:
+            self._layout.addWidget(widget)
+        self._layout.addStretch(1)
+        self._layout.activate()
 
     def set_books(
         self,

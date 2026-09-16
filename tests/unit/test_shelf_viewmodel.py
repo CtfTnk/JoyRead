@@ -570,8 +570,11 @@ def test_shelf_preferences_round_trip_through_settings_store(tmp_path: Path) -> 
     vm.set_view_mode(ViewMode.GRID.value)
     persisted = store.load()
 
-    assert persisted.shelf_sort_field == SortField.TITLE.value
-    assert persisted.shelf_sort_ascending is False
+    # Sort preference now belongs to the shelf in the repository. Legacy
+    # settings remain the defaults for shelves without an explicit preference.
+    assert persisted.shelf_sort_field == SortField.AUTHOR.value
+    assert persisted.shelf_sort_ascending is True
+    assert vm._library_service.list_shelf_orders()["all"].sort_field == SortField.TITLE.value
     assert persisted.shelf_file_filter == FileFilter.CBZ.value
     assert persisted.shelf_view_mode == ViewMode.GRID.value
 

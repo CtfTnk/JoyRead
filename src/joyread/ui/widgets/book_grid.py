@@ -6,7 +6,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QLayout, QLayoutItem, QScrollArea, QWidget
+from PySide6.QtWidgets import QLayout, QLayoutItem, QScrollArea, QWidget, QWidgetItem
 
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -24,6 +24,8 @@ class BookGridWidget(QScrollArea):
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._reorder_placeholder = None
+        self._reorder_moving: set[str] = set()
         self._resources = resources
         self.setProperty("class", "ShelfScrollArea")
         self.setWidgetResizable(True)
@@ -56,6 +58,34 @@ class BookGridWidget(QScrollArea):
             if isinstance(mouse_event, QMouseEvent) and mouse_event.button() == Qt.MouseButton.LeftButton:
                 self.blank_clicked.emit()
         return super().eventFilter(watched, event)
+
+    @property
+    def book_controls(self):
+        return self._cards
+
+    def show_reorder_preview(self, moving: tuple[str, ...], index: int, placeholder: QWidget) -> None:
+        self._reorder_placeholder = placeholder
+        self._reorder_moving = set(moving)
+        widgets = [self._cards[key] for key in self._book_ids if key not in self._reorder_moving]
+        widgets.insert(index, placeholder)
+        for key in moving:
+            self._cards[key].hide()
+        self._arrange_preview_widgets(widgets)
+        placeholder.show()
+
+    def clear_reorder_preview(self) -> None:
+        if self._reorder_placeholder is None:
+            return
+        self._reorder_placeholder = None
+        self._reorder_moving.clear()
+        self._arrange_preview_widgets([self._cards[key] for key in self._book_ids])
+        for widget in self._cards.values():
+            widget.show()
+
+    def _arrange_preview_widgets(self, widgets: list[QWidget]) -> None:
+        self._layout.set_widget_order(widgets)
+        self._content.updateGeometry()
+        self._layout.activate()
 
     def set_books(
         self,
@@ -153,6 +183,10 @@ class JustifiedBookGridLayout(QLayout):
 
     def set_widget_order(self, widgets: list[QWidget]) -> None:
         items = {item.widget(): item for item in self._items}
+        for widget in widgets:
+            if widget not in items:
+                self.addChildWidget(widget)
+                items[widget] = QWidgetItem(widget)
         self._items = [items[widget] for widget in widgets]
         self.invalidate()
 

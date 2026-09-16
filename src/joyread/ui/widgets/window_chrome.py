@@ -125,12 +125,14 @@ class TitleBarWidget(QWidget):
     def set_view_mode(self, mode: str) -> None:
         self._list_mode_switch.set_value(mode)
 
-    def set_sort(self, field: str, ascending: bool) -> None:
+    def set_sort(self, field: str, ascending: bool, *, scope: str = "all", saving: bool = False) -> None:
         sort_field = _sort_field_from_value(field)
         self._current_sort_field = sort_field
         self._sort_dropdown.set_value(_sort_label(sort_field))
         self._sort_ascending = ascending
         self._sort_mode_switch.set_ascending(ascending)
+        self._sort_mode_switch.setEnabled(not saving and scope != "recent" and sort_field != SortField.CUSTOM)
+        self._sort_dropdown.setEnabled(not saving and scope != "recent")
 
     def refresh_sort_labels(self) -> None:
         """Rebuild the sort dropdown labels after a locale change."""

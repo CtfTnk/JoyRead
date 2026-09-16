@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.ui.viewmodels.shelf_sorting import ShelfSorting
+
 import logging
 from collections.abc import Iterable
 from dataclasses import replace
@@ -40,6 +42,7 @@ class ViewMode(StrEnum):
 
 
 class SortField(StrEnum):
+    CUSTOM = "Custom"
     ADD_TIME = "Add Time"
     TITLE = "Title"
     AUTHOR = "Author"
@@ -63,7 +66,7 @@ class ShelfKey(StrEnum):
     HIDDEN = "hidden"
 
 
-class ShelfViewModel:
+class ShelfViewModel(ShelfSorting):
     """ViewModel for the bookshelf grid/list and detail panel.
 
     Owns the shelf's UI state — the current section (All / Recent /
@@ -172,6 +175,7 @@ class ShelfViewModel:
         self._detail_pending_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
         self._detail_stream: ThumbnailStreamController | None = None
         self._rebuild_detail_stream()
+        self._init_sorting()
 
     @property
     def cover_paths(self) -> dict[str, Path]:
@@ -215,6 +219,9 @@ class ShelfViewModel:
                 key=lambda book: (book.last_read_at or datetime.min, book.title.lower()),
                 reverse=True,
             )
+        if self.sort_field == SortField.CUSTOM:
+            by_id = {book.uuid: book for book in books}
+            return [by_id[key] for key in self._manual_ids() if key in by_id]
         return sorted(books, key=self._sort_key, reverse=not self.sort_ascending)
 
     @property
@@ -249,6 +256,9 @@ class ShelfViewModel:
             self.books = self._library_service.list_books()
             self.collections = self._library_service.list_collections()
             self.languages = self._library_service.list_languages()
+            if not self.sort_saving:
+                self._shelf_orders = self._library_service.list_shelf_orders()
+                self._restore_scope_sort()
             self._refresh_search_documents()
             self._refresh_book_tag_index()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
@@ -277,6 +287,10 @@ class ShelfViewModel:
         thumbnail_service: ThumbnailService | None = None,
         tag_service: TagService | None = None,
     ) -> None:
+        self._sort_epoch += 1
+        self.sort_saving = False
+        self._shelf_orders = {}
+        self._sort_book_snapshot = None
         self._library_service = library_service
         if thumbnail_service is not None:
             self._thumbnail_service = thumbnail_service
@@ -329,18 +343,6 @@ class ShelfViewModel:
         self.search_query = query
         self.clear_selection(emit_state=False)
         self._emit_state()
-
-    def set_sort(self, field: str, ascending: bool | None = None) -> None:
-        normalized_field = SortField(field)
-        changed = normalized_field != self.sort_field
-        self.sort_field = normalized_field
-        if ascending is not None and ascending != self.sort_ascending:
-            self.sort_ascending = ascending
-            changed = True
-        if changed:
-            logger.debug("Shelf sort changed field=%s ascending=%s", self.sort_field.value, self.sort_ascending)
-            self._save_shelf_preferences()
-            self._emit_state()
 
     def set_filter(self, filter_name: str) -> None:
         normalized_filter = FileFilter(filter_name)
@@ -1377,6 +1379,9 @@ class ShelfViewModel:
         return refreshed
 
     def _emit_state(self) -> None:
+        self._prune_sort_memberships()
+        if self._sort_scope != self.current_shelf:
+            self._restore_scope_sort()
         visible_ids = {book.uuid for book in self.visible_books}
         removed = self.selected_book_ids - visible_ids
         if removed:
@@ -1390,8 +1395,6 @@ class ShelfViewModel:
         if self._settings_store is None:
             return
         self._settings_store.update(
-            shelf_sort_field=self.sort_field.value,
-            shelf_sort_ascending=self.sort_ascending,
             shelf_file_filter=self.file_filter.value,
             shelf_view_mode=self.view_mode.value,
         )

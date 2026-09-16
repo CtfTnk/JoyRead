@@ -44,6 +44,16 @@ JOYREAD_RUNTIME_DIR=/tmp/joyread-release-smoke python -m joyread.app.main
 Check initialization, import, Library recovery, CBZ/ZIP/7z/RAR/PDF,
 thumbnail scrolling, Reader close/reopen, and application restart.
 
+For the unreleased custom-sort changes, validate grid and list with a temporary
+library: Shift selection, rectangles while wheel-scrolling, group order, first/
+last insertion, outside release and return, right-button/Esc cancellation, window
+deactivation, and external file import. Reopen to check per-scope order, and
+remove/re-add a favourite/collection member to check front insertion. Qt offscreen
+checks and macOS Cocoa synthetic gesture tests have passed locally; physical
+mouse capture/release outside the application still needs desktop acceptance.
+Windows and Ubuntu native gesture checks remain pending. These changes do not
+bump the application version or publish new installers.
+
 The novel (EPUB) reader remains in the repository, under `src/joyread/novel/`,
 but is disabled for this release until it is complete. With
 `EPUB_ACCESS_ENABLED` off the spec excludes both `joyread.novel` and `lxml`
