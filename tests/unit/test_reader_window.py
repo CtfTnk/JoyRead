@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from math import ceil
 from pathlib import Path
 from types import SimpleNamespace
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -795,7 +796,8 @@ def test_reader_topic_panel_updates_interest_when_virtual_grid_scrolls(qtbot) ->
     visible, prefetch, size = interests[-1]
     assert visible[0] > 0
     assert prefetch
-    assert size == (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
+    ratio = panel.devicePixelRatioF()
+    assert size == (ceil(Theme.detail_thumbnail_width * ratio), ceil(Theme.detail_thumbnail_height * ratio))
 
     context.close()
 

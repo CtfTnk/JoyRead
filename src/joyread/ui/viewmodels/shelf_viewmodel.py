@@ -5,6 +5,7 @@ from __future__ import annotations
 from joyread.ui.viewmodels.shelf_sorting import ShelfSorting
 
 import logging
+from math import ceil
 from collections.abc import Iterable
 from dataclasses import replace
 from datetime import datetime
@@ -139,7 +140,10 @@ class ShelfViewModel(ShelfSorting):
         self._tag_service = tag_service
         self._archive_warmup_coordinator = archive_warmup_coordinator
         self._detail_warmup_client_id = f"detail-thumbnail:{id(self)}"
+        self._cover_logical_size = cover_size
         self._cover_size = cover_size
+        self._thumbnail_dpr = 1.0
+        self._cover_request_epoch = 0
         self._settings_store = settings_store
         self.books: list[Book] = []
         self.collections: list[Collection] = []
@@ -297,6 +301,7 @@ class ShelfViewModel(ShelfSorting):
         if tag_service is not None:
             self._tag_service = tag_service
         self._cover_paths.clear()
+        self._cover_request_epoch += 1
         self._pending_cover_ids.clear()
         self._refresh_book_tag_index()
         self._set_detail_book_uuid(None)
@@ -1029,44 +1034,65 @@ class ShelfViewModel(ShelfSorting):
             on_failure=lambda error, target_ids=target_ids: self._handle_delete_failure(error, target_ids),
         )
 
+    def thumbnail_render_size(self, logical_size: tuple[int, int]) -> tuple[int, int]:
+        """Physical pixels for the window's density; layout stays in logical pixels."""
+        return tuple(max(1, ceil(value * self._thumbnail_dpr)) for value in logical_size)
+
+    def set_thumbnail_device_pixel_ratio(self, ratio: float) -> bool:
+        ratio = max(1.0, float(ratio))
+        if ratio == self._thumbnail_dpr:
+            return False
+        self._thumbnail_dpr = ratio
+        if self._cover_logical_size is not None:
+            self._cover_size = self.thumbnail_render_size(self._cover_logical_size)
+        # Keep displayed images until replacements arrive. Old-density workers
+        # may finish, but cannot publish over a newer request (or library).
+        self._cover_request_epoch += 1
+        self._pending_cover_ids.clear()
+        return True
+
     def request_cover_generation_for_loaded_books(self) -> None:
         self.request_covers_for_books(book.uuid for book in self.books)
 
     def request_covers_for_books(self, book_uuids: Iterable[str]) -> None:
         if self._thumbnail_service is None or self._task_service is None or self._cover_size is None:
             return
-
+        service, size, epoch = self._thumbnail_service, self._cover_size, self._cover_request_epoch
         target_ids = set(book_uuids)
         books_by_uuid = {book.uuid: book for book in self.books}
         for book_uuid in target_ids:
             book = books_by_uuid.get(book_uuid)
             if book is None:
                 continue
-            existing = self._thumbnail_service.existing_cover_path(book, self._cover_size)
+            existing = service.existing_cover_path(book, size)
             if existing is not None:
                 self._record_cover(book.uuid, existing)
                 continue
-            if book.uuid in self._pending_cover_ids or not self._thumbnail_service.can_generate_from(book):
+            if book.uuid in self._pending_cover_ids or not service.can_generate_from(book):
                 continue
-
             self._pending_cover_ids.add(book.uuid)
             kwargs = {
-                "on_success": lambda path, book_uuid=book.uuid: self._handle_cover_result(book_uuid, path),
-                "on_failure": lambda _error, book_uuid=book.uuid: self._pending_cover_ids.discard(book_uuid),
+                "on_success": lambda path, source=book: self._finish_cover_request(source, epoch, path),
+                "on_failure": lambda _error, source=book: self._finish_cover_request(source, epoch, None),
             }
             try:
                 self._task_service.submit(
                     f"cover-{book.uuid}",
-                    lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
-                    priority=TaskPriority.LOW,
-                    **kwargs,
+                    lambda book=book: service.generate_cover(book, size),
+                    priority=TaskPriority.LOW, **kwargs,
                 )
             except TypeError:
                 self._task_service.submit(
-                    f"cover-{book.uuid}",
-                    lambda book=book: self._thumbnail_service.generate_cover(book, self._cover_size),
-                    **kwargs,
+                    f"cover-{book.uuid}", lambda book=book: service.generate_cover(book, size), **kwargs,
                 )
+
+    def _finish_cover_request(self, source: Book, epoch: int, path: Path | None) -> None:
+        if epoch == self._cover_request_epoch:
+            current = self._book_by_uuid(source.uuid)
+            if current is not None and current.cover_thumbnail_path != source.cover_thumbnail_path:
+                self._pending_cover_ids.discard(source.uuid)
+                return  # An edited cover superseded the automatic request.
+            self._handle_cover_result(source.uuid, path)
 
     def prepare_detail_thumbnail_source(self, book_uuid: str, size: tuple[int, int]) -> None:
         if (
@@ -1078,18 +1104,22 @@ class ShelfViewModel(ShelfSorting):
         normalized_size = (max(1, int(size[0])), max(1, int(size[1])))
         if self._detail_source_handle is not None and self._detail_thumbnail_size == normalized_size:
             return
-        if self._detail_source_task is not None:
+        self._detail_thumbnail_size = normalized_size
+        if self._detail_source_handle is not None:
+            self._handle_detail_source_result(
+                self._detail_load_token, book_uuid, self._detail_source_handle,
+                publish_count=False)
             return
+        if self._detail_source_task is not None:
+            return  # Its callback uses the most recently requested size.
         book = self._book_by_uuid(book_uuid)
         open_source = getattr(self._thumbnail_service, "open_thumbnail_source", None)
         if book is None or not callable(open_source) or not self._thumbnail_service.can_generate_from(book):
             self.detail_thumbnail_source_ready.emit(book_uuid, 0)
             return
         token = self._detail_load_token
-        self._detail_thumbnail_size = normalized_size
-
         def success(source: ThumbnailSourceHandle | None) -> None:
-            self._handle_detail_source_result(token, book_uuid, source, normalized_size)
+            self._handle_detail_source_result(token, book_uuid, source)
 
         try:
             self._detail_source_task = self._task_service.submit(
@@ -1455,7 +1485,8 @@ class ShelfViewModel(ShelfSorting):
         token: int,
         book_uuid: str,
         source: ThumbnailSourceHandle | None,
-        size: tuple[int, int],
+        *,
+        publish_count: bool = True,
     ) -> None:
         if token != self._detail_load_token or self.detail_book_uuid != book_uuid:
             if source is not None:
@@ -1470,6 +1501,7 @@ class ShelfViewModel(ShelfSorting):
             return
 
         thumbnail_service = self._thumbnail_service
+        size = self._detail_thumbnail_size
 
         def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
             thumbnail_service.stream_thumbnails(
@@ -1488,7 +1520,8 @@ class ShelfViewModel(ShelfSorting):
             batch_planner=planner if callable(planner) else None,
             batch_size_for=source.preferred_batch_size,
         )
-        self.detail_thumbnail_source_ready.emit(book_uuid, source.page_count)
+        if publish_count:
+            self.detail_thumbnail_source_ready.emit(book_uuid, source.page_count)
         visible, prefetch = self._detail_pending_interest
         if visible or prefetch:
             self._detail_stream.set_interest(visible, prefetch)

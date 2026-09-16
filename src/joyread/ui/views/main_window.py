@@ -1527,7 +1527,7 @@ class MainWindow(QMainWindow):
             return
         self._cover_editor_thumbnail_viewmodel.save_cover(
             crop_state,
-            (Theme.cover_width, Theme.cover_height),
+            self._context.shelf_viewmodel.thumbnail_render_size((Theme.detail_cover_width, Theme.detail_cover_height)),
         )
 
     def _handle_cover_editor_source_loaded(

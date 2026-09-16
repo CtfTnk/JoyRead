@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import platform
+import runpy
 import shutil
 import stat
 import subprocess
@@ -29,7 +30,7 @@ NOTICES_SOURCE = ROOT / "packaging" / "THIRD_PARTY_NOTICES.txt"
 APP_NAME = "JoyRead"
 PACKAGE_NAME = "joyread"
 # Rebuild the Linux package without changing the cross-platform app version.
-# APT must distinguish this Ubuntu 22.04 build from the original 1.0.2 DEB.
+# Increment this revision for a same-application-version packaging rebuild.
 PACKAGE_REVISION = 1
 INSTALL_PREFIX = Path("opt/joyread")
 DESKTOP_PATH = Path("usr/share/applications/joyread.desktop")
@@ -96,6 +97,11 @@ fi
 
 exit 0
 """
+
+
+def debian_package_version(version: str) -> str:
+    versions = runpy.run_path(str(ROOT / "packaging" / "version_info.py"))["package_versions"](version)
+    return f"{versions['debian_upstream']}-{PACKAGE_REVISION}"
 
 
 def project_version() -> str:
@@ -339,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
         stage_package(
             staging_root,
             app_dir=app_dir,
-            version=f"{version}-{PACKAGE_REVISION}",
+            version=debian_package_version(version),
             architecture=architecture,
         )
         build_deb(staging_root, destination)

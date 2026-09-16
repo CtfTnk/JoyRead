@@ -39,7 +39,7 @@ VOLUME_ICON = ROOT / "src" / "joyread" / "ui" / "resources" / "icons" / "JoyRead
 
 def app_version() -> str:
     plist = plistlib.loads((APP / "Contents" / "Info.plist").read_bytes())
-    return str(plist["CFBundleShortVersionString"])
+    return str(plist.get("JoyReadVersion", plist["CFBundleShortVersionString"]))
 
 
 def dmg_settings(workspace: Path) -> dict:

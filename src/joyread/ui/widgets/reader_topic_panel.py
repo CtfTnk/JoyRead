@@ -5,8 +5,9 @@ from __future__ import annotations
 from joyread.ui.widgets.localized_text import LocalizedLabel
 
 from enum import StrEnum
+from math import ceil
 
-from PySide6.QtCore import QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QContextMenuEvent, QIcon, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -51,6 +52,8 @@ class ReaderTopicPanel(QFrame):
         self._page_count = 0
         self._bookmarks: tuple[ReaderBookmarkItem, ...] = ()
         self._last_thumbnail_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
+        self._last_thumbnail_size: tuple[int, int] | None = None
+        self._density_window = None
         self._thumbnail_check_timer = QTimer(self)
         self._thumbnail_check_timer.setSingleShot(True)
         self._thumbnail_check_timer.timeout.connect(self._emit_thumbnail_interest)
@@ -151,7 +154,23 @@ class ReaderTopicPanel(QFrame):
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
+        window = self.window().windowHandle()
+        if window is not self._density_window:
+            if self._density_window is not None:
+                try:
+                    self._density_window.screenChanged.disconnect(self._defer_thumbnail_check)
+                except (RuntimeError, TypeError):
+                    pass  # The previous native window can already be destroyed.
+            self._density_window = window
+            if window is not None:
+                window.screenChanged.connect(self._defer_thumbnail_check)
         self._defer_thumbnail_check()
+
+    def event(self, event) -> bool:
+        result = super().event(event)
+        if event.type() == QEvent.Type.DevicePixelRatioChange and hasattr(self, "_thumbnail_check_timer"):
+            self._defer_thumbnail_check()
+        return result
 
     def hideEvent(self, event) -> None:  # type: ignore[override]
         super().hideEvent(event)
@@ -277,14 +296,17 @@ class ReaderTopicPanel(QFrame):
         viewport_rect = QRect(origin, self._thumbnails_scroll.viewport().size())
         visible, prefetch = self._thumbnail_grid.visible_and_prefetch_indices(viewport_rect, prefetch_rows=1)
         interest = (visible, prefetch)
-        if interest == self._last_thumbnail_interest:
+        ratio = max(1.0, self.devicePixelRatioF())
+        size = (ceil(Theme.detail_thumbnail_width * ratio), ceil(Theme.detail_thumbnail_height * ratio))
+        if interest == self._last_thumbnail_interest and size == self._last_thumbnail_size:
             return
         self._last_thumbnail_interest = interest
+        self._last_thumbnail_size = size
         self._thumbnail_grid.set_interest((*visible, *prefetch))
         self.thumbnail_interest_changed.emit(
             visible,
             prefetch,
-            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+            size,
         )
 
     def _release_thumbnail_interest(self) -> None:

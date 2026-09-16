@@ -202,6 +202,8 @@ class ThumbnailService:
         self._reader_session_service = reader_session_service or ReaderSessionService(archive_service)
         self._cache_service = cache_service
         self._thumbnail_renderer = thumbnail_renderer
+        self._cover_variants_lock = RLock()
+        self._cover_variants: dict[str, dict[SizeTuple, Path]] | None = None
         self._archive_limits = archive_limits or ArchiveOpenLimits(
             nested_archive_max_depth=_core_depth_limit(
                 nested_archive_max_depth,
@@ -371,7 +373,12 @@ class ThumbnailService:
             self._cache_service.cover_index.put(cache_key, str(cover_path))
             logger.debug("Cover file exists book=%s path=%s", book.uuid, cover_path)
             return cover_path
-        return None
+        # A higher-resolution generated cover also satisfies this request.
+        # Explicit/custom covers were handled above and keep their chosen crop.
+        larger = self._generated_cover_at_least(book, size)
+        if larger is not None:
+            self._cache_service.cover_index.put(cache_key, str(larger))
+        return larger
 
     def load_cover_source_page(self, book: Book, page_index: int) -> bytes | None:
         if page_index < 0 or not self.can_generate_from(book):
@@ -414,6 +421,8 @@ class ThumbnailService:
     def invalidate_file_cache(self, file_id: str) -> None:
         """Forget sessions and rendered thumbnails derived from managed content."""
 
+        with self._cover_variants_lock:
+            self._cover_variants = None
         document_cache_key = f"file:{file_id}"
         with self._session_registry_lock:
             sessions: list[ReaderImageSession] = []
@@ -458,7 +467,11 @@ class ThumbnailService:
         cover_path = self._cover_path(book, size)
         cover_path.parent.mkdir(parents=True, exist_ok=True)
         cover_path.write_bytes(rendered)
-        self._remove_stale_covers(book, keep=cover_path)
+        # Keep other density variants: an in-flight request or another window
+        # can still own their path. Book deletion clears all generated variants.
+        with self._cover_variants_lock:
+            if self._cover_variants is not None:
+                self._cover_variants.setdefault(self._safe_book_uuid(book.uuid), {})[size] = cover_path
         self._cache_service.cover_index.put(self._cover_cache_key(book, size), str(cover_path))
         logger.debug("Generate cover complete book=%s path=%s", book.uuid, cover_path)
         return cover_path
@@ -877,12 +890,18 @@ class ThumbnailService:
 
     def _fallback_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
         safe_uuid = self._safe_book_uuid(book.uuid)
-        pattern = f"{safe_uuid}-*-{size[0]}x{size[1]}.png"
+        # An unavailable source cannot be regenerated: keep the best cached
+        # image visible even when the window moves to a denser screen.
+        pattern = f"{safe_uuid}-*.png"
         candidates = list(self._covers_dir().glob(pattern))
         if not candidates:
             return None
         try:
-            return max(candidates, key=lambda path: path.stat().st_mtime)
+            def quality(path: Path):
+                match = re.search(r"-(\d+)x(\d+)\.png$", path.name)
+                area = int(match[1]) * int(match[2]) if match else 0
+                return area, path.stat().st_mtime
+            return max(candidates, key=quality)
         except OSError as exc:
             logger.debug(
                 "thumbnail fallback stat failed book=%s, picking first candidate: %s",
@@ -891,11 +910,22 @@ class ThumbnailService:
             )
             return candidates[0]
 
-    def _remove_stale_covers(self, book: Book, keep: Path) -> None:
-        safe_uuid = self._safe_book_uuid(book.uuid)
-        for path in self._covers_dir().glob(f"{safe_uuid}-generated-*.png"):
-            if path != keep:
-                path.unlink(missing_ok=True)
+    def _generated_cover_at_least(self, book: Book, size: SizeTuple) -> Path | None:
+        # Index filenames once, not one directory scan per book when a whole
+        # shelf changes density. This holds paths/dimensions, never image data.
+        with self._cover_variants_lock:
+            if self._cover_variants is None:
+                variants: dict[str, dict[SizeTuple, Path]] = {}
+                for path in self._covers_dir().glob("*-generated-*.png"):
+                    match = re.fullmatch(r"(.+)-generated-(\d+)x(\d+)\.png", path.name)
+                    if match:
+                        dimensions = (int(match[2]), int(match[3]))
+                        variants.setdefault(match[1], {})[dimensions] = path
+                self._cover_variants = variants
+            entries = self._cover_variants.get(self._safe_book_uuid(book.uuid), {})
+            candidates = [(width * height, path) for (width, height), path in entries.items()
+                          if width >= size[0] and height >= size[1] and path.exists()]
+        return min(candidates, key=lambda item: item[0])[1] if candidates else None
 
     def _cover_cache_key(self, book: Book, size: SizeTuple) -> str:
         return f"cover:{book.uuid}:{size[0]}x{size[1]}"

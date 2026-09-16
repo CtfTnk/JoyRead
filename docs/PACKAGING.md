@@ -1,6 +1,7 @@
 # JoyRead Packaging Guide
 
-This guide builds the production JoyRead v1.0.2 artifacts with PyInstaller.
+This guide currently prepares JoyRead **1.1.0rc1**, a prerelease candidate for
+1.1.0, with PyInstaller. Stable downloads remain at 1.0.2 until publication.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in
@@ -44,15 +45,23 @@ JOYREAD_RUNTIME_DIR=/tmp/joyread-release-smoke python -m joyread.app.main
 Check initialization, import, Library recovery, CBZ/ZIP/7z/RAR/PDF,
 thumbnail scrolling, Reader close/reopen, and application restart.
 
-For the unreleased custom-sort changes, validate grid and list with a temporary
+For thumbnail HiDPI acceptance, check 100%, 125%, 150%, and 200% scaling and move
+the Library between monitors with different scale factors. Covers and Detail
+thumbnails should sharpen after loading while card geometry, selection and
+Detail scroll position stay unchanged. Verify custom cover edits, cached covers
+with missing source files, and switching screens during thumbnail generation.
+Repeat for the Reader Topic thumbnail panel, including a panel hidden while
+switching screens and reopened afterwards; preserve the reader's page position.
+Automated scale simulation does not replace physical multi-monitor acceptance.
+
+For the 1.1.0rc1 custom-sort changes, validate grid and list with a temporary
 library: Shift selection, rectangles while wheel-scrolling, group order, first/
 last insertion, outside release and return, right-button/Esc cancellation, window
 deactivation, and external file import. Reopen to check per-scope order, and
 remove/re-add a favourite/collection member to check front insertion. Qt offscreen
 checks and macOS Cocoa synthetic gesture tests have passed locally; physical
 mouse capture/release outside the application still needs desktop acceptance.
-Windows and Ubuntu native gesture checks remain pending. These changes do not
-bump the application version or publish new installers.
+Windows and Ubuntu native gesture checks remain pending. The candidate has not been published; native desktop acceptance remains pending.
 
 The novel (EPUB) reader remains in the repository, under `src/joyread/novel/`,
 but is disabled for this release until it is complete. With
@@ -635,3 +644,29 @@ retrying a timed-out close in addition to the real storage-reset regression.
 The Windows spec retains the installed libffi DLL basename (`ffi.dll`,
 `ffi-*.dll`, or `libffi*.dll`) so both defaults-based Conda and conda-forge /
 Miniforge environments are supported. SQLite's `sqlite3.dll` remains required.
+
+
+## 1.1.0rc1 prerelease preparation
+
+- App/Python version and artifact filenames: `1.1.0rc1`.
+- Proposed GitHub tag: `v1.1.0rc1`; mark the release **Prerelease**, not Latest.
+- macOS short version: `1.1.0`; build version: `1.1.0fc1`. `JoyReadVersion`
+  retains `1.1.0rc1` for DMG naming and provenance.
+- Debian package version: `1.1.0~rc1-1`, which sorts before `1.1.0-1`.
+- Windows AppVersion: `1.1.0rc1`; numeric file version: `1.1.0.0`.
+- Version transformations live in `packaging/version_info.py`; project version
+  still comes from `pyproject.toml`, with the runtime constant checked by tests.
+- Scope: custom shelf order/selection/dragging, incremental shelf presentation,
+  cached Gaussian-style blur, disabled-switch styling and HiDPI thumbnails.
+- Database schema advances to 14. Back up the library before prerelease testing;
+  rollback must restore that backup, since 1.0.2 does not expose saved custom order.
+- Run Build packages on the exact committed candidate on macOS arm64, Windows
+  x64 and Ubuntu amd64/arm64. Keep installer checksums and source metadata.
+- Validate real mouse capture, outside release/cancel, imported files, migration,
+  per-shelf ordering, fractional scaling, cross-monitor moves, upgrade/uninstall.
+- Source tests and macOS synthetic checks do not establish Windows/Linux desktop
+  acceptance. Record each actual build/test result in the candidate release notes.
+- Existing README download links remain stable until candidate assets exist.
+
+Version rules: [Apple bundle keys](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html),
+[Debian version ordering](https://www.debian.org/doc/debian-policy/ch-controlfields.html#version).

@@ -150,6 +150,16 @@ Switching shelves, sorting, or view mode, deactivating the window, or a backgrou
 membership/order change cancels the gesture. Saving briefly disables further
 reordering; if it fails, JoyRead restores the last saved order and shows an error.
 
+### Display scaling
+
+Book covers and thumbnails in Detail and the Reader's Topic panel adapt to
+display scaling automatically.
+Moving JoyRead between screens refreshes their resolution without changing card
+sizes or selection. Existing custom cover images keep their chosen crop; if an
+older custom cover looks soft on a high-density screen, reopen the cover editor
+from the original source and save it again on that screen. Missing source files
+continue to use their available cached covers.
+
 ## Collections
 
 Collections are manual groupings — a series, a run, a to-read pile. Create one

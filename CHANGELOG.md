@@ -5,6 +5,21 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.1.0rc1] — 2026-09-17
+
+Release candidate for 1.1.0; not the stable release.
+[Release notes — English / 中文 / 日本語](docs/releases/v1.1.0rc1.md)
+
+### HiDPI
+
+- Generate bookshelf covers and Detail/Reader Topic thumbnails at the window's device
+  pixel ratio, including fractional scaling, while preserving logical layout.
+- Refresh image requests when moving between displays; retain current images
+  until replacements arrive and ignore results from older density requests.
+- Reuse sufficiently large generated covers and retain cached density variants.
+  Existing custom crops stay authoritative; newly saved crops use the current
+  density and the Detail cover's resolution.
+
 ### Bug Fixes
 
 - Share a downsampled Pillow Gaussian approximation between the file-drop

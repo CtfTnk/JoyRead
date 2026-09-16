@@ -164,6 +164,7 @@ class ReaderViewModel:
         thumbnail_client = thumbnail_cache_client or SharedThumbnailCache(64 * 1024 * 1024).issue_client(
             "reader-topic-test"
         )
+        self._topic_thumbnail_size: tuple[int, int] | None = None
         self._topic_thumbnail_stream = ThumbnailStreamController(
             task_service,
             thumbnail_client,
@@ -481,7 +482,8 @@ class ReaderViewModel:
         if self._document is None or self._page_count <= 0:
             self._topic_thumbnail_stream.release_interest()
             return
-        if self._topic_thumbnail_stream.source_id is None:
+        size = (max(1, int(size[0])), max(1, int(size[1])))
+        if self._topic_thumbnail_stream.source_id is None or size != self._topic_thumbnail_size:
             self._configure_topic_thumbnail_stream(self._document, size)
         self._topic_thumbnail_stream.set_interest(visible_indices, prefetch_indices)
 
@@ -1186,6 +1188,7 @@ class ReaderViewModel:
                     continue
                 emit_item(ThumbnailStreamItem(page_index, rendered))
 
+        self._topic_thumbnail_size = size
         self._topic_thumbnail_stream.set_source(
             source_id,
             document.page_count,

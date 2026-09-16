@@ -17,6 +17,7 @@ PACKAGE_ROOT = ROOT / "src" / "joyread"
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 APP_NAME = "JoyRead"
 VERSION = str(PROJECT["version"])
+VERSION_INFO = runpy.run_path(str(ROOT / "packaging" / "version_info.py"))["package_versions"](VERSION)
 # Reverse-DNS under the project's GitHub namespace. macOS caches UTI
 # registrations by identifier, so changing these after a public release
 # strands the old ones in Launch Services -- treat them as frozen.
@@ -338,8 +339,9 @@ if sys.platform == "darwin":
         bundle_identifier=BUNDLE_ID,
         info_plist={
             "CFBundleDisplayName": APP_NAME,
-            "CFBundleShortVersionString": VERSION,
-            "CFBundleVersion": VERSION,
+            "CFBundleShortVersionString": VERSION_INFO["mac_short"],
+            "CFBundleVersion": VERSION_INFO["mac_build"],
+            "JoyReadVersion": VERSION,
             "CFBundleDocumentTypes": MACOS_DOCUMENT_TYPES,
             "LSMinimumSystemVersion": "13.0",
             "LSSupportsOpeningDocumentsInPlace": True,

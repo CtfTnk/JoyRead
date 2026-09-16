@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
@@ -62,6 +62,10 @@ class ShelfView(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
         self._resources = resources
+        self._density_window = None
+        self._density_timer = QTimer(self)
+        self._density_timer.setSingleShot(True)
+        self._density_timer.timeout.connect(self._sync_display_density)
         self._cover_request_books: dict[str, Book] = {}
         self._known_cover_paths: dict[str, Path] = {}
         self._pending_cover_requests: set[str] = set()
@@ -149,6 +153,34 @@ class ShelfView(QWidget):
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
         self._viewmodel.detail_thumbnail_source_ready.connect(self.detail_panel.set_thumbnail_page_count)
+
+    def event(self, event) -> bool:
+        result = super().event(event)
+        if event.type() in (QEvent.Type.Show, QEvent.Type.DevicePixelRatioChange):
+            if hasattr(self, "_density_timer"):
+                self._density_timer.start(0)
+        return result
+
+    def _schedule_density_sync(self, *_args) -> None:
+        self._density_timer.start(0)
+
+    def _sync_display_density(self) -> None:
+        window = self.window().windowHandle()
+        if window is not self._density_window:
+            if self._density_window is not None:
+                try:
+                    self._density_window.screenChanged.disconnect(self._schedule_density_sync)
+                except (RuntimeError, TypeError):
+                    pass  # The previous native window may already be gone.
+            self._density_window = window
+            if window is not None:
+                window.screenChanged.connect(self._schedule_density_sync)
+        if self._viewmodel.set_thumbnail_device_pixel_ratio(self.devicePixelRatioF()):
+            self._pending_cover_requests.update(self._cover_request_books)
+            if self._pending_cover_requests:
+                self._cover_request_timer.start(0)
+            if self.detail_panel.isVisible():
+                self._render_detail_panel()
 
     def _show_sort_error(self, message: str) -> None:
         self.info_requested.emit(t("sort.dialog_title"), message)
@@ -374,7 +406,7 @@ class ShelfView(QWidget):
                 0,
                 lambda book_uuid=book.uuid: self._viewmodel.prepare_detail_thumbnail_source(
                     book_uuid,
-                    (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+                    self._viewmodel.thumbnail_render_size((Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)),
                 ),
             )
 
@@ -411,7 +443,7 @@ class ShelfView(QWidget):
             book_uuid,
             visible_indices,
             prefetch_indices,
-            (Theme.detail_thumbnail_width, Theme.detail_thumbnail_height),
+            self._viewmodel.thumbnail_render_size((Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)),
         )
 
     def _exec_interaction_popup(self, menu: FigmaMenu, global_pos: QPoint) -> None:
