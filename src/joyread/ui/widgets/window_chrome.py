@@ -364,7 +364,10 @@ class ActionMenuButton(QFrame):
             menu = self._build_menu()
             menu.closed.connect(self._finish_menu_interaction)
             self._finish_menu_interaction()
-            menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+            menu.exec(
+                self.mapToGlobal(QPoint(0, self.height())),
+                anchor_rect=QRect(self.mapToGlobal(QPoint()), self.size()),
+            )
             event.accept()
             return
         super().mousePressEvent(event)

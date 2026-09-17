@@ -74,8 +74,9 @@ def assert_figma_menu_layout(menu: QWidget, labels: list[str], expected_width: i
         Theme.menu_layout_margin,
     )
 
-    assert option_list.geometry().x() == Theme.menu_visual_padding
-    assert option_list.geometry().y() == Theme.menu_visual_padding
+    # The list is now inside a scroll viewport; preserve its visual panel inset.
+    assert option_list.mapTo(panel, QPoint()).x() == Theme.menu_visual_padding
+    assert option_list.mapTo(panel, QPoint()).y() == Theme.menu_visual_padding
 
     option_margins = option_list.layout().contentsMargins()
     assert (option_margins.left(), option_margins.top(), option_margins.right(), option_margins.bottom()) == (

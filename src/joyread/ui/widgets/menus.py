@@ -7,9 +7,12 @@ from joyread.ui.widgets.localized_text import LocalizedLabel
 from collections.abc import Callable, Sequence
 
 import shiboken6
-from PySide6.QtCore import QEventLoop, QPoint, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QCursor, QHideEvent, QIcon, QMouseEvent, QTransform
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+
+from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.popup_geometry import popup_position
 
 from joyread.core.models.book import Book
 from joyread.core.models.language import Language
@@ -54,10 +57,10 @@ class MenuItem(QFrame):
         )
         layout.setSpacing(Theme.menu_item_text_gap)
 
-        label = LocalizedLabel(text)
+        label = ElidedLabel(text)
         label.setProperty("class", "FigmaMenuItemText")
         label.setProperty("destructive", "true" if destructive else "false")
-        label.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Minimum)
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         layout.addWidget(label)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -103,6 +106,8 @@ class _PopupMenu(QWidget):
         self._menu_width = width
         self._loop: QEventLoop | None = None
         self._opened = False
+        self._owner_window = parent.window()
+        self._owner_handle = None
         self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
@@ -112,7 +117,7 @@ class _PopupMenu(QWidget):
 
         raise NotImplementedError
 
-    def exec(self, global_pos: QPoint) -> None:
+    def exec(self, global_pos: QPoint, *, anchor_rect: QRect | None = None) -> None:
         """Show the menu modally, then destroy it.
 
         A menu is single-use: callers build one per opening and this call
@@ -126,11 +131,22 @@ class _PopupMenu(QWidget):
             # hint of why. Say so here instead.
             raise RuntimeError(f"{type(self).__name__} is single-use; build a new menu for each opening")
         self._opened = True
-        self.refresh_size()
-        self.move(global_pos)
+        self.ensurePolished()
+        bounds = self._available_bounds(global_pos)
+        self._fit_to_bounds(bounds)
+        position = popup_position(global_pos, self.size(), bounds, anchor_rect)
+        self.move(position)
         self.show()
+        # Cocoa can offset the first move while creating a frameless native
+        # popup. Apply the same logical position after native creation, before
+        # returning to the event loop (and thus before the first paint).
+        self.move(position)
         self.raise_()
         self.activateWindow()
+        self._owner_window.installEventFilter(self)
+        self._owner_handle = self._owner_window.windowHandle()
+        if self._owner_handle is not None:
+            self._owner_handle.screenChanged.connect(self.close)
         # Deliberately unparented, and kept in a local for the whole call. A
         # QEventLoop parented to this widget is destroyed with it, and a menu
         # can be destroyed by the very action it triggered. That leaves a
@@ -165,6 +181,40 @@ class _PopupMenu(QWidget):
         # is held only by a local, so the deletion can reach nothing running.
         self.deleteLater()
 
+    def _available_bounds(self, point: QPoint) -> QRect:
+        screen = QApplication.screenAt(point) or self._owner_window.screen()
+        available = screen.availableGeometry()
+        owner = QRect(self._owner_window.mapToGlobal(QPoint()), self._owner_window.size())
+        bounds = owner.intersected(available)
+        if bounds.isEmpty():
+            bounds = available
+        margin = min(Theme.menu_boundary_margin, max(0, (min(bounds.width(), bounds.height()) - 1) // 2))
+        return bounds.adjusted(margin, margin, -margin, -margin)
+
+    def _fit_to_bounds(self, bounds: QRect) -> None:
+        self._menu_width = min(self._menu_width, bounds.width())
+        self.refresh_size()
+        if self.height() > bounds.height():
+            chrome = self.height() - self._scroll_area.height()
+            self._scroll_area.setProperty("constrained", "true")
+            bar = self._scroll_area.verticalScrollBar()
+            bar.style().unpolish(bar)
+            bar.style().polish(bar)
+            self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            self._scroll_area.setFixedHeight(max(1, bounds.height() - chrome))
+            self._panel.setFixedHeight(bounds.height())
+            self.setFixedHeight(bounds.height())
+        self.layout().activate()
+        self._panel.layout().activate()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._owner_window and event.type() in (
+            QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.Close,
+            QEvent.Type.Hide, QEvent.Type.DevicePixelRatioChange,
+        ):
+            self.close()
+        return super().eventFilter(watched, event)
+
     def _trigger(self, callback: Callable[[], None]) -> None:
         # close() only asks the loop to quit; it returns long before exec()
         # does. Invoking the callback here would run the entire action nested
@@ -176,6 +226,11 @@ class _PopupMenu(QWidget):
         QTimer.singleShot(0, callback)
 
     def hideEvent(self, event: QHideEvent) -> None:
+        if shiboken6.isValid(self._owner_window):
+            self._owner_window.removeEventFilter(self)
+        if self._owner_handle is not None and shiboken6.isValid(self._owner_handle):
+            self._owner_handle.screenChanged.disconnect(self.close)
+        self._owner_handle = None
         _release_popup_grabs(self)
         if self._loop is not None and self._loop.isRunning():
             self._loop.quit()
@@ -216,7 +271,14 @@ class FigmaMenu(_PopupMenu):
         self._option_list = QWidget()
         self._option_list.setObjectName("FigmaMenuOptionList")
         self._option_list.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        panel_layout.addWidget(self._option_list)
+        self._scroll_area = QScrollArea()
+        self._scroll_area.setObjectName("FigmaMenuScrollArea")
+        self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setWidget(self._option_list)
+        panel_layout.addWidget(self._scroll_area)
 
         self._option_layout = QVBoxLayout(self._option_list)
         self._option_layout.setContentsMargins(0, 0, 0, 0)
@@ -240,13 +302,11 @@ class FigmaMenu(_PopupMenu):
         return item
 
     def refresh_size(self) -> None:
-        # Let Qt derive menu height from the option-list content. Width is the
-        # only fixed value because the Figma component is explicitly 130px wide.
         self._option_layout.invalidate()
-        self._option_list.adjustSize()
-        self._panel.adjustSize()
-        self.adjustSize()
-        panel_height = self._panel.sizeHint().height()
+        option_height = self._option_layout.sizeHint().height()
+        self._option_list.setMinimumHeight(option_height)
+        self._scroll_area.setFixedHeight(option_height)
+        panel_height = option_height + Theme.menu_visual_padding * 2
         self._panel.setFixedSize(self._menu_width, panel_height)
         self.setFixedSize(self._menu_width, panel_height)
         self.updateGeometry()
@@ -292,7 +352,7 @@ class LanguageDropdownMenu(_PopupMenu):
 
         self._scroll_area = QScrollArea()
         self._scroll_area.setObjectName("LanguageDropdownMenuScrollArea")
-        self._scroll_area.setWidgetResizable(False)
+        self._scroll_area.setWidgetResizable(True)
         self._scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll_area.setFrameShape(QFrame.Shape.NoFrame)
@@ -330,9 +390,8 @@ class LanguageDropdownMenu(_PopupMenu):
         option_height = (visible_items * Theme.menu_item_height) + (
             max(0, visible_items - 1) * Theme.menu_option_gap
         )
-        self._option_list.setFixedWidth(
-            self._menu_width - (Theme.language_menu_visual_padding_horizontal * 2)
-        )
+        self._option_list.setMinimumHeight(self._option_layout.sizeHint().height())
+        self._panel.setFixedWidth(self._menu_width)
         self._scroll_area.setFixedHeight(option_height)
         self._option_layout.invalidate()
         self._option_list.adjustSize()

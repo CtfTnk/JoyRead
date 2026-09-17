@@ -5,6 +5,14 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- Show 1-based page numbers below Detail, Reader Topic and cover-picker
+  thumbnails, including unloaded pages; numbers also select their page.
+- Keep custom menus within the visible application window, flipping at edges.
+  Button dropdowns retain their anchor, and oversized menus scroll with
+  ellipsis/tooltips for clipped labels.
+
 ### Performance
 
 - Reprioritize thumbnail loading as the viewport moves, with visible pages

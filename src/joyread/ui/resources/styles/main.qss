@@ -1152,6 +1152,8 @@ QWidget#FigmaMenuOptionList {
 }
 
 QWidget#LanguageDropdownMenuIndicator,
+QScrollArea#FigmaMenuScrollArea,
+QScrollArea#FigmaMenuScrollArea QWidget,
 QScrollArea#LanguageDropdownMenuScrollArea,
 QScrollArea#LanguageDropdownMenuScrollArea QWidget,
 QWidget#LanguageDropdownMenuOptionList {
@@ -1161,6 +1163,27 @@ QWidget#LanguageDropdownMenuOptionList {
 
 QScrollArea#LanguageDropdownMenuScrollArea QScrollBar:vertical {
     width: 0;
+}
+
+QScrollArea#FigmaMenuScrollArea QScrollBar:vertical,
+QScrollArea#LanguageDropdownMenuScrollArea[constrained="true"] QScrollBar:vertical {
+    width: __SHELF_SCROLLBAR_WIDTH__;
+    background: transparent;
+    border: none;
+}
+
+QScrollArea#FigmaMenuScrollArea QScrollBar::handle:vertical,
+QScrollArea#LanguageDropdownMenuScrollArea[constrained="true"] QScrollBar::handle:vertical {
+    background: __SHELF_SCROLLBAR_HANDLE__;
+    border-radius: __SHELF_SCROLLBAR_RADIUS__;
+    min-height: __SHELF_SCROLLBAR_MIN_HEIGHT__;
+}
+
+QScrollArea#FigmaMenuScrollArea QScrollBar::add-line:vertical,
+QScrollArea#FigmaMenuScrollArea QScrollBar::sub-line:vertical,
+QScrollArea#LanguageDropdownMenuScrollArea[constrained="true"] QScrollBar::add-line:vertical,
+QScrollArea#LanguageDropdownMenuScrollArea[constrained="true"] QScrollBar::sub-line:vertical {
+    height: 0;
 }
 
 QFrame#FigmaMenuItem {

@@ -11,7 +11,7 @@ from math import ceil
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, Signal as QtSignal
-from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
     QFrame,
@@ -525,6 +525,9 @@ class BookDetailPanel(QFrame):
                 self._language_pill.mapToGlobal(QPoint(0, self._language_pill.height())),
             )
 
+    def language_menu_anchor(self) -> QRect:
+        return QRect(self._language_pill.mapToGlobal(QPoint()), self._language_pill.size())
+
     def _emit_tag_filter_requested(self, tag_id: str) -> None:
         if self._book is not None:
             self.tag_filter_requested.emit(self._book.uuid, tag_id)
@@ -746,6 +749,7 @@ class DetailThumbnailGrid(QWidget):
         self._columns = 0
         self._is_complete = False
         self._pressed_index: int | None = None
+        self.setMouseTracking(True)
         # Each DetailThumbnailWidget sets its own hand cursor; a cursor here
         # too would extend it into the grid's own padding and inter-item
         # gaps, which aren't clickable.
@@ -825,7 +829,7 @@ class DetailThumbnailGrid(QWidget):
         if visible_rect.isEmpty():
             return (), ()
         top = self._margins[1]
-        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        row_step = self._slot_height() + self._vertical_spacing
         first_row = max(0, (visible_rect.top() - top) // row_step)
         last_row = min(
             self._row_count() - 1,
@@ -874,16 +878,21 @@ class DetailThumbnailGrid(QWidget):
         if clip.isEmpty() or self._page_count <= 0:
             painter.end()
             return
-        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        row_step = self._slot_height() + self._vertical_spacing
         first_row = max(0, (clip.top() - self._margins[1]) // row_step)
         last_row = min(
             self._row_count() - 1,
             max(first_row, (clip.bottom() - self._margins[1]) // row_step),
         )
         placeholder = thumbnail_placeholder(self.devicePixelRatioF())
+        painter.setFont(self._index_font())
+        painter.setPen(QColor(Theme.color_thumbnail_index))
         for index in self._indices_for_rows(first_row, last_row):
             if index not in self._thumbnails:
                 painter.drawPixmap(self._item_rect(index), placeholder)
+            # Page labels belong to the virtual grid, including unloaded slots;
+            # they never become per-page widgets or encoded thumbnail pixels.
+            painter.drawText(self._index_rect(index), Qt.AlignmentFlag.AlignCenter, str(index + 1))
         painter.end()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -902,6 +911,32 @@ class DetailThumbnailGrid(QWidget):
             event.accept()
             return
         super().mouseReleaseEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        self.setCursor(Qt.CursorShape.PointingHandCursor if self._index_at(event.position().toPoint()) is not None
+                       else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def changeEvent(self, event: QEvent) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.ApplicationFontChange) and hasattr(self, "_columns"):
+            self._refresh_geometry(force=True)
+
+    def _index_font(self) -> QFont:
+        font = QFont(self.font())
+        font.setPixelSize(Theme.thumbnail_index_font_size)
+        return font
+
+    def _index_height(self) -> int:
+        return max(Theme.thumbnail_index_min_height, QFontMetrics(self._index_font()).height())
+
+    def _slot_height(self) -> int:
+        return Theme.detail_thumbnail_height + Theme.thumbnail_index_gap + self._index_height()
+
+    def _index_rect(self, index: int) -> QRect:
+        image = self._item_rect(index)
+        return QRect(image.x(), image.y() + image.height() + Theme.thumbnail_index_gap,
+                     image.width(), self._index_height())
 
     def _refresh_geometry(self, force: bool = False) -> None:
         columns = self._calculate_columns()
@@ -938,7 +973,7 @@ class DetailThumbnailGrid(QWidget):
         rows = self._row_count()
         height = self._margins[1] + self._margins[3]
         if rows:
-            height += (rows * Theme.detail_thumbnail_height) + ((rows - 1) * self._vertical_spacing)
+            height += (rows * self._slot_height()) + ((rows - 1) * self._vertical_spacing)
         self.setMinimumHeight(height)
 
     def _row_count(self) -> int:
@@ -954,13 +989,13 @@ class DetailThumbnailGrid(QWidget):
         columns = max(1, self._columns)
         row, column = divmod(index, columns)
         x = self._margins[0] + column * (Theme.detail_thumbnail_width + self._horizontal_spacing)
-        y = self._margins[1] + row * (Theme.detail_thumbnail_height + self._vertical_spacing)
+        y = self._margins[1] + row * (self._slot_height() + self._vertical_spacing)
         return QRect(x, y, Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
 
     def _index_at(self, point: QPoint) -> int | None:
         if self._page_count <= 0:
             return None
-        row_step = Theme.detail_thumbnail_height + self._vertical_spacing
+        row_step = self._slot_height() + self._vertical_spacing
         column_step = Theme.detail_thumbnail_width + self._horizontal_spacing
         local_x = point.x() - self._margins[0]
         local_y = point.y() - self._margins[1]
@@ -971,7 +1006,10 @@ class DetailThumbnailGrid(QWidget):
         if column >= max(1, self._columns):
             return None
         index = row * max(1, self._columns) + column
-        return index if index < self._page_count and self._item_rect(index).contains(point) else None
+        if index >= self._page_count:
+            return None
+        return index if (self._item_rect(index).contains(point)
+                         or self._index_rect(index).contains(point)) else None
 
     def _position_loaded_widgets(self) -> None:
         for index, thumbnail in self._thumbnails.items():

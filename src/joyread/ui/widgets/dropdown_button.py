@@ -6,7 +6,7 @@ from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 
 from collections.abc import Callable, Sequence
 
-from PySide6.QtCore import QEvent, QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -143,7 +143,10 @@ class FigmaDropdownButton(QFrame):
         for option in self._options:
             menu.add_item(self._label_for_value(option), lambda value=option: self.set_value(value, emit=True))
         self._finish_menu_interaction()
-        menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+        menu.exec(
+            self.mapToGlobal(QPoint(0, self.height())),
+            anchor_rect=QRect(self.mapToGlobal(QPoint()), self.size()),
+        )
 
     def _finish_menu_interaction(self) -> None:
         # Popup mouse capture can swallow leave events. Clear the visual hover

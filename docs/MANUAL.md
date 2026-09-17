@@ -164,6 +164,14 @@ continue to use their available cached covers.
 Detail and Topic thumbnails load visible pages first and adjust preloading as
 you scroll. Recently viewed thumbnails are reused when you scroll back, within
 a fixed memory limit; long books do not load all their page images at once.
+Detail, Topic and the cover picker show page numbers starting at 1 below each
+thumbnail, even before its image loads. Click the image or its number to select
+that page; gaps between items are not clickable.
+
+Context menus open toward available space inside the current window. Near its
+right or bottom edge they flip left or upward; button dropdowns can open above
+their button. Long menus scroll, and clipped labels expose their full text in a
+tooltip. Moving or resizing the window closes an open menu.
 
 ## Collections
 

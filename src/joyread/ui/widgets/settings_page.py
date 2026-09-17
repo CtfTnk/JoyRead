@@ -6,7 +6,7 @@ from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 
 from collections.abc import Iterable
 
-from PySide6.QtCore import QPoint, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QFrame,
@@ -1077,7 +1077,10 @@ class SettingsDropdownButton(QFrame):
         menu = FigmaMenu(self, width=self.width())
         for option in self._options:
             menu.add_item(option, lambda selected=option: self.set_value(selected.resolve() if isinstance(selected, TranslatedText) else selected))
-        menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+        menu.exec(
+            self.mapToGlobal(QPoint(0, self.height())),
+            anchor_rect=QRect(self.mapToGlobal(QPoint()), self.size()),
+        )
 
 
 class SettingsPushButton(QToolButton):

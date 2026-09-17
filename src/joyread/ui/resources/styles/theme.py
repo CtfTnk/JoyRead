@@ -128,6 +128,9 @@ class Theme:
     detail_thumbnail_width = 100
     detail_thumbnail_height = 142
     detail_thumbnail_radius = 6
+    thumbnail_index_font_size = 12
+    thumbnail_index_gap = 4
+    thumbnail_index_min_height = 18
     # Inactive decoded thumbnail retention (per panel; active pages are pinned).
     thumbnail_retained_widget_limit = 32
     thumbnail_retained_byte_limit = 8 * 1024 * 1024
@@ -285,6 +288,7 @@ class Theme:
     )
 
     # Figma menu popups and native combo popup metrics
+    menu_boundary_margin = 6
     menu_width = 130
     menu_border_width = 2
     menu_radius = 10
@@ -638,6 +642,7 @@ class Theme:
     color_sidebar_item_hover = "#eeeeee"
     color_text = "#000000"
     color_text_muted = "#6d6d6d"
+    color_thumbnail_index = color_text_muted
     color_dialog_input_header = "#5f5f5f"
     color_settings_path_edge = "#7f7f7f"
     color_settings_switch_background = "#b9b9b9"

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
@@ -292,7 +292,7 @@ class ShelfView(QWidget):
             book.language_tag,
             lambda language_tag: self._viewmodel.update_book_language(book_uuid, language_tag),
         )
-        self._exec_interaction_popup(menu, global_pos)
+        self._exec_interaction_popup(menu, global_pos, self.detail_panel.language_menu_anchor())
 
     def _menu_target_ids(self, book_uuid: str) -> tuple[str, ...]:
         selected_ids = set(self._viewmodel.selected_book_ids)
@@ -447,10 +447,13 @@ class ShelfView(QWidget):
             self._viewmodel.thumbnail_render_size((Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)),
         )
 
-    def _exec_interaction_popup(self, menu: FigmaMenu, global_pos: QPoint) -> None:
+    def _exec_interaction_popup(self, menu: FigmaMenu, global_pos: QPoint, anchor_rect: QRect | None = None) -> None:
         self._popup_interaction_depth += 1
         try:
-            menu.exec(global_pos)
+            if anchor_rect is None:
+                menu.exec(global_pos)
+            else:
+                menu.exec(global_pos, anchor_rect=anchor_rect)
         finally:
             self._popup_interaction_depth = max(0, self._popup_interaction_depth - 1)
             if not self._is_popup_interaction_active():

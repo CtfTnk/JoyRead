@@ -7,7 +7,7 @@ from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 import re
 from collections.abc import Callable
 
-from PySide6.QtCore import QPoint, QRectF, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QPoint, QRect, QRectF, QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
@@ -355,7 +355,10 @@ class _FitModeButton(QFrame):
                 lambda selected=mode: self.set_value(selected),
                 selected=mode == self._value,
             )
-        menu.exec(self.mapToGlobal(QPoint(0, self.height())))
+        menu.exec(
+            self.mapToGlobal(QPoint(0, self.height())),
+            anchor_rect=QRect(self.mapToGlobal(QPoint()), self.size()),
+        )
 
 
 class SpinButton(QFrame):
