@@ -5,6 +5,7 @@ from __future__ import annotations
 from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 
 import logging
+from collections import OrderedDict
 from collections.abc import Iterable
 from math import ceil
 from pathlib import Path
@@ -34,6 +35,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.thumbnail_placeholder import thumbnail_placeholder
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
@@ -735,6 +737,11 @@ class DetailThumbnailGrid(QWidget):
         self.setSizePolicy(horizontal_policy, QSizePolicy.Policy.Minimum)
         self._page_count = 0
         self._thumbnails: dict[int, DetailThumbnailWidget] = {}
+        # Only inactive widgets count against this small, byte-bounded LRU.
+        # Active interest stays pinned; retaining the widget also retains its
+        # decoded pixmap, so short reversals need neither allocation nor decode.
+        self._retained: OrderedDict[int, DetailThumbnailWidget] = OrderedDict()
+        self._retained_bytes = 0
         self._interest: frozenset[int] = frozenset()
         self._columns = 0
         self._is_complete = False
@@ -758,6 +765,7 @@ class DetailThumbnailGrid(QWidget):
 
     def reset_unknown(self) -> None:
         self._clear_loaded_widgets()
+        self._clear_retained()
         self._page_count = 0
         self._interest = frozenset()
         self._columns = 0
@@ -769,6 +777,7 @@ class DetailThumbnailGrid(QWidget):
         if reset:
             self.reset_unknown()
         self._page_count = max(0, int(count))
+        self._clear_retained()
         self._clear_loaded_widgets(keep=frozenset(index for index in self._thumbnails if index < self._page_count))
         self._refresh_geometry(force=True)
 
@@ -784,7 +793,24 @@ class DetailThumbnailGrid(QWidget):
         if interest == self._interest:
             return
         self._interest = interest
-        self._clear_loaded_widgets(keep=interest)
+        if not interest:
+            self._clear_loaded_widgets()
+            self._clear_retained()
+        else:
+            for index in tuple(self._thumbnails):
+                if index not in interest:
+                    widget = self._thumbnails.pop(index)
+                    widget.hide()
+                    self._retained[index] = widget
+                    self._retained_bytes += widget.memory_bytes
+            for index in interest:
+                widget = self._retained.pop(index, None)
+                if widget is not None:
+                    self._retained_bytes -= widget.memory_bytes
+                    self._thumbnails[index] = widget
+                    widget.setGeometry(self._item_rect(index))
+                    widget.show()
+            self._trim_retained()
         self.update()
 
     def visible_and_prefetch_indices(
@@ -854,22 +880,10 @@ class DetailThumbnailGrid(QWidget):
             self._row_count() - 1,
             max(first_row, (clip.bottom() - self._margins[1]) // row_step),
         )
-        colors = (QColor("#d8d8d8"), QColor("#cfcfcf"))
+        placeholder = thumbnail_placeholder(self.devicePixelRatioF())
         for index in self._indices_for_rows(first_row, last_row):
-            if index in self._thumbnails:
-                continue
-            rect = self._item_rect(index)
-            path = QPainterPath()
-            path.addRoundedRect(QRectF(rect), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
-            painter.save()
-            painter.setClipPath(path)
-            square = 8
-            for y in range(rect.top(), rect.bottom() + 1, square):
-                for x in range(rect.left(), rect.right() + 1, square):
-                    color = colors[(((x - rect.left()) // square) + ((y - rect.top()) // square)) % 2]
-                    painter.fillRect(x, y, square, square, color)
-            painter.fillRect(rect, QColor(0, 0, 0, 28))
-            painter.restore()
+            if index not in self._thumbnails:
+                painter.drawPixmap(self._item_rect(index), placeholder)
         painter.end()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -963,6 +977,21 @@ class DetailThumbnailGrid(QWidget):
         for index, thumbnail in self._thumbnails.items():
             thumbnail.setGeometry(self._item_rect(index))
 
+    def _trim_retained(self) -> None:
+        while self._retained and (
+            len(self._retained) > Theme.thumbnail_retained_widget_limit
+            or self._retained_bytes > Theme.thumbnail_retained_byte_limit
+        ):
+            _, widget = self._retained.popitem(last=False)
+            self._retained_bytes -= widget.memory_bytes
+            widget.deleteLater()
+
+    def _clear_retained(self) -> None:
+        for widget in self._retained.values():
+            widget.deleteLater()
+        self._retained.clear()
+        self._retained_bytes = 0
+
     def _clear_loaded_widgets(self, keep: frozenset[int] = frozenset()) -> None:
         for index in tuple(self._thumbnails):
             if index in keep:
@@ -982,20 +1011,30 @@ class DetailThumbnailWidget(QFrame):
         self.setFixedSize(Theme.detail_thumbnail_width, Theme.detail_thumbnail_height)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._pixmap: QPixmap | None = None
+        self._image_bytes: bytes | None = None
         self._page_index: int | None = None
         self._pressed_inside = False
 
     def set_page_index(self, page_index: int) -> None:
         self._page_index = page_index
 
+    @property
+    def memory_bytes(self) -> int:
+        pixel_bytes = 0 if self._pixmap is None else self._pixmap.width() * self._pixmap.height() * ((self._pixmap.depth() + 7) // 8)
+        return pixel_bytes + len(self._image_bytes or b"")
+
     def set_thumbnail_bytes(self, image_bytes: bytes) -> None:
+        if image_bytes == self._image_bytes:
+            return
         pixmap = QPixmap()
         if pixmap.loadFromData(image_bytes):
             self._pixmap = pixmap
+            self._image_bytes = image_bytes
             self.update()
 
     def clear_thumbnail(self) -> None:
         self._pixmap = None
+        self._image_bytes = None
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
@@ -1027,12 +1066,7 @@ class DetailThumbnailWidget(QFrame):
         if self._pixmap is not None and not self._pixmap.isNull():
             painter.drawPixmap(self.rect(), self._pixmap)
         else:
-            colors = (QColor("#d8d8d8"), QColor("#cfcfcf"))
-            square = 8
-            for y in range(0, self.height(), square):
-                for x in range(0, self.width(), square):
-                    painter.fillRect(x, y, square, square, colors[((x // square) + (y // square)) % 2])
-            painter.fillRect(self.rect(), QColor(0, 0, 0, 28))
+            painter.drawPixmap(self.rect(), thumbnail_placeholder(self.devicePixelRatioF()))
         painter.end()
 
 

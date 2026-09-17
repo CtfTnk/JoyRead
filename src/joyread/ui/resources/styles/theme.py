@@ -128,6 +128,9 @@ class Theme:
     detail_thumbnail_width = 100
     detail_thumbnail_height = 142
     detail_thumbnail_radius = 6
+    # Inactive decoded thumbnail retention (per panel; active pages are pinned).
+    thumbnail_retained_widget_limit = 32
+    thumbnail_retained_byte_limit = 8 * 1024 * 1024
     detail_thumbnail_frame_padding = 10
     detail_thumbnail_row_padding_horizontal = 10
     detail_thumbnail_row_padding_vertical = 5

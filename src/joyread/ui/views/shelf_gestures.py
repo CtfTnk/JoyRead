@@ -9,7 +9,7 @@ from weakref import WeakSet
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QTimer, Qt
 from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QWidget
 
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.book_grid import BookGridWidget
@@ -28,6 +28,8 @@ class ShelfGestureController(QObject):
         self._mode = None
         self._suppressed = False
         self._releasing = False
+        self._grabbed_viewport = None
+        self._cursor_overridden = False
         self._preview = None
         self._placeholder = None
         self._rubber = None
@@ -69,7 +71,23 @@ class ShelfGestureController(QObject):
             self.cancel(restore_selection=False, suppress_release=True)
 
     def eventFilter(self, watched, event):
+        # The application filter also sees native QWindow input. Let Qt
+        # translate it first so QWidgetWindow can maintain implicit capture
+        # and hover state; consume only the resulting QWidget events.
+        if not isinstance(watched, QWidget):
+            return False
         kind = event.type()
+        if self._suppressed:
+            # A release can be lost when the window deactivates or the pointer
+            # leaves the app. A fresh press/idle move belongs to the next input
+            # sequence, never to the cancelled gesture's trailing release.
+            fresh_press = (kind == QEvent.Type.MouseButtonPress
+                           and (event.button() == Qt.MouseButton.LeftButton
+                                or not event.buttons() & Qt.MouseButton.LeftButton))
+            idle_move = kind == QEvent.Type.MouseMove and event.buttons() == Qt.MouseButton.NoButton
+            if fresh_press or idle_move:
+                self._suppressed = False
+                self._release_tracking()
         if self._suppressed:
             if kind in (QEvent.Type.WindowDeactivate, QEvent.Type.Close, QEvent.Type.Hide) and watched is self._owner.window():
                 self._suppressed = False
@@ -145,7 +163,13 @@ class ShelfGestureController(QObject):
         self._scroll_fraction = 0.0
         QApplication.instance().installEventFilter(self)
         surface.viewport().setFocus(Qt.FocusReason.MouseFocusReason)
-        surface.viewport().grabMouse()
+        # Qt already provides an implicit grab for an ordinary press. Moving
+        # it to the viewport here disrupts native hover/cursor tracking even
+        # for a click; only an actual rubber-band/reorder needs explicit capture.
+
+    def _capture_mouse(self):
+        self._grabbed_viewport = self._surface.viewport()
+        self._grabbed_viewport.grabMouse()
 
     def move(self, global_pos):
         if not self.active:
@@ -156,6 +180,7 @@ class ShelfGestureController(QObject):
             # when the gesture starts on an already-selected book.
             if self._pressed_key is None or self._additive:
                 self._mode = "rubber"
+                self._capture_mouse()
                 self._rubber = SelectionRectangle(self._surface._content)
                 self._rubber.show()
             elif self._vm.can_reorder:
@@ -167,6 +192,7 @@ class ShelfGestureController(QObject):
         if not self._moving:
             return
         self._mode = "drag"
+        self._capture_mouse()
         self._vm.set_selection(set(self._moving))
         control = self._surface.book_controls[self._moving[0]]
         snapshots = card_snapshots(self._surface, self._moving, self._resources)
@@ -202,6 +228,7 @@ class ShelfGestureController(QObject):
                                - self._preview.card_origin)
             self._preview.raise_()
             self._surface.viewport().setCursor(Qt.CursorShape.ClosedHandCursor if self._inside() else Qt.CursorShape.ForbiddenCursor)
+            self._cursor_overridden = True
             if self._inside():
                 point = self._surface._content.mapFromGlobal(self._last_global)
                 index = self._insertion_index(point)
@@ -297,14 +324,23 @@ class ShelfGestureController(QObject):
         if self._preview is not None:
             self._preview.fade_out()
             self._preview = None
-        self._surface.viewport().unsetCursor()
+        if self._cursor_overridden:
+            self._surface.viewport().unsetCursor()
+            self._cursor_overridden = False
+        # Cancellation may still swallow a trailing release, but must not
+        # leave the native mouse/cursor captured while waiting for it.
+        self._release_mouse()
         self._suppressed = suppress_release
         if not suppress_release:
             self._release_tracking()
 
-    def _release_tracking(self):
+    def _release_mouse(self):
         self._releasing = True
-        if self._surface is not None:
-            self._surface.viewport().releaseMouse()
-        QApplication.instance().removeEventFilter(self)
+        viewport, self._grabbed_viewport = self._grabbed_viewport, None
+        if viewport is not None and QWidget.mouseGrabber() is viewport:
+            viewport.releaseMouse()
         self._releasing = False
+
+    def _release_tracking(self):
+        self._release_mouse()
+        QApplication.instance().removeEventFilter(self)

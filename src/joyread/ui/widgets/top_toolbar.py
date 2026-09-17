@@ -27,6 +27,7 @@ class TopToolbarWidget(QWidget):
     search_changed = QtSignal(str)
     filter_changed = QtSignal(str)
     tag_filter_requested = QtSignal()
+    blank_clicked = QtSignal()
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -66,6 +67,17 @@ class TopToolbarWidget(QWidget):
         self._tag_filter_button = TagFilterButton(resources)
         self._tag_filter_button.clicked.connect(self.tag_filter_requested.emit)
         layout.addWidget(self._tag_filter_button)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        point = event.position().toPoint()
+        controls = (self._search_panel, self._filter_dropdown, self._tag_filter_button)
+        if (event.button() == Qt.MouseButton.LeftButton
+                and not any(control.geometry().contains(point) for control in controls)):
+            if not event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                self.blank_clicked.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
 
     def refresh_labels(self) -> None:
         """Re-apply translated tooltips/placeholders after a locale change.

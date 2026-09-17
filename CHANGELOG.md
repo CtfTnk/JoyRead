@@ -5,6 +5,25 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Performance
+
+- Reprioritize thumbnail loading as the viewport moves, with visible pages
+  first and directional prefetch next. Finish one bounded in-flight batch
+  instead of repeatedly cancelling and duplicating work on scroll.
+- Deliver unchanged visible thumbnails only once; retain a bounded LRU of
+  decoded offscreen thumbnails/widgets for reverse scrolling and cache the
+  DPR-aware checkerboard placeholder.
+
+### Fixes
+
+- Let Qt process native window mouse events before intercepting widget gestures,
+  preventing stale pressed/hover state and a stuck hand cursor after book clicks.
+- Keep ordinary shelf clicks on Qt's implicit mouse capture; acquire explicit
+  viewport capture only after rectangle selection or reorder starts. Release it
+  immediately on cancellation and recover from a missing trailing release.
+- Clear shelf selection when clicking toolbar blank space or its title, while
+  preserving Shift-click, search input and button behavior.
+
 ## [1.1.0] — 2026-09-17
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.1.0.md)

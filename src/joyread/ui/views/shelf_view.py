@@ -89,6 +89,7 @@ class ShelfView(QWidget):
         self.toolbar.search_changed.connect(self._viewmodel.set_search_query)
         self.toolbar.filter_changed.connect(self._viewmodel.set_filter)
         self.toolbar.tag_filter_requested.connect(self.tag_filter_requested.emit)
+        self.toolbar.blank_clicked.connect(self._handle_blank_clicked)
         layout.addWidget(self.toolbar)
 
         self.stack = QStackedWidget()

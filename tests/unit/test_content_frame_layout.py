@@ -950,7 +950,7 @@ def test_detail_thumbnail_grid_updates_single_thumbnail_from_bytes(qtbot) -> Non
     assert grid._thumbnails[1]._pixmap is not None
 
 
-def test_detail_thumbnail_grid_virtualizes_large_page_counts_and_releases_offscreen_pixmaps(qtbot) -> None:
+def test_detail_thumbnail_grid_virtualizes_large_page_counts_and_hides_offscreen_widgets(qtbot) -> None:
     grid = DetailThumbnailGrid()
     qtbot.addWidget(grid)
     grid.resize(864, 400)

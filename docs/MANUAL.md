@@ -129,7 +129,8 @@ collection member also puts it at the front. Search, filters, and privacy
 visibility do not erase saved positions.
 
 Click a book to select it alone. Shift-click adds a book or removes it from the
-selection. Click blank shelf space to clear selection; Shift-clicking blank
+selection. Click blank shelf space or the toolbar's blank/title area to clear
+selection; Shift-clicking blank
 space keeps it. Drag from blank space to draw a selection rectangle. Shift-drag
 starts a rectangle even on a book and adds intersecting books to the selection
 you had when you started; it never starts reordering. You can use
@@ -159,6 +160,10 @@ sizes or selection. Existing custom cover images keep their chosen crop; if an
 older custom cover looks soft on a high-density screen, reopen the cover editor
 from the original source and save it again on that screen. Missing source files
 continue to use their available cached covers.
+
+Detail and Topic thumbnails load visible pages first and adjust preloading as
+you scroll. Recently viewed thumbnails are reused when you scroll back, within
+a fixed memory limit; long books do not load all their page images at once.
 
 ## Collections
 

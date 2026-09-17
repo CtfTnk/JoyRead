@@ -2,7 +2,8 @@ from dataclasses import replace
 from time import monotonic
 
 import pytest
-from PySide6.QtCore import QPoint, QEvent, Qt
+from PySide6.QtCore import QObject, QPoint, QEvent, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import QApplication
 
@@ -267,3 +268,114 @@ def test_shift_drag_from_book_adds_rectangle_selection_without_reordering(shelf,
     controller.release(end)
     assert vm.selected_book_ids == {"1", "5", key}
     assert vm._shelf_orders == saved and not vm.sort_saving
+
+
+def test_plain_click_does_not_take_or_reset_viewport_capture(shelf, qtbot, monkeypatch):
+    widget, vm, surface = shelf
+    def unexpected(*args):
+        pytest.fail('An ordinary click must leave native mouse capture/cursor tracking alone')
+    for method in ('grabMouse', 'releaseMouse', 'unsetCursor'):
+        monkeypatch.setattr(surface.viewport(), method, unexpected)
+    card = surface.book_controls['3']
+    qtbot.mousePress(card, Qt.MouseButton.LeftButton, pos=QPoint(30,30))
+    assert widget.gestures._mode == 'pressed'
+    assert widget.gestures._grabbed_viewport is None
+    qtbot.mouseRelease(card, Qt.MouseButton.LeftButton, pos=QPoint(30,30))
+    assert vm.selected_book_ids == {'3'}
+    assert not widget.gestures.active and not widget.gestures._suppressed
+
+
+def test_window_release_reaches_qt_before_widget_gesture_consumes_it(shelf):
+    widget, vm, surface = shelf
+    releases = []
+
+    class WindowEvents(QObject):
+        def eventFilter(self, watched, event):
+            if event.type() == QEvent.Type.MouseButtonRelease:
+                releases.append(event.button())
+            return False
+
+    # QWidget-only tests bypass QWidgetWindow's implicit-grab bookkeeping.
+    # Send through QWindow as the platform does: Qt must receive the release
+    # before the controller consumes the translated widget event.
+    window = widget.windowHandle()
+    observer = WindowEvents(window)
+    window.installEventFilter(observer)
+    point = widget.mapFromGlobal(surface.book_controls['3'].mapToGlobal(QPoint(30, 30)))
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, pos=point)
+    assert widget.gestures.active
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, pos=point)
+    assert releases == [Qt.MouseButton.LeftButton]
+    assert vm.selected_book_ids == {'3'}
+    assert not widget.gestures.active
+
+
+@pytest.mark.parametrize('cancel', ['escape', 'right'])
+def test_cancel_releases_capture_before_trailing_left_release(shelf, qtbot, cancel):
+    from PySide6.QtWidgets import QWidget
+    widget, vm, surface = shelf
+    controller = start_drag(shelf)
+    assert controller._grabbed_viewport is surface.viewport()
+    if cancel == 'escape':
+        qtbot.keyClick(surface.viewport(), Qt.Key.Key_Escape)
+    else:
+        qtbot.mousePress(surface.viewport(), Qt.MouseButton.RightButton)
+        qtbot.mouseRelease(surface.viewport(), Qt.MouseButton.RightButton)
+    assert controller._suppressed and not controller.active
+    assert controller._grabbed_viewport is None
+    assert QWidget.mouseGrabber() is not surface.viewport()
+    assert not controller._cursor_overridden
+    qtbot.mouseRelease(surface.viewport(), Qt.MouseButton.LeftButton)
+    assert not controller._suppressed
+
+
+def test_fresh_click_after_missing_cancel_release_is_not_swallowed(shelf, qtbot):
+    widget, vm, surface = shelf
+    controller = start_drag(shelf)
+    controller.cancel(suppress_release=True)
+    # Simulate a release lost outside the application: the next click must work
+    # immediately rather than merely clearing stale cancellation state.
+    card = surface.book_controls['5']
+    qtbot.mouseClick(card, Qt.MouseButton.LeftButton, pos=QPoint(30,30))
+    assert vm.selected_book_ids == {'5'}
+    assert not controller.active and not controller._suppressed
+
+
+def test_new_right_press_after_missing_release_is_not_swallowed(shelf, qtbot):
+    widget, vm, surface = shelf
+    controller = start_drag(shelf)
+    controller.cancel(suppress_release=True)
+    qtbot.mousePress(surface.viewport(), Qt.MouseButton.RightButton)
+    assert not controller._suppressed and not controller.active
+    qtbot.mouseRelease(surface.viewport(), Qt.MouseButton.RightButton)
+
+
+def test_toolbar_blank_and_title_clear_selection_but_shift_preserves(shelf, qtbot):
+    widget, vm, surface = shelf
+    toolbar = widget.toolbar
+    blank = QPoint((toolbar._title.geometry().right()+toolbar._search_panel.x())//2,
+                   toolbar.height()//2)
+    vm.set_selection({'1','3'})
+    qtbot.mouseClick(toolbar, Qt.MouseButton.LeftButton, pos=blank)
+    assert not vm.selected_book_ids
+    vm.set_selection({'1','3'})
+    qtbot.mouseClick(toolbar, Qt.MouseButton.LeftButton, stateKey=Qt.KeyboardModifier.ShiftModifier, pos=blank)
+    assert vm.selected_book_ids == {'1','3'}
+    qtbot.mouseClick(toolbar._title, Qt.MouseButton.LeftButton)
+    assert not vm.selected_book_ids
+
+
+def test_toolbar_search_and_tag_button_preserve_selection(shelf, qtbot):
+    widget, vm, surface = shelf
+    vm.set_selection({'1','3'})
+    search = widget.toolbar._search_panel
+    qtbot.mouseClick(search._expand_button, Qt.MouseButton.LeftButton)
+    assert vm.selected_book_ids == {'1','3'}
+    qtbot.mouseClick(search._input, Qt.MouseButton.LeftButton)
+    qtbot.keyClicks(search._input, 'test')
+    assert search.query == 'test' and vm.selected_book_ids == {'1','3'}
+    requested = []
+    widget.tag_filter_requested.connect(lambda: requested.append(True))
+    qtbot.mouseClick(widget.toolbar._tag_filter_button, Qt.MouseButton.LeftButton)
+    assert requested == [True] and vm.selected_book_ids == {'1','3'}
+    assert not widget.gestures.active

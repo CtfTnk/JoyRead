@@ -47,6 +47,8 @@ class ThumbnailStreamController:
         self._visible: tuple[int, ...] = ()
         self._prefetch: tuple[int, ...] = ()
         self._interest: frozenset[int] = frozenset()
+        self._delivered: set[int] = set()
+        self._direction = 0
         self._queue: list[int] = []
         self._active_indices: tuple[int, ...] = ()
         self._handle: TaskHandle[object] | None = None
@@ -131,24 +133,38 @@ class ThumbnailStreamController:
         if visible == self._visible and prefetch == self._prefetch:
             return
 
-        self._generation += 1
-        if self._handle is not None:
-            self._handle.cancel()
-        self._handle = None
-        self._active_indices = ()
+        # Scrolling changes demand, not source identity. A bounded running batch
+        # finishes once; its useful results survive and the next batch uses the
+        # latest queue. Cancelling here cannot interrupt decoding/archive I/O
+        # and would create overlapping workers whose results are thrown away.
+        if visible and self._visible:
+            movement = (min(visible) + max(visible)) - (min(self._visible) + max(self._visible))
+            if movement:
+                self._direction = 1 if movement > 0 else -1
         self._visible = visible
         self._prefetch = prefetch
         self._interest = frozenset((*visible, *prefetch))
+        self._delivered.intersection_update(self._interest)
         self._cache.set_pins(frozenset(self._key(index) for index in self._interest))
 
         ordered = _center_out(visible)
+        if visible and self._direction:
+            low, high = min(visible), max(visible)
+            prefetch = tuple(sorted(prefetch, key=lambda index: (
+                0 if (index > high if self._direction > 0 else index < low) else 1,
+                min(abs(index - low), abs(index - high)),
+            )))
         ordered.extend(prefetch)
         missing: list[int] = []
         for page_index in ordered:
+            if page_index in self._delivered:
+                continue
             cached = self._cache.get(self._key(page_index))
             if cached is None:
-                missing.append(page_index)
+                if page_index not in self._active_indices:
+                    missing.append(page_index)
                 continue
+            self._delivered.add(page_index)
             self.thumbnail_ready.emit(page_index, cached)
 
         self._queue = missing
@@ -164,6 +180,8 @@ class ThumbnailStreamController:
         self._visible = ()
         self._prefetch = ()
         self._interest = frozenset()
+        self._delivered.clear()
+        self._direction = 0
         self._cache.release()
 
     def cancel(self) -> None:
@@ -175,6 +193,7 @@ class ThumbnailStreamController:
         self._batch_planner = None
 
     def refresh(self) -> None:
+        self._delivered.clear()
         visible = self._visible
         prefetch = self._prefetch
         self._visible = ()
@@ -189,16 +208,16 @@ class ThumbnailStreamController:
         if self._loader is None or not self._queue:
             return
 
-        first = self._queue[0]
         selected = self._planned_prefix()
         self._queue = self._queue[len(selected) :]
         self._active_indices = selected
         generation = self._generation
         priority = TaskPriority.HIGH if any(index in self._visible for index in selected) else TaskPriority.NORMAL
 
+        loader = self._loader
+
         def work(emit_item: ThumbnailEmitter) -> None:
-            assert self._loader is not None
-            self._loader(selected, emit_item)
+            loader(selected, emit_item)
 
         submit_stream = getattr(self._task_service, "submit_stream", None)
         if callable(submit_stream):
@@ -279,6 +298,7 @@ class ThumbnailStreamController:
             return
         self._cache.put(self._key(page_index), item.image_bytes)
         if page_index in self._interest:
+            self._delivered.add(page_index)
             self.thumbnail_ready.emit(page_index, item.image_bytes)
 
     def _handle_finished(self, generation: int) -> None:
