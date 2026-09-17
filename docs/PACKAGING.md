@@ -1,7 +1,7 @@
 # JoyRead Packaging Guide
 
-This guide currently prepares JoyRead **1.1.0rc1**, a prerelease candidate for
-1.1.0, with PyInstaller. Stable downloads remain at 1.0.2 until publication.
+This guide builds JoyRead **1.1.0** with PyInstaller.
+See [release notes](releases/v1.1.0.md) for installation and validation status.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in
@@ -54,14 +54,14 @@ Repeat for the Reader Topic thumbnail panel, including a panel hidden while
 switching screens and reopened afterwards; preserve the reader's page position.
 Automated scale simulation does not replace physical multi-monitor acceptance.
 
-For the 1.1.0rc1 custom-sort changes, validate grid and list with a temporary
+For the 1.1.0 custom-sort changes, validate grid and list with a temporary
 library: Shift selection, rectangles while wheel-scrolling, group order, first/
 last insertion, outside release and return, right-button/Esc cancellation, window
 deactivation, and external file import. Reopen to check per-scope order, and
 remove/re-add a favourite/collection member to check front insertion. Qt offscreen
 checks and macOS Cocoa synthetic gesture tests have passed locally; physical
 mouse capture/release outside the application still needs desktop acceptance.
-Windows and Ubuntu native gesture checks remain pending. The candidate has not been published; native desktop acceptance remains pending.
+Windows and Ubuntu native gesture checks remain pending. Native desktop acceptance remains pending.
 
 The novel (EPUB) reader remains in the repository, under `src/joyread/novel/`,
 but is disabled for this release until it is complete. With
@@ -646,7 +646,7 @@ The Windows spec retains the installed libffi DLL basename (`ffi.dll`,
 Miniforge environments are supported. SQLite's `sqlite3.dll` remains required.
 
 
-## 1.1.0rc1 prerelease preparation
+## Historical 1.1.0rc1 local preparation (superseded by 1.1.0)
 
 - App/Python version and artifact filenames: `1.1.0rc1`.
 - Proposed GitHub tag: `v1.1.0rc1`; mark the release **Prerelease**, not Latest.
@@ -670,3 +670,12 @@ Miniforge environments are supported. SQLite's `sqlite3.dll` remains required.
 
 Version rules: [Apple bundle keys](https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html),
 [Debian version ordering](https://www.debian.org/doc/debian-policy/ch-controlfields.html#version).
+
+
+## 1.1.0 publication
+
+The user selected 1.1.0 as the published version after local RC1 evaluation.
+Application, DMG and Windows versions are 1.1.0; Debian is 1.1.0-1.
+Rebuild all four targets from the same frozen source commit. Publish as a normal
+GitHub release, with the v1.0.1 macOS first-launch guide included in all three
+languages. Do not relabel or upload the older RC1 binaries as 1.1.0.

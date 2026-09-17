@@ -5,10 +5,9 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
-## [1.1.0rc1] — 2026-09-17
+## [1.1.0] — 2026-09-17
 
-Release candidate for 1.1.0; not the stable release.
-[Release notes — English / 中文 / 日本語](docs/releases/v1.1.0rc1.md)
+[Release notes — English / 中文 / 日本語](docs/releases/v1.1.0.md)
 
 ### HiDPI
 
