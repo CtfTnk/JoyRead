@@ -387,31 +387,25 @@ def test_completions_correlate_by_request_id_not_arrival_order(
     try:
         renderer = session._renderer  # noqa: SLF001
 
-        def enqueue_all() -> list[tuple[int, object]]:
-            from PySide6.QtCore import QSize
-
-            return [
-                (page, renderer.request_page(page, QSize(100, 100))[1]) for page in range(3)
-            ]
-
-        submissions = pdf_thread().call(enqueue_all)
-        request_ids = [
-            request_id
-            for request_id in renderer._pending  # noqa: SLF001
-        ]
-        assert len(request_ids) == 3, "all three requests must still be outstanding"
-
-        # Fabricate delivery out of submission order: last id first, tagged
-        # with an image only that id's page could plausibly have produced.
-        def deliver_out_of_order() -> None:
+        def enqueue_and_deliver() -> list[tuple[int, object]]:
             from PySide6.QtCore import QSize
             from PySide6.QtGui import QImage
 
+            submissions = [
+                (page, renderer.request_page(page, QSize(100, 100))[1]) for page in range(3)
+            ]
+            request_ids = list(renderer._pending)  # noqa: SLF001
+            assert len(request_ids) == 3, "all three requests must still be outstanding"
+            # Submit and inject deliveries in the same owner-thread turn.
+            # Returning to its event loop between these steps lets real Qt
+            # rendering win the race and resolve a completion before our tag.
+            # Last id arrives first, tagged with its own distinguishable image.
             for offset, request_id in enumerate(reversed(request_ids)):
                 tag = QImage(10 + offset, 10, QImage.Format.Format_RGB32)
                 renderer._on_page_rendered(0, QSize(10, 10), tag, None, request_id)  # noqa: SLF001
+            return submissions
 
-        pdf_thread().call(deliver_out_of_order)
+        submissions = pdf_thread().call(enqueue_and_deliver)
 
         for expected_width, (page, completion) in zip((12, 11, 10), submissions):
             image = completion.wait(2.0)
