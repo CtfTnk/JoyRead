@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+from joyread.ui.widgets.elided_label import ElidedLabel
 
 from collections.abc import Iterable
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, Signal as QtSignal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
+    QBoxLayout,
+    QLayout,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -363,6 +366,9 @@ class SettingsPageWidget(QFrame):
         )
         window_switch.toggled.connect(self._viewmodel.set_individual_read_window)
 
+        reset_window = SettingsButtonItem(t("settings.window_size"), t("settings.restore_window_size"))
+        reset_window.clicked.connect(self._viewmodel.reset_window_sizes)
+
         import_banner = SectionBanner(t("settings.banner_import"), self._resources)
 
         import_folder_depth_item = SettingsNumericItem(
@@ -398,6 +404,7 @@ class SettingsPageWidget(QFrame):
             import_switch,
             verify_import_switch,
             window_switch,
+            reset_window,
             import_banner,
             import_folder_depth_item,
             canonical_policy_item,
@@ -825,7 +832,9 @@ class SettingsOptionItem(QFrame):
         self.setFixedHeight(Theme.settings_item_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
-        layout = QHBoxLayout(self)
+        layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
+        self._row_layout = layout
         layout.setContentsMargins(
             Theme.settings_item_padding,
             Theme.settings_item_padding,
@@ -834,7 +843,10 @@ class SettingsOptionItem(QFrame):
         )
         layout.setSpacing(0)
 
-        layout.addWidget(_SettingsNameCell(name), stretch=1)
+        self._name_cell = _SettingsNameCell(name)
+        layout.addWidget(self._name_cell, stretch=1)
+        self._option = option
+        self._option_width = option.width()
         option_frame = QWidget()
         option_frame.setObjectName("SettingsItemOption")
         option_frame.setFixedHeight(Theme.settings_item_name_height)
@@ -843,6 +855,53 @@ class SettingsOptionItem(QFrame):
         option_layout.setSpacing(0)
         option_layout.addWidget(option)
         layout.addWidget(option_frame)
+        self._option_frame = option_frame
+        self._reflow_timer = QTimer(self)
+        self._reflow_timer.setSingleShot(True)
+        self._reflow_timer.timeout.connect(self._reflow)
+        self._reflow_timer.start(0)
+
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, Theme.settings_item_height)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._schedule_reflow()
+
+    def event(self, event) -> bool:
+        result = super().event(event)
+        if event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.FontChange):
+            self._schedule_reflow()
+        return result
+
+    def _schedule_reflow(self) -> None:
+        if hasattr(self, "_reflow_timer") and not self._reflow_timer.isActive():
+            self._reflow_timer.start(0)
+
+    def _reflow(self) -> None:
+        available = max(1, self.contentsRect().width() - 2 * Theme.settings_item_padding)
+        label = self._name_cell.findChild(QLabel)
+        natural = label.fontMetrics().horizontalAdvance(label.text()) + 2 * Theme.settings_item_name_padding
+        wanted = getattr(self._option, "preferred_width", self._option_width)
+        stacked = natural + wanted > available
+        name_width = max(1, (available if stacked else available - wanted) - 2 * Theme.settings_item_name_padding)
+        text_height = label.fontMetrics().boundingRect(QRect(0, 0, name_width, 10000), Qt.TextFlag.TextWordWrap, label.text()).height()
+        name_height = max(Theme.settings_item_name_height, text_height)
+        signature = (available, stacked, wanted, name_height)
+        if signature == getattr(self, "_last_reflow", None):
+            return
+        self._last_reflow = signature
+        self._row_layout.setDirection(QBoxLayout.Direction.TopToBottom if stacked else QBoxLayout.Direction.LeftToRight)
+        self._row_layout.setSpacing(Theme.settings_stacked_gap if stacked else 0)
+        self._option.setFixedWidth(min(wanted, available))
+        self._row_layout.setAlignment(self._option_frame, Qt.AlignmentFlag.AlignRight if stacked else Qt.AlignmentFlag.AlignVCenter)
+        self._name_cell.setFixedHeight(name_height)
+        height = name_height + (Theme.settings_item_name_height + Theme.settings_stacked_gap if stacked else 0)
+        self.setFixedHeight(height + 2 * Theme.settings_item_padding)
+        self._option_frame.layout().activate()
+        self._row_layout.invalidate()
+        self._row_layout.activate()
 
 
 class SettingsDropdownItem(SettingsOptionItem):
@@ -1011,13 +1070,14 @@ class SettingsDropdownButton(QFrame):
         self.setProperty("class", "SettingsDropdownButton")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(_dropdown_width(options), Theme.settings_dropdown_height)
+        self.preferred_width = _dropdown_width(options)
+        self.setFixedSize(self.preferred_width, Theme.settings_dropdown_height)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        self._label = LocalizedLabel(value)
+        self._label = ElidedLabel(value)
         self._label.setProperty("class", "SettingsControlText")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._label, stretch=1)
@@ -1043,9 +1103,10 @@ class SettingsDropdownButton(QFrame):
         return self._value
 
     def refresh_labels(self) -> None:
-        self.setFixedWidth(_dropdown_width(tuple(
+        self.preferred_width = _dropdown_width(tuple(
             value.resolve() if isinstance(value, TranslatedText) else value for value in self._options
-        )))
+        ))
+        self.setFixedWidth(self.preferred_width)
 
     def set_value(self, value: str, *, emit: bool = True) -> None:
         if value == self._value:
@@ -1090,6 +1151,11 @@ class SettingsPushButton(QToolButton):
         set_localized(self, "setText", text)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFixedSize(Theme.settings_push_button_width, Theme.settings_push_button_height)
+
+    @property
+    def preferred_width(self) -> int:
+        return max(Theme.settings_push_button_width,
+                   self.fontMetrics().horizontalAdvance(self.text()) + Theme.settings_item_name_padding * 2)
 
 
 class SettingsSwitchControl(QFrame):
@@ -1176,6 +1242,9 @@ class _SettingsNameCell(QWidget):
 
         label = LocalizedLabel(text)
         label.setProperty("class", "SettingsItemNameText")
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        label.setMinimumWidth(0)
         label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         layout.addWidget(label)
 

@@ -62,7 +62,9 @@
     "canonical_import_never": "从不转换",
     "canonical_import_expensive": "仅低速与嵌套格式",
     "canonical_import_always": "始终转换",
-    "language_system": "跟随系统"
+    "language_system": "跟随系统",
+    "window_size": "窗口大小",
+    "restore_window_size": "恢复默认大小"
   },
   "menu": {
     "read": "阅读",

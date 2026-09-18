@@ -120,6 +120,8 @@ class SettingsViewModel:
     ) -> None:
         settings = settings or AppSettings(storage_location="~/Documents/JoyRead-Library")
         self.state_changed: Signal[None] = Signal()
+        self.window_sizes_reset: Signal[None] = Signal()
+        self._window_sizes = {"library": settings.library_window_size, "reader": settings.reader_window_size}
         # Emitted after the locale has been reloaded so the UI can refresh labels.
         self.language_changed: Signal[None] = Signal()
         # The cache fields are user-tunable and surface "Clear archive cache"
@@ -624,6 +626,20 @@ class SettingsViewModel:
         self.purge_encrypted_cache_on_close = value
         self._persist(purge_encrypted_cache_on_close=value)
         self.state_changed.emit()
+
+    def window_size(self, kind: str) -> tuple[int, int] | None:
+        return self._window_sizes[kind]
+
+    def remember_window_size(self, kind: str, size: tuple[int, int]) -> None:
+        if self._window_sizes[kind] == size:
+            return
+        self._persist(**{f"{kind}_window_size": size})
+        self._window_sizes[kind] = size
+
+    def reset_window_sizes(self) -> None:
+        self._persist(library_window_size=None, reader_window_size=None)
+        self._window_sizes = {"library": None, "reader": None}
+        self.window_sizes_reset.emit()
 
     def _persist(self, **changes: object) -> None:
         if self._settings_store is not None:

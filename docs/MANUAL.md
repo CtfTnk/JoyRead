@@ -153,6 +153,23 @@ reordering; if it fails, JoyRead restores the last saved order and shows an erro
 
 ### Display scaling
 
+JoyRead remembers the normal sizes of the Library and independent Reader
+windows separately. Maximizing/fullscreen and automatic screen fitting do not
+overwrite these preferences. **Settings → General → Window sizes → Restore
+defaults** clears both preferences and resizes open windows to their defaults
+(1200×860), adjusted to the current screen.
+
+On a smaller screen, windows fit the available desktop area and align at its
+top-left corner, below system menus and outside reserved taskbar/Dock space.
+They retain their minimum sizes (Library 738×600; Reader 500×706). If the screen
+is smaller than a minimum, the right/bottom may extend beyond it while the title
+bar stays accessible. Window positions and maximized/fullscreen state are not
+saved. Embedded reading shares the Library window.
+
+The expanded shelf search narrows with the window while keeping format and tag
+filters available. Settings rows place their controls below the label when the
+horizontal layout no longer fits; widening restores the original arrangement.
+
 Book covers and thumbnails in Detail and the Reader's Topic panel adapt to
 display scaling automatically.
 Moving JoyRead between screens refreshes their resolution without changing card

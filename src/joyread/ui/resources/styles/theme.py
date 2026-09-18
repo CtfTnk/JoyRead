@@ -179,6 +179,9 @@ class Theme:
     toolbar_control_height = 36
     search_width = 200
     search_panel_width = 242
+    search_panel_min_width = 122
+    search_min_input_width = 40
+    toolbar_title_min_width = 48
     file_filter_width = 90
     sort_dropdown_width = 146
     control_radius = 10
@@ -342,6 +345,8 @@ class Theme:
     settings_about_line_height = 20
     settings_item_padding = 2
     settings_item_height = 28
+    settings_stacked_gap = 4
+    window_size_save_delay_ms = 400
     settings_item_name_height = 24
     settings_item_name_padding = 10
     settings_item_font_size = 14

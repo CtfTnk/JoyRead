@@ -7,6 +7,10 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Added
 
+- Remember normal Library and independent Reader window sizes separately;
+  General settings can restore both defaults. Small screens fit the window to
+  available space, respecting its minimum size and keeping the title bar at
+  the available area's top-left edge.
 - Show 1-based page numbers below Detail, Reader Topic and cover-picker
   thumbnails, including unloaded pages; numbers also select their page.
 - Keep custom menus within the visible application window, flipping at edges.
@@ -24,6 +28,9 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Fixes
 
+- Allow the expanded shelf search to shrink while retaining format/tag filters.
+- Stack settings controls below their labels when a row is too narrow, with
+  wrapping labels and content-sized action buttons.
 - Let Qt process native window mouse events before intercepting widget gestures,
   preventing stale pressed/hover state and a stuck hand cursor after book clicks.
 - Keep ordinary shelf clicks on Qt's implicit mouse capture; acquire explicit

@@ -91,7 +91,7 @@ def test_search_panel_collapses_expands_and_submits_only_on_action(qtbot) -> Non
     search_bar = panel.findChild(QFrame, "FigmaSearchBar")
     assert search_bar is not None
     assert search_bar.layout().spacing() == Theme.search_bar_gap
-    assert search_input.minimumWidth() == Theme.search_input_text_width
+    assert search_input.minimumWidth() == Theme.search_min_input_width
     assert search_input.alignment() & Qt.AlignmentFlag.AlignLeft
 
     search_input.setText("spy")

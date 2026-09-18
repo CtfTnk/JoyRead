@@ -62,7 +62,9 @@
     "canonical_import_never": "Never",
     "canonical_import_expensive": "Expensive and nested formats",
     "canonical_import_always": "Always",
-    "language_system": "Follow system"
+    "language_system": "Follow system",
+    "window_size": "Window sizes",
+    "restore_window_size": "Restore defaults"
   },
   "menu": {
     "read": "Read",

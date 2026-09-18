@@ -83,12 +83,17 @@ class SearchPanelWidget(QFrame):
         self._search_bar.setVisible(expanded)
         self._collapse_button.setVisible(expanded)
         self._expand_button.setVisible(not expanded)
-        self.setFixedSize(
-            Theme.search_panel_width if expanded else Theme.toolbar_button_size,
-            Theme.toolbar_control_height,
-        )
+        self.setMinimumWidth(Theme.search_panel_min_width if expanded else Theme.toolbar_button_size)
+        self.setMaximumWidth(Theme.search_panel_width if expanded else Theme.toolbar_button_size)
+        self.resize(self.maximumWidth(), Theme.toolbar_control_height)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
+        self.updateGeometry()
         if expanded:
             self._input.setFocus(Qt.FocusReason.MouseFocusReason)
+
+    def sizeHint(self) -> QSize:
+        return QSize(Theme.search_panel_width if self._expanded else Theme.toolbar_button_size,
+                     Theme.toolbar_control_height)
 
     def refresh_labels(self) -> None:
         """Re-apply translated placeholder and tooltips after a locale change."""
@@ -107,7 +112,8 @@ class SearchPanelWidget(QFrame):
         frame.setObjectName("FigmaSearchBar")
         frame.setProperty("class", "FigmaSearchBar")
         frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        frame.setFixedSize(Theme.search_width, Theme.toolbar_control_height)
+        frame.setFixedHeight(Theme.toolbar_control_height)
+        frame.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
 
         layout = QHBoxLayout(frame)
         # Figma's 4px padding is measured from the outside of the 1px stroke.
@@ -131,7 +137,7 @@ class SearchPanelWidget(QFrame):
         set_localized(self._input, "setPlaceholderText", t("toolbar.search_placeholder"))
         self._input.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self._input.setFixedHeight(Theme.search_input_height)
-        self._input.setMinimumWidth(Theme.search_input_text_width)
+        self._input.setMinimumWidth(Theme.search_min_input_width)
         self._input.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._input.returnPressed.connect(self.submit)
 

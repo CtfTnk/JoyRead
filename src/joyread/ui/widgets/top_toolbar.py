@@ -21,6 +21,7 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import FileFilter
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.search_panel import SearchPanelWidget
+from joyread.ui.widgets.elided_label import ElidedLabel
 
 
 class TopToolbarWidget(QWidget):
@@ -42,10 +43,10 @@ class TopToolbarWidget(QWidget):
         )
         layout.setSpacing(10)
 
-        self._title = LocalizedLabel(t("sidebar.all"))
+        self._title = ElidedLabel(t("sidebar.all"))
+        self._title.setMinimumWidth(Theme.toolbar_title_min_width)
         self._title.setObjectName("PageTitle")
-        layout.addWidget(self._title)
-        layout.addStretch(1)
+        layout.addWidget(self._title, stretch=1)
 
         self._search_panel = SearchPanelWidget(resources)
         self._search_panel.search_submitted.connect(self.search_changed.emit)

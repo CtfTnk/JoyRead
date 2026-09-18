@@ -195,11 +195,11 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     for earlier, later in zip(upper_order, upper_order[1:]):
         assert sidebar_item_positions[later] - sidebar_item_positions[earlier] == step
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Four General rows (Storage moved to Privacy), the two genuinely
+    # Five General rows including window-size reset (Storage moved to Privacy), the two genuinely
     # import-only rows (folder depth and the conversion policy), and the Library
     # maintenance action. Archive, Cache, and the two shared archive depth rows
     # are in their own scope now.
-    assert len(setting_items) == 7
+    assert len(setting_items) == 8
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
     assert len(spin_buttons) == 1
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
@@ -446,8 +446,13 @@ def test_pool_usage_does_not_close_an_open_dropdown(qtbot) -> None:
 
 def test_settings_overlay_resizes_panel_within_figma_min_max(qtbot) -> None:
     apply_theme()
-    overlay = SettingsView(SettingsViewModel(), ResourceLoader())
-    qtbot.addWidget(overlay)
+    # Production embeds this overlay in a window. A standalone native window
+    # is screen-clamped by Cocoa before the oversized-layout case can run.
+    host = QWidget()
+    qtbot.addWidget(host)
+    host.resize(900, 600)
+    host.show()
+    overlay = SettingsView(SettingsViewModel(), ResourceLoader(), host)
 
     overlay.resize(900, 600)
     overlay.show()

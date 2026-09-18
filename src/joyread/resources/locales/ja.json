@@ -62,7 +62,9 @@
     "canonical_import_never": "変換しない",
     "canonical_import_expensive": "低速・入れ子形式のみ",
     "canonical_import_always": "常に変換",
-    "language_system": "システムに従う"
+    "language_system": "システムに従う",
+    "window_size": "ウィンドウサイズ",
+    "restore_window_size": "既定のサイズに戻す"
   },
   "menu": {
     "read": "読む",

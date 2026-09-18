@@ -42,6 +42,8 @@ class AppSettings:
     # retaining a content hash calculated during the required copy pass.
     verify_imported_file_integrity: bool = True
     individual_read_window: bool = False
+    library_window_size: tuple[int, int] | None = None
+    reader_window_size: tuple[int, int] | None = None
     shelf_sort_field: str = "Add Time"
     shelf_sort_ascending: bool = False
     shelf_file_filter: str = "ALL"
@@ -168,6 +170,8 @@ class SettingsStore:
         logger.debug("Loading settings from %s", self.settings_path)
         raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
         settings = AppSettings(
+            library_window_size=_window_size(raw.get("library_window_size")),
+            reader_window_size=_window_size(raw.get("reader_window_size")),
             storage_location=str(raw.get("storage_location") or self._default_storage_root),
             last_good_storage_location=_coerce_optional_str(raw.get("last_good_storage_location")),
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
@@ -402,3 +406,10 @@ def _coerce_limit_or_unlimited(value: object, *, default: int, maximum: int) -> 
     """Parse a positive resource setting whose UI sentinel is ``-1``."""
 
     return _coerce_depth_limit(value, default=default, maximum=maximum)
+
+
+def _window_size(value: object) -> tuple[int, int] | None:
+    """Old/malformed preferences use defaults; geometry is in logical pixels."""
+    if isinstance(value, (tuple, list)) and len(value) == 2 and all(type(v) is int and v > 0 for v in value):
+        return value[0], value[1]
+    return None

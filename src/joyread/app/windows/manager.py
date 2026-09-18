@@ -25,6 +25,7 @@ from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
+from joyread.ui.widgets.window_geometry import WindowGeometryController, fitted_window_rect
 
 
 logger = logging.getLogger(__name__)
@@ -250,6 +251,11 @@ class ApplicationWindowManager(QObject):
             self._ownership.add_child(window_id, owner=id(owner))
         self._activation.record_activation(window_id)
         window.installEventFilter(self)
+        settings = getattr(self._context, "settings_viewmodel", None)
+        if settings is not None and hasattr(settings, "window_size"):
+            window._window_geometry_controller = WindowGeometryController(
+                window, settings, "library" if window is self._main_window else "reader"
+            )
 
         closed = getattr(window, "closed", None)
         if closed is not None and hasattr(closed, "connect"):
@@ -394,6 +400,10 @@ def activate_window(window: QMainWindow) -> None:
 
 
 def center_window_on_launch(window: QMainWindow) -> None:
+    geometry_controller = getattr(window, "_window_geometry_controller", None)
+    if geometry_controller is not None:
+        geometry_controller.place()
+        return
     screen = window.screen() or QApplication.primaryScreen()
     if screen is None:
         return
@@ -402,5 +412,4 @@ def center_window_on_launch(window: QMainWindow) -> None:
         window_geometry = window.geometry()
     if window_geometry.isNull() or window_geometry.width() <= 0 or window_geometry.height() <= 0:
         return
-    window_geometry.moveCenter(screen.availableGeometry().center())
-    window.move(window_geometry.topLeft())
+    window.setGeometry(fitted_window_rect(window.size(), window.minimumSize(), screen.availableGeometry()))
