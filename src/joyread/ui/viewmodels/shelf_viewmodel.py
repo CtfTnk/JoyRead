@@ -145,6 +145,8 @@ class ShelfViewModel(ShelfSorting):
         self._thumbnail_dpr = 1.0
         self._cover_request_epoch = 0
         self._settings_store = settings_store
+        self.sidebar_sections_changed: Signal[None] = Signal()
+        self.sidebar_collapsed_sections = frozenset(settings.sidebar_collapsed_sections if settings else ())
         self.books: list[Book] = []
         self.collections: list[Collection] = []
         self.languages: list[Language] = []
@@ -241,6 +243,19 @@ class ShelfViewModel(ShelfSorting):
     @property
     def can_remove_from_current_shelf(self) -> bool:
         return self.current_shelf == ShelfKey.RECENT.value or self.current_shelf.startswith("collection:")
+
+    def set_sidebar_section_expanded(self, key: str, expanded: bool) -> None:
+        collapsed = set(self.sidebar_collapsed_sections)
+        if expanded:
+            collapsed.discard(key)
+        else:
+            collapsed.add(key)
+        if collapsed == self.sidebar_collapsed_sections:
+            return
+        if self._settings_store is not None:
+            self._settings_store.update(sidebar_collapsed_sections=tuple(sorted(collapsed)))
+        self.sidebar_collapsed_sections = frozenset(collapsed)
+        self.sidebar_sections_changed.emit()
 
     def load_books(self) -> None:
         """Refresh every shelf-backing list from the library service.

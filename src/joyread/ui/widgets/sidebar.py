@@ -24,10 +24,12 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.section_banner import SectionBanner, SidebarSectionBanner
+from joyread.ui.widgets.sidebar_section import SidebarSection
 
 
 class SidebarWidget(QWidget):
     navigation_requested = QtSignal(str)
+    section_expansion_requested = QtSignal(str, bool)
     collection_menu_requested = QtSignal(str, QPoint)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
@@ -36,6 +38,8 @@ class SidebarWidget(QWidget):
         self.setObjectName("Sidebar")
         self.setFixedWidth(Theme.sidebar_width)
         self._buttons: dict[str, SidebarItemWidget] = {}
+        self._sections: dict[str, SidebarSection] = {}
+        self._active_key = ShelfKey.ALL.value
         # ``_hidden_item`` is built up-front but visibility is gated on the
         # "Show Hidden Collection" setting toggled from the Privacy page.
         self._hidden_item: SidebarItemWidget | None = None
@@ -69,13 +73,9 @@ class SidebarWidget(QWidget):
         upper_layout.setSpacing(Theme.sidebar_gap)
 
         upper_layout.addWidget(self._build_book_shelf_section())
-        self._collections_section = QWidget()
-        self._collections_section.setObjectName("SidebarSectionGroup")
-        collections_layout = QVBoxLayout(self._collections_section)
-        collections_layout.setContentsMargins(0, 0, 0, 0)
-        collections_layout.setSpacing(Theme.sidebar_gap)
-        self._collections_banner = SidebarSectionBanner(t("sidebar.collections"), self._resources)
-        collections_layout.addWidget(self._collections_banner)
+        self._collections_section = self._make_section("collections", t("sidebar.collections"))
+        collections_layout = self._collections_section.body_layout
+        self._collections_banner = self._collections_section.banner
         new_collection_item = self._item(t("sidebar.new_collection"), "new_collection", "icon_add.svg")
         self._fixed_labels.append((new_collection_item, "sidebar.new_collection"))
         collections_layout.addWidget(new_collection_item)
@@ -126,6 +126,7 @@ class SidebarWidget(QWidget):
                 allow_context_menu=True,
             )
             self._collections_layout.addWidget(button)
+        self.set_active(self._active_key)
 
     def set_hidden_visible(self, visible: bool) -> None:
         if self._hidden_item is not None:
@@ -141,21 +142,14 @@ class SidebarWidget(QWidget):
             widget.set_label(t(key))
 
     def set_active(self, key: str) -> None:
+        self._active_key = key
         for item_key, button in self._buttons.items():
             button.set_checked(item_key == key)
 
     def _build_book_shelf_section(self) -> QWidget:
-        # The fixed Book Shelf section, plus a Hidden row that the Privacy
-        # toggle reveals. Built inline (rather than via ``_section``) so the
-        # Hidden row reference survives for later visibility toggling.
-        section = QWidget()
-        section.setObjectName("SidebarSectionGroup")
-        layout = QVBoxLayout(section)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Theme.sidebar_gap)
-
-        self._book_shelf_banner = SidebarSectionBanner(t("sidebar.book_shelf"), self._resources)
-        layout.addWidget(self._book_shelf_banner)
+        section = self._make_section("bookshelf", t("sidebar.book_shelf"))
+        layout = section.body_layout
+        self._book_shelf_banner = section.banner
         all_item = self._item(t("sidebar.all"), ShelfKey.ALL.value, "icon_book_all.svg", checked=True)
         self._fixed_labels.append((all_item, "sidebar.all"))
         layout.addWidget(all_item)
@@ -171,16 +165,15 @@ class SidebarWidget(QWidget):
         layout.addWidget(self._hidden_item)
         return section
 
-    def _section(self, title: str, items: tuple[tuple[str, str, str, bool], ...]) -> QWidget:
-        section = QWidget()
-        section.setObjectName("SidebarSectionGroup")
-        layout = QVBoxLayout(section)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Theme.sidebar_gap)
+    def set_collapsed_sections(self, keys) -> None:
+        collapsed = set(keys)
+        for key, section in self._sections.items():
+            section.set_expanded(key not in collapsed)
 
-        layout.addWidget(SidebarSectionBanner(title, self._resources))
-        for label, key, icon_name, checked in items:
-            layout.addWidget(self._item(label, key, icon_name, checked=checked))
+    def _make_section(self, key: str, title: str) -> SidebarSection:
+        section = SidebarSection(key, title, self._resources)
+        section.expansion_requested.connect(self.section_expansion_requested.emit)
+        self._sections[key] = section
         return section
 
     def _item(

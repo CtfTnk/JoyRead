@@ -7,7 +7,9 @@
     "all": "全部",
     "recent": "最近阅读",
     "favourites": "我的收藏",
-    "hidden": "已隐藏"
+    "hidden": "已隐藏",
+    "collapse_section": "收起{name}",
+    "expand_section": "展开{name}"
   },
   "settings": {
     "section_general": "通用",

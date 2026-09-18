@@ -192,6 +192,17 @@ tooltip. Moving or resizing the window closes an open menu.
 
 ## Collections
 
+Click the **Book Shelf** or **Collections** header to collapse or expand its
+navigation entries. The arrow points right when collapsed and down when expanded;
+focused headers also respond to Enter or Space.
+Headers darken while pressed; dragging outside removes that feedback and
+releasing outside cancels the click.
+Both sections start expanded, and JoyRead remembers their state across restarts.
+Collapsing a section keeps the
+current shelf and selection; Collections also hides its New Collection entry.
+Settings remains visible at the bottom. Hidden Space visibility still follows
+its privacy setting, including after reopening a collapsed section.
+
 Collections are manual groupings — a series, a run, a to-read pile. Create one
 with **New Collection** in the sidebar, then add books through a book's
 **Add to…** menu. A book can be in as many collections as you like.

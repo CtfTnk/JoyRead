@@ -7,6 +7,9 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Added
 
+- Independently collapse/expand the Bookshelf and Collections sidebar sections
+  by clicking their headers or pressing Enter/Space. Remember state across
+  restarts without changing the active shelf, selection or privacy visibility.
 - Remember normal Library and independent Reader window sizes separately;
   General settings can restore both defaults. Small screens fit the window to
   available space, respecting its minimum size and keeping the title bar at
@@ -28,6 +31,8 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Fixes
 
+- Give sidebar section headers distinct hover/pressed feedback, clear the fill
+  when dragging outside, and avoid refreshing unchanged sections on toggles.
 - Allow the expanded shelf search to shrink while retaining format/tag filters.
 - Stack settings controls below their labels when a row is too narrow, with
   wrapping labels and content-sized action buttons.

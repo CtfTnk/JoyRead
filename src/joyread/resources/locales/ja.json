@@ -7,7 +7,9 @@
     "all": "すべて",
     "recent": "最近",
     "favourites": "お気に入り",
-    "hidden": "非表示"
+    "hidden": "非表示",
+    "collapse_section": "{name}を折りたたむ",
+    "expand_section": "{name}を展開"
   },
   "settings": {
     "section_general": "一般",

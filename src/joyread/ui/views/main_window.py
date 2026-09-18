@@ -135,6 +135,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(Theme.main_view_gap)
 
         self.sidebar = SidebarWidget(context.resources)
+        self.sidebar.section_expansion_requested.connect(context.shelf_viewmodel.set_sidebar_section_expanded)
+        context.shelf_viewmodel.sidebar_sections_changed.connect(self._sync_sidebar_sections)
+        self.destroyed.connect(lambda: context.shelf_viewmodel.sidebar_sections_changed.disconnect(self._sync_sidebar_sections))
+        self._sync_sidebar_sections()
         self.shelf_view = ShelfView(context.shelf_viewmodel, context.resources)
         self.content_stack = QStackedWidget()
         self.content_stack.setObjectName("MainContentStack")
@@ -1650,6 +1654,9 @@ class MainWindow(QMainWindow):
             ),
             None,
         )
+
+    def _sync_sidebar_sections(self) -> None:
+        self.sidebar.set_collapsed_sections(self._context.shelf_viewmodel.sidebar_collapsed_sections)
 
     def _sync_sidebar(self) -> None:
         if self.settings_view.isVisible():

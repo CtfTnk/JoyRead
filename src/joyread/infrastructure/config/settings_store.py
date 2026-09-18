@@ -48,6 +48,7 @@ class AppSettings:
     shelf_sort_ascending: bool = False
     shelf_file_filter: str = "ALL"
     shelf_view_mode: str = "grid"
+    sidebar_collapsed_sections: tuple[str, ...] = ()
     # In-memory cache budgets use MB; the archive disk pool uses GB. Defaults
     # intentionally match AppConfig so missing settings remain upgrade-safe.
     # Reader cache is the total shared budget across all open reader windows.
@@ -170,6 +171,7 @@ class SettingsStore:
         logger.debug("Loading settings from %s", self.settings_path)
         raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
         settings = AppSettings(
+            sidebar_collapsed_sections=_section_keys(raw.get("sidebar_collapsed_sections")),
             library_window_size=_window_size(raw.get("library_window_size")),
             reader_window_size=_window_size(raw.get("reader_window_size")),
             storage_location=str(raw.get("storage_location") or self._default_storage_root),
@@ -413,3 +415,9 @@ def _window_size(value: object) -> tuple[int, int] | None:
     if isinstance(value, (tuple, list)) and len(value) == 2 and all(type(v) is int and v > 0 for v in value):
         return value[0], value[1]
     return None
+
+
+def _section_keys(value: object) -> tuple[str, ...]:
+    if not isinstance(value, (tuple, list)):
+        return ()
+    return tuple(dict.fromkeys(key for key in value if isinstance(key, str) and key))

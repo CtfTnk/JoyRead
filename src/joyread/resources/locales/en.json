@@ -7,7 +7,9 @@
     "all": "All",
     "recent": "Recent",
     "favourites": "Favourites",
-    "hidden": "Hidden"
+    "hidden": "Hidden",
+    "collapse_section": "Collapse {name}",
+    "expand_section": "Expand {name}"
   },
   "settings": {
     "section_general": "General",
