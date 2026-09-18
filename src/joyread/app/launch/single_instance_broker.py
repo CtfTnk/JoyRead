@@ -19,6 +19,7 @@ from joyread.app.launch.intent import (
     encode_launch_intent,
 )
 from joyread.core.operation_context import OperationContext, bind_operation, create_operation
+from joyread.infrastructure import windows_activation
 
 
 logger = logging.getLogger(__name__)
@@ -216,6 +217,13 @@ class SingleInstanceBroker(QObject):
             socket.connectToServer(self._server_name)
             remaining_ms = max(1, int((deadline - monotonic()) * 1000))
             if socket.waitForConnected(min(250, remaining_ms)):
+                # The Explorer-launched process owns foreground eligibility.
+                # Transfer it before writing: primary can handle IPC immediately.
+                # Read only the existing process lock, never profile settings/DB.
+                if windows_activation.IS_WINDOWS and self._lock is not None:
+                    process_id, _host, _application = self._lock.getLockInfo()
+                    if process_id > 0:
+                        windows_activation.allow_foreground_process(process_id)
                 if socket.write(message) != len(message):
                     last_error = socket.errorString()
                     socket.abort()

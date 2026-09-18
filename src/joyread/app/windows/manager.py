@@ -26,6 +26,7 @@ from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneRea
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.window_geometry import WindowGeometryController, fitted_window_rect
+from joyread.infrastructure import windows_activation
 
 
 logger = logging.getLogger(__name__)
@@ -397,6 +398,10 @@ def activate_window(window: QMainWindow) -> None:
         window.show()
     window.raise_()
     window.activateWindow()
+    if windows_activation.IS_WINDOWS:
+        # Qt may only flash the taskbar for a background application. The
+        # explicit native request can use permission passed by a secondary.
+        windows_activation.request_foreground_window(int(window.winId()))
 
 
 def center_window_on_launch(window: QMainWindow) -> None:

@@ -5,6 +5,13 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Fixes
+
+- Request native Windows foreground activation when opening or reusing the
+  Library and Reader windows. Secondary launches grant the existing process
+  foreground permission before forwarding the open request, while preserving
+  minimized-window restoration and maximized state.
+
 ## [1.2.0] — 2026-09-18
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.2.0.md)
