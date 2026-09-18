@@ -1,0 +1,138 @@
+name: Publish verified release
+run-name: Publish packages from build ${{ inputs.build_run_id }}
+
+# Explicit dispatch only. Building, pushing, and tagging never publish a release.
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Build packages run containing all four targets
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: joyread-release-publication
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUILD_RUN_ID: ${{ inputs.build_run_id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify build source
+        run: |
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GH_REPO/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/run.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          run = json.loads((Path(os.environ['RUNNER_TEMP']) / 'run.json').read_text())
+          assert run['path'] == '.github/workflows/build-packages.yml'
+          assert run['event'] == 'workflow_dispatch'
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['head_repository']['full_name'] == os.environ['GH_REPO']
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f"BUILD_SHA={run['head_sha']}\nBUILD_URL={run['html_url']}\n")
+          PY
+
+      - uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run_id }}
+          path: release-artifacts
+
+      - name: Verify installers and assemble provenance
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, shutil, subprocess, tomllib
+          from pathlib import Path
+          expected = {
+              'macos-arm64': 'macos-arm64.dmg',
+              'windows-x86_64': 'windows-x86_64-setup.exe',
+              'linux-amd64': 'linux-amd64.deb',
+              'linux-arm64': 'linux-arm64.deb',
+          }
+          # Read version from the exact built commit, not the publication checkout.
+          raw = subprocess.check_output(['gh', 'api', '-H', 'Accept: application/vnd.github.raw+json',
+              f"repos/{os.environ['GH_REPO']}/contents/pyproject.toml?ref={os.environ['BUILD_SHA']}"], text=True)
+          version = tomllib.loads(raw)['project']['version']
+          assert re.fullmatch(r'\d+\.\d+\.\d+', version), 'Stable versions only'
+          notes = Path(f'docs/releases/v{version}.md')
+          assert notes.is_file(), f'Missing complete release notes: {notes}'
+          destination = Path('release-upload')
+          destination.mkdir()
+          targets, checksums = {}, []
+          for info_path in sorted(Path('release-artifacts').glob('*/build-info.json')):
+              info = json.loads(info_path.read_text())
+              target = info['target']
+              assert target in expected and target not in targets
+              assert info['commit'] == os.environ['BUILD_SHA'] and info['version'] == version
+              name = f'JoyRead-{version}-{expected[target]}'
+              manifest = (info_path.parent / 'SHA256SUMS').read_text().splitlines()
+              assert len(manifest) == 1
+              digest, listed_name = manifest[0].split(maxsplit=1)
+              assert listed_name == name
+              package = info_path.parent / name
+              with package.open('rb') as source:
+                  actual = hashlib.file_digest(source, 'sha256').hexdigest()
+              assert digest == actual, f'Checksum mismatch: {name}'
+              shutil.copy2(package, destination / name)
+              checksums.append(f'{actual}  {name}\n')
+              targets[target] = info
+          assert targets.keys() == expected.keys(), f'Incomplete targets: {targets.keys()}'
+          (destination / 'SHA256SUMS').write_text(''.join(sorted(checksums)))
+          metadata = {'version': version, 'commit': os.environ['BUILD_SHA'],
+                      'workflow_run': os.environ['BUILD_URL'], 'targets': targets}
+          (destination / 'build-info.json').write_text(json.dumps(metadata, indent=2) + '\n')
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'RELEASE_TAG=v{version}\nRELEASE_NOTES={notes}\n')
+          PY
+
+      - name: Create draft and upload verified assets
+        run: |
+          # Refuse an existing release/tag: reruns must never overwrite published assets.
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; inspect it before retrying." >&2
+            exit 1
+          fi
+          if gh api "repos/$GH_REPO/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists; inspect it before retrying." >&2
+            exit 1
+          fi
+          gh api -X POST "repos/$GH_REPO/git/refs" -f "ref=refs/tags/$RELEASE_TAG" -f "sha=$BUILD_SHA"
+          gh release create "$RELEASE_TAG" release-upload/* --verify-tag --draft \
+            --title "JoyRead $RELEASE_TAG" --notes-file "$RELEASE_NOTES"
+
+      - name: Verify uploaded assets and publish
+        run: |
+          gh api --paginate "repos/$GH_REPO/releases?per_page=100" \
+            --jq ".[] | select(.tag_name == \"$RELEASE_TAG\")" > "$RUNNER_TEMP/release.json"
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          release = json.loads((Path(os.environ['RUNNER_TEMP']) / 'release.json').read_text())
+          assert release['draft'] and not release['prerelease']
+          assets = {item['name']: item for item in release['assets']}
+          files = list(Path('release-upload').iterdir())
+          assert set(assets) == {path.name for path in files} and len(files) == 6
+          for path in files:
+              asset = assets[path.name]
+              assert asset['state'] == 'uploaded' and asset['size'] == path.stat().st_size
+              with path.open('rb') as source:
+                  digest = hashlib.file_digest(source, 'sha256').hexdigest()
+              assert asset['digest'] == 'sha256:' + digest, path.name
+          PY
+          gh release edit "$RELEASE_TAG" --draft=false --latest
+          gh release view "$RELEASE_TAG" --json url --jq .url >> "$GITHUB_STEP_SUMMARY"

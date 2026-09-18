@@ -691,3 +691,25 @@ preloading, adaptive menus/settings, saved window sizes and sidebar sections.
 Chinese and Japanese release notes are complete translations in initially
 collapsed details blocks; English remains expanded, with the macOS 1.0.1
 first-launch instructions retained in all three languages.
+
+### Publish verified cloud artifacts
+
+`Publish verified release` (`.github/workflows/publish-release.yml`) is an
+explicit `workflow_dispatch` step after a successful all-target `Build packages`
+run. Pass that run's numeric ID as `build_run_id`. It checks the build workflow,
+success and source repository, reads the version from the built commit, requires
+all four target manifests to match that commit/version, and verifies installer
+SHA-256 hashes. It publishes the complete three-language notes from the dispatch
+checkout, so finish the validation tables before dispatching.
+
+The workflow creates the release tag at the built commit, uploads all four
+installers plus aggregate checksums/provenance to a draft, compares GitHub's
+uploaded asset digests, and only then publishes it as Latest. Existing tags or
+releases are never overwritten automatically; inspect a failed draft before
+retrying. Builds, pushes and tags still do not trigger publication by themselves.
+
+1.2.0 installers were built from `20eabf1616eda690a293b1640adb3b89ef04a8ee` in
+[Build packages 35311131525](https://github.com/CtfTnk/JoyRead/actions/runs/35311131525). Shipping tests passed:
+macOS arm64 1754 (12 skipped), Windows x64 1745 (21 skipped), Linux amd64
+and arm64 1756 each (10 skipped each). Both Linux packages passed APT and
+installed-application validation. See the complete three-language release notes.
