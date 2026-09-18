@@ -11,6 +11,9 @@ All notable changes to JoyRead are documented here. This project follows
   Library and Reader windows. Secondary launches grant the existing process
   foreground permission before forwarding the open request, while preserving
   minimized-window restoration and maximized state.
+- Dispatch dropped Read/Import commands after the native drop callback returns,
+  so Reader activation does not occur inside drag handling. Closing the Library
+  cancels undelivered drop commands.
 
 ## [1.2.0] — 2026-09-18
 

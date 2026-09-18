@@ -8,7 +8,7 @@ import logging
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal, Slot
 from PySide6.QtGui import (
     QCloseEvent,
     QCursor,
@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
+        self._closing = False
         # Absent unless the composition root wired the novel reader in, which
         # is what makes an .epub unopenable rather than a special case here.
         self._novel_reader_provider = novel_reader_provider
@@ -173,8 +174,16 @@ class MainWindow(QMainWindow):
         )
         self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
         self.drop_zone_overlay.set_content_area(view_panel)
-        self.drop_zone_overlay.read_requested.connect(self.open_reader_for_file)
-        self.drop_zone_overlay.import_requested.connect(self._import_dropped_paths)
+        # Accept the drop and return to Qt/native drag handling before opening
+        # windows or dialogs. A synchronous Reader activation happens inside
+        # the OLE drop callback and can be undone by the drag source's cleanup.
+        # Queue the committed paths, not the transient QDropEvent/mime object.
+        self.drop_zone_overlay.read_requested.connect(
+            self.open_reader_for_file, Qt.ConnectionType.QueuedConnection
+        )
+        self.drop_zone_overlay.import_requested.connect(
+            self._import_dropped_paths, Qt.ConnectionType.QueuedConnection
+        )
         self.setCentralWidget(root)
         self.setAcceptDrops(True)
         self._position_cover_editor_overlay()
@@ -347,7 +356,10 @@ class MainWindow(QMainWindow):
         self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
         self.shelf_view.render()
 
+    @Slot(object)
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
+        if self._closing:
+            return
         source_path = Path(path)
         logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
         if self._is_shelved_epub(source_path):
@@ -497,8 +509,9 @@ class MainWindow(QMainWindow):
 
         return self.drop_zone_overlay.mapFrom(self, point)
 
+    @Slot(tuple)
     def _import_dropped_paths(self, paths: tuple[Path, ...]) -> None:
-        if not paths:
+        if self._closing or not paths:
             return
         settings = self._settings_for_import()
         logger.info("Import from drop count=%d", len(paths))
@@ -638,6 +651,9 @@ class MainWindow(QMainWindow):
         launcher(request)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        # Posted drop commands may precede DeferredDelete in the event queue.
+        # Closing the Library cancels them before they can create owned Readers.
+        self._closing = True
         self._close_embedded_reader()
         self._cover_editor_thumbnail_viewmodel.cancel()
         self.closed.emit()

@@ -16,6 +16,7 @@ from PIL import Image
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QUrl, Qt
 from PySide6.QtGui import QDragEnterEvent, QDragLeaveEvent, QDropEvent
 from PySide6.QtWidgets import QWidget
+from shiboken6 import isValid
 
 from joyread.app.app_context import create_app_context
 from joyread.ui.views.main_window import MainWindow
@@ -40,7 +41,7 @@ def window(qtbot, tmp_path, monkeypatch):
     finally:
         # Without this, a failure constructing MainWindow leaks an open SQLite
         # connection per test instead of producing one readable error.
-        if main is not None:
+        if main is not None and isValid(main):
             main.close()
         context.close()
 
@@ -137,7 +138,7 @@ def test_a_drag_is_refused_while_a_dialog_is_up(window, tmp_path) -> None:
     assert not main.drop_zone_overlay.isVisible()
 
 
-def test_dropping_on_read_opens_a_reader_without_importing(window, tmp_path) -> None:
+def test_dropping_on_read_opens_a_reader_without_importing(window, tmp_path, qtbot) -> None:
     main, launches = window
     source = _cbz(tmp_path / "drop" / "a.cbz")
     mime = _mime(source)
@@ -146,13 +147,16 @@ def test_dropping_on_read_opens_a_reader_without_importing(window, tmp_path) -> 
     event = _drop(main, mime, READ_ZONE)
 
     assert event.isAccepted()
-    assert len(launches) == 1
+    # Native drop handling must regain control before the Reader is created.
+    assert launches == []
+    qtbot.waitUntil(lambda: len(launches) == 1)
+    assert launches[0].path == source
     # Read must not touch the library.
     assert main._context.book_repository.list_books() == []
 
 
 def test_dropping_on_import_submits_an_import_and_opens_no_reader(
-    window, tmp_path, monkeypatch
+    window, tmp_path, monkeypatch, qtbot
 ) -> None:
     main, launches = window
     submitted: list[str] = []
@@ -174,7 +178,8 @@ def test_dropping_on_import_submits_an_import_and_opens_no_reader(
     event = _drop(main, mime, IMPORT_ZONE)
 
     assert event.isAccepted()
-    assert submitted == ["import-dropped"]
+    assert submitted == []
+    qtbot.waitUntil(lambda: submitted == ["import-dropped"])
     assert launches == []
 
 
@@ -207,7 +212,7 @@ def test_leaving_the_window_dismisses_the_overlay(window, qtbot, tmp_path) -> No
     qtbot.waitUntil(lambda: not main.drop_zone_overlay.isVisible(), timeout=2000)
 
 
-def test_a_drop_near_a_zone_edge_is_mapped_into_overlay_coordinates(window, tmp_path) -> None:
+def test_a_drop_near_a_zone_edge_is_mapped_into_overlay_coordinates(window, tmp_path, qtbot) -> None:
     """The overlay sits below the title bar, so window coordinates are offset
     from its own. Dropping at a zone's centre survives that error; dropping near
     an edge does not, which is what makes the mapping load-bearing here.
@@ -234,7 +239,36 @@ def test_a_drop_near_a_zone_edge_is_mapped_into_overlay_coordinates(window, tmp_
     main.dropEvent(event)
 
     assert event.isAccepted()
-    assert len(launches) == 1
+    qtbot.waitUntil(lambda: len(launches) == 1)
+
+
+@pytest.mark.parametrize("zone", [READ_ZONE, IMPORT_ZONE])
+def test_closing_library_cancels_an_accepted_but_undelivered_drop(
+    window, tmp_path, qtbot, monkeypatch, zone
+) -> None:
+    main, launches = window
+    submitted = []
+    monkeypatch.setattr(main._context.task_service, "submit_stream", lambda *args, **kwargs: submitted.append(args))
+    mime = _mime(_cbz(tmp_path / "drop" / "a.cbz"))
+    _enter(main, mime, QPoint(600, 400))
+    assert _drop(main, mime, zone).isAccepted()
+    main.close()
+    qtbot.wait(0)
+    assert launches == []
+    assert submitted == []
+
+
+def test_queued_read_keeps_committed_path_after_another_drag_begins(window, tmp_path, qtbot) -> None:
+    main, launches = window
+    first = _cbz(tmp_path / "drop" / "first.cbz")
+    second = _cbz(tmp_path / "drop" / "second.cbz")
+    mime = _mime(first)
+    _enter(main, mime, QPoint(600, 400))
+    assert _drop(main, mime, READ_ZONE).isAccepted()
+    _enter(main, _mime(second), QPoint(600, 400))
+    main.dragLeaveEvent(QDragLeaveEvent())
+    qtbot.waitUntil(lambda: len(launches) == 1)
+    assert launches[0].path == first
 
 
 def test_a_drag_is_refused_while_the_settings_page_is_open(window, tmp_path) -> None:
