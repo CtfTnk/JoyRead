@@ -260,14 +260,17 @@ def test_cancelling_midway_leaves_no_artifact(tmp_path: Path) -> None:
     seen: list[int] = []
 
     def cancel_after_two() -> bool:
-        seen.append(1)
-        return len(seen) > 2
+        # Cancellation probes also run inside the extractor. Counting probes
+        # makes this depend on process startup speed instead of written pages.
+        return len(seen) >= 2
 
     with pytest.raises(CanonicalWriteCancelled):
         ArchiveImageService().convert_to_canonical(
-            source, destination, is_cancelled=cancel_after_two
+            source, destination, is_cancelled=cancel_after_two,
+            on_page=lambda count, _total: seen.append(count),
         )
 
+    assert seen == [1, 2]
     assert not destination.exists()
 
 
