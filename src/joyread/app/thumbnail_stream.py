@@ -55,6 +55,19 @@ class ThumbnailStreamController:
         self._generation = 0
         self._submitting = False
         self._pump_deferred = False
+        self._preview_index: int | None = None
+        self._preview_loader: ThumbnailLoader | None = None
+        self._preview_enabled = False
+        self._active_preview = False
+
+    def set_preview(self, index: int | None, loader: ThumbnailLoader | None = None, *, enabled: bool = True) -> None:
+        """Replace only preview demand; an executing batch drains into the cache."""
+        self._preview_index = index if index is not None and 0 <= index < self._page_count else None
+        self._preview_loader = loader
+        self._preview_enabled = enabled
+        self._delivered.discard(self._preview_index)
+        visible, prefetch = self._visible, self._prefetch
+        self.set_interest(visible, prefetch, force=True)
 
     @property
     def source_id(self) -> str | None:
@@ -119,6 +132,7 @@ class ThumbnailStreamController:
         self,
         visible_indices: Iterable[int],
         prefetch_indices: Iterable[int] = (),
+        *, force: bool = False,
     ) -> None:
         if self._source_id is None or self._loader is None or self._page_count <= 0:
             self.release_interest()
@@ -130,7 +144,7 @@ class ThumbnailStreamController:
             for index in _unique_valid_indices(prefetch_indices, self._page_count)
             if index not in visible_set
         )
-        if visible == self._visible and prefetch == self._prefetch:
+        if not force and visible == self._visible and prefetch == self._prefetch:
             return
 
         # Scrolling changes demand, not source identity. A bounded running batch
@@ -143,7 +157,8 @@ class ThumbnailStreamController:
                 self._direction = 1 if movement > 0 else -1
         self._visible = visible
         self._prefetch = prefetch
-        self._interest = frozenset((*visible, *prefetch))
+        preview = () if self._preview_index is None else (self._preview_index,)
+        self._interest = frozenset((*visible, *prefetch, *preview))
         self._delivered.intersection_update(self._interest)
         self._cache.set_pins(frozenset(self._key(index) for index in self._interest))
 
@@ -155,12 +170,15 @@ class ThumbnailStreamController:
                 min(abs(index - low), abs(index - high)),
             )))
         ordered.extend(prefetch)
+        ordered = list(dict.fromkeys((*preview, *ordered)))
         missing: list[int] = []
         for page_index in ordered:
             if page_index in self._delivered:
                 continue
             cached = self._cache.get(self._key(page_index))
             if cached is None:
+                if page_index == self._preview_index and not self._preview_enabled and page_index not in (*visible, *prefetch):
+                    continue
                 if page_index not in self._active_indices:
                     missing.append(page_index)
                 continue
@@ -191,6 +209,9 @@ class ThumbnailStreamController:
         self._loader = None
         self._batch_size_for = lambda _index: 1
         self._batch_planner = None
+        self._preview_index = None
+        self._preview_loader = None
+        self._preview_enabled = False
 
     def refresh(self) -> None:
         self._delivered.clear()
@@ -214,7 +235,18 @@ class ThumbnailStreamController:
         generation = self._generation
         priority = TaskPriority.HIGH if any(index in self._visible for index in selected) else TaskPriority.NORMAL
 
-        loader = self._loader
+        # Topic demand retains its normal source policy even when preview also
+        # points at that page; preview must not downgrade it to cache-only.
+        preview_batch = (
+            selected == (self._preview_index,)
+            and self._preview_loader is not None
+            and self._preview_enabled
+            and self._preview_index not in (*self._visible, *self._prefetch)
+        )
+        loader = self._preview_loader if preview_batch else self._loader
+        self._active_preview = preview_batch
+        if preview_batch:
+            priority = TaskPriority.NORMAL
 
         def work(emit_item: ThumbnailEmitter) -> None:
             loader(selected, emit_item)
@@ -271,6 +303,8 @@ class ThumbnailStreamController:
         candidates = tuple(self._queue[:MAX_SEQUENTIAL_BATCH_ITEMS])
         if not candidates:
             return ()
+        if candidates[0] == self._preview_index and self._preview_enabled:
+            return candidates[:1]
         if self._batch_planner is None:
             batch_size = max(
                 1,
@@ -304,6 +338,13 @@ class ThumbnailStreamController:
     def _handle_finished(self, generation: int) -> None:
         if generation != self._generation:
             return
+        # Topic may have requested a page while a cache-only preview was
+        # already checking it. An empty check must not swallow that new demand.
+        if self._active_preview:
+            topic = frozenset((*self._visible, *self._prefetch))
+            needed = [index for index in self._active_indices if index in topic and index not in self._delivered]
+            self._queue = list(dict.fromkeys((*needed, *self._queue)))
+        self._active_preview = False
         self._handle = None
         self._active_indices = ()
         if self._submitting:

@@ -128,6 +128,12 @@ class ReaderDocumentHandle(ReaderDocumentSource):
     def read_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
         return self._source.read_pages(page_indices)
 
+    def allows_random_preview(self, page_index: int) -> bool:
+        return self._source.allows_random_preview(page_index)
+
+    def read_cached_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
+        return self._source.read_cached_pages(page_indices)
+
     def prepare_thumbnail_pages(
         self,
         page_indices: tuple[int, ...],

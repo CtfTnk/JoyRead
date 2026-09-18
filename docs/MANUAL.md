@@ -178,6 +178,20 @@ older custom cover looks soft on a high-density screen, reopen the cover editor
 from the original source and save it again on that screen. Missing source files
 continue to use their available cached covers.
 
+Hover over the Reader progress bar for 180 ms to preview the page at the pointer,
+or drag its handle to preview immediately. The bubble uses 80% opacity and shows the thumbnail above
+its 1-based page number and stays within the Reader. While waiting for an image,
+it shrinks to a Loading label and page number. Topic and progress previews share
+their thumbnail cache, so either can reuse images prepared by the other.
+
+Release a drag inside the application window to jump once and close the preview.
+Esc, a right-click while holding the left button, losing window activation, or
+releasing outside the window cancels without jumping. Normal hover exit fades
+the bubble over 320 ms; returning during the fade restores it immediately.
+Solid or unknown archive previews only use existing caches: a distant page may
+keep showing Loading until normal reading or background cache preparation makes
+it available. Previewing itself does not start archive extraction or warmup.
+
 Detail and Topic thumbnails load visible pages first and adjust preloading as
 you scroll. Recently viewed thumbnails are reused when you scroll back, within
 a fixed memory limit; long books do not load all their page images at once.
@@ -249,8 +263,8 @@ the pointer or right-click to bring it back.
 ### Layout
 
 Open **Reader settings** (the gear in the reader chrome) to change how pages are
-laid out. The panel is split into **Horizontal Mode** and **Vertical Mode**, and
-your choices are remembered per book.
+laid out. **Horizontal Mode** and **Vertical Mode** choices are remembered per
+book. The separate **Preloading** section applies globally to all readers.
 
 - **Reading direction** — Right-to-left (manga), Left-to-right, or Top-to-down.
 - **Single Page** — off gives two-page spreads. JoyRead detects double-width
@@ -261,6 +275,17 @@ your choices are remembered per book.
 - **Gap** — the space between the two pages of a spread.
 - **Zoom** — magnify beyond the fit mode.
 - **Page transition** — none, or slide.
+
+**Preloading** defaults to **4 previous pages and 8 following pages**, with
+ranges **0–10** and **0–20**. Previous/following means smaller/larger page
+numbers, regardless of left-to-right or right-to-left display. In two-page mode
+the counts start outside the displayed spread; vertical mode uses the current
+page anchor while still loading pages needed for its visible layout. A value of
+0 disables background preloading on that side, not pages needed for display.
+Changes update all open readers and persist across restarts. Reducing the window
+replaces pending demand but keeps useful cached pages and the open book. The
+existing page-cache memory budget still applies; these counts are requested
+preload windows, not a guarantee that every page is already cached.
 
 ### Getting around a long book
 

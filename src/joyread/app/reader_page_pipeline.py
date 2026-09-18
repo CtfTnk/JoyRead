@@ -122,6 +122,23 @@ class SessionReaderDocumentSource:
     def read_page(self, page_index: int) -> ReaderPagePayload | None:
         return self.read_pages((page_index,)).get(page_index)
 
+    def allows_random_preview(self, page_index: int) -> bool:
+        provider = getattr(self._session, "allows_random_preview", None)
+        if callable(provider):
+            return bool(provider(page_index))
+        # PDF has a bounded direct renderer. Unknown sessions are cache-only.
+        return callable(getattr(self._session, "prepare_thumbnail_pages", None))
+
+    def read_cached_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
+        provider = getattr(self._session, "read_cached_pages", None)
+        if not callable(provider):
+            return {}
+        return {
+            index: ReaderPagePayload(index, page.image_bytes, tuple(page.dimensions))
+            for index, page in zip(page_indices, provider(page_indices))
+            if page is not None
+        }
+
     def read_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
         if self._page_loader is not None:
             loaded = self._page_loader(self._session, page_indices)
@@ -440,6 +457,11 @@ class ReaderPagePipeline(Generic[FrameT]):
                 self._handle = handle
             else:
                 handle.cancel()
+
+    def cancel_pending_pages(self) -> None:
+        """Replace page demand while keeping the open source and page cache."""
+        with self._lock:
+            self._cancel_page_locked()
 
     def cancel(self, *, clear_cache: bool = False) -> None:
         with self._lock:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from os import cpu_count
+from joyread.core.models.reader_prefetch import PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -22,5 +23,5 @@ class AppConfig:
     thumbnail_cache_mb: int = 64
     archive_extraction_pool_gb: int = 5
     cover_index_max_items: int = 1024
-    page_prefetch_before: int = 2
-    page_prefetch_after: int = 4
+    page_prefetch_before: int = PREFETCH_BEFORE_DEFAULT
+    page_prefetch_after: int = PREFETCH_AFTER_DEFAULT

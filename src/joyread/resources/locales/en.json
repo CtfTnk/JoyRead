@@ -407,7 +407,12 @@
     "encrypted_skipped": "No readable images. Encrypted archives were skipped.",
     "open_failed": "Could not open reader: {detail}",
     "password_for": "Password required for {name}.",
-    "password_incorrect_for": "Incorrect password for {name}. Please try again."
+    "password_incorrect_for": "Incorrect password for {name}. Please try again.",
+    "section_prefetch": "Preloading",
+    "prefetch_before": "Previous pages",
+    "prefetch_after": "Following pages",
+    "prefetch_hint": "Shared by all readers. Pages before/after the displayed group in book order; 0 disables that side. Already cached pages are retained.",
+    "preview_unavailable": "Preview unavailable"
   },
   "about": {
     "intro": "A personal project, made for the pleasure of making it.\n\nIt started as a way to properly practise three things: designing with Figma MCP, building alongside vibe-coding agents, and shipping the same app across platforms. Along the way it became the thing it set out to be — a comfortable place to keep and read a local manga library.\n\nIf you enjoy it, a star on the project would mean a lot. Thank you.",

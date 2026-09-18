@@ -4,6 +4,19 @@ from __future__ import annotations
 
 
 class Theme:
+    # Reader progress preview (logical pixels)
+    reader_preview_hover_ms = 180
+    reader_preview_debounce_ms = 80
+    reader_preview_fade_ms = 320
+    reader_preview_opacity = 0.80
+    reader_preview_poll_ms = 250
+    reader_preview_padding = 8
+    reader_preview_margin = 6
+    reader_preview_gap = 4
+    reader_preview_radius = 8
+    reader_preview_arrow_width = 12
+    reader_preview_arrow_height = 6
+
     # Bookshelf selection and manual-reorder presentation
     shelf_drag_scale = 0.40
     shelf_drag_opacity = 0.65

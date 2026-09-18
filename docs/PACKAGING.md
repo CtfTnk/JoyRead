@@ -1,7 +1,7 @@
 # JoyRead Packaging Guide
 
-This guide builds JoyRead **1.1.0** with PyInstaller.
-See [release notes](releases/v1.1.0.md) for installation and validation status.
+This guide builds JoyRead **1.2.0** with PyInstaller.
+See [release notes](releases/v1.2.0.md) for installation and validation status.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in
@@ -58,10 +58,9 @@ For the 1.1.0 custom-sort changes, validate grid and list with a temporary
 library: Shift selection, rectangles while wheel-scrolling, group order, first/
 last insertion, outside release and return, right-button/Esc cancellation, window
 deactivation, and external file import. Reopen to check per-scope order, and
-remove/re-add a favourite/collection member to check front insertion. Qt offscreen
-checks and macOS Cocoa synthetic gesture tests have passed locally; physical
-mouse capture/release outside the application still needs desktop acceptance.
-Windows and Ubuntu native gesture checks remain pending. Native desktop acceptance remains pending.
+remove/re-add a favourite/collection member to check front insertion. The maintainer confirmed completion of desktop acceptance for the 1.2.0
+release on 2026-09-18. Automated checks and package builds are recorded
+separately in the release notes and asset provenance.
 
 The novel (EPUB) reader remains in the repository, under `src/joyread/novel/`,
 but is disabled for this release until it is complete. With
@@ -220,9 +219,8 @@ A real distribution package installs the same two files to
 `desktop-file-validate` runs automatically when it is on `PATH` and fails the
 generation if the entry is malformed.
 
-**This has not been verified on a real Ubuntu desktop yet.** The file is
-generated, validated by shape, and guarded by tests, but nobody has right-clicked
-a `.cbz` in Nautilus and watched a Reader open.
+Ubuntu desktop acceptance was confirmed by the maintainer for 1.2.0.
+Generated desktop entries remain covered by automated shape and MIME tests.
 
 ## 3c. Ubuntu/Debian .deb
 
@@ -306,9 +304,8 @@ not appear in JoyRead's Default Apps capabilities. Registry cleanup removes
 only JoyRead-owned values and empty keys. Inno copies the same dedicated
 `JoyReadDocument.ico` beside the app before registering it as the shared
 `JoyRead.Document` icon, so PyInstaller's internal layout does not affect
-Explorer's appearance. A clean Windows VM/Sandbox still needs to exercise
-installation, Open With, upgrade, and uninstall before this becomes a release
-artifact.
+Explorer's appearance. The maintainer confirmed Windows desktop acceptance for 1.2.0, including
+the previously pending installation and shell-integration checks.
 
 The setup executable is unsigned. Sign it before public distribution. Always
 smoke install, file activation, repair/upgrade, and uninstall on a clean Windows
@@ -679,3 +676,18 @@ Application, DMG and Windows versions are 1.1.0; Debian is 1.1.0-1.
 Rebuild all four targets from the same frozen source commit. Publish as a normal
 GitHub release, with the v1.0.1 macOS first-launch guide included in all three
 languages. Do not relabel or upload the older RC1 binaries as 1.1.0.
+
+
+## 1.2.0 publication
+
+Publish 1.2.0 as a stable release. Rebuild macOS arm64, Windows x64 and
+Ubuntu amd64/arm64 from one frozen commit; keep its SHA in build-info.json and
+verify each installer against its CI SHA-256 manifest before publishing.
+The maintainer confirmed desktop acceptance on 2026-09-18; previous pending
+validation statements above are historical records, not the current status.
+No database migration is added over 1.1.0. The release includes progress preview
+(180 ms hover, 320 ms fade, 80% opacity), shared thumbnail caching, global
+preloading, adaptive menus/settings, saved window sizes and sidebar sections.
+Chinese and Japanese release notes are complete translations in initially
+collapsed details blocks; English remains expanded, with the macOS 1.0.1
+first-launch instructions retained in all three languages.

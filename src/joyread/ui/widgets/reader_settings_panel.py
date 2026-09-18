@@ -23,6 +23,9 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.reader import ReaderFitMode, ReaderSettings
+from joyread.core.models.reader_prefetch import (
+    PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT, PREFETCH_BEFORE_MAX, PREFETCH_AFTER_MAX,
+)
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -37,6 +40,8 @@ class ReaderSettingsPanel(QFrame):
     vertical_fit_width_changed = QtSignal(bool)
     page_spacing_changed = QtSignal(int)
     zoom_percent_changed = QtSignal(int)
+    prefetch_before_changed = QtSignal(int)
+    prefetch_after_changed = QtSignal(int)
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -91,7 +96,20 @@ class ReaderSettingsPanel(QFrame):
         self.zoom_row = SettingRow(t("reader.zoom"), self.zoom_control, option_margin=0)
         layout.addWidget(self.zoom_row)
 
+        layout.addWidget(SectionBanner(t("reader.section_prefetch"), resources))
+        self.prefetch_before_control = SpinButton(resources, suffix="", value=PREFETCH_BEFORE_DEFAULT, minimum=0, maximum=PREFETCH_BEFORE_MAX)
+        self.prefetch_after_control = SpinButton(resources, suffix="", value=PREFETCH_AFTER_DEFAULT, minimum=0, maximum=PREFETCH_AFTER_MAX)
+        self.prefetch_before_control.value_changed.connect(self.prefetch_before_changed.emit)
+        self.prefetch_after_control.value_changed.connect(self.prefetch_after_changed.emit)
+        layout.addWidget(SettingRow(t("reader.prefetch_before"), self.prefetch_before_control, option_margin=0))
+        layout.addWidget(SettingRow(t("reader.prefetch_after"), self.prefetch_after_control, option_margin=0))
+        for control in (self.prefetch_before_control, self.prefetch_after_control):
+            set_localized(control, "setToolTip", t("reader.prefetch_hint"))
         layout.addStretch(1)
+
+    def set_prefetch_window(self, before: int, after: int) -> None:
+        self.prefetch_before_control.set_value(before, emit=False)
+        self.prefetch_after_control.set_value(after, emit=False)
 
     def set_settings(self, settings: ReaderSettings) -> None:
         self.custom_switch.set_checked(settings.custom_enabled, emit=False)

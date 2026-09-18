@@ -826,14 +826,14 @@ def test_reader_settings_panel_matches_figma_side_panel_geometry(qtbot) -> None:
         child for child in panel.findChildren(QFrame) if child.property("class") == "ReaderSettingsSmallControl"
     ]
 
-    assert len(sections) == 2
+    assert len(sections) == 3
     assert {section.height() for section in sections} == {Theme.reader_settings_section_height}
-    assert len(rows) == 7
+    assert len(rows) == 9
     assert {row.height() for row in rows} == {Theme.reader_settings_row_height}
     assert len(switches) == 4
     assert {switch.size().width() for switch in switches} == {Theme.settings_switch_width}
     assert {switch.size().height() for switch in switches} == {Theme.settings_switch_height}
-    assert len(controls) == 3
+    assert len(controls) == 5
     assert {control.size().width() for control in controls} == {Theme.reader_settings_control_width}
     assert {control.size().height() for control in controls} == {Theme.reader_settings_option_height}
 

@@ -787,7 +787,18 @@ class ArchiveImageSession:
 
         return self.read_pages(indices)
 
+    def allows_random_preview(self, page_index: int) -> bool:
+        """Source capability, independent of warmup budgets and cache state."""
+        return self.is_valid_index(page_index) and not self._pages[page_index].source.requires_sequential_warmup
+
+    def read_cached_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
+        """Read only existing pool entries; a miss must never extract a member."""
+        return self._read_pages(indices, cache_only=True)
+
     def read_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
+        return self._read_pages(indices, cache_only=False)
+
+    def _read_pages(self, indices: Iterable[int], *, cache_only: bool) -> list[ArchivePage | None]:
         """Read bounded page payloads for worker-side consumers.
 
         No mutable page metadata is written here. Backend reads are limited by
@@ -804,7 +815,7 @@ class ArchiveImageSession:
         started = perf_counter() if perf_enabled else 0.0
         loaded_bytes = 0
         try:
-            result = self._read_registered_pages(requested)
+            result = self._read_registered_pages(requested, cache_only=cache_only)
             loaded_bytes = sum(len(page.image_bytes) for page in result if page is not None)
             return result
         finally:
@@ -823,6 +834,7 @@ class ArchiveImageSession:
     def _read_registered_pages(
         self,
         requested: list[int],
+        *, cache_only: bool = False,
     ) -> list[ArchivePage | None]:
         # This method runs only while ``_active_reads`` owns the cache lease.
         # Keeping the whole operation under that registration guarantees close
@@ -849,6 +861,9 @@ class ArchiveImageSession:
                             results[result_index] = page
                             continue
                 missing.append((result_index, page_index, record))
+
+            if cache_only:
+                return results
 
             groups: OrderedDict[tuple[int, str | None], list[tuple[int, int, PageRecord]]] = OrderedDict()
             for item in missing:

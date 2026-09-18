@@ -33,6 +33,7 @@ from joyread.ui.views.reader_chrome import AutoHideController
 from joyread.ui.views.reader_shell_base import ReaderShellBase
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
+from joyread.ui.widgets.reader_preview import ReaderPreviewController
 from joyread.ui.widgets.reader_canvas import ReaderCanvas
 from joyread.ui.widgets.reader_controls import ReaderFooter, ReaderHeader, ReaderStepButton
 from joyread.ui.widgets.reader_settings_panel import ReaderSettingsPanel
@@ -128,8 +129,8 @@ class ReaderShellWidget(ReaderShellBase):
             title=title or (book.title if book is not None else self._source_path.stem),
             settings=_reader_settings_for_book(context, book),
             progress=_reader_progress_for_book(context, book, start_page_index),
-            prefetch_before=context.config.page_prefetch_before,
-            prefetch_after=context.config.page_prefetch_after,
+            prefetch_before=context.settings_viewmodel.page_prefetch_before,
+            prefetch_after=context.settings_viewmodel.page_prefetch_after,
             nested_archive_max_depth=app_settings.nested_archive_max_depth,
             archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
             archive_limits=context.settings_viewmodel.archive_open_limits,
@@ -140,6 +141,8 @@ class ReaderShellWidget(ReaderShellBase):
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
+        self.preview = ReaderPreviewController(self, self.footer.slider, self.viewmodel)
+        self.preview.seek_requested.connect(self.footer.seek_requested.emit)
         self._connect_signals()
         self._install_auto_hide()
 
@@ -154,7 +157,14 @@ class ReaderShellWidget(ReaderShellBase):
         self._open_timer.timeout.connect(lambda: self.viewmodel.open_path(self._source_path))
         self._open_timer.start(0)
 
+    def _sync_prefetch_window(self) -> None:
+        settings = self._context.settings_viewmodel
+        self.viewmodel.set_prefetch_window(settings.page_prefetch_before, settings.page_prefetch_after)
+        self.settings_panel.set_prefetch_window(settings.page_prefetch_before, settings.page_prefetch_after)
+
     def cancel(self) -> None:
+        self.preview.close()
+        self._context.settings_viewmodel.prefetch_window_changed.disconnect(self._sync_prefetch_window)
         if hasattr(self, "_open_timer"):
             self._open_timer.stop()
         self._rapid_navigation_timer.stop()
@@ -206,6 +216,11 @@ class ReaderShellWidget(ReaderShellBase):
         self.settings_panel.vertical_fit_width_changed.connect(self.viewmodel.set_vertical_fit_width)
         self.settings_panel.page_spacing_changed.connect(self.viewmodel.set_page_spacing)
         self.settings_panel.zoom_percent_changed.connect(self.viewmodel.set_vertical_zoom_percent)
+        self.settings_panel.prefetch_before_changed.connect(self._context.settings_viewmodel.set_page_prefetch_before)
+        self.settings_panel.prefetch_after_changed.connect(self._context.settings_viewmodel.set_page_prefetch_after)
+        self._context.settings_viewmodel.prefetch_window_changed.connect(self._sync_prefetch_window)
+        self.destroyed.connect(lambda: self._context.settings_viewmodel.prefetch_window_changed.disconnect(self._sync_prefetch_window))
+        self._sync_prefetch_window()
         self.viewmodel.state_changed.connect(self._sync_state)
         self.viewmodel.layout_changed.connect(self._sync_layout)
         self.viewmodel.page_ready.connect(self._sync_page)
@@ -241,6 +256,7 @@ class ReaderShellWidget(ReaderShellBase):
         self.auto_hide.start()
 
     def _sync_state(self) -> None:
+        self.preview.sync_state()
         self.header.set_title(self.viewmodel.title)
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
@@ -352,7 +368,7 @@ class ReaderShellWidget(ReaderShellBase):
     def _retained_controls(self) -> tuple[QWidget, ...]:
         # Bars form one retention group, but paddles are independent. Returning
         # both bars only protects visible members; it never wakes the other bar.
-        if self.footer.is_slider_active():
+        if self.footer.is_slider_active() or self.preview.active:
             return (self.header, self.footer)
         widget = QApplication.widgetAt(QCursor.pos())
         while widget is not None:

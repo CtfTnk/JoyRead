@@ -10,6 +10,11 @@ from os import environ
 from pathlib import Path
 from typing import Any
 
+from joyread.core.models.reader_prefetch import (
+    PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT,
+    PREFETCH_BEFORE_MAX, PREFETCH_AFTER_MAX, prefetch_count,
+)
+
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.models.import_policy import (
     DEFAULT_CANONICAL_IMPORT_POLICY,
@@ -52,6 +57,8 @@ class AppSettings:
     # In-memory cache budgets use MB; the archive disk pool uses GB. Defaults
     # intentionally match AppConfig so missing settings remain upgrade-safe.
     # Reader cache is the total shared budget across all open reader windows.
+    page_prefetch_before: int = PREFETCH_BEFORE_DEFAULT
+    page_prefetch_after: int = PREFETCH_AFTER_DEFAULT
     reader_page_cache_mb: int = 512
     thumbnail_cache_mb: int = 64
     archive_extraction_pool_gb: int = 5
@@ -171,6 +178,8 @@ class SettingsStore:
         logger.debug("Loading settings from %s", self.settings_path)
         raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
         settings = AppSettings(
+            page_prefetch_before=prefetch_count(raw.get("page_prefetch_before"), default=PREFETCH_BEFORE_DEFAULT, maximum=PREFETCH_BEFORE_MAX),
+            page_prefetch_after=prefetch_count(raw.get("page_prefetch_after"), default=PREFETCH_AFTER_DEFAULT, maximum=PREFETCH_AFTER_MAX),
             sidebar_collapsed_sections=_section_keys(raw.get("sidebar_collapsed_sections")),
             library_window_size=_window_size(raw.get("library_window_size")),
             reader_window_size=_window_size(raw.get("reader_window_size")),

@@ -7,6 +7,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Callable
 
+from joyread.core.models.reader_prefetch import (
+    PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT,
+    PREFETCH_BEFORE_MAX, PREFETCH_AFTER_MAX, prefetch_count,
+)
+
 from joyread.core.models.cache import (
     ARCHIVE_CACHE_STRATEGY_LABELS,
     ArchiveCacheStrategy,
@@ -121,6 +126,9 @@ class SettingsViewModel:
         settings = settings or AppSettings(storage_location="~/Documents/JoyRead-Library")
         self.state_changed: Signal[None] = Signal()
         self.window_sizes_reset: Signal[None] = Signal()
+        self.prefetch_window_changed: Signal[None] = Signal()
+        self.page_prefetch_before = prefetch_count(settings.page_prefetch_before, default=PREFETCH_BEFORE_DEFAULT, maximum=PREFETCH_BEFORE_MAX)
+        self.page_prefetch_after = prefetch_count(settings.page_prefetch_after, default=PREFETCH_AFTER_DEFAULT, maximum=PREFETCH_AFTER_MAX)
         self._window_sizes = {"library": settings.library_window_size, "reader": settings.reader_window_size}
         # Emitted after the locale has been reloaded so the UI can refresh labels.
         self.language_changed: Signal[None] = Signal()
@@ -626,6 +634,20 @@ class SettingsViewModel:
         self.purge_encrypted_cache_on_close = value
         self._persist(purge_encrypted_cache_on_close=value)
         self.state_changed.emit()
+
+    def set_page_prefetch_before(self, value: int) -> None:
+        self._set_prefetch_count("page_prefetch_before", value, PREFETCH_BEFORE_DEFAULT, PREFETCH_BEFORE_MAX)
+
+    def set_page_prefetch_after(self, value: int) -> None:
+        self._set_prefetch_count("page_prefetch_after", value, PREFETCH_AFTER_DEFAULT, PREFETCH_AFTER_MAX)
+
+    def _set_prefetch_count(self, field: str, value: int, default: int, maximum: int) -> None:
+        value = prefetch_count(value, default=default, maximum=maximum)
+        if value == getattr(self, field):
+            return
+        self._persist(**{field: value})
+        setattr(self, field, value)
+        self.prefetch_window_changed.emit()
 
     def window_size(self, kind: str) -> tuple[int, int] | None:
         return self._window_sizes[kind]

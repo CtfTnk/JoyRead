@@ -37,6 +37,11 @@ from joyread.core.reader import (
     SizeF,
     SmartLayoutEngine,
 )
+from joyread.core.models.reader_prefetch import (
+    PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT,
+    PREFETCH_BEFORE_MAX, PREFETCH_AFTER_MAX, prefetch_count,
+)
+
 from joyread.core.services.cache_service import (
     NamespacedPageCache,
     SharedThumbnailCache,
@@ -101,8 +106,8 @@ class ReaderViewModel:
         title: str = "Reader",
         settings: ReaderSettings | None = None,
         progress: ReaderProgress | None = None,
-        prefetch_before: int = 1,
-        prefetch_after: int = 1,
+        prefetch_before: int = PREFETCH_BEFORE_DEFAULT,
+        prefetch_after: int = PREFETCH_AFTER_DEFAULT,
         nested_archive_max_depth: int = 2,
         archive_global_file_max_depth: int = 100,
         archive_limits: ArchiveOpenLimits | None = None,
@@ -122,6 +127,12 @@ class ReaderViewModel:
         self.contents_changed: Signal[tuple[ReaderContentsItem, ...]] = Signal()
         self.bookmark_error_changed: Signal[str] = Signal()
         self.topic_thumbnail_ready: Signal[tuple[int, bytes]] = Signal()
+        self.preview_changed: Signal[tuple[int, str, bytes | None]] = Signal()
+        self._preview_index: int | None = None
+        self._preview_status = "loading"
+        self._preview_size: tuple[int, int] | None = None
+        self._preview_load_enabled = False
+        self._topic_interest: tuple[tuple[int, ...], tuple[int, ...]] = ((), ())
 
         self._document_runtime = document_runtime
         self._task_service = task_service
@@ -171,12 +182,11 @@ class ReaderViewModel:
             task_name="reader-topic-thumbnail",
         )
         self._topic_thumbnail_stream.thumbnail_ready.connect(self.topic_thumbnail_ready.emit)
+        self._topic_thumbnail_stream.thumbnail_ready.connect(self._preview_ready)
+        self._topic_thumbnail_stream.thumbnail_failed.connect(self._preview_failed)
         self._page_count = 0
-        # Prefetch windows come from AppConfig; we hold the raw values and let
-        # `_preload_nearby_pages` apply direction-aware bias so RTL readers
-        # prefetch toward the next page, not the previous one.
-        self._prefetch_before = max(0, int(prefetch_before))
-        self._prefetch_after = max(0, int(prefetch_after))
+        self._prefetch_before = prefetch_count(prefetch_before, default=PREFETCH_BEFORE_DEFAULT, maximum=PREFETCH_BEFORE_MAX)
+        self._prefetch_after = prefetch_count(prefetch_after, default=PREFETCH_AFTER_DEFAULT, maximum=PREFETCH_AFTER_MAX)
         self._archive_limits = archive_limits or ArchiveOpenLimits(
             nested_archive_max_depth=_core_depth_limit(
                 nested_archive_max_depth,
@@ -380,6 +390,9 @@ class ReaderViewModel:
         # leaves a closed reader holding part of the shared thumbnail cache for
         # the rest of the process.
         self._topic_thumbnail_stream.cancel()
+        self._preview_index = None
+        self._topic_interest = ((), ())
+        self.preview_changed.emit(-1, "closed", None)
         # `clear_cache=True` clears the pipeline's frame cache, which *is* this
         # session's `NamespacedPageCache` -- that is what frees this reader's
         # slice of the shared page budget. The namespace itself stays valid; a
@@ -483,12 +496,82 @@ class ReaderViewModel:
             self._topic_thumbnail_stream.release_interest()
             return
         size = (max(1, int(size[0])), max(1, int(size[1])))
+        self._topic_interest = (visible_indices, prefetch_indices)
         if self._topic_thumbnail_stream.source_id is None or size != self._topic_thumbnail_size:
             self._configure_topic_thumbnail_stream(self._document, size)
+            if self._preview_index is not None:
+                self.set_preview_target(self._preview_index, size, load=self._preview_load_enabled)
         self._topic_thumbnail_stream.set_interest(visible_indices, prefetch_indices)
 
     def release_topic_thumbnail_interest(self) -> None:
-        self._topic_thumbnail_stream.release_interest()
+        self._topic_interest = ((), ())
+        self._topic_thumbnail_stream.set_interest((), ())
+
+    def set_preview_target(self, index: int, size: tuple[int, int], *, load: bool = False) -> None:
+        document = self._document
+        if document is None or not 0 <= index < self.page_count:
+            return
+        changed = index != self._preview_index or size != self._preview_size
+        self._preview_index = index
+        self._preview_size = size
+        self._preview_load_enabled = load
+        if changed:
+            self._preview_status = "loading"
+            self.preview_changed.emit(index, "loading", None)
+        if size != self._topic_thumbnail_size:
+            self._configure_topic_thumbnail_stream(document, size)
+            self._topic_thumbnail_stream.set_interest(*self._topic_interest)
+        if self._preview_status == "unavailable" and not changed:
+            return
+
+        def preview_load(indices, emit_item):
+            # A queued worker may start after its target was replaced or closed.
+            if index != self._preview_index or size != self._topic_thumbnail_size or document is not self._document:
+                return
+            renderer = self._thumbnail_renderer
+            if renderer is None:
+                return
+            for target in indices:
+                prepared = self._page_cache.get(target)
+                if prepared is not None and not _prepared_frame_is_too_small(prepared, size):
+                    emit_item(ThumbnailStreamItem(target, renderer.render_prepared(prepared.frame, size)))
+                    continue
+                # Read only existing extraction entries before considering the source.
+                cached = document.read_cached_pages((target,)).get(target)
+                if cached is not None:
+                    emit_item(ThumbnailStreamItem(target, renderer.render_encoded(cached.image_bytes, size)))
+                    continue
+                if self.loading_page_index is not None or not document.allows_random_preview(target):
+                    continue
+                direct = document.prepare_thumbnail_pages((target,), size)
+                if direct and direct[0] is not None:
+                    data = renderer.render_prepared(direct[0].frame, size)
+                else:
+                    page = document.read_page(target)
+                    if page is None:
+                        raise RuntimeError("Preview page unavailable")
+                    data = renderer.render_encoded(page.image_bytes, size)
+                emit_item(ThumbnailStreamItem(target, data))
+
+        self._topic_thumbnail_stream.set_preview(index, preview_load, enabled=load)
+
+    def release_preview(self) -> None:
+        self._preview_index = None
+        self._topic_thumbnail_stream.set_preview(None)
+
+    def retry_preview(self) -> None:
+        if self._preview_index is not None and self._preview_load_enabled and self._preview_status == "loading" and self._topic_thumbnail_size:
+            self.set_preview_target(self._preview_index, self._topic_thumbnail_size, load=True)
+
+    def _preview_ready(self, index: int, data: bytes) -> None:
+        if index == self._preview_index:
+            self._preview_status = "ready"
+            self.preview_changed.emit(index, "ready", data)
+
+    def _preview_failed(self, index: int) -> None:
+        if index == self._preview_index:
+            self._preview_status = "unavailable"
+            self.preview_changed.emit(index, "unavailable", None)
 
     def set_viewport_size(
         self,
@@ -1247,6 +1330,8 @@ class ReaderViewModel:
         if page.generation != self._task_generation:
             return
         self._unavailable_pages.discard(page.page_index)
+        if page.page_index == self._preview_index:
+            self.retry_preview()
         if self._should_keep_page_resident(page.page_index):
             self._pages[page.page_index] = page
             self.recalculate_layout()
@@ -1445,43 +1530,36 @@ class ReaderViewModel:
             handle if handle.status in {TaskStatus.PENDING, TaskStatus.RUNNING} else None
         )
 
+    def set_prefetch_window(self, before: int, after: int) -> None:
+        before = prefetch_count(before, default=PREFETCH_BEFORE_DEFAULT, maximum=PREFETCH_BEFORE_MAX)
+        after = prefetch_count(after, default=PREFETCH_AFTER_DEFAULT, maximum=PREFETCH_AFTER_MAX)
+        if (before, after) == (self._prefetch_before, self._prefetch_after):
+            return
+        self._prefetch_before, self._prefetch_after = before, after
+        if self._document is None:
+            # Opening has its own request token. Do not invalidate that task
+            # before it can attach the document; first layout uses these counts.
+            return
+        # Replace obsolete queued reads without closing the document or evicting
+        # useful cached pages. Visible demand survives even when both are zero.
+        self._page_pipeline.cancel_pending_pages()
+        if self.loading_page_index is not None or self._layout_result is None:
+            self._request_visible_pages()
+        else:
+            self._preload_nearby_pages()
+
     def _preload_nearby_pages(self) -> None:
         if self._page_count <= 0:
             return
-        # `before`/`after` follow archive index order, but RTL users read with
-        # decreasing indices visually, so we swap the bias so prefetch always
-        # tracks the direction the user is moving in.
-        before, after = self._directional_prefetch_window()
-        if self._is_vertical_mode:
-            self._request_pages({
-                index
-                for index in range(self._primary_index - before, self._primary_index + after + 1)
-                if 0 <= index < self._page_count
-            })
-            return
-
-        step = self._current_step()
-        targets: set[int] = set()
-        # Pages behind the spread (going back).
-        for offset in range(1, before + 1):
-            targets.add(max(0, self._primary_index - offset))
-        # Pages ahead of the spread. Walk ``after`` indices past the spread
-        # so a forward turn always finds the next pages in the cache.
-        for offset in range(1, after + 1):
-            targets.add(min(self._page_count - 1, self._primary_index + step + offset - 1))
+        # Reading direction changes placement, never the book's page order.
+        # Backward spreads may have their higher page as primary, so use the
+        # actual layout's bounds rather than primary + a guessed spread width.
+        anchors = self._navigation_anchor_indices()
+        low, high = min(anchors), max(anchors)
+        targets = set(self.current_display_indices)
+        targets.update(range(max(0, low - self._prefetch_before), low))
+        targets.update(range(high + 1, min(self._page_count, high + self._prefetch_after + 1)))
         self._request_pages(targets)
-
-    def _directional_prefetch_window(self) -> tuple[int, int]:
-        before = self._prefetch_before
-        after = self._prefetch_after
-        if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:
-            return after, before
-        return before, after
-
-    def _current_step(self) -> int:
-        if self._layout_result is not None and self._layout_result.mode == ReaderDisplayMode.DOUBLE:
-            return 2
-        return 1
 
     def _navigation_anchor_indices(self) -> tuple[int, ...]:
         """Indices that are actually being displayed.

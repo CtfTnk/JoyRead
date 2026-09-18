@@ -1163,6 +1163,7 @@ def test_reader_topic_uses_a_direct_thumbnail_render_when_the_session_offers_one
         _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         title="Book",
+        prefetch_before=0, prefetch_after=0,  # Keep the probed page cold.
         thumbnail_renderer=renderer,
         thumbnail_cache_client=cache.issue_thumbnail_client("topic-direct"),
     )
@@ -1203,6 +1204,7 @@ def test_reader_topic_falls_back_per_page_when_the_direct_render_misses(
         _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         title="Book",
+        prefetch_before=0, prefetch_after=0,  # Keep the probed page cold.
         thumbnail_renderer=renderer,
         thumbnail_cache_client=cache.issue_thumbnail_client("topic-partial"),
     )
@@ -1240,6 +1242,7 @@ def test_reader_topic_falls_back_when_a_prepared_direct_frame_fails_to_render(
         _SyncTaskService(),  # type: ignore[arg-type]
         cache.issue_reader_namespace(),
         title="Book",
+        prefetch_before=0, prefetch_after=0,  # Keep the probed page cold.
         thumbnail_renderer=renderer,
         thumbnail_cache_client=cache.issue_thumbnail_client("topic-render-fail"),
     )
@@ -1410,27 +1413,18 @@ def test_reader_viewmodel_prefetch_window_uses_configured_after_count(tmp_path: 
     assert all(index >= vm_high.current_index for index in high_cached)
 
 
-def test_reader_viewmodel_rtl_swaps_prefetch_window(tmp_path: Path) -> None:
-    cache_service = _cache_service(tmp_path)
-    vm = _viewmodel(
-        tmp_path,
-        cache_service=cache_service,
-        prefetch_before=0,
-        prefetch_after=3,
-    )
-    # Default direction is RTL but be explicit so the intent is obvious.
-    vm.set_direction(ReaderDirection.RIGHT_TO_LEFT)
+def test_reader_viewmodel_rtl_prefetches_toward_increasing_page_numbers(tmp_path: Path) -> None:
+    vm = _viewmodel(tmp_path, prefetch_before=0, prefetch_after=0)
     vm.open_path(tmp_path / "book.cbz")
     vm.set_viewport_size(700, 900)
-    vm.seek(3)
-
-    namespace = vm._page_cache
-    # RTL swaps the window so the user-facing "forward" prefetch (decreasing
-    # archive indices) is covered by the configured ``after`` count. With
-    # prefetch_after=3 the cache should hold pages 0..3 (page 3 from the
-    # spread, pages 0..2 from the prefetch).
-    for index in range(0, 4):
-        assert namespace.get(index) is not None, f"page {index} should be prefetched"
+    vm.seek(2)
+    requested = []
+    vm._request_pages = lambda indices: requested.append(set(indices))
+    vm._prefetch_before, vm._prefetch_after = 0, 2
+    vm._preload_nearby_pages()
+    anchors = vm._navigation_anchor_indices()
+    assert requested[-1] == set(vm.current_display_indices) | set(range(max(anchors) + 1, min(vm.page_count, max(anchors) + 3)))
+    assert all(index >= min(anchors) for index in requested[-1])
 
 
 def test_reader_viewmodel_disabling_always_one_page_recovers_double_spread_from_lru(tmp_path: Path) -> None:
@@ -1447,7 +1441,7 @@ def test_reader_viewmodel_disabling_always_one_page_recovers_double_spread_from_
         prefetch_before=0,
         prefetch_after=1,
     )
-    # LTR so the directional prefetch window points to the *next* archive
+    # LTR layout; prefetch follows the *next* archive
     # index — the future companion if the user disables Always One Page.
     vm.set_direction(ReaderDirection.LEFT_TO_RIGHT)
     vm.set_custom_enabled(True)

@@ -468,7 +468,8 @@ class ReaderFooter(QWidget):
         self.slider.blockSignals(True)
         self.slider.set_reading_direction(direction)
         self.slider.setMaximum(maximum_index)
-        self.slider.setValue(safe_index)
+        if not self.slider.isSliderDown():
+            self.slider.setValue(safe_index)
         self.slider.blockSignals(False)
         set_localized(self.page_indicator, "setText", "0/0" if page_count <= 0 else f"{safe_index + 1}/{page_count}")
 

@@ -104,7 +104,8 @@ def grouped_chrome(host, monkeypatch):
         control.show()
     slider = {"active": False}
     footer.is_slider_active = lambda: slider["active"]
-    shell = SimpleNamespace(header=header, footer=footer, left_arrow=left, right_arrow=right)
+    shell = SimpleNamespace(header=header, footer=footer, left_arrow=left, right_arrow=right,
+                            preview=SimpleNamespace(active=False))
     hover = {"widget": None}
     monkeypatch.setattr(QApplication, "widgetAt", lambda _point: hover["widget"])
     controller = AutoHideController(

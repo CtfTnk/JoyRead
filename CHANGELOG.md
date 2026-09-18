@@ -5,8 +5,19 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-09-18
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.2.0.md)
+
 ### Added
 
+- Preview a page above the Reader progress bar after 180 ms of hovering or
+  immediately while dragging. Display at 80% opacity, share HiDPI thumbnails
+  with Topic, fade out over 320 ms on hover exit, and cancel drags without changing reading progress.
+  Solid/unknown archive previews wait for existing reading/extraction caches
+  rather than initiating random extraction.
+- Add global Reader settings for previous/following page preloading: defaults
+  4/8, adjustable to 0–10 / 0–20, persisted and synchronized across open readers.
 - Independently collapse/expand the Bookshelf and Collections sidebar sections
   by clicking their headers or pressing Enter/Space. Remember state across
   restarts without changing the active shelf, selection or privacy visibility.
@@ -31,6 +42,9 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Fixes
 
+- Prefetch follows book page order in both reading directions and uses actual
+  spread boundaries, including backward-facing pairs. Changing the window
+  retains visible demand and cached pages without reopening the document.
 - Give sidebar section headers distinct hover/pressed feedback, clear the fill
   when dragging outside, and avoid refreshing unchanged sections on toggles.
 - Allow the expanded shelf search to shrink while retaining format/tag filters.

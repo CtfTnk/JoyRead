@@ -144,6 +144,26 @@ def test_pipeline_publishes_visible_center_first_then_nearest_prefetch() -> None
     assert failed == []
 
 
+def test_cancel_pending_pages_keeps_source_and_discards_old_queue() -> None:
+    executor = _ManualExecutor()
+    decoder = _Decoder()
+    cache = _FrameCache()
+    ready = []
+    pipeline = _pipeline(executor, decoder, cache, ready, [])
+    source = _Source()
+    pipeline.set_source(source, generation=7)
+    pipeline.request((1,), (2, 3), target_width=100, target_height=140,
+                     device_pixel_ratio=1, generation=7)
+    pipeline.cancel_pending_pages()
+    pipeline.request((8,), (), target_width=100, target_height=140,
+                     device_pixel_ratio=1, generation=7)
+    executor.run()
+    assert source.reads == []
+    executor.run(1)
+    assert source.reads == [8] and not source.closed
+    assert [page.page_index for page in ready] == [8]
+
+
 def test_pipeline_drops_a_request_cancelled_during_decode_before_cache_or_publish() -> None:
     executor = _ManualExecutor()
     decoder = _Decoder()
