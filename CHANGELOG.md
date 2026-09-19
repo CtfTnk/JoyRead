@@ -16,6 +16,9 @@ All notable changes to JoyRead are documented here. This project follows
 - Dispatch dropped Read/Import commands after the native drop callback returns,
   so Reader activation does not occur inside drag handling. Closing the Library
   cancels undelivered drop commands.
+- Disable native popup shadows on Windows context and dropdown menus to remove
+  the rectangular edge outside their rounded panels. Other platforms retain
+  their existing menu shadows.
 
 ## [1.2.0] — 2026-09-18
 

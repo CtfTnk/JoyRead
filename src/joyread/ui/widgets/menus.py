@@ -5,6 +5,7 @@ from __future__ import annotations
 from joyread.ui.widgets.localized_text import LocalizedLabel
 
 from collections.abc import Callable, Sequence
+import sys
 
 import shiboken6
 from PySide6.QtCore import QEvent, QEventLoop, QPoint, QRect, QSize, QTimer, Qt, Signal as QtSignal
@@ -108,7 +109,12 @@ class _PopupMenu(QWidget):
         self._opened = False
         self._owner_window = parent.window()
         self._owner_handle = None
-        self.setWindowFlags(Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint)
+        flags = Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
+        if sys.platform == "win32":
+            # Windows' rectangular popup shadow extends beyond our translucent
+            # rounded panel, leaving a hard edge along its right/bottom sides.
+            flags |= Qt.WindowType.NoDropShadowWindowHint
+        self.setWindowFlags(flags)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
 
