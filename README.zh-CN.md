@@ -72,7 +72,9 @@
 
 阅读器提供单页和双页布局，支持阅读方向、书签、页面缩略图与进度导航。可以从书库继续阅读，也可以把 JoyRead 作为本地文件的可选打开方式。
 
-![JoyRead 双页阅读器](docs/assets/readme/reader.png)
+将鼠标悬停在进度条上，即可预览对应页面，再决定跳转位置。
+
+![JoyRead 双页阅读器与进度条悬停页面预览](docs/assets/readme/reader.png)
 
 ## 加密漫画与隐藏功能的边界
 

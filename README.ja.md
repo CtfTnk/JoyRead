@@ -72,7 +72,9 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 リーダーでは単ページと見開き表示を切り替え、読む方向、しおり、ページサムネイル、進捗バーを使えます。本棚から続きを読むことも、ローカルファイルを開くアプリとして JoyRead を選ぶこともできます。
 
-![JoyRead の見開きリーダー](docs/assets/readme/reader.png)
+進捗バーにマウスを合わせると、移動先のページをプレビューできます。
+
+![JoyRead の見開きリーダーと進捗バーのページプレビュー](docs/assets/readme/reader.png)
 
 ## 暗号化アーカイブと非表示機能について
 

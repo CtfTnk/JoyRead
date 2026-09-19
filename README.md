@@ -94,7 +94,9 @@ Add tags in book details, then filter by them from the shelf toolbar. **Settings
 
 Choose single-page or spread layouts, set your reading direction, and move through a book using thumbnails, bookmarks, or the progress bar. Resume from the library or use JoyRead as an immediate reader for a local file.
 
-![JoyRead two-page reader with navigation and reading controls](docs/assets/readme/reader.png)
+Hover over the progress bar to preview a page before jumping to it.
+
+![JoyRead two-page reader with a page preview above the progress bar](docs/assets/readme/reader.png)
 
 ## Encrypted comics and Hidden Space
 
