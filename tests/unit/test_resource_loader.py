@@ -2,7 +2,7 @@ import sys
 import tomllib
 
 from PIL import Image
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QFont, QFontDatabase, QIcon, QRawFont
 import pytest
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
@@ -112,12 +112,38 @@ def test_noto_font_resources_are_available() -> None:
 
     assert {path.name for path in font_paths} == {
         "NotoSansSC-Regular.otf",
+        "NotoSansSC-Medium.otf",
         "NotoSansSC-Bold.otf",
         "NotoSansJP-Regular.otf",
+        "NotoSansJP-Medium.otf",
         "NotoSansJP-Bold.otf",
     }
     assert all(path.exists() for path in font_paths)
     assert (font_dir / "OFL.txt").exists()
+
+
+def test_bundled_fonts_resolve_requested_ui_weights(qapp) -> None:
+    # A QSS request for 500 can silently select Regular if Medium is missing.
+    # Check the selected font face, not just the requested QFont weight.
+    font_ids = []
+    try:
+        for path in ResourceLoader().font_paths():
+            font_id = QFontDatabase.addApplicationFont(str(path))
+            assert font_id >= 0, path.name
+            font_ids.append(font_id)
+        for family in ("Noto Sans SC", "Noto Sans JP"):
+            for weight, style in ((400, "Regular"), (500, "Medium"), (700, "Bold")):
+                font = QFont(family)
+                font.setPixelSize(14)
+                font.setWeight(QFont.Weight(weight))
+                actual = QRawFont.fromFont(font)
+                assert actual.isValid()
+                assert actual.familyName() == family
+                assert actual.styleName() == style
+                assert actual.weight() == weight
+    finally:
+        for font_id in font_ids:
+            QFontDatabase.removeApplicationFont(font_id)
 
 
 def test_locale_resources_are_available_and_packaged() -> None:

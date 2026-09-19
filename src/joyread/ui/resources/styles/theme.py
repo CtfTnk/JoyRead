@@ -37,8 +37,10 @@ class Theme:
     # Typography
     font_files = (
         "NotoSansSC-Regular.otf",
+        "NotoSansSC-Medium.otf",
         "NotoSansSC-Bold.otf",
         "NotoSansJP-Regular.otf",
+        "NotoSansJP-Medium.otf",
         "NotoSansJP-Bold.otf",
     )
     primary_font_family = "Noto Sans SC"

@@ -7,6 +7,8 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Fixes
 
+- Bundle Noto Sans SC/JP Medium alongside Regular and Bold so UI text requesting
+  weight 500 uses the intended face instead of falling back to Regular.
 - Request native Windows foreground activation when opening or reusing the
   Library and Reader windows. Secondary launches grant the existing process
   foreground permission before forwarding the open request, while preserving
