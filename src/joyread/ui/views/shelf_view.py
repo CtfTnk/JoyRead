@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterable
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
+from joyread.app import startup_trace
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -62,6 +64,8 @@ class ShelfView(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._viewmodel = viewmodel
         self._resources = resources
+        self._startup_book_probe_widgets: set[QWidget] = set()
+        self._startup_probe_pending = False
         self._density_window = None
         self._density_timer = QTimer(self)
         self._density_timer.setSingleShot(True)
@@ -118,6 +122,8 @@ class ShelfView(QWidget):
             self.importing_state,
         ):
             self.stack.addWidget(widget)
+        for widget in (self.empty_state, self.error_state):
+            widget.installEventFilter(self)
         layout.addWidget(self.stack, stretch=1)
 
         # Sits above the toolbar/grid/list and below detail_panel, so Qt's
@@ -161,6 +167,54 @@ class ShelfView(QWidget):
             if hasattr(self, "_density_timer"):
                 self._density_timer.start(0)
         return result
+
+    def eventFilter(self, watched: object, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Paint and not self._startup_probe_pending:
+            milestone: str | None = None
+            active = self.stack.currentWidget()
+            if watched is self.error_state and active is self.error_state:
+                milestone = "library_error_visible"
+            elif (
+                watched is self.empty_state
+                and active is self.empty_state
+                and not self._viewmodel.books
+                and not self._viewmodel.is_loading
+                and not self._viewmodel.error_message
+            ):
+                milestone = "library_ready_empty"
+            elif (
+                watched in self._startup_book_probe_widgets
+                and active in (self.grid, self.list_view)
+            ):
+                milestone = "library_first_book_paint"
+            if milestone is not None:
+                self._startup_probe_pending = True
+                QTimer.singleShot(0, lambda name=milestone: self._record_startup_paint(name))
+        return super().eventFilter(watched, event)
+
+    def _record_startup_paint(self, milestone: str) -> None:
+        self._startup_probe_pending = False
+        active = self.stack.currentWidget()
+        if milestone == "library_first_book_paint" and active not in (self.grid, self.list_view):
+            return
+        if milestone == "library_ready_empty" and active is not self.empty_state:
+            return
+        if milestone == "library_error_visible" and active is not self.error_state:
+            return
+        if startup_trace.mark(milestone) is not None:
+            startup_trace.flush_to_log(logger)
+        if milestone == "library_first_book_paint":
+            for widget in self._startup_book_probe_widgets:
+                widget.removeEventFilter(self)
+            self._startup_book_probe_widgets.clear()
+
+    def _watch_startup_book_paint(self, controls: Iterable[QWidget]) -> None:
+        if any(mark.name == "library_first_book_paint" for mark in startup_trace.milestones()):
+            return
+        for widget in controls:
+            if widget not in self._startup_book_probe_widgets:
+                widget.installEventFilter(self)
+                self._startup_book_probe_widgets.add(widget)
 
     def _schedule_density_sync(self, *_args) -> None:
         self._density_timer.start(0)
@@ -221,9 +275,11 @@ class ShelfView(QWidget):
         if self._viewmodel.view_mode == ViewMode.GRID:
             self.grid.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.grid)
+            self._watch_startup_book_paint(self.grid.book_controls.values())
         else:
             self.list_view.set_books(books, selected_ids, cover_paths)
             self.stack.setCurrentWidget(self.list_view)
+            self._watch_startup_book_paint(self.list_view.book_controls.values())
         self.gestures.bind_controls()
         self._sync_cover_requests(books, cover_paths)
         self._render_detail_panel()

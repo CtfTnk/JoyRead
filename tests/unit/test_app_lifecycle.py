@@ -10,13 +10,15 @@ from PySide6.QtGui import QFileOpenEvent
 from PySide6.QtWidgets import QApplication, QDialog, QMainWindow, QPushButton
 
 from joyread.app import bootstrap
-from joyread.app.app_context import AppContext, StorageTransition
+from joyread.app.app_context import AppContext, StorageTransition, create_app_context
 from joyread.app.bootstrap import create_application
 from joyread.app.launch.file_open_router import FileOpenRouter
 from joyread.app.launch.coordinator import LaunchCoordinator
 from joyread.app.launch.intent import LaunchIntent
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
+from joyread.core.services.import_service import ImportService
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
+from joyread.infrastructure.config.settings_store import create_environment_settings_store
 from joyread.infrastructure.logging.logging_service import shutdown_logging
 from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
@@ -205,6 +207,31 @@ def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) ->
 
     window.close()
     context.close()
+
+
+def test_os_document_open_never_imports_even_with_legacy_setting_enabled(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    # Initialising the default Library first preserves the real first-run
+    # sentinel; a settings file alone would launch the recovery dialog.
+    prepared = create_app_context()
+    prepared.close()
+    create_environment_settings_store().update(import_book_when_opening=True)
+    source = tmp_path / "external.cbz"
+    source.write_bytes(b"")
+
+    def reject_import(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("OS file requests must not reach ImportService")
+
+    monkeypatch.setattr(ImportService, "import_files", reject_import)
+    app, context, window = create_application(["joyread", str(source)])
+    try:
+        assert isinstance(window, ReaderWindow)
+        app.processEvents()
+    finally:
+        window.close()
+        context.close()
 
 
 def test_direct_external_open_does_not_accept_epub(qtbot, tmp_path: Path, monkeypatch) -> None:

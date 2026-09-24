@@ -34,6 +34,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
+from joyread.app import startup_trace
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 from joyread.core.reader import ReaderLayoutResult
@@ -88,6 +89,7 @@ class ReaderCanvas(QWidget):
         self._pixmaps: dict[int, QPixmap] = {}
         self._frame_signatures: dict[int, tuple[int, int, tuple[int, int], float]] = {}
         self._failed_pages: set[int] = set()
+        self._startup_content_reported = False
         self._pan_x = 0.0
         self._slide_source: _CanvasSlideFrame | None = None
         self._slide_target: _CanvasSlideFrame | None = None
@@ -380,7 +382,38 @@ class ReaderCanvas(QWidget):
                 self._effective_pan_x(),
             )
         painter.end()
+        self._record_startup_content_paint()
         self._record_paint(perf_started)
+
+    def _record_startup_content_paint(self) -> None:
+        """A prepared frame counts only after Qt paints a visible page."""
+
+        if self._startup_content_reported or self.is_page_slide_active:
+            return
+        layout = self._layout_result
+        if layout is None:
+            return
+        viewport = QRectF(self.rect())
+        for draw in layout.page_draws:
+            drawn = QRectF(
+                draw.rect.x + self._effective_pan_x(),
+                draw.rect.y,
+                draw.rect.width,
+                draw.rect.height,
+            )
+            if not drawn.intersects(viewport):
+                continue
+            pixmap = self._pixmaps.get(draw.page_index)
+            if pixmap is not None and not pixmap.isNull():
+                self._startup_content_reported = True
+                if startup_trace.mark("reader_first_page_paint") is not None:
+                    startup_trace.flush_to_log(logger)
+                return
+            if draw.page_index in self._failed_pages:
+                self._startup_content_reported = True
+                if startup_trace.mark("reader_error_visible") is not None:
+                    startup_trace.flush_to_log(logger)
+                return
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         self.cancel_page_slide()

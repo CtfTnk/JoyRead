@@ -1,40 +1,19 @@
 #!/usr/bin/env python3
-"""Measure packaged (or source) JoyRead startup, stage by stage, over N runs.
+"""Measure JoyRead startup on a native desktop with a disposable profile.
 
-Three scenarios, matching the three ways a user actually starts JoyRead:
-
-``library``
-    Plain launch with no document. Reports ``origin`` through ``first_paint``.
-
-``file``
-    Cold file activation with no primary running: the process opens a Reader
-    directly and never builds a Library.
-
-``openwith``
-    A primary is already running and a second process forwards a document to it
-    and exits. This is the scenario the launch-path work targets, and the one
-    whose milestones arrive on stderr rather than in the log file, because a
-    secondary exits before file logging is configured.
-
-The process cannot see its own PyInstaller-bootloader and interpreter-init time,
-so this harness measures it from outside: it records the instant before spawning
-and subtracts it from ``origin_epoch``, which the app reports on its first
-milestone line. That difference is printed as ``spawn->origin``.
-
-Examples::
-
-    python scripts/bench_startup.py --runs 7
-    python scripts/bench_startup.py --exe dist/JoyRead/JoyRead.exe --runs 7
-    python scripts/bench_startup.py --scenario openwith --document book.cbz
-    python scripts/bench_startup.py --runs 3 --cold   # tag as cold-cache
+``file`` and ``openwith`` pass a path on the command line. They do not emulate
+macOS Finder's native QFileOpenEvent. Run the native behavior checklist too.
+The OS file cache is never cleared or described as cold by this tool.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import shutil
 import statistics
@@ -43,25 +22,24 @@ import sys
 import tempfile
 import time
 
+try:
+    import psutil
+except ImportError as exc:  # pragma: no cover - developer environment prerequisite.
+    raise SystemExit("Install JoyRead's dev dependencies (psutil) before benchmarking.") from exc
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOG_RELATIVE = Path(".joyread_support") / "Logs" / "joyread.log"
+SETTLE_SECONDS = 2.0
+POLL_SECONDS = 0.02
+_MEMORY_SCOPE = "process_tree"
 
-# `startup <name> at <elapsed> ms (+<stage> ms)` -- emitted by
-# joyread.app.startup_trace.flush_to_log through the standard text formatter.
 _MILESTONE_RE = re.compile(
     r"startup (?P<name>[a-z_]+) at (?P<elapsed>[0-9.]+) ms \(\+(?P<stage>[0-9.]+) ms\)"
 )
 _ORIGIN_EPOCH_RE = re.compile(r"origin_epoch[\"']?[:=]\s*(?P<epoch>[0-9.]+)")
-
-# A launch that was asked to open a document but showed the Library instead is a
-# *correctness* failure that still produces a perfectly healthy-looking set of
-# milestones. Timing alone cannot tell the two apart, so every document-bearing
-# scenario asserts on the launch decision the app logged.
 _READER_OPENED_RE = re.compile(r"Reader window created")
-_LIBRARY_FALLBACK_RE = re.compile(
-    r"No document could be opened at launch|Launch settled with no document"
-)
+_LIBRARY_FALLBACK_RE = re.compile(r"No document could be opened at launch|Launch settled with no document")
 _SECONDARY_FORWARDED_RE = re.compile(r"Secondary process forwarded its launch intent")
 _INTENT_DISPATCHED_RE = re.compile(r"Dispatching launch request")
 _INTENT_DELIVERED_RE = re.compile(r"Launch intent delivered")
@@ -77,40 +55,25 @@ MILESTONE_ORDER = (
     "window_constructed",
     "window_shown",
     "first_paint",
+    "library_first_book_paint",
+    "library_ready_empty",
+    "reader_first_page_paint",
+    "secondary_process_exit",
+    "primary_reader_first_page_paint",
 )
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument(
-        "--exe",
-        type=Path,
-        help="Packaged executable. Defaults to running the source tree with this interpreter.",
-    )
-    parser.add_argument("--runs", type=int, default=5)
-    parser.add_argument(
-        "--scenario",
-        choices=("library", "file", "openwith"),
-        default="library",
-    )
-    parser.add_argument("--document", type=Path, help="Required by the file/openwith scenarios.")
-    parser.add_argument(
-        "--timeout",
-        type=float,
-        default=60.0,
-        help="Seconds to wait for a run to reach first_paint (or for a secondary to exit).",
-    )
-    parser.add_argument(
-        "--cold",
-        action="store_true",
-        help="Tag the report as cold-cache. Does not itself clear any cache.",
-    )
-    parser.add_argument(
-        "--keep-runtime",
-        action="store_true",
-        help="Keep the isolated runtime directory instead of deleting it.",
-    )
-    parser.add_argument("--json", type=Path, help="Write the raw per-run results here.")
+    parser.add_argument("--exe", type=Path, help="Packaged executable; source tree is the default.")
+    parser.add_argument("--fixture-dir", type=Path, help="Output of prepare_startup_fixture.py.")
+    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--scenario", choices=("library", "file", "openwith"), default="library")
+    parser.add_argument("--document", type=Path, help="Required by file/openwith; normally a fixture sample.")
+    parser.add_argument("--app-cache", choices=("clean", "warm"), default="clean")
+    parser.add_argument("--timeout", type=float, default=90.0)
+    parser.add_argument("--keep-runtime", action="store_true")
+    parser.add_argument("--json", type=Path, help="Write per-run results and environment metadata.")
     return parser.parse_args(argv)
 
 
@@ -131,364 +94,437 @@ def _environment(runtime_dir: Path, exe: Path | None) -> dict[str, str]:
     return env
 
 
-def _parse_milestones(text: str) -> dict[str, float]:
+def _parse_milestones(output: str) -> dict[str, float]:
     found: dict[str, float] = {}
-    for match in _MILESTONE_RE.finditer(text):
-        # First occurrence wins, mirroring startup_trace's own rule.
+    for match in _MILESTONE_RE.finditer(output):
         found.setdefault(match.group("name"), float(match.group("elapsed")))
     return found
 
 
-def _parse_origin_epoch(text: str) -> float | None:
-    match = _ORIGIN_EPOCH_RE.search(text)
+def _parse_origin_epoch(output: str) -> float | None:
+    match = _ORIGIN_EPOCH_RE.search(output)
     return float(match.group("epoch")) if match is not None else None
 
 
 def _read_log(runtime_dir: Path) -> str:
-    log_file = runtime_dir / LOG_RELATIVE
-    if not log_file.is_file():
-        return ""
-    return log_file.read_text(encoding="utf-8", errors="replace")
+    path = runtime_dir / LOG_RELATIVE
+    return path.read_text(encoding="utf-8", errors="replace") if path.is_file() else ""
 
 
 def _log_size(runtime_dir: Path) -> int:
-    log_file = runtime_dir / LOG_RELATIVE
-    return log_file.stat().st_size if log_file.is_file() else 0
+    path = runtime_dir / LOG_RELATIVE
+    return path.stat().st_size if path.is_file() else 0
 
 
 def _read_log_since(runtime_dir: Path, offset: int) -> str:
-    """Read records appended after ``offset`` in the primary log.
-
-    Open-With runs share one primary process and therefore one cumulative log.
-    Looking at the whole file lets a successful earlier run hide a failed later
-    one. Taking the byte offset before each secondary launch makes every
-    correctness assertion belong to that launch only.
-    """
-
-    log_file = runtime_dir / LOG_RELATIVE
-    if not log_file.is_file():
+    path = runtime_dir / LOG_RELATIVE
+    if not path.is_file():
         return ""
-    with log_file.open("rb") as stream:
+    with path.open("rb") as stream:
         stream.seek(offset)
         return stream.read().decode("utf-8", errors="replace")
 
 
-def _primary_delivery_problems(text: str) -> list[str]:
+def _primary_delivery_problems(output: str) -> list[str]:
     problems: list[str] = []
-    if not _INTENT_DISPATCHED_RE.search(text):
+    if not _INTENT_DISPATCHED_RE.search(output):
         problems.append("primary never dispatched the forwarded intent")
-    elif not _READER_ACTIVATED_RE.search(text):
+    elif not _READER_ACTIVATED_RE.search(output):
         problems.append("primary dispatched the intent but opened or focused no Reader window")
-    if not _INTENT_DELIVERED_RE.search(text):
+    if not _INTENT_DELIVERED_RE.search(output):
         problems.append("primary did not finish delivering the forwarded intent")
     return problems
 
 
-def _wait_for_primary_delivery(
-    runtime_dir: Path,
-    offset: int,
-    timeout: float,
-) -> tuple[str, list[str]]:
-    """Wait for the primary to finish the launch requested by one secondary."""
+def _wait_for_primary_delivery(runtime_dir: Path, offset: int, timeout: float) -> tuple[str, list[str]]:
+    """Compatibility seam for the existing delivery-correlation tests."""
 
     deadline = time.monotonic() + timeout
-    text = ""
+    output = ""
     while time.monotonic() < deadline:
-        text = _read_log_since(runtime_dir, offset)
-        if _INTENT_DELIVERED_RE.search(text):
+        output = _read_log_since(runtime_dir, offset)
+        if _INTENT_DELIVERED_RE.search(output):
             break
-        time.sleep(0.02)
-    return text, _primary_delivery_problems(text)
+        time.sleep(POLL_SECONDS)
+    return output, _primary_delivery_problems(output)
+
+
+def _rss_tree(pid: int) -> int:
+    global _MEMORY_SCOPE
+    try:
+        process = psutil.Process(pid)
+        total = process.memory_info().rss
+        if _MEMORY_SCOPE == "parent_only":
+            return total
+        try:
+            children = process.children(recursive=True)
+        except (psutil.Error, OSError):
+            # Some desktop automation sandboxes deny the system-wide process
+            # listing that psutil uses for children(). Never label this a
+            # process-tree peak when only the parent was observable.
+            _MEMORY_SCOPE = "parent_only"
+            return total
+        for child in children:
+            try:
+                total += child.memory_info().rss
+            except (psutil.Error, OSError):
+                continue
+        return total
+    except (psutil.Error, OSError):
+        return 0
+
+
+def _target_milestone(scenario: str, populated: bool) -> str:
+    if scenario == "library":
+        return "library_first_book_paint" if populated else "library_ready_empty"
+    return "reader_first_page_paint"
+
+
+def _stop_process(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    process.terminate()
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def _wait_for_content(
+    process: subprocess.Popen[bytes],
+    runtime_dir: Path,
+    target: str,
+    timeout: float,
+) -> tuple[dict[str, float], int, list[str]]:
+    deadline = time.monotonic() + timeout
+    settle_until: float | None = None
+    peak = 0
+    milestones: dict[str, float] = {}
+    problems: list[str] = []
+    while time.monotonic() < deadline:
+        peak = max(peak, _rss_tree(process.pid))
+        milestones = _parse_milestones(_read_log(runtime_dir))
+        if "library_error_visible" in milestones or "reader_error_visible" in milestones:
+            problems.append("an error surface was shown before usable content")
+            break
+        if target in milestones and "first_paint" in milestones:
+            if settle_until is None:
+                settle_until = time.monotonic() + SETTLE_SECONDS
+            elif time.monotonic() >= settle_until:
+                break
+        if process.poll() is not None:
+            problems.append(f"process exited before usable content ({process.returncode})")
+            break
+        time.sleep(POLL_SECONDS)
+    else:
+        problems.append(f"timed out waiting for {target} and first_paint")
+    if target not in milestones and not problems:
+        problems.append(f"missing {target}")
+    if "first_paint" not in milestones and not problems:
+        problems.append("missing first_paint")
+    return milestones, peak, problems
 
 
 def _run_primary(
     args: argparse.Namespace,
     runtime_dir: Path,
     arguments: list[str],
+    target: str,
 ) -> dict[str, object]:
-    """Start a primary, wait for first_paint in its log, then stop it."""
-
-    env = _environment(runtime_dir, args.exe)
-    # Never a pipe. JoyRead mirrors every record to stderr through its early
-    # handler, and a pipe nobody drains fills its ~64 KB buffer and blocks the
-    # child mid-write -- the process then never reaches first_paint and the run
-    # times out looking like a startup regression.
     console_path = runtime_dir / "console.txt"
     spawned_at = time.time()
     with console_path.open("w", encoding="utf-8", errors="replace") as console:
         process = subprocess.Popen(
             _launch_command(args.exe, arguments),
-            env=env,
+            env=_environment(runtime_dir, args.exe),
             stdout=console,
             stderr=subprocess.STDOUT,
         )
-        deadline = time.monotonic() + args.timeout
-        milestones: dict[str, float] = {}
-        origin_epoch: float | None = None
         try:
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    break
-                text = _read_log(runtime_dir)
-                milestones = _parse_milestones(text)
-                origin_epoch = _parse_origin_epoch(text)
-                if "first_paint" in milestones:
-                    break
-                time.sleep(0.05)
+            milestones, peak, problems = _wait_for_content(process, runtime_dir, target, args.timeout)
         finally:
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=10)
-    captured = console_path.read_text(encoding="utf-8", errors="replace")
-
-    text = _read_log(runtime_dir) or captured
-    milestones = milestones or _parse_milestones(text)
-    origin_epoch = origin_epoch if origin_epoch is not None else _parse_origin_epoch(text)
-    problems: list[str] = []
+            _stop_process(process)
+    output = _read_log(runtime_dir) or console_path.read_text(encoding="utf-8", errors="replace")
+    milestones = milestones or _parse_milestones(output)
     if arguments:
-        if _LIBRARY_FALLBACK_RE.search(text):
-            problems.append("asked to open a document but fell back to the Library")
-        elif not _READER_OPENED_RE.search(text):
-            problems.append("asked to open a document but no Reader window was created")
+        if _LIBRARY_FALLBACK_RE.search(output):
+            problems.append("document launch fell back to Library")
+        elif not _READER_OPENED_RE.search(output):
+            problems.append("document launch created no Reader window")
+    elif target == "library_first_book_paint" and "library_ready_empty" in milestones:
+        problems.append("populated fixture appeared empty")
+    origin_epoch = _parse_origin_epoch(output)
     return {
         "milestones": milestones,
-        "spawn_to_origin_ms": (origin_epoch - spawned_at) * 1000.0 if origin_epoch else None,
+        "spawn_to_origin_ms": (origin_epoch - spawned_at) * 1000 if origin_epoch else None,
+        "peak_rss_bytes": peak,
         "problems": problems,
-        "output": captured,
+        "output": output[-4000:],
     }
 
 
-def _run_secondary(args: argparse.Namespace, runtime_dir: Path, document: Path) -> dict[str, object]:
-    """Forward one document to an already-running primary and time the exit."""
+def _run_forwarded(
+    args: argparse.Namespace,
+    runtime_dir: Path,
+    document: Path,
+    *,
+    populated: bool,
+) -> dict[str, object]:
+    primary_console_path = runtime_dir / "primary_console.txt"
+    with primary_console_path.open("w", encoding="utf-8", errors="replace") as primary_console:
+        primary = subprocess.Popen(
+            _launch_command(args.exe, []),
+            env=_environment(runtime_dir, args.exe),
+            stdout=primary_console,
+            stderr=subprocess.STDOUT,
+        )
+        try:
+            ready_target = _target_milestone("library", populated)
+            _ready, idle_peak, ready_problems = _wait_for_content(primary, runtime_dir, ready_target, args.timeout)
+            if ready_problems:
+                return {
+                    "milestones": {},
+                    "peak_rss_bytes": idle_peak,
+                    "problems": [f"primary not ready: {problem}" for problem in ready_problems],
+                    "output": _read_log(runtime_dir)[-4000:],
+                }
 
-    env = _environment(runtime_dir, args.exe)
-    primary_log_offset = _log_size(runtime_dir)
-    spawned_at = time.time()
-    started = time.perf_counter()
-    process = subprocess.run(
-        _launch_command(args.exe, [str(document)]),
-        env=env,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=args.timeout,
-    )
-    wall_ms = (time.perf_counter() - started) * 1000.0
-    text = f"{process.stdout or ''}\n{process.stderr or ''}"
-    milestones = _parse_milestones(text)
-    origin_epoch = _parse_origin_epoch(text)
-    milestones["process_exit"] = wall_ms
-
-    problems: list[str] = []
-    if process.returncode != 0:
-        problems.append(f"secondary exited {process.returncode}")
-    if not _SECONDARY_FORWARDED_RE.search(text):
-        # Without this, a secondary that quietly became a second *primary*
-        # would still be timed, and would look fast for the wrong reason.
-        problems.append("did not take the SECONDARY role")
-    # Secondary exit and primary dispatch are asynchronous. The first forwarded
-    # request may still be constructing its Reader for ~180 ms after the sender
-    # exits, so wait for this request's terminal event. Inspect only bytes
-    # appended after this launch; otherwise an earlier successful run can make
-    # a later failure look healthy.
-    primary_delivery, delivery_problems = _wait_for_primary_delivery(
-        runtime_dir,
-        primary_log_offset,
-        args.timeout,
-    )
-    problems.extend(delivery_problems)
-    return {
-        "milestones": milestones,
-        "spawn_to_origin_ms": (origin_epoch - spawned_at) * 1000.0 if origin_epoch else None,
-        "returncode": process.returncode,
-        "problems": problems,
-        "output": f"{text}\n--- primary delivery ---\n{primary_delivery}",
-    }
+            offset = _log_size(runtime_dir)
+            primary_origin_epoch = _parse_origin_epoch(_read_log(runtime_dir))
+            secondary_console_path = runtime_dir / "secondary_console.txt"
+            spawned_at = time.time()
+            started = time.perf_counter()
+            with secondary_console_path.open("w", encoding="utf-8", errors="replace") as secondary_console:
+                secondary = subprocess.Popen(
+                    _launch_command(args.exe, [str(document)]),
+                    env=_environment(runtime_dir, args.exe),
+                    stdout=secondary_console,
+                    stderr=subprocess.STDOUT,
+                )
+                settle_until: float | None = None
+                settled = False
+                deadline = time.monotonic() + args.timeout
+                peak = 0
+                primary_peak = 0
+                process_exit_ms: float | None = None
+                delivery = ""
+                while time.monotonic() < deadline:
+                    primary_rss = _rss_tree(primary.pid)
+                    primary_peak = max(primary_peak, primary_rss)
+                    peak = max(peak, primary_rss + _rss_tree(secondary.pid))
+                    delivery = _read_log_since(runtime_dir, offset)
+                    marks = _parse_milestones(delivery)
+                    if "reader_error_visible" in marks or "library_error_visible" in marks:
+                        break
+                    if secondary.poll() is not None and process_exit_ms is None:
+                        process_exit_ms = (time.perf_counter() - started) * 1000
+                    if "reader_first_page_paint" in marks and _INTENT_DELIVERED_RE.search(delivery) and secondary.poll() is not None:
+                        if settle_until is None:
+                            settle_until = time.monotonic() + SETTLE_SECONDS
+                        elif time.monotonic() >= settle_until:
+                            settled = True
+                            break
+                    if primary.poll() is not None:
+                        break
+                    time.sleep(POLL_SECONDS)
+                _stop_process(secondary)
+            secondary_output = secondary_console_path.read_text(encoding="utf-8", errors="replace")
+            delivery = _read_log_since(runtime_dir, offset)
+            marks = _parse_milestones(delivery)
+            if process_exit_ms is None:
+                process_exit_ms = (time.perf_counter() - started) * 1000
+            page_ms = (
+                (primary_origin_epoch + marks["reader_first_page_paint"] / 1000 - spawned_at) * 1000
+                if primary_origin_epoch is not None and "reader_first_page_paint" in marks
+                else None
+            )
+            metrics = {"secondary_process_exit": process_exit_ms}
+            if page_ms is not None:
+                metrics["primary_reader_first_page_paint"] = page_ms
+            problems = _primary_delivery_problems(delivery)
+            if secondary.returncode != 0:
+                problems.append(f"secondary exited {secondary.returncode}")
+            if not _SECONDARY_FORWARDED_RE.search(secondary_output):
+                problems.append("secondary did not forward its intent")
+            if not _READER_OPENED_RE.search(delivery):
+                problems.append("forwarded request did not create a new Reader")
+            if "reader_first_page_paint" not in marks:
+                problems.append("primary never painted a readable page")
+            if "reader_error_visible" in marks or "library_error_visible" in marks:
+                problems.append("an error surface was shown")
+            if not settled:
+                problems.append("timed out before forwarded content settled")
+            return {
+                "milestones": metrics,
+                "primary_ready_milestones": _ready,
+                "secondary_milestones": _parse_milestones(secondary_output),
+                "spawn_to_origin_ms": (
+                    (_parse_origin_epoch(secondary_output) - spawned_at) * 1000
+                    if _parse_origin_epoch(secondary_output) is not None else None
+                ),
+                "peak_rss_bytes": peak,
+                "primary_peak_rss_bytes": primary_peak,
+                "primary_idle_peak_rss_bytes": idle_peak,
+                "problems": problems,
+                "output": (secondary_output + "\n--- primary delivery ---\n" + delivery)[-4000:],
+            }
+        finally:
+            _stop_process(primary)
 
 
 def _summarize(runs: list[dict[str, object]]) -> list[tuple[str, int, float, float, float]]:
-    names: list[str] = []
-    for run in runs:
-        for name in run["milestones"]:  # type: ignore[index]
-            if name not in names:
-                names.append(name)
-    names.sort(key=lambda name: (MILESTONE_ORDER.index(name) if name in MILESTONE_ORDER else 99, name))
-
+    names = {name for run in runs for name in run["milestones"]}  # type: ignore[union-attr]
     rows: list[tuple[str, int, float, float, float]] = []
-    for name in names:
-        values = [
-            float(run["milestones"][name])  # type: ignore[index]
-            for run in runs
-            if name in run["milestones"]  # type: ignore[operator]
-        ]
-        if values:
-            rows.append((name, len(values), statistics.median(values), min(values), max(values)))
+    for name in sorted(names, key=lambda value: (MILESTONE_ORDER.index(value) if value in MILESTONE_ORDER else 99, value)):
+        values = [float(run["milestones"][name]) for run in runs if name in run["milestones"]]  # type: ignore[index,operator]
+        rows.append((name, len(values), statistics.median(values), min(values), max(values)))
     return rows
 
 
 def _print_report(args: argparse.Namespace, runs: list[dict[str, object]]) -> None:
-    label = "cold" if args.cold else "warm"
-    target = str(args.exe) if args.exe else "source tree"
-    print()
-    print(f"JoyRead startup benchmark - scenario={args.scenario} cache={label} runs={len(runs)}")
-    print(f"target: {target}")
-
-    spawn_deltas = [
-        float(run["spawn_to_origin_ms"])
-        for run in runs
-        if run.get("spawn_to_origin_ms") is not None
-    ]
-    if spawn_deltas:
-        print(
-            f"spawn->origin (loader + interpreter init): "
-            f"median {statistics.median(spawn_deltas):8.1f} ms  "
-            f"[{min(spawn_deltas):.1f} - {max(spawn_deltas):.1f}]"
-        )
-    else:
-        print("spawn->origin: unavailable (no origin_epoch in output)")
-
-    rows = _summarize(runs)
-    if not rows:
-        print("\nNo milestones captured. Check the run output below.\n")
-        for index, run in enumerate(runs, start=1):
-            print(f"--- run {index} output ---")
-            print(str(run.get("output", ""))[-2000:])
-        return
-
-    print()
-    print(f"{'milestone':<20}{'n':>3}{'median':>10}{'min':>10}{'max':>10}{'stage':>10}")
-    print("-" * 63)
-    previous_median = 0.0
-    for name, count, median, low, high in rows:
-        stage = median - previous_median
-        previous_median = median
-        print(f"{name:<20}{count:>3}{median:>10.1f}{low:>10.1f}{high:>10.1f}{stage:>10.1f}")
-    print("-" * 63)
-    print("all figures in ms from the trace origin; 'stage' is median-to-median")
-    print()
-
-
-def _report_problems(runs: list[dict[str, object]]) -> int:
-    """Print any correctness failures and return how many runs had one.
-
-    A timing harness that does not check what the app actually did will happily
-    measure the wrong thing: a launch that showed the Library instead of the
-    requested document produces a completely normal-looking milestone table.
-    """
-
-    failed = [(index, run) for index, run in enumerate(runs, start=1) if run.get("problems")]
-    if not failed:
-        return 0
-    print("CORRECTNESS FAILURES -- the timings above are not measuring what you think:")
+    print(f"JoyRead startup: {args.scenario}, app cache={args.app_cache}, OS file cache=uncontrolled, runs={len(runs)}")
+    print(f"target: {args.exe or 'source tree'}")
+    for name, count, median, low, high in _summarize(runs):
+        print(f"{name:<34} n={count:<2} median={median:9.1f} ms  range={low:9.1f}..{high:9.1f}")
+    rss = [int(run["peak_rss_bytes"]) / (1024 * 1024) for run in runs if run.get("peak_rss_bytes")]
+    if rss:
+        print(f"peak RSS ({_MEMORY_SCOPE}): median={statistics.median(rss):.1f} MiB, range={min(rss):.1f}..{max(rss):.1f}")
+    failed = [(index, run) for index, run in enumerate(runs, 1) if run.get("problems")]
     for index, run in failed:
-        for problem in run["problems"]:  # type: ignore[index]
-            print(f"  run {index}: {problem}")
-    print()
-    return len(failed)
+        print(f"run {index} failed: {', '.join(run['problems'])}")  # type: ignore[arg-type]
+    print(f"correctness failures: {len(failed)}")
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _git_revision() -> str | None:
+    result = subprocess.run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _git_dirty() -> bool | None:
+    result = subprocess.run(["git", "status", "--porcelain"], cwd=REPO_ROOT, capture_output=True, text=True)
+    return bool(result.stdout.strip()) if result.returncode == 0 else None
+
+
+def _reset_logs(runtime_dir: Path) -> None:
+    logs = runtime_dir / LOG_RELATIVE.parent
+    shutil.rmtree(logs, ignore_errors=True)
+    logs.mkdir(parents=True, exist_ok=True)
+    for path in runtime_dir.glob("*console.txt"):
+        path.unlink()
+
+
+def _prepare_run_dir(args: argparse.Namespace, run_dir: Path, document: Path | None, populated: bool) -> None:
+    if args.fixture_dir is not None:
+        shutil.copytree(args.fixture_dir / "profile_template", run_dir)
+        settings_path = run_dir / ".joyread_support" / "Config" / "settings.json"
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+        # The settings store saves an absolute Library root. Without rebasing
+        # both fields, a copied run silently reads the template's database and
+        # cache, defeating isolation and corrupting every cold/warm label.
+        storage = str(run_dir / "JoyRead-Library")
+        settings["storage_location"] = storage
+        settings["last_good_storage_location"] = storage
+        settings_path.write_text(json.dumps(settings, indent=2, sort_keys=True), encoding="utf-8")
+    else:
+        run_dir.mkdir(parents=True)
+    if args.app_cache == "warm":
+        warm_arguments = [str(document)] if document is not None else []
+        target = _target_milestone("file" if document is not None else "library", populated)
+        warmup = _run_primary(args, run_dir, warm_arguments, target)
+        if warmup["problems"]:
+            raise RuntimeError(f"Warmup failed: {warmup['problems']}\n{warmup['output']}")
+        _reset_logs(run_dir)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(list(sys.argv[1:] if argv is None else argv))
-
-    if args.scenario in {"file", "openwith"}:
+    if args.runs < 1 or args.timeout <= SETTLE_SECONDS:
+        raise SystemExit("--runs must be positive and --timeout must exceed the 2-second settle window")
+    if args.exe is not None:
+        args.exe = args.exe.expanduser().resolve()
+        if not args.exe.is_file():
+            raise SystemExit(f"No executable: {args.exe}")
+    fixture_manifest = None
+    if args.fixture_dir is not None:
+        args.fixture_dir = args.fixture_dir.expanduser().resolve()
+        fixture_manifest = json.loads((args.fixture_dir / "manifest.json").read_text(encoding="utf-8"))
+        if fixture_manifest.get("version") != 1 or not (args.fixture_dir / "profile_template").is_dir():
+            raise SystemExit("Unsupported or incomplete fixture directory")
+        for relative, expected_hash in fixture_manifest["files"].items():
+            sample = args.fixture_dir / relative
+            if not sample.is_file() or _sha256(sample) != expected_hash:
+                raise SystemExit(f"Fixture file is missing or changed: {sample}")
+    if args.scenario in ("file", "openwith"):
         if args.document is None:
-            print(f"--document is required for the {args.scenario} scenario", file=sys.stderr)
-            return 2
+            raise SystemExit("--document is required for file/openwith")
         document = args.document.expanduser().resolve()
         if not document.is_file():
-            print(f"No such document: {document}", file=sys.stderr)
-            return 2
+            raise SystemExit(f"No document: {document}")
     else:
         document = None
-
-    if args.exe is not None and not args.exe.is_file():
-        print(f"No such executable: {args.exe}", file=sys.stderr)
-        return 2
-
-    runtime_root = Path(tempfile.mkdtemp(prefix="joyread-bench-"))
+    populated = fixture_manifest is not None and int(fixture_manifest["book_count"]) > 0
+    root = Path(tempfile.mkdtemp(prefix="joyread-bench-"))
     runs: list[dict[str, object]] = []
-    primary: subprocess.Popen[bytes] | None = None
-    primary_console = None
     try:
-        if args.scenario == "openwith":
-            # One primary, held for every run: the point is the secondary's
-            # cost against a warm, already-running process.
-            primary_dir = runtime_root / "primary"
-            primary_dir.mkdir(parents=True, exist_ok=True)
-            # Held for the whole session, so piping it would stall the primary
-            # the moment its buffer filled. See the note in `_run_primary`.
-            primary_console = (primary_dir / "console.txt").open(
-                "w", encoding="utf-8", errors="replace"
-            )
-            primary = subprocess.Popen(
-                _launch_command(args.exe, []),
-                env=_environment(primary_dir, args.exe),
-                stdout=primary_console,
-                stderr=subprocess.STDOUT,
-            )
-            deadline = time.monotonic() + args.timeout
-            primary_ready = False
-            while time.monotonic() < deadline:
-                if "first_paint" in _parse_milestones(_read_log(primary_dir)):
-                    primary_ready = True
-                    break
-                if primary.poll() is not None:
-                    print("Primary exited before it was ready", file=sys.stderr)
-                    return 1
-                time.sleep(0.05)
-            if not primary_ready:
-                print("Primary did not reach first_paint before the timeout", file=sys.stderr)
-                return 1
-            for _ in range(args.runs):
+        for index in range(args.runs):
+            run_dir = root / f"run-{index + 1:02d}"
+            _prepare_run_dir(args, run_dir, document, populated)
+            if args.scenario == "openwith":
                 assert document is not None
-                runs.append(_run_secondary(args, primary_dir, document))
-        else:
-            arguments = [str(document)] if document is not None else []
-            for index in range(args.runs):
-                # A fresh runtime per run keeps each launch a real first launch
-                # for this profile, so no run inherits another's warm state.
-                run_dir = runtime_root / f"run{index}"
-                run_dir.mkdir(parents=True, exist_ok=True)
-                runs.append(_run_primary(args, run_dir, arguments))
+                run = _run_forwarded(args, run_dir, document, populated=populated)
+            else:
+                target = _target_milestone(args.scenario, populated)
+                run = _run_primary(args, run_dir, [str(document)] if document else [], target)
+            runs.append(run)
+            print(f"run {index + 1}/{args.runs}: {'OK' if not run['problems'] else 'FAILED'}", flush=True)
     finally:
-        if primary is not None and primary.poll() is None:
-            primary.terminate()
-            try:
-                primary.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                primary.kill()
-        if primary_console is not None:
-            primary_console.close()
         if args.keep_runtime:
-            print(f"runtime kept at {runtime_root}")
+            print(f"runtime kept at {root}")
         else:
-            shutil.rmtree(runtime_root, ignore_errors=True)
+            shutil.rmtree(root, ignore_errors=True)
 
     _print_report(args, runs)
-    broken = _report_problems(runs)
     if args.json is not None:
+        args.json.parent.mkdir(parents=True, exist_ok=True)
         payload = {
+            "schema_version": 2,
             "scenario": args.scenario,
-            "cache": "cold" if args.cold else "warm",
-            "target": str(args.exe) if args.exe else "source",
+            "entry_mechanism": "cli_argv" if args.scenario == "file" else "cli_secondary_forward" if args.scenario == "openwith" else "plain_launch",
+            "process_state": "running_primary" if args.scenario == "openwith" else "new_process",
+            "app_cache": args.app_cache,
+            "os_file_cache": "uncontrolled",
+            "target": "packaged" if args.exe else "source",
+            "git_revision": _git_revision(),
+            "git_dirty": _git_dirty(),
+            "executable": str(args.exe) if args.exe else None,
+            "executable_sha256": _sha256(args.exe) if args.exe else None,
+            "document": str(document) if document else None,
+            "document_sha256": _sha256(document) if document else None,
+            "fixture_manifest": fixture_manifest,
+            "system": platform.platform(),
+            "machine": platform.machine(),
+            "memory_scope": _MEMORY_SCOPE,
+            "python": sys.version,
             "runs": [
                 {
-                    "milestones": run["milestones"],
-                    "spawn_to_origin_ms": run.get("spawn_to_origin_ms"),
-                    "problems": run.get("problems", []),
+                    **{key: value for key, value in run.items() if key != "output"},
+                    **({"diagnostic_tail": run["output"]} if run["problems"] else {}),
                 }
                 for run in runs
             ],
         }
-        args.json.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        args.json.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"raw results written to {args.json}")
-    # Non-zero on a correctness failure, so this is usable as a smoke test and
-    # not only as a stopwatch.
-    return 1 if broken else 0
+    return 1 if any(run["problems"] for run in runs) else 0
 
 
 if __name__ == "__main__":
