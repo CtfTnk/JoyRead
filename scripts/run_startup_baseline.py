@@ -6,7 +6,7 @@ Example (from the repository conda environment)::
     python scripts/run_startup_baseline.py --output /tmp/joyread-p0-mac-source
     python scripts/run_startup_baseline.py --output /tmp/joyread-p0-mac-package --exe dist/JoyRead.app/Contents/MacOS/JoyRead
 
-The script prepares a disposable 50-book profile, runs 10 repetitions of each
+The script prepares a disposable 50-book profile, runs 3 repetitions of each
 Library/CBZ/PDF scenario in clean and warm application-cache conditions, and
 writes JSON plus a concise index. Native Finder/Explorer checks are separate.
 """
@@ -55,7 +55,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--fixture-dir", type=Path, help="Reuse a previously generated fixture.")
     parser.add_argument("--exe", type=Path, help="Packaged executable; omit for source.")
-    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--timeout", type=float, default=90.0)
     return parser.parse_args(argv)
 

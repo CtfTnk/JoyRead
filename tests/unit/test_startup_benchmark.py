@@ -23,6 +23,11 @@ def _load_benchmark():
     return module
 
 
+def test_default_repetition_count_is_three() -> None:
+    benchmark = _load_benchmark()
+    assert benchmark._parse_args([]).runs == 3
+
+
 def test_openwith_waits_for_the_primary_delivery_belonging_to_this_run(tmp_path: Path) -> None:
     benchmark = _load_benchmark()
     log_file = tmp_path / benchmark.LOG_RELATIVE

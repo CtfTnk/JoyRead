@@ -67,7 +67,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--exe", type=Path, help="Packaged executable; source tree is the default.")
     parser.add_argument("--fixture-dir", type=Path, help="Output of prepare_startup_fixture.py.")
-    parser.add_argument("--runs", type=int, default=10)
+    parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--scenario", choices=("library", "file", "openwith"), default="library")
     parser.add_argument("--document", type=Path, help="Required by file/openwith; normally a fixture sample.")
     parser.add_argument("--app-cache", choices=("clean", "warm"), default="clean")
