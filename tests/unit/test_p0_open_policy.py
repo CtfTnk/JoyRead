@@ -7,7 +7,7 @@ import json
 import pytest
 
 from joyread.app.launch.intent import LaunchIntent, encode_launch_intent
-from joyread.app.open_policy import (
+from joyread.app.p0_open_policy import (
     LibraryState,
     OpenDisposition,
     OpenOrigin,

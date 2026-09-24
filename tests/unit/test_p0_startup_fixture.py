@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _load_generator():
-    spec = importlib.util.spec_from_file_location("prepare_startup_fixture", REPO_ROOT / "scripts" / "prepare_startup_fixture.py")
+    spec = importlib.util.spec_from_file_location("p0_prepare_startup_fixture", REPO_ROOT / "scripts" / "p0_prepare_startup_fixture.py")
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

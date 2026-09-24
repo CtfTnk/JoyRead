@@ -3,12 +3,13 @@
 
 Example (from the repository conda environment)::
 
-    python scripts/run_startup_baseline.py --output /tmp/joyread-p0-mac-source
-    python scripts/run_startup_baseline.py --output /tmp/joyread-p0-mac-package --exe dist/JoyRead.app/Contents/MacOS/JoyRead
+    python scripts/p0_run_startup_baseline.py --output reports/p0-2026-09-24/mac-source
+    python scripts/p0_run_startup_baseline.py --output reports/p0-2026-09-24/mac-package --exe dist/JoyRead.app/Contents/MacOS/JoyRead
 
 The script prepares a disposable 50-book profile, runs 3 repetitions of each
 Library/CBZ/PDF scenario in clean and warm application-cache conditions, and
-writes JSON plus a concise index. Native Finder/Explorer checks are separate.
+writes JSON plus a concise index. Keep the output in Git-ignored ``reports/``
+until P5 acceptance, then delete it. Native Finder/Explorer checks are separate.
 """
 
 from __future__ import annotations
@@ -85,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     fixture = args.fixture_dir.expanduser().resolve() if args.fixture_dir else output / "fixture"
     if not (fixture / "manifest.json").is_file():
         subprocess.run(
-            [sys.executable, str(SCRIPT_DIR / "prepare_startup_fixture.py"), str(fixture)],
+            [sys.executable, str(SCRIPT_DIR / "p0_prepare_startup_fixture.py"), str(fixture)],
             check=True,
         )
 
@@ -104,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             json_path = output / f"{name}.json"
             command = [
                 sys.executable,
-                str(SCRIPT_DIR / "bench_startup.py"),
+                str(SCRIPT_DIR / "p0_bench_startup.py"),
                 "--fixture-dir", str(fixture),
                 "--scenario", scenario,
                 "--app-cache", cache,
