@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 import json
 import logging
 from math import ceil
 from os import environ
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from joyread.core.models.reader_prefetch import (
     PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT,
@@ -31,6 +31,17 @@ except ImportError:  # pragma: no cover - platformdirs is a project dependency.
 
 logger = logging.getLogger(__name__)
 
+if TYPE_CHECKING:
+    from joyread.core.reader.models import ReaderSettings
+
+
+def _default_reader_settings() -> ReaderSettings:
+    # SettingsStore is imported before single-instance arbitration. Keep the
+    # reader package out of that secondary-process path.
+    from joyread.core.reader.models import ReaderSettings
+
+    return ReaderSettings()
+
 
 @dataclass(frozen=True)
 class AppSettings:
@@ -47,6 +58,7 @@ class AppSettings:
     # retaining a content hash calculated during the required copy pass.
     verify_imported_file_integrity: bool = True
     individual_read_window: bool = False
+    default_reader_settings: ReaderSettings = field(default_factory=_default_reader_settings)
     library_window_size: tuple[int, int] | None = None
     reader_window_size: tuple[int, int] | None = None
     shelf_sort_field: str = "Add Time"
@@ -190,6 +202,7 @@ class SettingsStore:
             import_book_when_opening=bool(raw.get("import_book_when_opening", False)),
             verify_imported_file_integrity=bool(raw.get("verify_imported_file_integrity", True)),
             individual_read_window=bool(raw.get("individual_read_window", False)),
+            default_reader_settings=_reader_settings(raw.get("default_reader_settings")),
             shelf_sort_field=str(raw.get("shelf_sort_field") or "Add Time"),
             shelf_sort_ascending=bool(raw.get("shelf_sort_ascending", False)),
             shelf_file_filter=str(raw.get("shelf_file_filter") or "ALL"),
@@ -294,7 +307,7 @@ class SettingsStore:
             fields={"count": len(keys), "keys": keys},
         ):
             current = self.load()
-            next_settings = AppSettings(**{**asdict(current), **changes})
+            next_settings = replace(current, **changes)
             self.save(next_settings)
             return next_settings
 
@@ -417,6 +430,38 @@ def _coerce_limit_or_unlimited(value: object, *, default: int, maximum: int) -> 
     """Parse a positive resource setting whose UI sentinel is ``-1``."""
 
     return _coerce_depth_limit(value, default=default, maximum=maximum)
+
+
+def _reader_settings(value: object) -> ReaderSettings:
+    """Read global defaults without allowing a damaged JSON field to break startup."""
+
+    from joyread.core.reader.models import (
+        ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode,
+    )
+
+    if not isinstance(value, dict):
+        return ReaderSettings()
+
+    def enum_value(enum_type, key: str, default):  # noqa: ANN001 - local StrEnum helper.
+        try:
+            return enum_type(value.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    return ReaderSettings(
+        direction=enum_value(ReaderDirection, "direction", ReaderDirection.RIGHT_TO_LEFT),
+        transition_mode=enum_value(ReaderTransitionMode, "transition_mode", ReaderTransitionMode.NONE),
+        custom_enabled=bool(value.get("custom_enabled", False)),
+        always_one_page=bool(value.get("always_one_page", False)),
+        fit_mode=enum_value(ReaderFitMode, "fit_mode", ReaderFitMode.AUTO),
+        vertical_custom_enabled=bool(value.get("vertical_custom_enabled", False)),
+        vertical_fit_width=bool(value.get("vertical_fit_width", False)),
+        page_spacing=_coerce_int_in_range(value.get("page_spacing"), default=0, minimum=0, maximum=200),
+        vertical_zoom_percent=_coerce_int_in_range(
+            value.get("vertical_zoom_percent"), default=100, minimum=25, maximum=200,
+        ),
+        spread_offset=_coerce_int_in_range(value.get("spread_offset"), default=0, minimum=0, maximum=1),
+    )
 
 
 def _window_size(value: object) -> tuple[int, int] | None:

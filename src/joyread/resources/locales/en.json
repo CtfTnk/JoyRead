@@ -13,6 +13,10 @@
   },
   "settings": {
     "section_general": "General",
+    "section_reading": "Reading Defaults",
+    "reading_defaults_hint": "New books and temporary files start with these values. Book-specific settings take priority.",
+    "reading_direction": "Reading direction",
+    "page_transition": "Page transition",
     "section_archive": "Archive & Cache",
     "section_tags": "Tags",
     "section_privacy": "Privacy",

@@ -13,6 +13,10 @@
   },
   "settings": {
     "section_general": "通用",
+    "section_reading": "默认阅读偏好",
+    "reading_defaults_hint": "新书籍和临时文件会使用这些初始设置；已有的单本书设置优先。",
+    "reading_direction": "阅读方向",
+    "page_transition": "翻页动画",
     "section_archive": "归档与缓存",
     "section_tags": "标签",
     "section_privacy": "隐私",

@@ -127,7 +127,7 @@ class ReaderShellWidget(ReaderShellBase):
             context.library_service if book is not None else None,
             book_uuid=book.uuid if book is not None else None,
             title=title or (book.title if book is not None else self._source_path.stem),
-            settings=_reader_settings_for_book(context, book),
+            settings=_reader_settings_for_book(context, book, app_settings.default_reader_settings),
             progress=_reader_progress_for_book(context, book, start_page_index),
             prefetch_before=context.settings_viewmodel.page_prefetch_before,
             prefetch_after=context.settings_viewmodel.page_prefetch_after,
@@ -628,11 +628,14 @@ class ReaderShellWidget(ReaderShellBase):
             self.dialog_overlay.raise_()
 
 
-def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderSettings:
+def _reader_settings_for_book(
+    context: AppContext, book: Book | None, defaults: ReaderSettings | None = None,
+) -> ReaderSettings:
+    defaults = defaults or ReaderSettings()
     if book is None:
-        return ReaderSettings()
+        return defaults
     try:
-        return context.library_service.get_reader_settings(book.uuid) or ReaderSettings()
+        return context.library_service.get_reader_settings(book.uuid) or defaults
     except Exception as exc:
         # Falling back silently here is how the ``vertical_fit_width`` schema
         # drift hid for so long: bookkeeping read errors made every reload
@@ -643,7 +646,7 @@ def _reader_settings_for_book(context: AppContext, book: Book | None) -> ReaderS
             exc,
             exc_info=True,
         )
-        return ReaderSettings()
+        return defaults
 
 
 def _reader_progress_for_book(

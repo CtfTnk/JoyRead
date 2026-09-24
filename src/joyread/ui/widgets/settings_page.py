@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from joyread import __version__
 from joyread.core.archive.limits import GIB
+from joyread.core.reader.models import ReaderDirection, ReaderFitMode, ReaderTransitionMode
 from joyread.infrastructure.i18n.locale_service import (
     language_display_options,
     TranslatedText,
@@ -101,6 +102,7 @@ class SettingsPageWidget(QFrame):
         self._resources = resources
         self._tag_viewmodel = tag_viewmodel
         self._language_dropdown = None
+        self._reading_dropdowns: dict[str, SettingsDropdownButton] = {}
         self._tag_page = None  # cached TagManagementPage, lazily created
         self._archive_pool_usage_item: SettingsCacheStatusItem | None = None
         self._disposed = False
@@ -154,6 +156,7 @@ class SettingsPageWidget(QFrame):
         if self._disposed:
             return
         self._language_dropdown = None
+        self._reading_dropdowns = {}
         self._sidebar.set_active(self._viewmodel.current_section)
         # Leaving the Tags section clears any chip selection so revisiting
         # the page starts in a clean state (and the inline rename input,
@@ -193,6 +196,8 @@ class SettingsPageWidget(QFrame):
             dropdown.refresh_labels()
         if self._language_dropdown is not None:
             self._language_dropdown.set_value(language_display_name(self._viewmodel.language), emit=False)
+        for field, dropdown in self._reading_dropdowns.items():
+            dropdown.set_value(_reader_preference_label(field, getattr(self._viewmodel.default_reader_settings, field)), emit=False)
 
     def _handle_destroyed(self, _obj: object | None = None) -> None:
         self.dispose()
@@ -200,6 +205,8 @@ class SettingsPageWidget(QFrame):
     def _items_for_current_section(self) -> list[QWidget]:
         if self._viewmodel.current_section == SettingsSectionKey.GENERAL:
             return self._general_items()
+        if self._viewmodel.current_section == SettingsSectionKey.READING:
+            return self._reading_items()
         if self._viewmodel.current_section == SettingsSectionKey.ARCHIVE:
             return self._archive_cache_items()
         if self._viewmodel.current_section == SettingsSectionKey.PRIVACY:
@@ -209,6 +216,75 @@ class SettingsPageWidget(QFrame):
         if self._viewmodel.current_section == SettingsSectionKey.ABOUT:
             return self._about_items()
         return []
+
+    def _reading_items(self) -> list[QWidget]:
+        """Initial values for new library books and files opened temporarily."""
+
+        settings = self._viewmodel.default_reader_settings
+        change = self._viewmodel.set_default_reader_preference
+
+        def dropdown(field: str, title: str, values: tuple) -> SettingsDropdownItem:
+            item = SettingsDropdownItem(
+                t(title),
+                _reader_preference_label(field, getattr(settings, field)),
+                tuple(_reader_preference_label(field, value) for value in values),
+                self._resources,
+            )
+            item.value_changed.connect(
+                lambda label, field=field, values=values: change(
+                    field,
+                    next(value for value in values if label == _reader_preference_label(field, value)),
+                )
+            )
+            self._reading_dropdowns[field] = item.dropdown
+            return item
+
+        direction = dropdown("direction", "settings.reading_direction", tuple(ReaderDirection))
+        transition = dropdown("transition_mode", "settings.page_transition", tuple(ReaderTransitionMode))
+
+        horizontal_custom = SettingsSwitchItem(t("reader.enable_custom"), settings.custom_enabled, gate=True)
+        one_page = SettingsSwitchItem(t("reader.single_page"), settings.always_one_page)
+        fit_mode = dropdown("fit_mode", "reader.fit_mode", tuple(ReaderFitMode))
+        horizontal_custom.toggled.connect(lambda enabled: change("custom_enabled", enabled))
+        horizontal_custom.toggled.connect(one_page.setEnabled)
+        horizontal_custom.toggled.connect(fit_mode.setEnabled)
+        one_page.toggled.connect(lambda enabled: change("always_one_page", enabled))
+        one_page.setEnabled(settings.custom_enabled)
+        fit_mode.setEnabled(settings.custom_enabled)
+
+        vertical_custom = SettingsSwitchItem(t("reader.enable_custom"), settings.vertical_custom_enabled, gate=True)
+        fit_width = SettingsSwitchItem(t("reader.fit_width_toggle"), settings.vertical_fit_width)
+        spacing = SettingsNumericItem(t("reader.gap"), settings.page_spacing, 0, 200, self._resources, "px")
+        zoom = SettingsNumericItem(t("reader.zoom"), settings.vertical_zoom_percent, 25, 200, self._resources, "%")
+        vertical_custom.toggled.connect(lambda enabled: change("vertical_custom_enabled", enabled))
+        vertical_custom.toggled.connect(fit_width.setEnabled)
+        vertical_custom.toggled.connect(spacing.setEnabled)
+        vertical_custom.toggled.connect(
+            lambda enabled: zoom.setEnabled(enabled and not fit_width.switch.checked)
+        )
+        fit_width.toggled.connect(lambda enabled: change("vertical_fit_width", enabled))
+        fit_width.toggled.connect(lambda enabled: zoom.setEnabled(vertical_custom.switch.checked and not enabled))
+        spacing.value_changed.connect(lambda value: change("page_spacing", value))
+        zoom.value_changed.connect(lambda value: change("vertical_zoom_percent", value))
+        fit_width.setEnabled(settings.vertical_custom_enabled)
+        spacing.setEnabled(settings.vertical_custom_enabled)
+        zoom.setEnabled(settings.vertical_custom_enabled and not settings.vertical_fit_width)
+
+        return [
+            SectionBanner(t("settings.section_reading"), self._resources),
+            SettingsAboutText(t("settings.reading_defaults_hint")),
+            direction,
+            transition,
+            SectionBanner(t("reader.section_horizontal"), self._resources),
+            horizontal_custom,
+            one_page,
+            fit_mode,
+            SectionBanner(t("reader.section_vertical"), self._resources),
+            vertical_custom,
+            fit_width,
+            spacing,
+            zoom,
+        ]
 
     def _about_items(self) -> list[QWidget]:
         """What JoyRead is, and the version, for a pane that rendered empty.
@@ -649,6 +725,7 @@ class SettingsSidebarWidget(QFrame):
     # Maps section key to the locale key used for the label.
     _SECTION_LOCALE_KEYS: dict[SettingsSectionKey, str] = {
         SettingsSectionKey.GENERAL: "settings.section_general",
+        SettingsSectionKey.READING: "settings.section_reading",
         SettingsSectionKey.ARCHIVE: "settings.section_archive",
         SettingsSectionKey.TAGS: "settings.section_tags",
         SettingsSectionKey.PRIVACY: "settings.section_privacy",
@@ -1050,6 +1127,27 @@ def _dropdown_width(options: tuple[str, ...]) -> int:
 #: Breathing room either side of the label, so text never touches the border or
 #: the chevron.
 _DROPDOWN_TEXT_PADDING = 20
+
+
+def _reader_preference_label(field: str, value: object) -> str:
+    keys = {
+        "direction": {
+            ReaderDirection.RIGHT_TO_LEFT: "reader.dir_rtl",
+            ReaderDirection.LEFT_TO_RIGHT: "reader.dir_ltr",
+            ReaderDirection.TOP_TO_BOTTOM: "reader.dir_ttb",
+        },
+        "transition_mode": {
+            ReaderTransitionMode.NONE: "reader.effect_none",
+            ReaderTransitionMode.SLIDE: "reader.effect_slide",
+        },
+        "fit_mode": {
+            ReaderFitMode.AUTO: "reader.fit_auto",
+            ReaderFitMode.FIT_HEIGHT: "reader.fit_height",
+            ReaderFitMode.FIT_WIDTH: "reader.fit_width",
+            ReaderFitMode.FIT_PAGE: "reader.fit_page",
+        },
+    }
+    return t(keys[field][value])
 
 
 class SettingsDropdownButton(QFrame):

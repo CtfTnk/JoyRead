@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Callable
 
@@ -23,6 +23,7 @@ from joyread.core.models.import_policy import (
     normalize_canonical_import_policy,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, GIB, MEGAPIXEL
+from joyread.core.reader.models import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.hidden_space_service import (
     HiddenSpacePasswordError,
     HiddenSpaceService,
@@ -37,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 class SettingsSectionKey(StrEnum):
     GENERAL = "general"
+    READING = "reading"
     # Resource-budget tuning: archive traversal limits and cache sizes. Split
     # out of GENERAL, which had become the default home for anything that did
     # not obviously belong to Tags or Privacy.
@@ -161,6 +163,7 @@ class SettingsViewModel:
         self._archive_pool_bytes_provider: Callable[[], int] | None = None
         self.sections = (
             SettingsSection(SettingsSectionKey.GENERAL, locale_service.t("settings.section_general")),
+            SettingsSection(SettingsSectionKey.READING, locale_service.t("settings.section_reading")),
             SettingsSection(SettingsSectionKey.ARCHIVE, locale_service.t("settings.section_archive")),
             SettingsSection(SettingsSectionKey.TAGS, locale_service.t("settings.section_tags")),
             SettingsSection(SettingsSectionKey.PRIVACY, locale_service.t("settings.section_privacy")),
@@ -173,6 +176,7 @@ class SettingsViewModel:
             getattr(settings, "verify_imported_file_integrity", True)
         )
         self.individual_read_window = settings.individual_read_window
+        self.default_reader_settings = settings.default_reader_settings
         self.storage_location = settings.storage_location
         self.reader_page_cache_mb = _clamp_int(
             getattr(settings, "reader_page_cache_mb", 512),
@@ -273,6 +277,33 @@ class SettingsViewModel:
             return
         self.current_section = normalized
         self.state_changed.emit()
+
+    def set_default_reader_preference(self, field: str, value: object) -> None:
+        """Change a future reader's starting value, leaving open books untouched."""
+
+        enum_fields = {
+            "direction": ReaderDirection,
+            "transition_mode": ReaderTransitionMode,
+            "fit_mode": ReaderFitMode,
+        }
+        bool_fields = {
+            "custom_enabled", "always_one_page", "vertical_custom_enabled", "vertical_fit_width",
+        }
+        if field in enum_fields:
+            value = enum_fields[field](value)
+        elif field in bool_fields:
+            value = bool(value)
+        elif field == "page_spacing":
+            value = _clamp_int(value, 0, 200)
+        elif field == "vertical_zoom_percent":
+            value = _clamp_int(value, 25, 200)
+        else:
+            raise ValueError(f"Unsupported default reader preference: {field}")
+        updated = replace(self.default_reader_settings, **{field: value})
+        if updated == self.default_reader_settings:
+            return
+        self._persist(default_reader_settings=updated)
+        self.default_reader_settings = updated
 
     def set_language(self, language: str) -> None:
         if language == self.language and language != "System":

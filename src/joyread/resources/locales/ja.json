@@ -13,6 +13,10 @@
   },
   "settings": {
     "section_general": "一般",
+    "section_reading": "既定の読書設定",
+    "reading_defaults_hint": "新しい本や一時ファイルにはこの設定を適用します。本ごとの設定が優先されます。",
+    "reading_direction": "読む方向",
+    "page_transition": "ページ切り替え効果",
     "section_archive": "アーカイブとキャッシュ",
     "section_tags": "タグ",
     "section_privacy": "プライバシー",

@@ -191,7 +191,7 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     step = Theme.settings_sidebar_item_height + Theme.settings_sidebar_gap
     # Walk the whole upper group rather than naming pairs, so inserting a
     # section cannot leave a stale assertion passing on the wrong neighbours.
-    upper_order = ["General", "Archive & Cache", "Tags", "Privacy"]
+    upper_order = ["General", "Reading Defaults", "Archive & Cache", "Tags", "Privacy"]
     for earlier, later in zip(upper_order, upper_order[1:]):
         assert sidebar_item_positions[later] - sidebar_item_positions[earlier] == step
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
@@ -1182,7 +1182,7 @@ def test_the_archive_scope_is_labelled_and_ordered_after_general(qtbot) -> None:
         item.findChild(QLabel).text() for item in page.findChildren(SettingsSidebarItem)
     ]
 
-    assert labels == ["General", "Archive & Cache", "Tags", "Privacy", "About"]
+    assert labels == ["General", "Reading Defaults", "Archive & Cache", "Tags", "Privacy", "About"]
 
 
 def test_the_gate_switches_are_bold_and_nothing_else_is(qtbot) -> None:
