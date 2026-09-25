@@ -146,6 +146,11 @@ class SidebarWidget(QWidget):
         for item_key, button in self._buttons.items():
             button.set_checked(item_key == key)
 
+    def set_library_ready(self, ready: bool) -> None:
+        for key, button in self._buttons.items():
+            if key != "settings":
+                button.setEnabled(ready)
+
     def _build_book_shelf_section(self) -> QWidget:
         section = self._make_section("bookshelf", t("sidebar.book_shelf"))
         layout = section.body_layout

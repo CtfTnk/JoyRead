@@ -1,7 +1,7 @@
 """Reader-owned services, constructible without Library repositories or SQLite.
 
-P2 still builds this alongside the Library at startup. The factory deliberately
-has no dependency on AppContext so later launch routing can request it alone.
+The factory has no dependency on AppContext. Normal startup constructs it
+before the Library shell; intent-based cold Reader routing remains P5 work.
 """
 
 from __future__ import annotations

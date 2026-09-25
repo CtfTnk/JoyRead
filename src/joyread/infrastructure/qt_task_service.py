@@ -281,6 +281,13 @@ class TaskService:
         def complete(result: object) -> None:
             with bind_operation(handle.operation_context):
                 if handle.status == TaskStatus.CANCELLED:
+                    # Cancellation can race a worker that already emitted its
+                    # result but whose queued GUI callback has not run yet.
+                    if on_discard is not None:
+                        try:
+                            on_discard(result)  # type: ignore[arg-type]
+                        except Exception:
+                            logger.exception("Late task discard cleanup failed")
                     return
                 handle.result = result  # type: ignore[assignment]
                 handle.status = TaskStatus.COMPLETED

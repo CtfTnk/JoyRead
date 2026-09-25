@@ -190,6 +190,35 @@ def test_readers_are_flushed_and_only_closed_once_their_writes_land(qtbot) -> No
     assert context.calls == ["quiesce", "commit"]
 
 
+def test_storage_transition_flushes_and_closes_only_library_owned_readers(qtbot) -> None:
+    owned = _ReaderWindow()
+    external = _ReaderWindow()
+
+    class SelectiveManager(_WindowManager):
+        library_reader_windows = (owned,)
+
+        def close_all_readers(self) -> int:
+            raise AssertionError("External Reader must stay open")
+
+        def close_library_readers(self) -> int:
+            self.closed += 1
+            return len(self.library_reader_windows)
+
+    manager = SelectiveManager((owned, external))
+    context = _Context([0])
+    controller = StorageTransitionController(context, manager)
+    done: list[str] = []
+    controller.finished.connect(done.append)
+
+    assert controller.start(lambda: "migrated")
+    qtbot.waitUntil(lambda: bool(done), timeout=2000)
+
+    assert owned.viewmodel.flushed == 1
+    assert external.viewmodel.flushed == 0
+    assert manager.closed == 1
+    assert context.calls == ["quiesce", "commit"]
+
+
 def test_work_that_will_not_stop_abandons_instead_of_migrating(qtbot) -> None:  # noqa: ANN001, ARG001
     """Migrating without proven quiescence is the defect being prevented."""
 

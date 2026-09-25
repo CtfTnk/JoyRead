@@ -244,3 +244,18 @@ def test_close_all_readers_is_a_no_op_without_readers(qtbot) -> None:
         assert manager.close_all_readers() == 0
     finally:
         _close_windows(manager, qtbot)
+
+
+def test_storage_rebuild_closes_only_library_owned_readers(qtbot, tmp_path: Path) -> None:
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        owned = main.launcher(StandaloneReaderRequest(tmp_path / "managed.cbz"))
+        external = manager.open_files((tmp_path / "external.cbz",))[0]
+
+        assert manager.library_reader_windows == (owned,)
+        assert manager.close_library_readers() == 1
+        assert external in manager.reader_windows
+        assert external.isVisible()
+    finally:
+        _close_windows(manager, qtbot)

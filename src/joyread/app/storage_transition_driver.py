@@ -130,7 +130,10 @@ class StorageTransitionController(QObject):
         return True
 
     def _collect_flush_handles(self) -> tuple[TaskHandle[object], ...]:
-        return reader_flush_handles(getattr(self._window_manager, "reader_windows", ()))
+        return reader_flush_handles(
+            getattr(self._window_manager, "library_reader_windows",
+                    getattr(self._window_manager, "reader_windows", ()))
+        )
 
     def _enter(self, phase: _Phase) -> None:
         self._phase = phase
@@ -175,7 +178,10 @@ class StorageTransitionController(QObject):
         # inline instead, which is what guarantees no handle is still open on
         # the storage root when the disk phase starts.
         self._context.quiesce_for_storage_transition()
-        close_readers = getattr(self._window_manager, "close_all_readers", None)
+        close_readers = getattr(
+            self._window_manager, "close_library_readers",
+            getattr(self._window_manager, "close_all_readers", None),
+        )
         if callable(close_readers):
             close_readers()
         self._enter(_Phase.DRAINING)

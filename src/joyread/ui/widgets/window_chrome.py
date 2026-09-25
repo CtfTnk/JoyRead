@@ -153,6 +153,13 @@ class TitleBarWidget(QWidget):
         for control in self._shelf_controls:
             control.setVisible(visible)
 
+    def set_open_action_only(self) -> None:
+        """Keep Open Book available while database-backed tools are unavailable."""
+
+        self._action_button.show()
+        for control in self._shelf_controls[1:]:
+            control.hide()
+
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._drag.press(self, event)

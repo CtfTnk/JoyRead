@@ -134,9 +134,12 @@ class _ApplicationRuntime:
     context: AppContext
     file_open_router: FileOpenRouter
     initial_intent: LaunchIntent | None
+    deferred_library: bool = False
 
 
-def create_application(argv: list[str] | None = None) -> tuple[QApplication, AppContext, QMainWindow]:
+def create_application(
+    argv: list[str] | None = None, *, defer_library: bool = False
+) -> tuple[QApplication, AppContext, QMainWindow]:
     """Create a deterministic immediate window for tests and embedded callers.
 
     Production uses :func:`run`, which adds single-instance arbitration and the
@@ -146,7 +149,7 @@ def create_application(argv: list[str] | None = None) -> tuple[QApplication, App
 
     environment = _prepare_startup_environment(argv, gate=ImmediateLaunchGate())
     _configure_primary_logging(environment)
-    runtime = _build_primary_runtime(environment)
+    runtime = _build_primary_runtime(environment, defer_library=defer_library)
     _manager, coordinator = _configure_window_management(
         runtime,
         gate=environment.gate,
@@ -203,9 +206,11 @@ def _prepare_startup_environment(
     )
 
 
-def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRuntime:
-    # The whole graph enters here, and only here. This is the ~683 ms a
-    # secondary process must never pay.
+def _build_primary_runtime(
+    environment: _StartupEnvironment, *, defer_library: bool = False
+) -> _ApplicationRuntime:
+    # Primary-only composition. Production defers Library validation and
+    # construction until after the first window; a secondary never enters.
     from joyread.app.app_context import create_app_context
 
     app = environment.app
@@ -221,11 +226,13 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
 
     app.setQuitOnLastWindowClosed(True)
     context = create_app_context(
-        recovery_prompt=_prompt_storage_recovery,
+        recovery_prompt=None if defer_library else _prompt_storage_recovery,
         config=environment.config,
         settings_store=environment.settings_store,
+        defer_library=defer_library,
     )
-    context.paths.ensure_directories()
+    if not defer_library:
+        context.paths.ensure_directories()
     # Collect what a crashed or killed launch left in the system temp
     # directory. Deferred to a daemon thread and deliberately not part of any
     # startup gate: it touches nothing this launch needs, and the whole point
@@ -252,6 +259,7 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
         context=context,
         file_open_router=file_open_router,
         initial_intent=environment.startup_intent,
+        deferred_library=defer_library,
     )
 
 
@@ -323,6 +331,10 @@ def _configure_window_management(
     if broker is not None:
         broker.set_intent_handler(_broker_intent_handler(coordinator))
     _install_first_paint_probe(runtime.app)
+    if runtime.deferred_library:
+        # Window construction and its first paint are never delayed by storage
+        # validation, migrations, or the first shelf query.
+        coordinator.settled.connect(runtime.context.start_library_load)
     coordinator.start(runtime.initial_intent)
     startup_trace.mark("window_shown")
     # After the window exists, never before it. The warm-up thread spends its
@@ -501,7 +513,7 @@ def run(argv: list[str] | None = None) -> int:
     from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
 
     try:
-        runtime = _build_primary_runtime(environment)
+        runtime = _build_primary_runtime(environment, defer_library=True)
     except StorageRecoveryCancelled:
         log_event(
             logger,

@@ -37,8 +37,6 @@ class OpenDisposition(StrEnum):
 
 class RecoveryAction(StrEnum):
     RETRY = "retry"
-    SELECT_LIBRARY = "select_library"
-    USE_DEFAULT = "use_default"
     SKIP_SESSION = "skip_session"
 
 
@@ -52,13 +50,6 @@ class LibraryUiContract:
     status_key: str
 
 
-_RECOVERY_ACTIONS = (
-    RecoveryAction.RETRY,
-    RecoveryAction.SELECT_LIBRARY,
-    RecoveryAction.USE_DEFAULT,
-)
-
-
 def library_ui_contract(state: LibraryState) -> LibraryUiContract:
     """Describe Library controls in a state without constructing the runtime."""
 
@@ -68,9 +59,9 @@ def library_ui_contract(state: LibraryState) -> LibraryUiContract:
         can_use_shelf=state is LibraryState.READY,
         can_import=state is LibraryState.READY,
         recovery_actions=(
-            (*_RECOVERY_ACTIONS, RecoveryAction.SKIP_SESSION)
+            (RecoveryAction.RETRY, RecoveryAction.SKIP_SESSION)
             if state is LibraryState.FAILED
-            else _RECOVERY_ACTIONS if state is LibraryState.SKIPPED else ()
+            else (RecoveryAction.RETRY,) if state is LibraryState.SKIPPED else ()
         ),
         status_key=f"library_state.{state.value}",
     )

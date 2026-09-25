@@ -67,16 +67,10 @@ def test_library_controls_and_recovery_actions(state: LibraryState) -> None:
     if state is LibraryState.FAILED:
         assert contract.recovery_actions == (
             RecoveryAction.RETRY,
-            RecoveryAction.SELECT_LIBRARY,
-            RecoveryAction.USE_DEFAULT,
             RecoveryAction.SKIP_SESSION,
         )
     elif state is LibraryState.SKIPPED:
-        assert contract.recovery_actions == (
-            RecoveryAction.RETRY,
-            RecoveryAction.SELECT_LIBRARY,
-            RecoveryAction.USE_DEFAULT,
-        )
+        assert contract.recovery_actions == (RecoveryAction.RETRY,)
     else:
         assert contract.recovery_actions == ()
 

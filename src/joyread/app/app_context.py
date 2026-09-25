@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import perf_counter
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
-from joyread.core.models.cache import normalize_archive_cache_strategy
+from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.models.import_policy import normalize_canonical_import_policy
 from joyread.core.reader import ReaderSessionService
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.app.archive_pool_usage_bridge import ArchivePoolUsageBridge
+from joyread.app.event_hook import EventHook
+from joyread.app.open_policy import LibraryState
+from joyread.app.tasking import TaskHandle, TaskPriority
 from joyread.app.reader_runtime import (
     ReaderRuntime,
     archive_open_limits_from_settings as _archive_open_limits_from_settings,
@@ -37,6 +40,7 @@ from joyread.core.services.storage_migration_service import (
 )
 from joyread.core.services.storage_recovery_service import RecoveryPrompt, StorageRecoveryService
 from joyread.core.services.storage_validation_service import (
+    StorageValidationCode,
     StorageValidationResult,
     StorageValidationService,
 )
@@ -56,6 +60,7 @@ from joyread.infrastructure.filesystem.path_service import PathService
 from joyread.infrastructure.filesystem.windows_long_paths import WindowsLongPathCapability
 from joyread.infrastructure.logging import log_event, operation_scope
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
+from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 
 
 logger = logging.getLogger(__name__)
@@ -78,6 +83,18 @@ class StorageTransition:
     reload_required: bool = False
 
 
+@dataclass(frozen=True)
+class LibraryLoadResult:
+    """One worker attempt; the GUI thread alone adopts its staged runtime."""
+
+    generation: int
+    settings: AppSettings
+    paths: PathService
+    runtime: LibraryRuntime | None = None
+    error_kind: str | None = None
+    error_message: str = ""
+
+
 @dataclass
 class AppContext(RuntimeAccess):
     """Application lifecycle and storage-transition coordinator.
@@ -91,10 +108,20 @@ class AppContext(RuntimeAccess):
     settings_store: SettingsStore
     paths: PathService
     reader_runtime: ReaderRuntime
-    library_runtime: LibraryRuntime
+    library_runtime: LibraryRuntime | None
     storage_migration_service: StorageMigrationService
     storage_validation_service: StorageValidationService
     storage_recovery_service: StorageRecoveryService
+    initial_settings_viewmodel: SettingsViewModel | None = None
+    library_state: LibraryState = LibraryState.READY
+    library_attempted_path: Path | None = None
+    library_books_preloaded: bool = False
+    library_error_kind: str | None = None
+    library_error_message: str = ""
+    library_state_changed: EventHook[LibraryState] = field(default_factory=EventHook)
+    _library_load_generation: int = 0
+    _library_load_handle: TaskHandle[LibraryLoadResult] | None = None
+    _closed: bool = False
     #: Carries live pool usage from caching workers to the settings page.
     archive_pool_usage_bridge: ArchivePoolUsageBridge | None = None
     #: Queues worker-side path diagnostics onto the GUI thread.
@@ -108,7 +135,20 @@ class AppContext(RuntimeAccess):
     #: that never touched storage.
     storage_rebuild_required: bool = False
 
+    @property
+    def settings_viewmodel(self) -> SettingsViewModel:
+        library = self.library_runtime
+        if library is not None:
+            return library.settings_viewmodel
+        if self.initial_settings_viewmodel is None:
+            raise RuntimeError("Settings ViewModel is unavailable")
+        return self.initial_settings_viewmodel
+
     def close(self) -> None:
+        self._closed = True
+        self._library_load_generation += 1
+        if self._library_load_handle is not None:
+            self._library_load_handle.cancel()
         started = perf_counter()
         failures: list[tuple[str, Exception]] = []
         log_event(
@@ -143,13 +183,14 @@ class AppContext(RuntimeAccess):
         if self.path_issue_bridge is not None:
             close_component("path_issue_bridge", self.path_issue_bridge.detach)
         close_component("task_service", self.task_service.shutdown)
-        if self.thumbnail_service is not None:
-            close_component("thumbnail_service", self.thumbnail_service.close)
+        if self.library_runtime is not None and self.library_runtime.thumbnail_service is not None:
+            close_component("thumbnail_service", self.library_runtime.thumbnail_service.close)
         # Task shutdown stops accepting new work first. PDF shutdown then seals
         # its own queue behind any render already accepted and joins when that
         # queue drains, without destroying a still-running QThread on timeout.
         close_component("pdf_thread", shutdown_pdf_thread)
-        close_component("database", self.database_interpreter.close)
+        if self.library_runtime is not None:
+            close_component("database", self.library_runtime.database_interpreter.close)
         log_event(
             logger,
             logging.WARNING if failures else logging.INFO,
@@ -159,6 +200,184 @@ class AppContext(RuntimeAccess):
             status="completed_with_errors" if failures else "finished",
             duration_ms=round((perf_counter() - started) * 1000.0, 3),
             failed_count=len(failures),
+        )
+
+    def start_library_load(self, selected_root: Path | None = None) -> None:
+        """Load one Library snapshot off the GUI thread, superseding older attempts."""
+
+        if self._closed or self.library_runtime is not None:
+            return
+        self._library_load_generation += 1
+        generation = self._library_load_generation
+        if self._library_load_handle is not None:
+            self._library_load_handle.cancel()
+        settings = self.settings_store.load()
+        if selected_root is not None:
+            settings = replace(settings, storage_location=str(selected_root.expanduser().resolve()))
+        paths = _create_path_service(self.config, self.settings_store, settings)
+        self.library_attempted_path = paths.storage_root
+        self.library_state = LibraryState.LOADING
+        self.library_error_kind = None
+        self.library_error_message = ""
+        self.library_state_changed.emit(self.library_state)
+
+        def load() -> LibraryLoadResult:
+            root = paths.storage_root
+            # A missing app default can be created. An existing but damaged
+            # default, or a missing custom Library, is never reset implicitly.
+            new_default = root == self.settings_store.default_storage_root and not root.exists()
+            if selected_root is not None:
+                validation = self.storage_validation_service.validate_full(root)
+            elif new_default:
+                validation = StorageValidationResult.success()
+            else:
+                validation = self.storage_validation_service.validate_lightweight(root)
+            if not validation.ok:
+                kind = "path" if validation.code in {
+                    StorageValidationCode.NOT_READABLE,
+                    StorageValidationCode.NOT_WRITABLE,
+                    StorageValidationCode.LONG_PATHS_DISABLED,
+                } else "database"
+                return LibraryLoadResult(generation, settings, paths, error_kind=kind,
+                                         error_message=validation.message)
+            try:
+                paths.ensure_directories()
+            except OSError as exc:
+                return LibraryLoadResult(generation, settings, paths, error_kind="path",
+                                         error_message=str(exc))
+            staged_reader = replace(self.reader_runtime, paths=paths)
+            try:
+                runtime = create_library_runtime(
+                    staged_reader, self.config, settings, self.settings_store,
+                    settings_viewmodel=self.initial_settings_viewmodel,
+                )
+                runtime.shelf_viewmodel.load_books()
+                if runtime.shelf_viewmodel.error_message:
+                    message = runtime.shelf_viewmodel.error_message
+                    runtime.close()
+                    return LibraryLoadResult(generation, settings, paths, error_kind="database",
+                                             error_message=message)
+            except Exception as exc:
+                logger.exception("Background Library construction failed")
+                return LibraryLoadResult(generation, settings, paths, error_kind="database",
+                                         error_message=str(exc))
+            return LibraryLoadResult(generation, settings, paths, runtime=runtime)
+
+        self._library_load_handle = self.task_service.submit(
+            "library-startup", load,
+            on_success=self._finish_library_load,
+            on_failure=lambda exc: self._fail_library_load(generation, "database", str(exc)),
+            on_discard=lambda result: result.runtime.close() if result.runtime is not None else None,
+            priority=TaskPriority.HIGH,
+        )
+
+    def skip_library_load(self) -> None:
+        if self.library_runtime is not None or self._closed:
+            return
+        self._library_load_generation += 1
+        if self._library_load_handle is not None:
+            self._library_load_handle.cancel()
+            self._library_load_handle = None
+        self.library_state = LibraryState.SKIPPED
+        self.library_state_changed.emit(self.library_state)
+
+    def _fail_library_load(self, generation: int, kind: str, message: str) -> None:
+        if self._closed or generation != self._library_load_generation:
+            return
+        self._library_load_handle = None
+        self.library_state = LibraryState.FAILED
+        self.library_error_kind = kind
+        self.library_error_message = message
+        self.library_state_changed.emit(self.library_state)
+
+    def _finish_library_load(self, result: LibraryLoadResult) -> None:
+        if self._closed or result.generation != self._library_load_generation:
+            if result.runtime is not None:
+                result.runtime.close()
+            return
+        self._library_load_handle = None
+        if result.runtime is None:
+            self._fail_library_load(result.generation, result.error_kind or "database",
+                                    result.error_message)
+            return
+        try:
+            persisted = self.settings_store.load()
+            # Settings remain editable while the shelf loads. A staged graph
+            # built from an older snapshot must not publish stale cache,
+            # import, or archive policy after those edits.
+            if replace(
+                result.settings,
+                storage_location=persisted.storage_location,
+                last_good_storage_location=persisted.last_good_storage_location,
+            ) != persisted:
+                result.runtime.close()
+                selected_root = (
+                    result.paths.storage_root
+                    if result.settings.storage_location != persisted.storage_location else None
+                )
+                self.start_library_load(selected_root)
+                return
+            if (result.settings.storage_location != persisted.storage_location
+                    or persisted.last_good_storage_location != result.settings.storage_location):
+                self.settings_store.update(
+                    storage_location=result.settings.storage_location,
+                    last_good_storage_location=result.settings.storage_location,
+                )
+            previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
+            self.settings = self.settings_store.load()
+            self.paths = result.paths
+            self.reader_runtime.paths = result.paths
+            self.library_runtime = result.runtime
+            self.library_books_preloaded = True
+            self.library_maintenance_recovery_conflicts = result.runtime.maintenance_recovery_conflicts
+            self._wire_loaded_library()
+            # Reader cache budgets may have changed while Settings stayed
+            # usable during loading. Pool strategy replacement waits until the
+            # staged Library is ready, so no worker loses its extraction pool.
+            self._apply_cache_settings_bound(previous_strategy=previous_strategy)
+        except Exception as exc:
+            self.library_runtime = None
+            result.runtime.close()
+            self._fail_library_load(result.generation, "database", str(exc))
+            return
+        self.library_state = LibraryState.READY
+        self.library_state_changed.emit(self.library_state)
+
+    def _wire_loaded_library(self) -> None:
+        library = self.library_runtime
+        if library is None:
+            return
+        viewmodel = library.settings_viewmodel
+        viewmodel.set_hidden_space_service(library.hidden_space_service)
+        viewmodel.set_storage_location(self.settings.storage_location)
+        viewmodel.prefetch_window_changed.connect(self.reader_runtime.preferences.refresh)
+        viewmodel.archive_open_limits_changed.connect(self.reader_runtime.preferences.refresh)
+        self.reader_runtime.preferences.prefetch_changed.connect(
+            lambda: viewmodel.sync_page_prefetch(
+                self.reader_runtime.preferences.page_prefetch_before,
+                self.reader_runtime.preferences.page_prefetch_after,
+            )
+        )
+        viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
+        self.archive_pool_usage_bridge = ArchivePoolUsageBridge()
+        self.archive_pool_usage_bridge.usage_changed.connect(
+            lambda _usage: viewmodel.refresh_archive_pool_usage()
+        )
+        self.attach_archive_pool_usage_bridge()
+        viewmodel.cache_budgets_changed.connect(self.apply_cache_settings)
+        viewmodel.archive_open_limits_changed.connect(self.apply_archive_open_limits)
+        viewmodel.clear_archive_pool_requested.connect(self.clear_archive_extraction_pool)
+        viewmodel.import_integrity_changed.connect(
+            lambda: self.import_service.set_verify_imported_file_integrity(
+                self.settings_store.load().verify_imported_file_integrity
+            )
+        )
+        viewmodel.canonical_import_policy_changed.connect(
+            lambda: self.import_service.set_canonical_import_policy(
+                normalize_canonical_import_policy(
+                    self.settings_store.load().canonical_import_policy
+                )
+            )
         )
 
     def quiesce_for_storage_transition(self) -> int:
@@ -172,8 +391,8 @@ class AppContext(RuntimeAccess):
         terminal -- a closed one is never usable again -- so it belongs to
         :meth:`commit_storage_transition`, past the point of no return. That
         split is what lets a drain that times out put the application back
-        exactly as it was. The PDF thread is left alone for the same reason;
-        it is stopped at commit and restarts itself on the next call.
+        exactly as it was. The shared PDF thread also stays alive because an
+        independent external Reader may retain a PDF document during a switch.
 
         Returns the number of tasks still unwinding. This does not join -- see
         :meth:`TaskService.quiesce` -- so the caller must poll
@@ -209,7 +428,8 @@ class AppContext(RuntimeAccess):
             self.archive_warmup_coordinator.reset()
         if self.thumbnail_service is not None:
             self.thumbnail_service.close()
-        shutdown_pdf_thread()
+        # Library-owned Reader and thumbnail sessions have been retired above.
+        # External Readers may still own documents on the shared PDF thread.
 
     def abandon_storage_transition(self) -> None:
         """Undo a quiesce that never committed.
@@ -510,12 +730,24 @@ class AppContext(RuntimeAccess):
         """
 
         with operation_scope(logger, "settings.cache.apply", category="settings"):
+            if self.library_runtime is None:
+                settings = self.settings_store.load()
+                reader_cache = self.reader_runtime.cache_service
+                reader_cache.reader_page_cache.resize(settings.reader_page_cache_mb * 1024 * 1024)
+                reader_cache.thumbnail_cache.resize(settings.thumbnail_cache_mb * 1024 * 1024)
+                self.archive_extraction_pool.resize(settings.archive_extraction_pool_gb * 1024 * 1024 * 1024)
+                self._refresh_settings_pool_usage()
+                return
             self._apply_cache_settings_bound()
 
-    def _apply_cache_settings_bound(self) -> None:
+    def _apply_cache_settings_bound(
+        self, *, previous_strategy: ArchiveCacheStrategy | None = None
+    ) -> None:
         """Apply cache settings while the public operation is already bound."""
 
-        previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
+        previous_strategy = previous_strategy or normalize_archive_cache_strategy(
+            self.settings.archive_cache_strategy
+        )
         settings = self.settings_store.load()
         next_strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
         logger.info(
@@ -677,6 +909,7 @@ def create_app_context(
     *,
     config: AppConfig | None = None,
     settings_store: SettingsStore | None = None,
+    defer_library: bool = False,
 ) -> AppContext:
     config = config or AppConfig()
     settings_store = settings_store or create_environment_settings_store(
@@ -689,17 +922,18 @@ def create_app_context(
         category="startup",
         fields={"worker_count": config.max_background_workers},
     ):
-        return _create_app_context_bound(config, settings_store, recovery_prompt)
+        return _create_app_context_bound(config, settings_store, recovery_prompt, defer_library)
 
 
 def _create_app_context_bound(
     config: AppConfig,
     settings_store: SettingsStore,
     recovery_prompt: RecoveryPrompt | None,
+    defer_library: bool,
 ) -> AppContext:
-    # Resolve the storage root before anything is built: first-run init,
-    # daily health check, and recovery all happen here so the rest of the
-    # graph is wired against a known-usable library.
+    # The eager helper retains startup recovery for embedded callers. The
+    # production deferred path only reads settings here; its Library gate
+    # runs later on TaskService after the first window exists.
     path_issue_service = PathIssueService(WindowsLongPathCapability())
     storage_validation_service = StorageValidationService(path_issue_service=path_issue_service)
     storage_migration_service = StorageMigrationService(settings_store, storage_validation_service)
@@ -713,10 +947,11 @@ def _create_app_context_bound(
         resources.locale_dir(), settings_store.locales_dir,
         settings_store.read_language_preference(),
     )
-    startup = storage_recovery_service.prepare(recovery_prompt)
-    settings = startup.settings
+    startup = None if defer_library else storage_recovery_service.prepare(recovery_prompt)
+    settings = settings_store.load() if startup is None else startup.settings
     paths = _create_path_service(config, settings_store, settings)
-    paths.ensure_directories()
+    if not defer_library:
+        paths.ensure_directories()
     resources = ResourceLoader()
     # Initialise the locale service before any UI is constructed.
     locale_service.init(
@@ -732,6 +967,35 @@ def _create_app_context_bound(
         resources=resources,
         path_issue_service=path_issue_service,
     )
+    if defer_library:
+        # Only Reader-owned work is built before the Library window paints.
+        # Database validation, migration and the first query run in a worker.
+        viewmodel = SettingsViewModel(settings, settings_store)
+        context = AppContext(
+            config=config,
+            settings=settings,
+            settings_store=settings_store,
+            paths=paths,
+            reader_runtime=reader_runtime,
+            library_runtime=None,
+            storage_migration_service=storage_migration_service,
+            storage_validation_service=storage_validation_service,
+            storage_recovery_service=storage_recovery_service,
+            initial_settings_viewmodel=viewmodel,
+            library_state=LibraryState.UNLOADED,
+            library_attempted_path=paths.storage_root,
+        )
+        viewmodel.prefetch_window_changed.connect(reader_runtime.preferences.refresh)
+        viewmodel.archive_open_limits_changed.connect(reader_runtime.preferences.refresh)
+        viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
+        viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
+        viewmodel.set_archive_pool_bytes_provider(
+            lambda: context.archive_extraction_pool.current_bytes
+        )
+        context.path_issue_bridge = PathIssueBridge()
+        context.path_issue_bridge.issue_detected.connect(reader_runtime.path_issue_viewmodel.present)
+        context.path_issue_bridge.attach(path_issue_service)
+        return context
     try:
         library_runtime = create_library_runtime(reader_runtime, config, settings, settings_store)
     except BaseException:
@@ -760,7 +1024,7 @@ def _create_app_context_bound(
         storage_migration_service=storage_migration_service,
         storage_validation_service=storage_validation_service,
         storage_recovery_service=storage_recovery_service,
-        storage_startup_notice=startup.notice,
+        storage_startup_notice=startup.notice if startup is not None else None,
         library_maintenance_recovery_conflicts=library_runtime.maintenance_recovery_conflicts,
     )
     # The settings panel renders a live "used / budget" label for the disk

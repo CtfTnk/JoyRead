@@ -80,6 +80,8 @@ def create_library_runtime(
     config: AppConfig,
     settings: AppSettings,
     settings_store: SettingsStore,
+    *,
+    settings_viewmodel: SettingsViewModel | None = None,
 ) -> LibraryRuntime:
     """Create a complete Library or release every partially built resource."""
 
@@ -159,7 +161,7 @@ def create_library_runtime(
             tag_service=tag_service,
             archive_warmup_coordinator=reader.archive_warmup_coordinator,
         )
-        settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space)
+        settings_viewmodel = settings_viewmodel or SettingsViewModel(settings, settings_store, hidden_space)
         return LibraryRuntime(
             paths=paths,
             database_interpreter=database,

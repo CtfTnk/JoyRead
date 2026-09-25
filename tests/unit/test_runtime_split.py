@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from threading import Event
 from zipfile import ZipFile
 
 import pytest
@@ -16,7 +17,8 @@ from PIL import Image
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import AppContext, create_app_context
-from joyread.app.library_runtime import create_library_runtime
+from joyread.app.open_policy import LibraryState
+from joyread.app.library_runtime import LibraryRuntime, create_library_runtime
 from joyread.app.reader_runtime import create_reader_runtime
 from joyread.core.models.import_policy import CanonicalImportPolicy
 from joyread.core.services.library_maintenance_service import LibraryMaintenanceService
@@ -24,7 +26,12 @@ from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import SettingsStore
 from joyread.infrastructure.database import DatabaseInterpreter
+from joyread.infrastructure.pdf_document_thread import pdf_thread
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.views.reader_window import ReaderWindow
+from joyread.ui.views.main_window import MainWindow
+from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
+from joyread.ui.widgets.dialogs import DialogTextButton
 
 
 def _store(tmp_path: Path) -> SettingsStore:
@@ -119,6 +126,36 @@ def test_standalone_reader_renders_with_unavailable_custom_library(
         reader.close()
 
 
+def test_external_pdf_reader_survives_library_runtime_rebuild(tmp_path: Path, qtbot) -> None:
+    store = _store(tmp_path)
+    store.update(page_prefetch_before=0, page_prefetch_after=0)
+    source = tmp_path / "external.pdf"
+    writer = QPdfWriter(str(source))
+    painter = QPainter(writer)
+    painter.drawText(40, 80, "First page")
+    writer.newPage()
+    painter.drawText(40, 80, "Second page")
+    painter.end()
+
+    context = create_app_context(settings_store=store)
+    window = ReaderWindow(context, source)
+    try:
+        window.show()
+        qtbot.waitUntil(lambda: 0 in window.canvas._pixmaps, timeout=5000)
+        assert pdf_thread().running
+        context.quiesce_for_storage_transition()
+        qtbot.waitUntil(lambda: context.storage_transition_pending_tasks() == 0)
+        context.commit_storage_transition()
+        assert pdf_thread().running
+        context.reload_storage_from_settings()
+        context.resume_after_storage_transition()
+        window.viewmodel.seek(1)
+        qtbot.waitUntil(lambda: 1 in window.canvas._pixmaps, timeout=5000)
+    finally:
+        window.close()
+        context.close()
+
+
 @pytest.mark.parametrize("file_type", ("cbz", "cb7"))
 def test_reader_uses_uncached_reads_when_application_cache_is_unavailable(
     tmp_path, qtbot, file_type
@@ -149,6 +186,277 @@ def test_reader_uses_uncached_reads_when_application_cache_is_unavailable(
     finally:
         window.close()
         reader.close()
+
+
+def test_deferred_library_window_paints_before_database_construction(
+    tmp_path: Path, qtbot, monkeypatch
+) -> None:
+    from joyread.app import app_context as context_module
+
+    started = Event()
+    release = Event()
+    real_factory = context_module.create_library_runtime
+
+    def delayed_factory(*args, **kwargs):
+        started.set()
+        assert release.wait(5)
+        return real_factory(*args, **kwargs)
+
+    monkeypatch.setattr(context_module, "create_library_runtime", delayed_factory)
+    store = _store(tmp_path)
+    context = create_app_context(settings_store=store, defer_library=True)
+    window = MainWindow(context)
+    try:
+        window.show()
+        qtbot.waitUntil(window.isVisible)
+        context.start_library_load()
+        qtbot.waitUntil(started.is_set)
+        assert context.library_state is LibraryState.LOADING
+        assert window._pending_shelf is not None
+        assert window.chrome._action_button.isVisible()
+        assert not window.sidebar._buttons["new_collection"].isEnabled()
+        assert context.library_runtime is None
+        assert not (tmp_path / "library" / "Database" / "joyread.sqlite3").exists()
+        release.set()
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.READY, timeout=7000)
+        assert window._pending_shelf is None
+        assert context.shelf_viewmodel.books == []
+    finally:
+        release.set()
+        window.close()
+        context.close()
+
+
+@pytest.mark.parametrize("failure_kind", ("path", "database"))
+def test_deferred_library_failure_keeps_reader_and_settings_available(
+    tmp_path: Path, qtbot, failure_kind: str
+) -> None:
+    store = _store(tmp_path)
+    if failure_kind == "path":
+        blocked = tmp_path / "blocked"
+        blocked.write_text("not a directory", encoding="utf-8")
+        location = blocked / "library"
+    else:
+        location = tmp_path / "damaged"
+        (location / "Database").mkdir(parents=True)
+        (location / "Database" / "joyread.sqlite3").write_bytes(b"not sqlite")
+    store.update(storage_location=str(location))
+    context = create_app_context(settings_store=store, defer_library=True)
+    opened = []
+    window = MainWindow(context, standalone_reader_launcher=opened.append)
+    try:
+        window.show()
+        context.start_library_load()
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.FAILED)
+        assert context.library_error_kind == failure_kind
+        assert window.dialog_overlay.isVisible() is (failure_kind == "database")
+        if failure_kind == "database":
+            assert sorted(
+                button.text for button in window.dialog_overlay.findChildren(DialogTextButton)
+            ) == sorted((t("dialog.library_retry"), t("dialog.library_skip")))
+        assert window._pending_state.isVisible()
+        assert bool(window._pending_state._title_label.text()) is (failure_kind == "path")
+        assert window._pending_shelf is not None
+        assert window.settings_view.page._library_ready is False
+        window.open_reader_for_file(tmp_path / "external.cbz")
+        assert len(opened) == 1
+        generation = context._library_load_generation
+        if failure_kind == "database":
+            window.dialog_overlay.panel.accepted.emit()
+        else:
+            window._pending_retry.clicked.emit()
+        assert context._library_load_generation == generation + 1
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.FAILED)
+        if failure_kind == "database":
+            window.dialog_overlay.panel.rejected.emit()
+        else:
+            window._pending_skip.clicked.emit()
+        assert context.library_state is LibraryState.SKIPPED
+        assert not window.dialog_overlay.isVisible()
+        assert store.load().storage_location == str(location)
+    finally:
+        window.close()
+        context.close()
+
+
+def test_deferred_select_commits_only_a_validated_library(
+    tmp_path: Path, qtbot, monkeypatch
+) -> None:
+    existing = tmp_path / "existing"
+    seed_store = SettingsStore(support_root=tmp_path / "seed-support", default_storage_root=existing)
+    seed = create_app_context(settings_store=seed_store)
+    page = tmp_path / "page.png"
+    Image.new("RGB", (16, 24), "#336699").save(page, format="PNG")
+    source = tmp_path / "managed.cbz"
+    with ZipFile(source, "w") as archive:
+        archive.write(page, "001.png")
+    imported = seed.import_service.import_files([source])
+    assert imported.imported_count == 1
+    seed.close()
+
+    store = _store(tmp_path)
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    saved_location = blocked / "library"
+    store.update(storage_location=str(saved_location))
+    context = create_app_context(settings_store=store, defer_library=True)
+    window = MainWindow(context)
+    try:
+        window.show()
+        context.start_library_load(tmp_path / "missing")
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.FAILED)
+        assert store.load().storage_location == str(saved_location)
+        window._show_settings_page()
+        context.settings_viewmodel.set_section(SettingsSectionKey.PRIVACY)
+        assert window.settings_view.isVisible()
+        monkeypatch.setattr(
+            "joyread.ui.views.main_window.QFileDialog.getExistingDirectory",
+            lambda *_args, **_kwargs: str(existing),
+        )
+        window._request_select_storage()
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.READY, timeout=7000)
+        assert store.load().storage_location == str(existing)
+        assert window._pending_shelf is None
+        assert len(context.shelf_viewmodel.books) == 1
+        assert window.shelf_view.stack.currentWidget() is window.shelf_view.grid
+    finally:
+        window.close()
+        context.close()
+
+
+def test_deferred_retry_discards_an_older_library_result(
+    tmp_path: Path, qtbot, monkeypatch
+) -> None:
+    from joyread.app import app_context as context_module
+
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    for name, location in (("first", first), ("second", second)):
+        seed = create_app_context(settings_store=SettingsStore(
+            support_root=tmp_path / f"{name}-support",
+            default_storage_root=location,
+        ))
+        seed.close()
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=first)
+    store.update(storage_location=str(first))
+
+    first_ready = Event()
+    release_first = Event()
+    discarded: list[Path] = []
+    real_factory = context_module.create_library_runtime
+    real_close = LibraryRuntime.close
+
+    def delayed_factory(reader, *args, **kwargs):
+        runtime = real_factory(reader, *args, **kwargs)
+        if reader.paths.storage_root == first:
+            first_ready.set()
+            assert release_first.wait(7)
+        return runtime
+
+    def record_close(runtime):  # noqa: ANN001
+        discarded.append(runtime.paths.storage_root)
+        return real_close(runtime)
+
+    monkeypatch.setattr(context_module, "create_library_runtime", delayed_factory)
+    monkeypatch.setattr(LibraryRuntime, "close", record_close)
+    context = create_app_context(settings_store=store, defer_library=True)
+    window = MainWindow(context)
+    try:
+        window.show()
+        context.start_library_load()
+        qtbot.waitUntil(first_ready.is_set)
+        context.start_library_load(second)
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.READY, timeout=7000)
+        assert context.paths.storage_root == second
+        assert store.load().storage_location == str(second)
+        release_first.set()
+        qtbot.waitUntil(lambda: first in discarded, timeout=7000)
+        assert context.paths.storage_root == second
+    finally:
+        release_first.set()
+        window.close()
+        context.close()
+
+
+def test_deferred_load_restarts_if_settings_change_during_construction(
+    tmp_path: Path, qtbot, monkeypatch
+) -> None:
+    from joyread.app import app_context as context_module
+
+    started = Event()
+    release = Event()
+    snapshots: list[bool] = []
+    real_factory = context_module.create_library_runtime
+
+    def delayed_factory(reader, config, settings, settings_store, **kwargs):
+        snapshots.append(settings.verify_imported_file_integrity)
+        runtime = real_factory(reader, config, settings, settings_store, **kwargs)
+        if len(snapshots) == 1:
+            started.set()
+            assert release.wait(7)
+        return runtime
+
+    monkeypatch.setattr(context_module, "create_library_runtime", delayed_factory)
+    context = create_app_context(settings_store=_store(tmp_path), defer_library=True)
+    window = MainWindow(context)
+    try:
+        window.show()
+        context.start_library_load()
+        qtbot.waitUntil(started.is_set)
+        context.settings_viewmodel.set_verify_imported_file_integrity(False)
+        context.settings_viewmodel.set_page_prefetch_after(3)
+        context.settings_viewmodel.set_reader_page_cache_mb(256)
+        assert context.reader_runtime.preferences.page_prefetch_after == 3
+        assert context.reader_runtime.cache_service.reader_page_cache.max_bytes == 256 * 1024 * 1024
+        release.set()
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.READY, timeout=7000)
+        assert snapshots == [True, False]
+        assert context.import_service._verify_imported_file_integrity is False
+        assert context.cache_service.reader_page_cache.max_bytes == 256 * 1024 * 1024
+    finally:
+        release.set()
+        window.close()
+        context.close()
+
+
+def test_closing_loading_window_discards_its_database_runtime(
+    tmp_path: Path, qtbot, monkeypatch
+) -> None:
+    from joyread.app import app_context as context_module
+
+    started = Event()
+    release = Event()
+    closed: list[Path] = []
+    real_factory = context_module.create_library_runtime
+    real_close = LibraryRuntime.close
+
+    def delayed_factory(*args, **kwargs):
+        runtime = real_factory(*args, **kwargs)
+        started.set()
+        assert release.wait(7)
+        return runtime
+
+    def record_close(runtime):  # noqa: ANN001
+        closed.append(runtime.paths.storage_root)
+        return real_close(runtime)
+
+    monkeypatch.setattr(context_module, "create_library_runtime", delayed_factory)
+    monkeypatch.setattr(LibraryRuntime, "close", record_close)
+    store = _store(tmp_path)
+    context = create_app_context(settings_store=store, defer_library=True)
+    window = MainWindow(context)
+    try:
+        window.show()
+        context.start_library_load()
+        qtbot.waitUntil(started.is_set)
+        window.close()
+        assert context.library_state is LibraryState.SKIPPED
+        release.set()
+        qtbot.waitUntil(lambda: context.paths.storage_root in closed, timeout=7000)
+        assert context.library_runtime is None
+    finally:
+        release.set()
+        context.close()
 
 
 @pytest.mark.parametrize("thumbnail_cleanup_fails", (False, True))

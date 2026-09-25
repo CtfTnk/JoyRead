@@ -308,7 +308,8 @@ def test_startup_shows_library_when_gate_resolves_with_no_document(qtbot) -> Non
 def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch, tmp_path: Path) -> None:
     calls: list[list[str] | None] = []
 
-    def cancel_startup(environment):  # noqa: ANN001
+    def cancel_startup(environment, *, defer_library):  # noqa: ANN001
+        assert defer_library
         calls.append(environment.argv)
         raise StorageRecoveryCancelled
 

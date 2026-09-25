@@ -59,9 +59,12 @@ from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.widgets.cover_editor import CoverEditorOverlay
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
+from joyread.ui.widgets.dialogs import DialogTextButton
 from joyread.ui.widgets.drop_zone_overlay import DropZoneOverlay, payload_from_mime_urls
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
+from joyread.ui.widgets.state_views import StateView
+from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import TitleBarWidget
@@ -86,8 +89,7 @@ class MainWindow(QMainWindow):
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
         self._closing = False
-        # MainWindow is currently built only after AppContext has opened the
-        # Library. P4 will replace this bridge with the async LibraryRuntime.
+        # Storage transitions after a ready Library can still fail later.
         self._library_failed = False
         # Absent unless the composition root wired the novel reader in, which
         # is what makes an .epub unopenable rather than a special case here.
@@ -107,6 +109,15 @@ class MainWindow(QMainWindow):
         self._cover_editor_book_uuid: str | None = None
         self._library_maintenance_task_active = False
         self._library_maintenance_plan_pending = False
+        self._pending_shelf: QWidget | None = None
+        self._lock_overlay: HiddenSpaceLockOverlay | None = None
+        if context.library_runtime is None:
+            self._initialize_pending_ui()
+            return
+        self._initialize_ready_ui()
+
+    def _initialize_ready_ui(self) -> None:
+        context = self._context
         if context.thumbnail_renderer is None:
             raise RuntimeError("AppContext must provide a cover preview renderer")
         self._cover_editor_thumbnail_viewmodel = CoverEditorThumbnailViewModel(
@@ -286,7 +297,10 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.book_tags_failed.connect(self._show_book_tags_failed)
         context.shelf_viewmodel.collection_failed.connect(self._show_collection_failed)
         context.shelf_viewmodel.remove_failed.connect(self._show_remove_failed)
-        context.shelf_viewmodel.load_books()
+        if not context.library_books_preloaded:
+            # The immediate test/embedded factory still builds an eager graph.
+            # Production P4 has already fetched its first shelf in the worker.
+            context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
         self.shelf_view.render()
 
@@ -318,6 +332,156 @@ class MainWindow(QMainWindow):
                     t("dialog.library_maintenance_recovery_msg"),
                 ),
             )
+
+    def _initialize_pending_ui(self) -> None:
+        """Paint the existing Library chrome before any database work begins."""
+
+        context = self._context
+        self.setObjectName("MainWindow")
+        set_localized(self, "setWindowTitle", t("app.name"))
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self.resize(Theme.window_width, Theme.window_height)
+        self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
+
+        root = QWidget()
+        root.setObjectName("RootPanel")
+        root_layout = QVBoxLayout(root)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+        self.title_bar = TitleBarWidget(context.resources)
+        self.chrome = self.title_bar
+        self.chrome.set_open_action_only()
+        root_layout.addWidget(self.chrome)
+
+        view_panel = QWidget()
+        view_panel.setObjectName("ViewPanel")
+        layout = QHBoxLayout(view_panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Theme.main_view_gap)
+        self.sidebar = SidebarWidget(context.resources)
+        self.sidebar.set_library_ready(False)
+        layout.addWidget(self.sidebar)
+        self._pending_shelf = QWidget()
+        self._pending_shelf.setObjectName("ShelfContent")
+        self._pending_shelf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        shelf_layout = QVBoxLayout(self._pending_shelf)
+        shelf_layout.setContentsMargins(0, Theme.content_top_padding, 0, 0)
+        shelf_layout.setSpacing(10)
+        self._pending_toolbar = TopToolbarWidget(context.resources)
+        self._pending_toolbar.setEnabled(False)
+        shelf_layout.addWidget(self._pending_toolbar)
+        self._pending_state = StateView(t("state.loading_title"), t("state.loading_msg"))
+        actions = QHBoxLayout()
+        actions.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+        actions.setSpacing(Theme.dialog_option_gap)
+        self._pending_retry = DialogTextButton(t("dialog.library_retry"))
+        self._pending_skip = DialogTextButton(t("dialog.library_skip"))
+        self._pending_retry.clicked.connect(context.start_library_load)
+        self._pending_skip.clicked.connect(context.skip_library_load)
+        actions.addWidget(self._pending_retry)
+        actions.addWidget(self._pending_skip)
+        self._pending_state.layout().addLayout(actions)
+        shelf_layout.addWidget(self._pending_state, stretch=1)
+        layout.addWidget(self._pending_shelf, stretch=1)
+        root_layout.addWidget(view_panel, stretch=1)
+        self.setCentralWidget(root)
+
+        self._resize_border = install_system_resize_border(self)
+        self.dialog_overlay = JoyReadDialogOverlay(
+            self._pending_shelf, context.resources, drag_handle=self.title_bar
+        )
+        self.dialog_overlay.hide()
+        self.settings_view = SettingsView(
+            context.settings_viewmodel, context.resources, root,
+            drag_handle=self.title_bar,
+        )
+        self.settings_view.page.set_library_ready(False)
+        self.settings_view.close_requested.connect(self._hide_settings_page)
+        self.settings_view.storage_select_requested.connect(self._request_select_storage)
+        self.settings_view.hide()
+        self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
+        self.drop_zone_overlay.set_content_area(view_panel)
+        self.drop_zone_overlay.read_requested.connect(self._queue_read_drop)
+        self.drop_zone_overlay.import_requested.connect(
+            self._import_dropped_paths, Qt.ConnectionType.QueuedConnection
+        )
+        self._position_settings_overlay()
+        self._position_dialog_overlay()
+        self._position_drop_zone_overlay()
+        self.chrome.set_action_menu_factory(self._pending_action_menu)
+        self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
+        self.sidebar.navigation_requested.connect(self._handle_navigation)
+        context.settings_viewmodel.language_changed.connect(self._on_pending_language_changed)
+        context.library_state_changed.connect(self._handle_library_state_changed)
+        self._handle_library_state_changed(context.library_state)
+
+    def _on_pending_language_changed(self) -> None:
+        self.sidebar.refresh_labels()
+        self.chrome.refresh_labels()
+        self._pending_toolbar.refresh_labels()
+
+    def _pending_action_menu(self) -> FigmaMenu:
+        menu = FigmaMenu(self)
+        menu.add_item(t("menu.open_book"), lambda: self._select_reader_file(False))
+        return menu
+
+    def _handle_library_state_changed(self, state: LibraryState) -> None:
+        if self._pending_shelf is None or self._closing:
+            return
+        if state is LibraryState.READY:
+            self._context.library_state_changed.disconnect(self._handle_library_state_changed)
+            self._context.settings_viewmodel.language_changed.disconnect(self._on_pending_language_changed)
+            self.dialog_overlay.hide()
+            old_geometry = self.geometry()
+            self._resize_border.deleteLater()
+            self.setUpdatesEnabled(False)
+            try:
+                self._pending_shelf = None
+                self._initialize_ready_ui()
+                self.setGeometry(old_geometry)
+            finally:
+                self.setUpdatesEnabled(True)
+                self.update()
+            return
+        self._pending_retry.setVisible(state in (LibraryState.FAILED, LibraryState.SKIPPED))
+        self._pending_skip.setVisible(state is LibraryState.FAILED)
+        if state is LibraryState.LOADING or state is LibraryState.UNLOADED:
+            self._pending_state.show()
+            self._pending_state.set_text(t("state.loading_title"), t("state.loading_msg"))
+            self.dialog_overlay.hide()
+        elif state is LibraryState.SKIPPED:
+            self._pending_state.show()
+            self._pending_state.set_text(
+                t("state.library_skipped_title"),
+                t("state.library_skipped_msg", path=str(self._context.library_attempted_path)),
+            )
+            self.dialog_overlay.hide()
+        elif self._context.library_error_kind == "path":
+            self._pending_state.show()
+            self._pending_state.set_text(
+                t("state.library_path_error_title"),
+                t("state.library_path_error_msg", path=str(self._context.library_attempted_path),
+                  detail=self._context.library_error_message),
+            )
+            self.dialog_overlay.hide()
+        else:
+            self._pending_retry.hide()
+            self._pending_skip.hide()
+            self._pending_state.show()
+            self._pending_state.set_text("", "")
+            self.dialog_overlay.show_confirm(
+                t("dialog.library_database_error_title"),
+                t("dialog.library_database_error_msg",
+                  path=str(self._context.library_attempted_path),
+                  detail=self._context.library_error_message),
+                on_confirm=self._context.start_library_load,
+                on_cancel=self._context.skip_library_load,
+                confirm_text=t("dialog.library_retry"),
+                cancel_text=t("dialog.library_skip"),
+            )
+        self._refresh_drop_policy()
 
     def open_reader_for_book(self, book_uuid: str, page_index: int | None = None) -> None:
         # Invoked via ``shelf_viewmodel.book_open_requested`` — the VM
@@ -473,6 +637,8 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _library_state(self) -> LibraryState:
+        if self._context.library_runtime is None:
+            return self._context.library_state
         if self._library_failed:
             return LibraryState.FAILED
         if self._storage_transition.busy or self._context.storage_rebuild_required:
@@ -526,7 +692,8 @@ class MainWindow(QMainWindow):
         embedded reader are equally opaque from the user's side.
         """
 
-        if self.cover_editor_overlay.isVisible() or self.dialog_overlay.isVisible():
+        if ((hasattr(self, "cover_editor_overlay") and self.cover_editor_overlay.isVisible())
+                or self.dialog_overlay.isVisible()):
             return True
         if self.settings_view.isVisible():
             return True
@@ -743,8 +910,11 @@ class MainWindow(QMainWindow):
         # Posted drop commands may precede DeferredDelete in the event queue.
         # Closing the Library cancels them before they can create owned Readers.
         self._closing = True
+        if self._context.library_runtime is None:
+            self._context.skip_library_load()
         self._close_embedded_reader()
-        self._cover_editor_thumbnail_viewmodel.cancel()
+        if hasattr(self, "_cover_editor_thumbnail_viewmodel"):
+            self._cover_editor_thumbnail_viewmodel.cancel()
         self.closed.emit()
         super().closeEvent(event)
 
@@ -1230,6 +1400,8 @@ class MainWindow(QMainWindow):
         )
 
     def _request_move_storage(self) -> None:
+        if self._context.library_runtime is None:
+            return
         directory = QFileDialog.getExistingDirectory(
             self,
             t("dialog.file_choose_library_parent_title"),
@@ -1251,6 +1423,10 @@ class MainWindow(QMainWindow):
         if not directory:
             return
         existing_root = Path(directory)
+        if self._context.library_runtime is None:
+            self._hide_settings_page()
+            self._context.start_library_load(existing_root)
+            return
         # Validation and adoption are one exclusive transition. Splitting them
         # would let an import slip in after validation but before the selected
         # storage root is adopted.
@@ -1293,7 +1469,8 @@ class MainWindow(QMainWindow):
 
     def _open_reader_windows(self) -> tuple[object, ...]:
         manager = self._storage_transition.window_manager
-        return tuple(getattr(manager, "reader_windows", ()))
+        return tuple(getattr(manager, "library_reader_windows",
+                             getattr(manager, "reader_windows", ())))
 
     def _begin_storage_transition(self, operation: Callable[[], StorageTransition]) -> None:
         # Confirmed, so the cover edit goes now: the user was told it would.
@@ -1316,6 +1493,8 @@ class MainWindow(QMainWindow):
         )
 
     def _request_reset_storage(self) -> None:
+        if self._context.library_runtime is None:
+            return
         self.dialog_overlay.show_confirm(
             t("dialog.reset_library_title"),
             t("dialog.reset_library_msg"),
@@ -1444,6 +1623,10 @@ class MainWindow(QMainWindow):
         self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(error)))
 
     def _handle_navigation(self, key: str) -> None:
+        if self._context.library_runtime is None:
+            if key == "settings":
+                self._show_settings_page()
+            return
         if key == "new_collection":
             self._show_new_collection_dialog()
             return
@@ -1783,6 +1966,9 @@ class MainWindow(QMainWindow):
         if self.settings_view.isVisible():
             self.sidebar.set_active("settings")
             return
+        if self._context.library_runtime is None:
+            self.sidebar.set_active(ShelfKey.ALL.value)
+            return
         current = self._context.shelf_viewmodel.current_shelf
         if current in {
             ShelfKey.ALL.value,
@@ -1837,13 +2023,15 @@ class MainWindow(QMainWindow):
     def _toggle_sidebar(self) -> None:
         visible = not self.sidebar.isVisible()
         self.sidebar.setVisible(visible)
-        self.shelf_view.set_sidebar_visible(visible)
+        if self._context.library_runtime is not None:
+            self.shelf_view.set_sidebar_visible(visible)
         self.settings_view.set_sidebar_visible(visible)
         self.chrome.set_sidebar_visible(visible)
 
     def _show_settings_page(self) -> None:
-        self._context.shelf_viewmodel.clear_selection(emit_state=False)
-        self._context.shelf_viewmodel.hide_detail()
+        if self._context.library_runtime is not None:
+            self._context.shelf_viewmodel.clear_selection(emit_state=False)
+            self._context.shelf_viewmodel.hide_detail()
         self._position_settings_overlay()
         self.settings_view.show()
         self.settings_view.raise_()
@@ -1869,6 +2057,10 @@ class MainWindow(QMainWindow):
 
     def _position_dialog_overlay(self) -> None:
         if not hasattr(self, "dialog_overlay"):
+            return
+        if self._pending_shelf is not None:
+            self.dialog_overlay.setGeometry(self._pending_shelf.rect())
+            self._raise_dialog_overlay_if_visible()
             return
         root = self.centralWidget()
         if root is None:

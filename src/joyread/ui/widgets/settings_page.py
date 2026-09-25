@@ -105,6 +105,7 @@ class SettingsPageWidget(QFrame):
         self._reading_dropdowns: dict[str, SettingsDropdownButton] = {}
         self._tag_page = None  # cached TagManagementPage, lazily created
         self._archive_pool_usage_item: SettingsCacheStatusItem | None = None
+        self._library_ready = True
         self._disposed = False
         self._sidebar_items: dict[SettingsSectionKey, SettingsSidebarItem] = {}
         self.setProperty("class", "SettingsPanel")
@@ -170,6 +171,17 @@ class SettingsPageWidget(QFrame):
         # Only the cache section carries a usage row; elsewhere this is None
         # and the usage signal has nothing to update.
         self._archive_pool_usage_item = self._content.findChild(SettingsCacheStatusItem)
+
+    def set_library_ready(self, ready: bool) -> None:
+        """Keep storage selection available while Library-owned actions wait."""
+
+        if self._library_ready == bool(ready):
+            return
+        self._library_ready = bool(ready)
+        self._sidebar.set_section_enabled(SettingsSectionKey.TAGS, self._library_ready)
+        if not self._library_ready and self._viewmodel.current_section is SettingsSectionKey.TAGS:
+            self._viewmodel.set_section(SettingsSectionKey.GENERAL)
+        self.render()
 
     def _refresh_archive_pool_usage(self) -> None:
         """Update the pool-usage label in place.
@@ -366,6 +378,10 @@ class SettingsPageWidget(QFrame):
         reset_library = SettingsButtonItem(t("settings.reset_library"), t("settings.btn_proceed"), destructive=True)
         reset_library.clicked.connect(self.storage_reset_requested.emit)
 
+        if not self._library_ready:
+            for control in (show_switch, change_password, revert, reset, move_library, reset_library):
+                control.setEnabled(False)
+
         # Encrypted-archive cache. Extracted pages of a password-protected
         # archive are plaintext in the pool, which is not itself encrypted yet.
         encrypted_banner = SectionBanner(t("settings.banner_encrypted_cache"), self._resources)
@@ -472,6 +488,7 @@ class SettingsPageWidget(QFrame):
             t("settings.btn_verify"),
         )
         verify_library.clicked.connect(self._viewmodel.request_library_maintenance)
+        verify_library.set_enabled(self._library_ready)
 
 
         return [
@@ -778,6 +795,9 @@ class SettingsSidebarWidget(QFrame):
     def set_active(self, key: SettingsSectionKey) -> None:
         for section_key, item in self._items.items():
             item.set_checked(section_key == key)
+
+    def set_section_enabled(self, key: SettingsSectionKey, enabled: bool) -> None:
+        self._items[key].setEnabled(enabled)
 
     def refresh_labels(self) -> None:
         """Re-apply translated labels to all sidebar items (called on language change)."""

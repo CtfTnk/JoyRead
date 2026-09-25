@@ -30,6 +30,8 @@ with the downloaded filename. The graphical installer gets stuck at
 **“Preparing”**; this issue has not been fixed.
 See the release notes for signing and platform validation status. On first
 launch JoyRead creates an empty library and shows the shelf.
+The Library window appears first, then loads its books in the background.
+Settings and **Actions → Open Book** remain available while it loads.
 
 The window is split into a sidebar on the left and the shelf on the right. The
 sidebar holds **Book Shelf** (with **All**, **Recent**, **Favourites**, and
@@ -437,8 +439,8 @@ them.
 **Library Location** in Settings → Privacy → Storage moves your books, covers,
 database, and backups somewhere else, an external drive included. The page
 cache stays in the application's cache location and is rebuilt when needed.
-JoyRead closes any open readers first, saving your place in each, then moves the
-files. **Select Existing Library** points
+JoyRead closes Readers opened from the Library first, saving your place in each,
+then moves the files. Independently opened Readers stay open. **Select Existing Library** points
 JoyRead at a library folder that already exists — useful if you moved it by hand
 or want to switch between two.
 
@@ -471,6 +473,13 @@ and taking a second.
 Neither matters much on a machine only you use. Both matter on a shared one.
 
 ## When something goes wrong
+
+**The Library does not load.** If its folder is unavailable, the Bookshelf
+shows the saved path and reason with **Retry** and **Skip this time**. If the
+database fails to load, the same two choices appear in a dialog. Skipping
+keeps your saved location and lets you open external files. Use Settings →
+Privacy → Storage → **Select Existing Library** to choose a different valid
+library. JoyRead does not erase or reset an existing damaged library at launch.
 
 **"This archive exceeds the current resource limits."** The book is larger than
 one of the Archive & Cache limits. Raise the specific limit named, or turn off

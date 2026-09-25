@@ -88,20 +88,26 @@ class ApplicationWindowManager(QObject):
         return tuple(self._reader_windows.values())
 
     @property
+    def library_reader_windows(self) -> tuple[QMainWindow, ...]:
+        return tuple(
+            window for window in self._reader_windows.values()
+            if self._ownership.owner_of(id(window)) == id(self._main_window)
+        ) if self._main_window is not None else ()
+
+    def close_library_readers(self) -> int:
+        """Retire Readers bound to the Library being replaced."""
+
+        readers = self.library_reader_windows
+        for window in readers:
+            window.close()
+        return len(readers)
+
+    @property
     def has_windows(self) -> bool:
         return bool(self._live_windows)
 
     def close_all_readers(self) -> int:
-        """Close every Reader window, leaving the Library open.
-
-        A storage transition replaces the services a Reader session is bound
-        to, and there is no way to re-point a live session at a rebuilt stack,
-        so the sessions go rather than being left dangling. The Library stays:
-        it is where the transition was requested from and where its result is
-        reported.
-
-        Iterates over a snapshot because closing a window unregisters it.
-        """
+        """Close every Reader; normal storage changes use the narrower owner scope."""
 
         readers = self.reader_windows
         for window in readers:
@@ -362,6 +368,8 @@ class ApplicationWindowManager(QObject):
         page_index: int,
         progress_percent: float,
     ) -> None:
+        if getattr(self._context, "library_runtime", True) is None or not book_uuid:
+            return
         self._context.shelf_viewmodel.apply_reader_progress(
             book_uuid,
             page_index,
