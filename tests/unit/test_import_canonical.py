@@ -14,6 +14,7 @@ from pathlib import Path
 import zipfile
 
 from PIL import Image
+import pytest
 
 from joyread.core.archive import ArchiveImageService
 from joyread.core.models.import_policy import CanonicalImportPolicy
@@ -415,6 +416,65 @@ def test_a_cancelled_bulk_extraction_skips_the_item_instead_of_importing_it(
                 "SELECT COUNT(*) FROM book_files"
             ).fetchone()[0]
         ) == 0
+    finally:
+        database.close()
+
+
+def test_cancelling_a_verbatim_import_during_copy_removes_the_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, database, paths = _services(tmp_path)
+    source = _zip(tmp_path / "flat.cbz", {"001.png": _png()})
+    service.set_verify_imported_file_integrity(False)
+    service._hash_service._CHUNK_SIZE = 32
+    checks = 0
+
+    def cancelled() -> bool:
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    def inspection_must_not_start(*_args, **_kwargs):
+        pytest.fail("Cancellation should stop the copy before archive inspection")
+
+    monkeypatch.setattr(service, "_validate_staged_file", inspection_must_not_start)
+    try:
+        result = service.import_files([source], is_cancelled=cancelled)
+        assert result.skipped_count == 1
+        assert result.imported_count == 0
+        assert _book_row(database) is None
+        assert not list((paths.paths.books / ".staging").glob("*"))
+    finally:
+        database.close()
+
+
+def test_cancelling_just_after_copy_stops_before_publishing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service, database, paths = _services(tmp_path)
+    source = _zip(tmp_path / "flat.cbz", {"001.png": _png()})
+    service.set_verify_imported_file_integrity(False)
+    copied = False
+    original_copy = service._hash_service.copy_with_hash
+
+    def cancel_after_copy(*args, **kwargs):
+        nonlocal copied
+        digest = original_copy(*args, **kwargs)
+        copied = True
+        return digest
+
+    def inspection_must_not_start(*_args, **_kwargs):
+        pytest.fail("Cancellation should stop before archive inspection")
+
+    monkeypatch.setattr(service._hash_service, "copy_with_hash", cancel_after_copy)
+    monkeypatch.setattr(service, "_validate_staged_file", inspection_must_not_start)
+    try:
+        result = service.import_files([source], is_cancelled=lambda: copied)
+        assert copied
+        assert result.skipped_count == 1
+        assert result.imported_count == 0
+        assert _book_row(database) is None
+        assert not list((paths.paths.books / ".staging").glob("*"))
     finally:
         database.close()
 

@@ -13,6 +13,7 @@ import pytest
 from joyread.app.app_context import AppContext, create_app_context
 from joyread.app.library_runtime import create_library_runtime
 from joyread.app.reader_runtime import create_reader_runtime
+from joyread.core.models.import_policy import CanonicalImportPolicy
 from joyread.core.services.library_maintenance_service import LibraryMaintenanceService
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
@@ -134,6 +135,21 @@ def test_storage_rebuild_commits_both_runtimes_and_keeps_viewmodels(tmp_path, mo
         context.close()
 
 
+def test_storage_rebuild_preserves_saved_import_conversion_policy(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    try:
+        context.settings_viewmodel.set_canonical_import_policy("Never")
+        assert context.import_service._canonical_import_policy is CanonicalImportPolicy.NEVER
+
+        context.reload_storage_from_settings()
+
+        assert context.import_service._canonical_import_policy is CanonicalImportPolicy.NEVER
+        assert context.settings_store.load().canonical_import_policy == "never"
+    finally:
+        context.close()
+
+
 def test_failed_storage_rebuild_does_not_publish_partial_runtime(
     tmp_path, monkeypatch
 ) -> None:
@@ -153,6 +169,46 @@ def test_failed_storage_rebuild_does_not_publish_partial_runtime(
         assert context.reader_runtime is old_reader
         assert context.library_runtime is old_library
         assert context.paths is old_paths
+    finally:
+        context.close()
+
+
+def test_failed_viewmodel_rebind_restores_old_services_before_closing_staged_runtime(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    old_reader = context.reader_runtime
+    old_library = context.library_runtime
+    tag_vm = context.tag_management_viewmodel
+    original_replace = tag_vm.replace_service
+    staged = []
+    original_create = create_library_runtime
+
+    def capture_runtime(*args, **kwargs):  # noqa: ANN002, ANN003
+        runtime = original_create(*args, **kwargs)
+        staged.append(runtime)
+        return runtime
+
+    def fail_after_rebind(service):  # noqa: ANN001
+        original_replace(service)
+        if service is not old_library.tag_service:
+            raise RuntimeError("tag rebind failed")
+
+    monkeypatch.setattr("joyread.app.app_context.create_library_runtime", capture_runtime)
+    monkeypatch.setattr(tag_vm, "replace_service", fail_after_rebind)
+    try:
+        with pytest.raises(RuntimeError, match="tag rebind failed"):
+            context.reload_storage_from_settings()
+
+        assert context.reader_runtime is old_reader
+        assert context.library_runtime is old_library
+        assert context.shelf_viewmodel._library_service is old_library.library_service
+        assert context.shelf_viewmodel._thumbnail_service is old_library.thumbnail_service
+        assert context.settings_viewmodel._hidden_space_service is old_library.hidden_space_service
+        assert tag_vm._service is old_library.tag_service
+        assert context.book_repository.list_books() == []
+        assert staged[0].database_interpreter._closed
     finally:
         context.close()
 

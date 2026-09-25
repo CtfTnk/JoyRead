@@ -75,6 +75,10 @@ class ImportStage(StrEnum):
     RECORDING = "recording"
 
 
+class ImportCancelled(Exception):
+    """The caller cancelled before the current item was published."""
+
+
 @dataclass(frozen=True)
 class ImportProgress:
     """One progress tick for one item of a batch."""
@@ -592,11 +596,11 @@ class ImportService:
                     ),
                     is_cancelled=is_cancelled,
                 )
-            except CanonicalWriteCancelled:
-                # Cancelling mid-conversion is a choice, not a defect, so the
+            except (CanonicalWriteCancelled, ImportCancelled):
+                # Cancelling the current item is a choice, not a defect, so the
                 # item is skipped rather than failed -- and the batch stops
                 # instead of carrying on into work the user just called off.
-                logger.info("Import cancelled during conversion of %s", source_value)
+                logger.info("Import cancelled while processing %s", source_value)
                 results.append(
                     self._record_item(
                         batch_id,
@@ -745,6 +749,11 @@ class ImportService:
         report: _ItemProgress | None = None,
         is_cancelled: Callable[[], bool] | None = None,
     ) -> ImportItemResult:
+        check_cancelled = (
+            (lambda: _raise_if_cancelled(is_cancelled))
+            if is_cancelled is not None
+            else None
+        )
         failure = self._validate_source_candidate(source_path)
         if failure is not None:
             logger.debug(
@@ -774,7 +783,14 @@ class ImportService:
         source_hash: str | None = None
         if self._verify_imported_file_integrity:
             logger.debug("Import item pre-hashing source=%s algorithm=%s", source_path, self._hash_algorithm)
-            source_hash = self._hash_service.compute(source_path, self._hash_algorithm)
+            source_hash = (
+                self._hash_service.compute(source_path, self._hash_algorithm)
+                if check_cancelled is None
+                else self._hash_service.compute(
+                    source_path, self._hash_algorithm, check_cancelled=check_cancelled
+                )
+            )
+            _raise_if_cancelled(is_cancelled)
             duplicate = self._find_duplicate(source_hash)
             if duplicate is not None:
                 return self._duplicate_result(batch_id, source_display, external_id, duplicate)
@@ -783,11 +799,22 @@ class ImportService:
             report.stage(ImportStage.STAGING)
         staging_path = self._staging_path(source_path)
         try:
-            staged_hash = self._hash_service.copy_with_hash(
-                source_path,
-                staging_path,
-                self._hash_algorithm,
+            staged_hash = (
+                self._hash_service.copy_with_hash(
+                    source_path, staging_path, self._hash_algorithm
+                )
+                if check_cancelled is None
+                else self._hash_service.copy_with_hash(
+                    source_path,
+                    staging_path,
+                    self._hash_algorithm,
+                    check_cancelled=check_cancelled,
+                )
             )
+            _raise_if_cancelled(is_cancelled)
+        except ImportCancelled:
+            staging_path.unlink(missing_ok=True)
+            raise
         except Exception as exc:
             if self._path_issue_service is not None:
                 self._path_issue_service.report_os_error(
@@ -815,7 +842,12 @@ class ImportService:
 
         if report is not None:
             report.stage(ImportStage.INSPECTING)
-        staged_failure, inspection = self._validate_staged_file(staging_path, limits)
+        try:
+            staged_failure, inspection = self._validate_staged_file(staging_path, limits)
+            _raise_if_cancelled(is_cancelled)
+        except ImportCancelled:
+            staging_path.unlink(missing_ok=True)
+            raise
         if staged_failure is not None:
             staging_path.unlink(missing_ok=True)
             return self._record_item(
@@ -832,6 +864,7 @@ class ImportService:
             else BookMetadata()
         )
         file_id = str(uuid4())
+        artifact: _StagedArtifact | None = None
         try:
             artifact = self._stage_artifact(
                 staging_path,
@@ -841,7 +874,10 @@ class ImportService:
                 is_cancelled=is_cancelled,
                 report=report,
             )
+            _raise_if_cancelled(is_cancelled)
         except Exception:
+            if artifact is not None:
+                artifact.path.unlink(missing_ok=True)
             staging_path.unlink(missing_ok=True)
             raise
 
@@ -1079,7 +1115,15 @@ class ImportService:
             )
 
         try:
-            stored_hash = self._hash_service.compute(canonical_path, self._hash_algorithm)
+            stored_hash = (
+                self._hash_service.compute(canonical_path, self._hash_algorithm)
+                if is_cancelled is None
+                else self._hash_service.compute(
+                    canonical_path,
+                    self._hash_algorithm,
+                    check_cancelled=lambda: _raise_if_cancelled(is_cancelled),
+                )
+            )
         except Exception:
             # Hash the artifact before dropping the source, and clean up the
             # artifact if that fails. Otherwise a failed hash strands a full
@@ -1345,6 +1389,11 @@ def _resolve_source_path(source_path: str, manifest_dir: Path | None) -> Path:
     if manifest_dir is not None and (manifest_dir / path).exists():
         return (manifest_dir / path).resolve()
     return (Path.cwd() / path).resolve()
+
+
+def _raise_if_cancelled(is_cancelled: Callable[[], bool] | None) -> None:
+    if is_cancelled is not None and is_cancelled():
+        raise ImportCancelled()
 
 
 def _supported_files_within_depth(folder: Path, *, max_depth: int) -> list[Path]:

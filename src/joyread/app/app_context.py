@@ -451,7 +451,31 @@ class AppContext(RuntimeAccess):
             settings_vm.set_hidden_space_service(library.hidden_space_service)
             tag_vm.replace_service(library.tag_service)
         except BaseException:
-            library.close()
+            # Each rebind changes a retained ViewModel before its next step can
+            # fail. Restore every reference before closing the staged database.
+            for name, restore in (
+                (
+                    "shelf",
+                    lambda: shelf.replace_services(
+                        old_library.library_service,
+                        old_library.thumbnail_service,
+                        old_library.tag_service,
+                    ),
+                ),
+                (
+                    "settings",
+                    lambda: settings_vm.set_hidden_space_service(old_library.hidden_space_service),
+                ),
+                ("tags", lambda: tag_vm.replace_service(old_library.tag_service)),
+            ):
+                try:
+                    restore()
+                except Exception:
+                    logger.error("%s ViewModel rollback after storage rebuild failed", name, exc_info=True)
+            try:
+                library.close()
+            except Exception:
+                logger.error("Staged Library cleanup after storage rebuild failed", exc_info=True)
             raise
         library.shelf_viewmodel = shelf
         library.settings_viewmodel = settings_vm

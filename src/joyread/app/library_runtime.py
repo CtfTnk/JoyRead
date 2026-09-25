@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import logging
 
 from joyread.app.reader_runtime import ReaderRuntime, archive_open_limits_from_settings
+from joyread.core.models.import_policy import normalize_canonical_import_policy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
@@ -111,6 +112,9 @@ def create_library_runtime(
             verify_imported_file_integrity=settings.verify_imported_file_integrity,
             maintenance_coordinator=coordinator,
             pdf_service=reader.pdf_image_service,
+            canonical_import_policy=normalize_canonical_import_policy(
+                settings.canonical_import_policy
+            ),
         )
         export_service = ExportService(book_repository, reader.hash_service)
         library_caches = LibraryCacheService(config.cover_index_max_items)
