@@ -190,10 +190,16 @@ class TaskService:
         self._pool.setMaxThreadCount(max_workers)
         self._active_signals: set[_TaskSignals] = set()
         self._active_handles: dict[str, TaskHandle[object]] = {}
+        self._handle_scopes: dict[str, TaskScope | None] = {}
         # Terminal teardown and a reversible storage-transition quiesce both
         # stop submission, but only the second one can be undone.
         self._shutting_down = False
         self._quiesced = False
+
+    def create_scope(self) -> TaskScope:
+        """Share the worker budget while giving one workflow its own drain gate."""
+
+        return TaskScope(self)
 
     def submit(
         self,
@@ -223,6 +229,7 @@ class TaskService:
         on_success: Callable[[T], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
+        _scope: TaskScope | None = None,
     ) -> TaskHandle[T]:
         signals = _TaskSignals()
 
@@ -237,6 +244,7 @@ class TaskService:
             on_item=on_item,
             priority=priority,
             signals=signals,
+            scope=_scope,
         )
 
     def _submit(
@@ -250,6 +258,7 @@ class TaskService:
         on_item: Callable[[object], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
         signals: _TaskSignals | None = None,
+        scope: TaskScope | None = None,
     ) -> TaskHandle[T]:
         callback_label = describe_callback(callback)
         operation = create_operation(f"task.{name}", category="task")
@@ -258,7 +267,7 @@ class TaskService:
             callback_label=callback_label,
             operation_context=operation,
         )
-        if self._shutting_down or self._quiesced:
+        if self._shutting_down or self._quiesced or (scope is not None and scope._quiesced):
             handle.status = TaskStatus.CANCELLED
             return handle
         with bind_operation(operation):
@@ -277,6 +286,7 @@ class TaskService:
         handle._signals = signals
         self._active_signals.add(signals)
         self._active_handles[handle.task_id] = handle  # type: ignore[assignment]
+        self._handle_scopes[handle.task_id] = scope
 
         def complete(result: object) -> None:
             with bind_operation(handle.operation_context):
@@ -307,6 +317,7 @@ class TaskService:
             with bind_operation(handle.operation_context):
                 self._active_signals.discard(signals)
                 self._active_handles.pop(handle.task_id, None)
+                self._handle_scopes.pop(handle.task_id, None)
                 handle._signals = None
 
         signals.completed.connect(complete)
@@ -398,6 +409,7 @@ class TaskService:
             handle.cancel()
             handle._signals = None
         self._active_handles.clear()
+        self._handle_scopes.clear()
         self._active_signals.clear()
         log_event(
             logger,
@@ -437,6 +449,55 @@ class TaskService:
                 exc_info=True,
             )
         return handle
+
+
+class TaskScope:
+    """A reversible subset of a TaskService; it never owns or stops the pool.
+
+    Library transitions seal this scope while external Readers keep submitting
+    through the parent service. Application shutdown still cancels every scope.
+    """
+
+    def __init__(self, service: TaskService) -> None:
+        self._service = service
+        self._quiesced = False
+
+    def submit(
+        self, name: str, callback: Callable[[], T], *,
+        on_success: Callable[[T], None] | None = None,
+        on_failure: Callable[[Exception], None] | None = None,
+        on_discard: Callable[[T], None] | None = None,
+        priority: TaskPriority | int = TaskPriority.NORMAL,
+    ) -> TaskHandle[T]:
+        return self._service._submit(
+            name, callback, on_success=on_success, on_failure=on_failure,
+            on_discard=on_discard, priority=priority, scope=self,
+        )
+
+    def submit_stream(
+        self, name: str, callback: Callable[[Callable[[I], None]], T], *,
+        on_item: Callable[[I], None],
+        on_success: Callable[[T], None] | None = None,
+        on_failure: Callable[[Exception], None] | None = None,
+        priority: TaskPriority | int = TaskPriority.NORMAL,
+    ) -> TaskHandle[T]:
+        return self._service.submit_stream(
+            name, callback, on_item=on_item, on_success=on_success,
+            on_failure=on_failure, priority=priority, _scope=self,
+        )
+
+    def quiesce(self) -> int:
+        self._quiesced = True
+        for task_id, handle in tuple(self._service._active_handles.items()):
+            if self._service._handle_scopes.get(task_id) is self:
+                handle.cancel()
+        return self.pending_task_count()
+
+    def pending_task_count(self) -> int:
+        return sum(scope is self for scope in self._service._handle_scopes.values())
+
+    def resume(self) -> None:
+        self._quiesced = False
 
 
 def _safe_emit(signal, *args: object, context: str = "") -> None:  # noqa: ANN001

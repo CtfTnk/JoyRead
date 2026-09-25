@@ -280,6 +280,65 @@ def test_resume_cannot_reopen_a_shutdown_pool(qtbot) -> None:  # noqa: ANN001, A
     assert service.submit("after-resume", lambda: "work").status == TaskStatus.CANCELLED
 
 
+def test_library_scope_drains_without_cancelling_external_work(qtbot) -> None:
+    service = TaskService(max_workers=2)
+    library = service.create_scope()
+    started = Event()
+    release = Event()
+    external_results = []
+
+    def external_open():
+        started.set()
+        assert release.wait(5)
+        return "opened"
+
+    external = service.submit("external", external_open, on_success=external_results.append)
+    try:
+        qtbot.waitUntil(started.is_set)
+        library.quiesce()
+        assert library.pending_task_count() == 0
+        assert external.status is TaskStatus.RUNNING
+        assert library.submit("import", lambda: None).status is TaskStatus.CANCELLED
+        new_external = service.submit("external-during-move", lambda: 42)
+        qtbot.waitUntil(lambda: new_external.status is TaskStatus.COMPLETED)
+        release.set()
+        qtbot.waitUntil(lambda: external_results == ["opened"])
+        library.resume()
+        resumed = library.submit("import-after-move", lambda: None)
+        qtbot.waitUntil(lambda: resumed.status is TaskStatus.COMPLETED)
+        service.shutdown()
+        library.resume()
+        assert library.submit("after-shutdown", lambda: None).status is TaskStatus.CANCELLED
+    finally:
+        release.set()
+        service.shutdown()
+
+
+def test_library_scope_waits_for_cancelled_stream_to_unwind(qtbot) -> None:
+    service = TaskService(max_workers=1)
+    library = service.create_scope()
+    started = Event()
+    release = Event()
+    received = []
+
+    def import_stream(emit):
+        started.set()
+        assert release.wait(5)
+        emit("late")
+
+    handle = library.submit_stream("import", import_stream, on_item=received.append)
+    try:
+        qtbot.waitUntil(started.is_set)
+        assert library.quiesce() == 1
+        assert handle.status is TaskStatus.CANCELLED
+        release.set()
+        qtbot.waitUntil(lambda: library.pending_task_count() == 0)
+        assert not received
+    finally:
+        release.set()
+        service.shutdown()
+
+
 def test_task_operation_context_reaches_worker_and_gui_callback(qtbot) -> None:
     service = TaskService(max_workers=1)
     parent = create_operation("reader.document.open", category="reader")

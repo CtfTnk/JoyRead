@@ -1,10 +1,8 @@
-"""Policy for application-wide quiescence around a storage transition.
+"""Policy for Library quiescence around a storage transition.
 
-Moving, selecting, or resetting the library replaces the archive extraction
-pool and the whole database stack. Anything still running against the retired
-stack at that moment is a defect waiting to happen: a bulk conversion writing
-into a pool that is about to be dropped, a Reader session whose document
-outlives its services, a thumbnail job holding a lease nobody will release.
+Moving, selecting, or resetting the Library replaces its database stack.
+Library tasks and managed Readers must drain before that storage is retired;
+external Readers retain their application services, tasks and cache leases.
 
 The ordering and the refusal rules live here, free of Qt, so they can be tested
 without an event loop. The driver that owns the timer, the worker thread, and
@@ -124,5 +122,4 @@ def describe_consequences(
         reader_windows=max(0, int(reader_window_count)),
         discards_cover_edit=bool(cover_editor_open),
     )
-
 

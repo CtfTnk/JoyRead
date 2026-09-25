@@ -336,6 +336,8 @@ class MainWindow(QMainWindow):
             # Production P4 has already fetched its first shelf in the worker.
             context.shelf_viewmodel.load_books()
         self._refresh_sidebar_collections()
+        self._sync_sidebar()
+        self._sync_chrome()
         self.shelf_view.render()
 
         # Launch-time Hidden Space gate. If the user closed the previous
@@ -413,7 +415,7 @@ class MainWindow(QMainWindow):
         actions.setSpacing(Theme.dialog_option_gap)
         self._pending_retry = DialogTextButton(t("dialog.library_retry"))
         self._pending_skip = DialogTextButton(t("dialog.library_skip"))
-        self._pending_retry.clicked.connect(context.start_library_load)
+        self._pending_retry.clicked.connect(context.retry_library_load)
         self._pending_skip.clicked.connect(context.skip_library_load)
         actions.addWidget(self._pending_retry)
         actions.addWidget(self._pending_skip)
@@ -517,7 +519,7 @@ class MainWindow(QMainWindow):
                 t("dialog.library_database_error_msg",
                   path=escape_html(str(self._context.library_attempted_path)),
                   detail=escape_html(self._context.library_error_message)),
-                on_confirm=self._context.start_library_load,
+                on_confirm=self._context.retry_library_load,
                 on_cancel=self._context.skip_library_load,
                 confirm_text=t("dialog.library_retry"),
                 cancel_text=t("dialog.library_skip"),

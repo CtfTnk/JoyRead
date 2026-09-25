@@ -92,10 +92,14 @@ class ApplicationWindowManager(QObject):
 
     @property
     def library_reader_windows(self) -> tuple[QMainWindow, ...]:
+        # An OS open can promote a managed Reader to a root window without
+        # detaching its database port or moving its source out of the Library.
         return tuple(
             window for window in self._reader_windows.values()
-            if self._ownership.owner_of(id(window)) == id(self._main_window)
-        ) if self._main_window is not None else ()
+            if getattr(window, "depends_on_library", False)
+            or (self._main_window is not None
+                and self._ownership.owner_of(id(window)) == id(self._main_window))
+        )
 
     def close_library_readers(self) -> int:
         """Retire Readers bound to the Library being replaced."""

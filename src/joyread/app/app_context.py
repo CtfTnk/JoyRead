@@ -22,7 +22,9 @@ from joyread.app.reader_runtime import (
     create_archive_extraction_cache as _create_archive_extraction_cache,
     create_reader_runtime,
 )
-from joyread.app.library_runtime import LibraryRuntime, create_library_runtime
+from joyread.app.library_runtime import (
+    LibraryRuntime, create_library_runtime, library_construction_settings,
+)
 from joyread.app.runtime_access import RuntimeAccess
 from joyread.app.path_issue_bridge import PathIssueBridge
 from joyread.core.services.cache_service import CacheService
@@ -121,6 +123,7 @@ class AppContext(RuntimeAccess):
     library_state_changed: EventHook[LibraryState] = field(default_factory=EventHook)
     _library_load_generation: int = 0
     _library_load_handle: TaskHandle[LibraryLoadResult] | None = None
+    _library_selected_root: Path | None = None
     _closed: bool = False
     #: Carries live pool usage from caching workers to the settings page.
     archive_pool_usage_bridge: ArchivePoolUsageBridge | None = None
@@ -182,7 +185,7 @@ class AppContext(RuntimeAccess):
             close_component("archive_warmup", self.archive_warmup_coordinator.close)
         if self.path_issue_bridge is not None:
             close_component("path_issue_bridge", self.path_issue_bridge.detach)
-        close_component("task_service", self.task_service.shutdown)
+        close_component("task_service", self.reader_runtime.task_service.shutdown)
         if self.library_runtime is not None and self.library_runtime.thumbnail_service is not None:
             close_component("thumbnail_service", self.library_runtime.thumbnail_service.close)
         # Task shutdown stops accepting new work first. PDF shutdown then seals
@@ -207,6 +210,7 @@ class AppContext(RuntimeAccess):
 
         if self._closed or self.library_runtime is not None:
             return
+        self._library_selected_root = selected_root
         self._library_load_generation += 1
         generation = self._library_load_generation
         if self._library_load_handle is not None:
@@ -271,6 +275,11 @@ class AppContext(RuntimeAccess):
             priority=TaskPriority.HIGH,
         )
 
+    def retry_library_load(self) -> None:
+        """Retry the selected candidate, including its full validation gate."""
+
+        self.start_library_load(self._library_selected_root)
+
     def skip_library_load(self) -> None:
         if self.library_runtime is not None or self._closed:
             return
@@ -303,19 +312,11 @@ class AppContext(RuntimeAccess):
         try:
             persisted = self.settings_store.load()
             # Settings remain editable while the shelf loads. A staged graph
-            # built from an older snapshot must not publish stale cache,
-            # import, or archive policy after those edits.
-            if replace(
-                result.settings,
-                storage_location=persisted.storage_location,
-                last_good_storage_location=persisted.last_good_storage_location,
-            ) != persisted:
+            # built from an older snapshot must not publish stale import or
+            # archive policy. Geometry and live Reader preferences are unrelated.
+            if library_construction_settings(result.settings) != library_construction_settings(persisted):
                 result.runtime.close()
-                selected_root = (
-                    result.paths.storage_root
-                    if result.settings.storage_location != persisted.storage_location else None
-                )
-                self.start_library_load(selected_root)
+                self.retry_library_load()
                 return
             if (result.settings.storage_location != persisted.storage_location
                     or persisted.last_good_storage_location != result.settings.storage_location):
@@ -383,9 +384,8 @@ class AppContext(RuntimeAccess):
     def quiesce_for_storage_transition(self) -> int:
         """Stop storage-dependent producers, reversibly.
 
-        Same order as :meth:`close` and for the same reason: the warmup
-        coordinator first, so its cancellation reaches an in-flight extractor
-        before anything else changes underneath it, then the task service.
+        Withdraw Library warmup demand first, then seal only Library tasks.
+        External Readers retain their tasks, callbacks and application cache.
 
         Only reversible work happens here. ``ThumbnailService.close()`` is
         terminal -- a closed one is never usable again -- so it belongs to
@@ -395,18 +395,21 @@ class AppContext(RuntimeAccess):
         independent external Reader may retain a PDF document during a switch.
 
         Returns the number of tasks still unwinding. This does not join -- see
-        :meth:`TaskService.quiesce` -- so the caller must poll
+        :meth:`TaskScope.quiesce` -- so the caller must poll
         :meth:`storage_transition_pending_tasks` from the event loop and only
         migrate once it reaches zero.
         """
 
         logger.info("Quiescing for storage transition")
         if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.close()
-        return self.task_service.quiesce()
+            self.archive_warmup_coordinator.quiesce_library(self.paths.storage_root)
+        self.task_service.quiesce()
+        return self.storage_transition_pending_tasks()
 
     def storage_transition_pending_tasks(self) -> int:
-        return self.task_service.pending_task_count()
+        return self.task_service.pending_task_count() + self.archive_warmup_coordinator.pending_library_tasks(
+            self.paths.storage_root
+        )
 
     def commit_storage_transition(self) -> None:
         """Release the services that must not outlive the retired storage.
@@ -416,16 +419,11 @@ class AppContext(RuntimeAccess):
         :meth:`reload_storage_from_settings`, which every path out of a
         committed transition runs -- see :attr:`storage_rebuild_required`.
 
-        The warmup coordinator is reset rather than merely closed. Its running
-        task was cancelled during the drain, which suppresses the callback that
-        would normally clear ``_active_key``; leaving it set would block every
-        later warmup. Resetting is only safe now, because the drain proves the
-        task is gone rather than still running.
+        Library warmups have drained through their normal callbacks. The shared
+        coordinator and Reader services remain live for external documents.
         """
 
         self.storage_rebuild_required = True
-        if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.reset()
         if self.thumbnail_service is not None:
             self.thumbnail_service.close()
         # Library-owned Reader and thumbnail sessions have been retired above.
@@ -434,16 +432,12 @@ class AppContext(RuntimeAccess):
     def abandon_storage_transition(self) -> None:
         """Undo a quiesce that never committed.
 
-        Reached when the drain times out. Storage was never touched and nothing
-        terminal has run, so the application goes back to what it was -- but
-        "what it was" includes the warmup coordinator, which the quiesce left
-        holding a cancelled task that will never report. Resetting it here for
-        the same reason :meth:`commit_storage_transition` does: without it,
-        ``_active_key`` stays set and no later warmup can ever start.
+        Storage was never touched and no service was retired. Reopen Library
+        task and warmup admission; external work was never stopped.
         """
 
         if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.reset()
+            self.archive_warmup_coordinator.resume_library()
         self.task_service.resume()
         logger.warning("Storage transition abandoned before migrating")
 
@@ -451,6 +445,7 @@ class AppContext(RuntimeAccess):
         """Accept background work again, against the rebuilt storage stack."""
 
         self.task_service.resume()
+        self.archive_warmup_coordinator.resume_library()
         logger.info("Resumed after storage transition")
 
     def move_storage_to_parent(self, target_parent: Path) -> None:
@@ -646,21 +641,9 @@ class AppContext(RuntimeAccess):
         )
         paths = _create_path_service(self.config, self.settings_store, settings)
         paths.ensure_directories()
-        pool = _create_archive_extraction_cache(paths, settings, self.path_issue_service)
-        archive_service = ArchiveImageService(
-            extraction_pool=pool, session_temp_root=paths.session_temp_root
-        )
-        session_service = ReaderSessionService(
-            archive_service, self.pdf_image_service, path_issue_service=self.path_issue_service
-        )
-        reader = replace(
-            self.reader_runtime,
-            paths=paths,
-            archive_extraction_pool=pool,
-            archive_image_service=archive_service,
-            reader_session_service=session_service,
-            cache_service=self.reader_runtime.cache_service.with_archive_pool(pool),
-        )
+        # Storage changes only retire the Library. The application cache and
+        # external Readers keep one pool, lease index and warmup scheduler.
+        reader = replace(self.reader_runtime, paths=paths)
         library = create_library_runtime(reader, self.config, settings, self.settings_store)
 
         old_library = self.library_runtime
@@ -704,11 +687,10 @@ class AppContext(RuntimeAccess):
         library.tag_management_viewmodel = tag_vm
         library.main_window_viewmodel = main_vm
 
-        self.reader_runtime = reader
+        self.reader_runtime.paths = paths
         self.library_runtime = library
         self.settings = settings
         self.paths = paths
-        self.archive_warmup_coordinator.replace_session_service(session_service)
         self.cache_service.apply_cache_budgets(
             reader_page_cache_bytes=settings.reader_page_cache_mb * 1024 * 1024,
             thumbnail_cache_bytes=settings.thumbnail_cache_mb * 1024 * 1024,

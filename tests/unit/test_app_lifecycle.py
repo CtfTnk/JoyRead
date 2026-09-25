@@ -596,6 +596,15 @@ class _RecordingWarmupCoordinator:
     def reset(self) -> None:
         self._calls.append("warmup-reset")
 
+    def quiesce_library(self, _root) -> None:
+        self._calls.append("library-warmup")
+
+    def pending_library_tasks(self, _root) -> int:
+        return 0
+
+    def resume_library(self) -> None:
+        self._calls.append("library-warmup-resume")
+
 
 class _RecordingThumbnailService:
     def __init__(self, calls: list[str]) -> None:
@@ -606,15 +615,17 @@ class _RecordingThumbnailService:
 
 
 def _quiesce_context(calls: list[str], pending: int = 0) -> AppContext:
-    return _minimal_context(
+    context = _minimal_context(
         SimpleNamespace(
-        task_service=_QuiesceRecordingTaskService(calls, pending),
+        library_task_service=_QuiesceRecordingTaskService(calls, pending),
         archive_warmup_coordinator=_RecordingWarmupCoordinator(calls),
         ),
         SimpleNamespace(
         thumbnail_service=_RecordingThumbnailService(calls),
         ),
     )
+    context.paths = SimpleNamespace(storage_root=Path("library"))
+    return context
 
 
 def test_quiesce_stops_warmup_before_cancelling_tasks() -> None:
@@ -625,7 +636,7 @@ def test_quiesce_stops_warmup_before_cancelling_tasks() -> None:
 
     _quiesce_context(calls).quiesce_for_storage_transition()
 
-    assert calls == ["warmup", "task-quiesce"]
+    assert calls == ["library-warmup", "task-quiesce"]
 
 
 def test_quiesce_leaves_the_thumbnail_service_usable_until_commit() -> None:
@@ -646,18 +657,17 @@ def test_quiesce_leaves_the_thumbnail_service_usable_until_commit() -> None:
     )
 
 
-def test_committing_resets_the_warmup_coordinator_rather_than_muting_it() -> None:
-    """The drain cancelled the warmup task, which suppresses the callback that
-    would clear `_active_key`. Left set, it blocks every later warmup."""
+def test_committing_preserves_the_shared_warmup_coordinator() -> None:
+    """Library warmups drain normally; external warmups must not be reset."""
 
     calls: list[str] = []
     context = _quiesce_context(calls)
 
     context.quiesce_for_storage_transition()
-    assert calls == ["warmup", "task-quiesce"]
+    assert calls == ["library-warmup", "task-quiesce"]
 
     context.commit_storage_transition()
-    assert "warmup-reset" in calls
+    assert "warmup-reset" not in calls
 
 
 def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
@@ -667,19 +677,12 @@ def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
     context.quiesce_for_storage_transition()
     context.abandon_storage_transition()
 
-    assert calls == ["warmup", "task-quiesce", "warmup-reset", "task-resume"]
+    assert calls == ["library-warmup", "task-quiesce", "library-warmup-resume", "task-resume"]
     assert "thumbnails" not in calls, "an abandoned transition must be fully reversible"
 
 
 def test_abandoning_a_transition_leaves_warmup_able_to_run_again() -> None:
-    """The abandon path reaches the same stuck coordinator as the commit path.
-
-    `close()` withdraws consumers and the quiesce then cancels the running
-    task, suppressing the callback that clears `_active_key`. Without a reset
-    here, a drain that timed out would silently kill archive warmup for the
-    rest of the session -- while leaving everything else working, so nothing
-    would point at the cause.
-    """
+    """Abandon reopens Library admission without resetting external warmups."""
 
     calls: list[str] = []
     context = _quiesce_context(calls, pending=2)
@@ -687,7 +690,8 @@ def test_abandoning_a_transition_leaves_warmup_able_to_run_again() -> None:
     context.quiesce_for_storage_transition()
     context.abandon_storage_transition()
 
-    assert "warmup-reset" in calls
+    assert "library-warmup-resume" in calls
+    assert "warmup-reset" not in calls
 
 
 class _RecordingLease:

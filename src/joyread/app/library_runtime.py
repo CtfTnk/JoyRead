@@ -36,6 +36,26 @@ from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewMode
 logger = logging.getLogger(__name__)
 
 
+def library_construction_settings(settings: AppSettings) -> tuple[object, ...]:
+    """Settings captured by Library services or the first shelf snapshot.
+
+    Window geometry, language and Reader preferences don't invalidate a loaded
+    Library. Shared cache budgets are applied separately when it is adopted.
+    Keep this key aligned with the settings consumed by the factory below.
+    """
+
+    return (
+        archive_open_limits_from_settings(settings),
+        settings.hash_algorithm,
+        settings.verify_imported_file_integrity,
+        normalize_canonical_import_policy(settings.canonical_import_policy),
+        settings.shelf_sort_field, settings.shelf_sort_ascending,
+        settings.shelf_file_filter, settings.shelf_view_mode,
+        settings.sidebar_collapsed_sections,
+        settings.show_hidden_collection, settings.hidden_space_password_hash,
+    )
+
+
 @dataclass
 class LibraryRuntime:
     """Everything that requires the Library database or managed thumbnails."""
@@ -154,7 +174,7 @@ def create_library_runtime(
         shelf = ShelfViewModel(
             library_service,
             thumbnails,
-            reader.task_service,
+            reader.library_task_service,
             cover_size=(Theme.detail_cover_width, Theme.detail_cover_height),
             settings=settings,
             settings_store=settings_store,

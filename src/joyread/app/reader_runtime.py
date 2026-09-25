@@ -1,7 +1,7 @@
 """Reader-owned services, constructible without Library repositories or SQLite.
 
-The factory has no dependency on AppContext. Normal startup constructs it
-before the Library shell; intent-based cold Reader routing remains P5 work.
+The factory has no dependency on AppContext. External Readers share its
+application services across Library loads and storage transitions.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ from joyread.infrastructure.filesystem.path_service import PathService, Writable
 from joyread.infrastructure.filesystem.windows_long_paths import WindowsLongPathCapability
 from joyread.infrastructure.pdf_image_service import PdfImageService
 from joyread.infrastructure.pdf_document_thread import shutdown_pdf_thread
-from joyread.infrastructure.qt_task_service import TaskService
+from joyread.infrastructure.qt_task_service import TaskScope, TaskService
 from joyread.infrastructure.reader_image_decoder import qimage_frame_bytes
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
@@ -134,6 +134,7 @@ class ReaderRuntime:
     path_issue_service: PathIssueService
     path_issue_viewmodel: PathIssueViewModel
     task_service: TaskService
+    library_task_service: TaskScope
     archive_extraction_pool: ArchiveExtractionCache
     archive_image_service: ArchiveImageService
     pdf_image_service: PdfImageService
@@ -148,6 +149,11 @@ class ReaderRuntime:
 
     def managed_cache_key(self, file_id: str) -> str:
         return managed_document_cache_key(file_id, self.paths.storage_root)
+
+    def uses_library_storage(self, source_path: Path, *, managed: bool) -> bool:
+        """A managed port or a file under the Library participates in its drain."""
+
+        return managed or source_path.resolve().is_relative_to(self.paths.storage_root)
 
     def close(self) -> None:
         """Release a standalone Reader runtime in producer-to-engine order."""
@@ -209,6 +215,7 @@ def create_reader_runtime(
             path_issue_service=path_issue_service,
             path_issue_viewmodel=PathIssueViewModel(),
             task_service=task_service,
+            library_task_service=task_service.create_scope(),
             archive_extraction_pool=archive_pool,
             archive_image_service=archive_service,
             pdf_image_service=pdf_service,

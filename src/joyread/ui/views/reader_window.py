@@ -91,6 +91,10 @@ class ReaderWindow(QMainWindow):
         self.panel_scrim = self.shell.panel_scrim
         self.viewmodel = self.shell.viewmodel
 
+    @property
+    def depends_on_library(self) -> bool:
+        return self.shell.depends_on_library
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.shell.handle_key_press(event):
             return

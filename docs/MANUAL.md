@@ -446,6 +446,8 @@ JoyRead closes Readers opened from the Library first, saving your place in each,
 then moves the files. Independently opened Readers stay open. **Select Existing Library** points
 JoyRead at a library folder that already exists — useful if you moved it by hand
 or want to switch between two.
+Readers using managed Library files or its saved progress also close during
+this operation, even if Open With previously activated their existing window.
 
 ## Encrypted archives
 

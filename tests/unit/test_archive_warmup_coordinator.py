@@ -121,6 +121,51 @@ def test_archive_warmup_deduplicates_consumers_and_runs_one_source_at_a_time(tmp
     assert ready == ["detail", "reader"]
 
 
+def test_library_drain_withdraws_managed_warmup_and_keeps_external_queue(tmp_path):
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(sessions, tasks)
+    root = tmp_path / "library"
+    ready = []
+    coordinator.acquire(root / "managed.cb7", "managed", document_cache_key="file:managed",
+                        on_ready=lambda: ready.append("managed"))
+    coordinator.acquire(tmp_path / "external.cb7", "external", document_cache_key="external:sha256:one",
+                        on_ready=lambda: ready.append("external"))
+    coordinator.quiesce_library(root)
+    assert coordinator.pending_library_tasks(root) == 1
+    # Library jobs finish through normal callbacks so the single warmup slot
+    # advances to external work without resetting the shared coordinator.
+    tasks.run(0)
+    assert sessions.calls[0][4] is True
+    assert coordinator.pending_library_tasks(root) == 0
+    assert len(tasks.tasks) == 2
+    tasks.run(1)
+    assert sessions.calls[1][4] is False
+    assert ready == ["external"]
+    coordinator.acquire(root / "blocked.cb7", "blocked", document_cache_key="file:blocked",
+                        on_ready=lambda: ready.append("blocked"))
+    assert len(tasks.tasks) == 2
+    coordinator.resume_library()
+    coordinator.acquire(root / "new.cb7", "new", document_cache_key="file:new",
+                        on_ready=lambda: ready.append("new"))
+    tasks.run(2)
+    assert ready == ["external", "new"]
+
+
+def test_library_drain_neither_waits_for_nor_cancels_external_warmup(tmp_path):
+    tasks = _ManualTaskService()
+    sessions = _FakeSessionService()
+    coordinator = ArchiveWarmupCoordinator(sessions, tasks)
+    ready = []
+    coordinator.acquire(tmp_path / "external.cb7", "external", document_cache_key="external:sha256:one",
+                        on_ready=lambda: ready.append("external"))
+    coordinator.quiesce_library(tmp_path / "library")
+    assert coordinator.pending_library_tasks(tmp_path / "library") == 0
+    tasks.run(0)
+    assert sessions.calls[0][4] is False
+    assert ready == ["external"]
+
+
 def test_archive_warmup_invalidation_waits_for_active_worker_before_replacement(tmp_path: Path) -> None:
     first = tmp_path / "first.cbr"
     second = tmp_path / "second.cb7"

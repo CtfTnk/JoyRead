@@ -105,6 +105,11 @@ class ReaderShellWidget(ReaderShellBase):
         )
 
         app_settings = reader.reload_settings()
+        # OS promotion changes window ownership, not a managed document's
+        # dependency on Library storage. Such work must join the Library drain.
+        self.depends_on_library = reader.uses_library_storage(
+            self._source_path, managed=book is not None
+        )
         logger.info(
             "ReaderShellWidget init: path=%s book=%s embedded=%s",
             self._source_path,
@@ -124,7 +129,7 @@ class ReaderShellWidget(ReaderShellBase):
                     getattr(app_settings, "purge_encrypted_cache_on_close", True)
                 ),
             ),
-            reader.task_service,
+            reader.library_task_service if self.depends_on_library else reader.task_service,
             reader.cache_service.issue_reader_namespace(),
             library_port if book is not None else None,
             book_uuid=book.uuid if book is not None else None,

@@ -553,7 +553,7 @@ def test_app_context_owns_one_reader_and_one_library_runtime(tmp_path, monkeypat
         context.close()
 
 
-def test_storage_rebuild_commits_both_runtimes_and_keeps_viewmodels(tmp_path, monkeypatch) -> None:
+def test_storage_rebuild_preserves_reader_runtime_and_library_viewmodels(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     context = create_app_context()
     old_reader = context.reader_runtime
@@ -563,7 +563,7 @@ def test_storage_rebuild_commits_both_runtimes_and_keeps_viewmodels(tmp_path, mo
     cache = context.reader_runtime.cache_service.reader_page_cache
     try:
         context.reload_storage_from_settings()
-        assert context.reader_runtime is not old_reader
+        assert context.reader_runtime is old_reader
         assert context.library_runtime is not old_library
         assert context.shelf_viewmodel is shelf
         assert context.settings_viewmodel is settings

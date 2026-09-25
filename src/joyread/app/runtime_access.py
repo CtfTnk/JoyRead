@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from joyread.core.services.thumbnail_service import ThumbnailService
     from joyread.infrastructure.database import DatabaseInterpreter
     from joyread.infrastructure.pdf_image_service import PdfImageService
-    from joyread.infrastructure.qt_task_service import TaskService
+    from joyread.infrastructure.qt_task_service import TaskScope
     from joyread.infrastructure.resources.resource_loader import ResourceLoader
     from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
     from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
@@ -59,7 +59,7 @@ class RuntimeAccess:
     archive_image_service: ArchiveImageService = _OwnedField("reader_runtime", "archive_image_service")  # type: ignore[assignment]
     reader_session_service: ReaderSessionService = _OwnedField("reader_runtime", "reader_session_service")  # type: ignore[assignment]
     pdf_image_service: PdfImageService = _OwnedField("reader_runtime", "pdf_image_service")  # type: ignore[assignment]
-    task_service: TaskService = _OwnedField("reader_runtime", "task_service")  # type: ignore[assignment]
+    task_service: TaskScope = _OwnedField("reader_runtime", "library_task_service")  # type: ignore[assignment]
     hash_service: HashService = _OwnedField("reader_runtime", "hash_service")  # type: ignore[assignment]
     archive_warmup_coordinator: ArchiveWarmupCoordinator = _OwnedField("reader_runtime", "archive_warmup_coordinator")  # type: ignore[assignment]
     thumbnail_renderer: QtThumbnailRenderer = _OwnedField("reader_runtime", "thumbnail_renderer")  # type: ignore[assignment]

@@ -11,7 +11,7 @@ from threading import Event
 from time import perf_counter
 from uuid import uuid4
 
-from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
+from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.archive import ArchiveOpenLimits
 from joyread.core.diagnostics import cache_identity_kind
 from joyread.core.reader import ReaderSessionService
@@ -54,6 +54,7 @@ class ArchiveWarmupCoordinator:
         #: warmup slot until it actually exits, so a reset cannot overlap two
         #: whole-document extractions.
         self._retired: _WarmupState | None = None
+        self._quiesced_storage_root: Path | None = None
 
     def acquire(
         self,
@@ -77,6 +78,10 @@ class ArchiveWarmupCoordinator:
             ),
         )
         cache_key = document_cache_key or f"session:{uuid4().hex}"
+        if self._quiesced_storage_root is not None and self._uses_library(
+            Path(source_path), cache_key, self._quiesced_storage_root
+        ):
+            return
         key = self._source_key(cache_key, effective_limits)
         state = self._states.get(key)
         if state is None:
@@ -159,6 +164,39 @@ class ArchiveWarmupCoordinator:
                     "count": affected,
                 },
             )
+
+    @staticmethod
+    def _uses_library(path: Path, cache_key: str, storage_root: Path) -> bool:
+        return cache_key.startswith(("file:", "book:")) or path.is_relative_to(storage_root)
+
+    def quiesce_library(self, storage_root: Path) -> None:
+        """Withdraw Library demand without cancelling unrelated external work.
+
+        Warmup tasks retain their completion callbacks so the single extraction
+        slot is released normally. The storage drain waits for these jobs too.
+        """
+
+        self._quiesced_storage_root = storage_root
+        for state in self._states.values():
+            if self._uses_library(state.path, state.document_cache_key, storage_root):
+                state.callbacks.clear()
+
+    def pending_library_tasks(self, storage_root: Path) -> int:
+        pending = sum(
+            state.handle is not None
+            and state.handle.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+            and self._uses_library(state.path, state.document_cache_key, storage_root)
+            for state in self._states.values()
+        )
+        retired = self._retired
+        if (retired is not None and not retired.exited.is_set()
+                and self._uses_library(retired.path, retired.document_cache_key, storage_root)):
+            pending += 1
+        return pending
+
+    def resume_library(self) -> None:
+        self._quiesced_storage_root = None
+        self._start_next()
 
     def reset(self) -> None:
         """Forget every warmup, including one whose task never reported back.
