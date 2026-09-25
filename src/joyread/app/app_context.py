@@ -910,11 +910,13 @@ def create_app_context(
     config: AppConfig | None = None,
     settings_store: SettingsStore | None = None,
     defer_library: bool = False,
+    reader_runtime: ReaderRuntime | None = None,
 ) -> AppContext:
     config = config or AppConfig()
-    settings_store = settings_store or create_environment_settings_store(
-        config.app_name,
-        config.app_author,
+    settings_store = settings_store or (
+        reader_runtime.settings_store
+        if reader_runtime is not None
+        else create_environment_settings_store(config.app_name, config.app_author)
     )
     with operation_scope(
         logger,
@@ -922,7 +924,9 @@ def create_app_context(
         category="startup",
         fields={"worker_count": config.max_background_workers},
     ):
-        return _create_app_context_bound(config, settings_store, recovery_prompt, defer_library)
+        return _create_app_context_bound(
+            config, settings_store, recovery_prompt, defer_library, reader_runtime
+        )
 
 
 def _create_app_context_bound(
@@ -930,11 +934,15 @@ def _create_app_context_bound(
     settings_store: SettingsStore,
     recovery_prompt: RecoveryPrompt | None,
     defer_library: bool,
+    reader_runtime: ReaderRuntime | None,
 ) -> AppContext:
     # The eager helper retains startup recovery for embedded callers. The
     # production deferred path only reads settings here; its Library gate
     # runs later on TaskService after the first window exists.
-    path_issue_service = PathIssueService(WindowsLongPathCapability())
+    path_issue_service = (
+        reader_runtime.path_issue_service
+        if reader_runtime is not None else PathIssueService(WindowsLongPathCapability())
+    )
     storage_validation_service = StorageValidationService(path_issue_service=path_issue_service)
     storage_migration_service = StorageMigrationService(settings_store, storage_validation_service)
     storage_recovery_service = StorageRecoveryService(
@@ -942,7 +950,7 @@ def _create_app_context_bound(
     )
     # Recovery can display a dialog before the paths/database exist. This
     # read-only preference lookup preserves the service's first-run sentinel.
-    resources = ResourceLoader()
+    resources = reader_runtime.resources if reader_runtime is not None else ResourceLoader()
     locale_service.init(
         resources.locale_dir(), settings_store.locales_dir,
         settings_store.read_language_preference(),
@@ -952,21 +960,26 @@ def _create_app_context_bound(
     paths = _create_path_service(config, settings_store, settings)
     if not defer_library:
         paths.ensure_directories()
-    resources = ResourceLoader()
     # Initialise the locale service before any UI is constructed.
     locale_service.init(
         bundled_dir=resources.locale_dir(),
         user_dir=settings_store.locales_dir if settings_store.locales_dir.exists() else None,
         language=settings.language,
     )
-    reader_runtime = create_reader_runtime(
-        config,
-        settings,
-        settings_store,
-        paths=paths,
-        resources=resources,
-        path_issue_service=path_issue_service,
-    )
+    if reader_runtime is None:
+        reader_runtime = create_reader_runtime(
+            config,
+            settings,
+            settings_store,
+            paths=paths,
+            resources=resources,
+            path_issue_service=path_issue_service,
+        )
+    else:
+        # A cold external Reader may already be open. Reuse its task pool,
+        # sessions, caches and preferences when Library is requested later.
+        reader_runtime.paths = paths
+        reader_runtime.preferences.apply(settings)
     if defer_library:
         # Only Reader-owned work is built before the Library window paints.
         # Database validation, migration and the first query run in a worker.
@@ -987,6 +1000,7 @@ def _create_app_context_bound(
         )
         viewmodel.prefetch_window_changed.connect(reader_runtime.preferences.refresh)
         viewmodel.archive_open_limits_changed.connect(reader_runtime.preferences.refresh)
+        viewmodel.window_sizes_reset.connect(reader_runtime.preferences.notify_window_sizes_reset)
         viewmodel.cache_budgets_changed.connect(context.apply_cache_settings)
         viewmodel.clear_archive_pool_requested.connect(context.clear_archive_extraction_pool)
         viewmodel.set_archive_pool_bytes_provider(
@@ -1007,6 +1021,7 @@ def _create_app_context_bound(
     settings_viewmodel = library_runtime.settings_viewmodel
     settings_viewmodel.prefetch_window_changed.connect(reader_runtime.preferences.refresh)
     settings_viewmodel.archive_open_limits_changed.connect(reader_runtime.preferences.refresh)
+    settings_viewmodel.window_sizes_reset.connect(reader_runtime.preferences.notify_window_sizes_reset)
     reader_runtime.preferences.prefetch_changed.connect(
         lambda: settings_viewmodel.sync_page_prefetch(
             reader_runtime.preferences.page_prefetch_before,

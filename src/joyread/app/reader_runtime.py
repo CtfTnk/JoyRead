@@ -51,6 +51,7 @@ class ReaderPreferences:
         self._settings = settings
         self._store = store
         self.prefetch_changed: EventHook[None] = EventHook()
+        self.window_sizes_reset: EventHook[None] = EventHook()
 
     @property
     def settings(self) -> AppSettings:
@@ -86,6 +87,23 @@ class ReaderPreferences:
         self._settings = settings
         if old_window != (self.page_prefetch_before, self.page_prefetch_after):
             self.prefetch_changed.emit()
+
+    def window_size(self, kind: str) -> tuple[int, int] | None:
+        self.refresh()
+        return (self._settings.library_window_size if kind == "library"
+                else self._settings.reader_window_size)
+
+    def remember_window_size(self, kind: str, size: tuple[int, int]) -> None:
+        field = "library_window_size" if kind == "library" else "reader_window_size"
+        settings = (
+            self._store.update(**{field: size})
+            if self._store is not None else replace(self._settings, **{field: size})
+        )
+        self.apply(settings)
+
+    def notify_window_sizes_reset(self) -> None:
+        self.refresh()
+        self.window_sizes_reset.emit()
 
     def set_page_prefetch_before(self, value: int) -> None:
         self._set_prefetch("page_prefetch_before", value, PREFETCH_BEFORE_DEFAULT, PREFETCH_BEFORE_MAX)

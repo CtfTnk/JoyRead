@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -16,8 +19,9 @@ from joyread.app.bootstrap import create_application
 from joyread.app.launch.file_open_router import FileOpenRouter
 from joyread.app.launch.coordinator import LaunchCoordinator
 from joyread.app.launch.intent import LaunchIntent
+from joyread.app.open_policy import LibraryState
+from joyread.app.reader_runtime import ReaderRuntime
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
-from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
 from joyread.infrastructure.logging.logging_service import shutdown_logging
 from joyread.ui.dialogs.storage_recovery_dialog import StorageRecoveryDialog
 from joyread.ui.views import main_window as main_window_module
@@ -183,6 +187,117 @@ def test_direct_external_open_uses_reader_window_without_file_dialog(qtbot, tmp_
     context.close()
 
 
+def test_reader_first_cold_file_open_never_imports_library_or_opens_database(tmp_path: Path) -> None:
+    source = tmp_path / "external.cbz"
+    source.write_bytes(b"")
+    script = """
+import sys
+from pathlib import Path
+from joyread.app.bootstrap import create_application
+from joyread.app.reader_runtime import ReaderRuntime
+
+app, context, window = create_application(
+    ['joyread', sys.argv[1]], defer_library=True, reader_first=True
+)
+try:
+    assert isinstance(context, ReaderRuntime)
+    assert type(window).__name__ == 'ReaderWindow'
+    assert hasattr(window, '_window_geometry_controller')
+    assert not [name for name in sys.modules if name.startswith('joyread.infrastructure.database')]
+    assert not list(Path(sys.argv[2]).rglob('*.sqlite3'))
+finally:
+    window.close()
+    context.close()
+"""
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen", JOYREAD_RUNTIME_DIR=str(tmp_path / "profile"))
+    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(source), str(tmp_path / "profile")],
+        env=env, capture_output=True, text=True, timeout=20, check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_reader_first_buffers_file_events_until_gate_then_promotes_on_library_request(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path / "profile"))
+    first = tmp_path / "first.cbz"
+    second = tmp_path / "second.cbz"
+    first.write_bytes(b"")
+    second.write_bytes(b"")
+    gate = _ManualLaunchGate()
+    environment = bootstrap._prepare_startup_environment(["joyread"], gate=gate)
+    bootstrap._configure_primary_logging(environment)
+    runtime = bootstrap._build_primary_runtime(
+        environment, defer_library=True, reader_first=True
+    )
+    manager, coordinator = bootstrap._configure_window_management(
+        runtime, gate=gate, enable_macos_reopen=False
+    )
+    try:
+        assert not coordinator.ready
+        QApplication.sendEvent(environment.app, QFileOpenEvent(str(first)))
+        QApplication.sendEvent(environment.app, QFileOpenEvent(str(second)))
+        gate.release()
+        assert coordinator.ready
+        assert len(manager.reader_windows) == 2
+        assert manager.main_window is None
+        assert isinstance(runtime.context, ReaderRuntime)
+        assert not list((tmp_path / "profile").rglob("*.sqlite3"))
+        coordinator.submit(LaunchIntent.open_files((first, second)))
+        assert len(manager.reader_windows) == 2
+
+        reader = runtime.context
+        main = manager.show_library()
+        assert isinstance(main, MainWindow)
+        assert manager._context.reader_runtime is reader
+        qtbot.waitUntil(lambda: manager._context.library_runtime is not None, timeout=7000)
+        assert all(window.isVisible() for window in manager.reader_windows)
+    finally:
+        if manager.main_window is not None:
+            manager.main_window.close()
+        for window in manager.reader_windows:
+            window.close()
+        runtime.close()
+
+
+def test_file_events_during_failed_or_skipped_library_never_import(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    profile = tmp_path / "profile"
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(profile))
+    from joyread.infrastructure.config.settings_store import create_environment_settings_store
+
+    blocked = tmp_path / "blocked"
+    blocked.write_text("not a directory", encoding="utf-8")
+    store = create_environment_settings_store()
+    store.update(storage_location=str(blocked / "library"))
+    source = tmp_path / "external.cbz"
+    source.write_bytes(b"")
+
+    app, context, main = create_application(
+        ["joyread"], defer_library=True, reader_first=True
+    )
+    manager = app._joyread_window_manager
+    try:
+        qtbot.waitUntil(lambda: context.library_state is LibraryState.FAILED)
+        assert context.library_runtime is None
+        QApplication.sendEvent(app, QFileOpenEvent(str(source)))
+        assert len(manager.reader_windows) == 1
+        context.skip_library_load()
+        QApplication.sendEvent(app, QFileOpenEvent(str(source)))
+        assert len(manager.reader_windows) == 1
+        assert context.library_state is LibraryState.SKIPPED
+        assert not list(profile.rglob("*.sqlite3"))
+        assert manager.main_window is main
+    finally:
+        main.close()
+        for window in manager.reader_windows:
+            window.close()
+        context.close()
+
+
 def test_direct_external_open_accepts_pdf(qtbot, tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
     source = tmp_path / "direct.pdf"
@@ -303,26 +418,6 @@ def test_startup_shows_library_when_gate_resolves_with_no_document(qtbot) -> Non
 
     sink.main_windows[0].close()
     coordinator.deleteLater()
-
-
-def test_run_exits_cleanly_when_storage_recovery_is_closed(monkeypatch, tmp_path: Path) -> None:
-    calls: list[list[str] | None] = []
-
-    def cancel_startup(environment, *, defer_library):  # noqa: ANN001
-        assert defer_library
-        calls.append(environment.argv)
-        raise StorageRecoveryCancelled
-
-    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
-    monkeypatch.setattr(bootstrap, "_build_primary_runtime", cancel_startup)
-    monkeypatch.setattr(
-        bootstrap.SingleInstanceBroker,
-        "start",
-        lambda _broker, _intent: bootstrap.InstanceRole.PRIMARY,
-    )
-
-    assert bootstrap.run(["joyread"]) == 0
-    assert calls == [["joyread"]]
 
 
 def test_secondary_run_forwards_before_app_context_is_created(monkeypatch, tmp_path: Path) -> None:

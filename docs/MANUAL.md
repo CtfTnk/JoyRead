@@ -32,6 +32,9 @@ See the release notes for signing and platform validation status. On first
 launch JoyRead creates an empty library and shows the shelf.
 The Library window appears first, then loads its books in the background.
 Settings and **Actions → Open Book** remain available while it loads.
+Opening a file through your system's Open With instead starts directly in its
+Reader. It does not load the Library or import the file. You can open the
+Library later without closing that Reader.
 
 The window is split into a sidebar on the left and the shelf on the right. The
 sidebar holds **Book Shelf** (with **All**, **Recent**, **Favourites**, and

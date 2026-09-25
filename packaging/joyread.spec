@@ -190,6 +190,10 @@ for locale_code in ("zh_CN", "ja"):
     datas.append((str(translation), qt_translation_destination))
 
 hiddenimports = collect_submodules("py7zr")
+# P5 enters AppContext only after a Reader-first launch requests Library.
+# Pin the late composition boundary so frozen builds can open Library from
+# an already-running standalone Reader even if static analysis misses it.
+hiddenimports.extend(["joyread.app.app_context", "joyread.app.library_runtime"])
 if sys.platform == "darwin":
     hiddenimports.extend(["objc", "Foundation", "AppKit"])
 

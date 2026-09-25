@@ -69,6 +69,13 @@ from the bundle — PyInstaller's static analysis follows the gated import in
 `bootstrap.py` regardless of the runtime flag, so without those exclusions a
 gate-off build would ship the whole disabled feature.
 
+The production launch now starts with `ReaderRuntime` and imports `AppContext`
+only when the Library window is requested. The spec pins the late AppContext
+and LibraryRuntime modules as hidden imports. A package smoke must therefore
+exercise both a cold external file launch without Library creation and opening
+the Library later from that running Reader; seeing only the first Reader is not
+enough to prove the frozen bundle is complete.
+
 Re-enabling it later therefore means three things, not one: flip the flag,
 build in an environment with the extra installed (`pip install -e
 '.[release,epub]'`), and re-check `THIRD_PARTY_NOTICES.txt`, where the lxml

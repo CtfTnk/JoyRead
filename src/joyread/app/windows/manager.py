@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from joyread.app.app_context import AppContext
+    from joyread.app.reader_runtime import ReaderRuntime
 
 MainWindowFactory = Callable[[StandaloneReaderLauncher], QMainWindow]
 ReaderWindowFactory = Callable[[StandaloneReaderRequest], QMainWindow]
@@ -46,8 +47,9 @@ class ApplicationWindowManager(QObject):
 
     def __init__(
         self,
-        context: AppContext,
+        context: AppContext | ReaderRuntime,
         *,
+        library_context_factory: Callable[[], AppContext] | None = None,
         main_window_factory: MainWindowFactory | None = None,
         reader_window_factory: ReaderWindowFactory | None = None,
         novel_reader_provider: NovelReaderProvider | None = None,
@@ -55,6 +57,7 @@ class ApplicationWindowManager(QObject):
     ) -> None:
         super().__init__(parent)
         self._context = context
+        self._library_context_factory = library_context_factory
         self._novel_reader_provider = novel_reader_provider
         self._main_window_factory = main_window_factory or self._create_main_window
         self._reader_window_factory = reader_window_factory or self._create_reader_window
@@ -131,10 +134,15 @@ class ApplicationWindowManager(QObject):
             )
             return window
 
+        if self._library_context_factory is not None:
+            self._context = self._library_context_factory()
         window = self._main_window_factory(self.open_reader_from_library)
         self._main_window = window
         self._register_window(window, owner=None)
         present_new_window(window)
+        load_library = getattr(self._context, "start_library_load", None)
+        if callable(load_library) and getattr(self._context, "library_runtime", True) is None:
+            load_library()
         logger.info(
             "Library window created",
             extra={
@@ -260,6 +268,8 @@ class ApplicationWindowManager(QObject):
         self._activation.record_activation(window_id)
         window.installEventFilter(self)
         settings = getattr(self._context, "settings_viewmodel", None)
+        if settings is None:
+            settings = getattr(self._context, "preferences", None)
         if settings is not None and hasattr(settings, "window_size"):
             window._window_geometry_controller = WindowGeometryController(
                 window, settings, "library" if window is self._main_window else "reader"
@@ -368,7 +378,8 @@ class ApplicationWindowManager(QObject):
         page_index: int,
         progress_percent: float,
     ) -> None:
-        if getattr(self._context, "library_runtime", True) is None or not book_uuid:
+        if (getattr(self._context, "library_runtime", True) is None
+                or not book_uuid or not hasattr(self._context, "shelf_viewmodel")):
             return
         self._context.shelf_viewmodel.apply_reader_progress(
             book_uuid,

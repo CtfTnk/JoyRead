@@ -83,6 +83,8 @@ from joyread.infrastructure.logging import (
 if TYPE_CHECKING:
     # Postponed annotations keep primary runtime imports off secondary startup.
     from joyread.app.app_context import AppContext
+    from joyread.app.path_issue_bridge import PathIssueBridge
+    from joyread.app.reader_runtime import ReaderRuntime
     from joyread.app.launch.coordinator import LaunchCoordinator
     from joyread.app.launch.macos_reopen_bridge import MacOSReopenBridge
     from joyread.app.windows.manager import ApplicationWindowManager
@@ -128,18 +130,55 @@ class _StartupEnvironment:
     startup_intent: LaunchIntent | None
 
 
-@dataclass(frozen=True)
+@dataclass
 class _ApplicationRuntime:
     app: QApplication
-    context: AppContext
+    context: AppContext | ReaderRuntime
     file_open_router: FileOpenRouter
     initial_intent: LaunchIntent | None
-    deferred_library: bool = False
+    config: AppConfig
+    settings_store: SettingsStore
+    reader_first: bool = False
+    reader_path_issue_bridge: PathIssueBridge | None = None
+
+    def ensure_library_context(self) -> AppContext:
+        """Promote an existing Reader graph only when a Library is requested."""
+
+        from joyread.app.reader_runtime import ReaderRuntime
+
+        if not isinstance(self.context, ReaderRuntime):
+            return self.context
+        reader = self.context
+        bridge = self.reader_path_issue_bridge
+        if bridge is not None:
+            bridge.detach()
+        try:
+            from joyread.app.app_context import create_app_context
+
+            context = create_app_context(
+                config=self.config,
+                settings_store=self.settings_store,
+                reader_runtime=reader,
+                defer_library=True,
+            )
+        except BaseException:
+            if bridge is not None:
+                bridge.attach(reader.path_issue_service)
+            raise
+        self.context = context
+        self.reader_path_issue_bridge = None
+        return context
+
+    def close(self) -> None:
+        if self.reader_path_issue_bridge is not None:
+            self.reader_path_issue_bridge.detach()
+        self.context.close()
 
 
 def create_application(
-    argv: list[str] | None = None, *, defer_library: bool = False
-) -> tuple[QApplication, AppContext, QMainWindow]:
+    argv: list[str] | None = None, *, defer_library: bool = False,
+    reader_first: bool = False,
+) -> tuple[QApplication, AppContext | ReaderRuntime, QMainWindow]:
     """Create a deterministic immediate window for tests and embedded callers.
 
     Production uses :func:`run`, which adds single-instance arbitration and the
@@ -149,7 +188,9 @@ def create_application(
 
     environment = _prepare_startup_environment(argv, gate=ImmediateLaunchGate())
     _configure_primary_logging(environment)
-    runtime = _build_primary_runtime(environment, defer_library=defer_library)
+    runtime = _build_primary_runtime(
+        environment, defer_library=defer_library, reader_first=reader_first
+    )
     _manager, coordinator = _configure_window_management(
         runtime,
         gate=environment.gate,
@@ -207,11 +248,13 @@ def _prepare_startup_environment(
 
 
 def _build_primary_runtime(
-    environment: _StartupEnvironment, *, defer_library: bool = False
+    environment: _StartupEnvironment, *, defer_library: bool = False,
+    reader_first: bool = False,
 ) -> _ApplicationRuntime:
-    # Primary-only composition. Production defers Library validation and
-    # construction until after the first window; a secondary never enters.
-    from joyread.app.app_context import create_app_context
+    # Primary-only composition. Production begins with a Reader graph; the
+    # Library graph is requested only if launch arbitration chooses Main.
+    if reader_first and not defer_library:
+        raise ValueError("Reader-first startup requires deferred Library loading")
 
     app = environment.app
     previous_router = getattr(app, "_joyread_file_open_router", None)
@@ -225,14 +268,37 @@ def _build_primary_runtime(
         file_open_router.enqueue(path)
 
     app.setQuitOnLastWindowClosed(True)
-    context = create_app_context(
-        recovery_prompt=None if defer_library else _prompt_storage_recovery,
-        config=environment.config,
-        settings_store=environment.settings_store,
-        defer_library=defer_library,
-    )
-    if not defer_library:
-        context.paths.ensure_directories()
+    bridge = None
+    if reader_first:
+        from joyread.app.path_issue_bridge import PathIssueBridge
+        from joyread.app.reader_runtime import create_reader_runtime
+        from joyread.infrastructure.resources.resource_loader import ResourceLoader
+
+        resources = ResourceLoader()
+        store = environment.settings_store
+        locale_service.init(resources.locale_dir(), store.locales_dir,
+                            store.read_language_preference())
+        settings = store.load()
+        locale_service.init(
+            resources.locale_dir(),
+            store.locales_dir if store.locales_dir.exists() else None,
+            settings.language,
+        )
+        context = create_reader_runtime(environment.config, settings, store, resources=resources)
+        bridge = PathIssueBridge()
+        bridge.issue_detected.connect(context.path_issue_viewmodel.present)
+        bridge.attach(context.path_issue_service)
+    else:
+        from joyread.app.app_context import create_app_context
+
+        context = create_app_context(
+            recovery_prompt=None if defer_library else _prompt_storage_recovery,
+            config=environment.config,
+            settings_store=environment.settings_store,
+            defer_library=defer_library,
+        )
+        if not defer_library:
+            context.paths.ensure_directories()
     # Collect what a crashed or killed launch left in the system temp
     # directory. Deferred to a daemon thread and deliberately not part of any
     # startup gate: it touches nothing this launch needs, and the whole point
@@ -251,16 +317,20 @@ def _build_primary_runtime(
     # Romanizer warm-up is deliberately *not* started here; see
     # `_configure_window_management`.
     app.aboutToQuit.connect(_log_about_to_quit)
-    app.aboutToQuit.connect(context.close)
-    app.aboutToQuit.connect(_shutdown_application_logging)
-
-    return _ApplicationRuntime(
+    runtime = _ApplicationRuntime(
         app=app,
         context=context,
         file_open_router=file_open_router,
         initial_intent=environment.startup_intent,
-        deferred_library=defer_library,
+        config=environment.config,
+        settings_store=environment.settings_store,
+        reader_first=reader_first,
+        reader_path_issue_bridge=bridge,
     )
+    app.aboutToQuit.connect(runtime.close)
+    app.aboutToQuit.connect(_shutdown_application_logging)
+
+    return runtime
 
 
 def _create_novel_reader_provider() -> NovelReaderProvider | None:
@@ -308,6 +378,7 @@ def _configure_window_management(
 
     manager = ApplicationWindowManager(
         runtime.context,
+        library_context_factory=runtime.ensure_library_context if runtime.reader_first else None,
         novel_reader_provider=_create_novel_reader_provider(),
         parent=runtime.app,
     )
@@ -331,10 +402,6 @@ def _configure_window_management(
     if broker is not None:
         broker.set_intent_handler(_broker_intent_handler(coordinator))
     _install_first_paint_probe(runtime.app)
-    if runtime.deferred_library:
-        # Window construction and its first paint are never delayed by storage
-        # validation, migrations, or the first shelf query.
-        coordinator.settled.connect(runtime.context.start_library_load)
     coordinator.start(runtime.initial_intent)
     startup_trace.mark("window_shown")
     # After the window exists, never before it. The warm-up thread spends its
@@ -506,28 +573,8 @@ def run(argv: list[str] | None = None) -> int:
     )
     setattr(environment.app, "_joyread_single_instance_broker", broker)
     environment.app.aboutToQuit.connect(broker.dispose)
-    # An `except` clause evaluates its class at runtime, so this one cannot be
-    # deferred to TYPE_CHECKING. It is imported here rather than at module
-    # scope because a secondary has already returned by this point and must not
-    # pay for the storage-recovery module.
-    from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
-
     try:
-        runtime = _build_primary_runtime(environment, defer_library=True)
-    except StorageRecoveryCancelled:
-        log_event(
-            logger,
-            logging.INFO,
-            "process.startup_cancelled",
-            "JoyRead startup cancelled during storage recovery",
-            category="process",
-            status="cancelled",
-            reason="storage_recovery",
-        )
-        _dispose_file_open_router(environment.app)
-        broker.dispose()
-        shutdown_logging()
-        return 0
+        runtime = _build_primary_runtime(environment, defer_library=True, reader_first=True)
     except Exception as exc:
         log_event(
             logger,
