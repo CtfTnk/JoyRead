@@ -12,7 +12,10 @@ from joyread.core.archive import ArchiveImageService
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderSessionService
 from tests.support.in_memory_book_repository import InMemoryBookRepository
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionPool,
+    managed_document_cache_key,
+)
 from joyread.core.services.cache_service import BoundedByteCache, CacheService
 from joyread.core.services.thumbnail_service import (
     CoverCropState,
@@ -296,7 +299,9 @@ def test_thumbnail_source_exposes_only_managed_file_cache_identity(tmp_path: Pat
     assert legacy_source is not None
     assert legacy_source.persistent_cache_key is None
     assert managed_source is not None
-    assert managed_source.persistent_cache_key == "file:content-42"
+    assert managed_source.persistent_cache_key == managed_document_cache_key(
+        "content-42", tmp_path
+    )
     legacy_source.close()
     managed_source.close()
 

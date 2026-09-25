@@ -14,6 +14,7 @@ from typing import Protocol
 from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.diagnostics import cache_identity_kind
+from joyread.core.services.archive_extraction_pool import managed_document_cache_key
 from joyread.core.models.book import Book
 from joyread.core.reader import ReaderImageSession, ReaderSessionService
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfError
@@ -423,7 +424,7 @@ class ThumbnailService:
 
         with self._cover_variants_lock:
             self._cover_variants = None
-        document_cache_key = f"file:{file_id}"
+        document_cache_key = managed_document_cache_key(file_id, self._paths.storage_root)
         with self._session_registry_lock:
             sessions: list[ReaderImageSession] = []
             for key in tuple(self._session_entries):
@@ -626,10 +627,10 @@ class ThumbnailService:
         """Return stable content identity without stat-ing a managed file."""
 
         if book.file_id:
-            return f"file:{book.file_id}"
+            return managed_document_cache_key(book.file_id, self._paths.storage_root)
         # Mock/legacy book rows without a file id must still avoid source path
         # metadata. They receive a book-scoped cache namespace until migrated.
-        return f"book:{book.uuid}"
+        return f"book:{managed_document_cache_key(book.uuid, self._paths.storage_root)}"
 
     def _open_thumbnail_session(
         self,

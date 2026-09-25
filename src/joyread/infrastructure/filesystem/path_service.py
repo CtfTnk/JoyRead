@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 import logging
 from pathlib import Path, PurePosixPath, PureWindowsPath
+import tempfile
 
 try:
     from platformdirs import user_cache_path, user_config_path, user_data_path, user_log_path
@@ -124,11 +125,16 @@ class PathService:
         base_dir: Path | None = None,
         storage_root: Path | None = None,
         support_root: Path | None = None,
+        cache_root: Path | None = None,
+        session_temp_root: Path | None = None,
     ) -> None:
         self._app_name = app_name
         self._app_author = app_author
         self._storage_root: Path = Path()
-        self._paths = self._build_paths(base_dir, storage_root, support_root)
+        self._session_temp_root = Path(
+            session_temp_root if session_temp_root is not None else tempfile.gettempdir()
+        ).expanduser().resolve()
+        self._paths = self._build_paths(base_dir, storage_root, support_root, cache_root)
         self._resolver = StoragePathResolver(self._storage_root)
 
     @property
@@ -140,6 +146,12 @@ class PathService:
         """Root of the movable JoyRead library folder (resolver root)."""
 
         return self._storage_root
+
+    @property
+    def session_temp_root(self) -> Path:
+        """OS-managed staging location; never part of the movable Library."""
+
+        return self._session_temp_root
 
     @property
     def resolver(self) -> StoragePathResolver:
@@ -158,8 +170,16 @@ class PathService:
 
     def ensure_directories(self) -> None:
         logger.debug("Ensuring JoyRead writable directories count=%d", len(self.required_directories()))
-        for directory in self.required_directories():
-            directory.mkdir(parents=True, exist_ok=True)
+        for location, directory in self._paths.as_dict().items():
+            try:
+                directory.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                if location is not WritableLocation.CACHE:
+                    raise
+                # The archive pool degrades to uncached reads if its OS cache
+                # location is unavailable. Library startup must still work.
+                logger.warning("Optional JoyRead cache directory is unavailable: %s", directory, exc_info=True)
+                continue
             logger.debug("Writable directory ready: %s", directory)
 
     def _build_paths(
@@ -167,12 +187,11 @@ class PathService:
         base_dir: Path | None,
         storage_root: Path | None,
         support_root: Path | None,
+        cache_root: Path | None,
     ) -> AppPaths:
         if storage_root is not None:
-            # `storage_root` (library data, cache, thumbnails) and
-            # `support_root` (config + logs) are split on purpose so that the
-            # user can move their library to another disk without losing
-            # `settings.json` or the rolling log. Tests pass both equal.
+            # Library data, support files, and disposable Reader cache have
+            # independent roots. Moving a library never moves its cache.
             logger.debug(
                 "Building paths from storage_root=%s support_root=%s",
                 storage_root,
@@ -180,7 +199,11 @@ class PathService:
             )
             data_root = storage_root.expanduser().resolve()
             support = support_root.expanduser().resolve() if support_root is not None else data_root
-            cache_root = data_root / "Cache"
+            resolved_cache = (
+                cache_root.expanduser().resolve()
+                if cache_root is not None
+                else (support / "Cache" if support_root is not None else self._platform_path("cache"))
+            )
             thumbnails_root = data_root / "Thumbnails"
             config_root = support / "Config"
             logs_root = support / "Logs"
@@ -191,27 +214,27 @@ class PathService:
             logger.debug("Building development/test paths from base_dir=%s", base_dir)
             root = base_dir.expanduser().resolve()
             data_root = root
-            cache_root = root / "Cache"
+            resolved_cache = cache_root.expanduser().resolve() if cache_root is not None else root / "Cache"
             thumbnails_root = root / "Thumbnails"
             config_root = root / "Config"
             logs_root = root / "Logs"
         else:
             logger.debug("Building platform paths for app=%s author=%s", self._app_name, self._app_author)
             data_root = self._platform_path("data")
-            cache_root = self._platform_path("cache")
-            thumbnails_root = cache_root / "Thumbnails"
+            resolved_cache = cache_root.expanduser().resolve() if cache_root is not None else self._platform_path("cache")
+            thumbnails_root = data_root / "Thumbnails"
             config_root = self._platform_path("config")
             logs_root = self._platform_path("logs")
 
         # `data_root` is the storage root: in every real run it is the movable
-        # JoyRead library folder that holds Books/Database/Thumbnails/Cache/…
+        # JoyRead library folder that holds Books/Database/Thumbnails/…
         # The resolver converts managed paths relative to exactly this root.
         self._storage_root = data_root
         return AppPaths(
             books=data_root / "Books",
             database=data_root / "Database",
             thumbnails=thumbnails_root,
-            cache=cache_root,
+            cache=resolved_cache,
             logs=logs_root,
             plugins=data_root / "Plugins",
             config=config_root,

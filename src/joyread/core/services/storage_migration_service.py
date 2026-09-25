@@ -131,7 +131,15 @@ class StorageMigrationService:
         try:
             if old_root.exists():
                 logger.info("Copying current library into staging %s", staging)
-                shutil.copytree(old_root, staging)
+                # Old releases kept disposable Reader cache inside the Library.
+                # Copying it can add gigabytes to Move without preserving data.
+                shutil.copytree(
+                    old_root,
+                    staging,
+                    ignore=lambda directory, names: (
+                        {"Cache"} if Path(directory) == old_root and "Cache" in names else set()
+                    ),
+                )
             else:
                 staging.mkdir(parents=True, exist_ok=True)
 

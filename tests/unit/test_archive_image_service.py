@@ -1627,6 +1627,21 @@ def test_a_failed_open_gives_back_its_pool_pin_and_spill_directory(
     assert archive_staging.create_spill_directory().parent == spill_root
 
 
+def test_reader_spill_uses_the_supplied_session_temp_root(tmp_path: Path) -> None:
+    temp_root = tmp_path / "session-temp"
+    temp_root.mkdir()
+    source = tmp_path / "external.cbz"
+    _write_zip(source, {"001.png": _png_bytes((8, 8))})
+    service = ArchiveImageService(session_temp_root=temp_root)
+
+    session = service.open(source)
+    try:
+        assert len(list(temp_root.iterdir())) == 1
+    finally:
+        session.close()
+    assert list(temp_root.iterdir()) == []
+
+
 def test_a_session_that_is_dropped_still_removes_its_spilled_archives(
     tmp_path: Path, monkeypatch
 ) -> None:

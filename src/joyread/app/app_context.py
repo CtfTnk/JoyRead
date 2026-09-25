@@ -427,7 +427,9 @@ class AppContext(RuntimeAccess):
         paths = _create_path_service(self.config, self.settings_store, settings)
         paths.ensure_directories()
         pool = _create_archive_extraction_cache(paths, settings, self.path_issue_service)
-        archive_service = ArchiveImageService(extraction_pool=pool)
+        archive_service = ArchiveImageService(
+            extraction_pool=pool, session_temp_root=paths.session_temp_root
+        )
         session_service = ReaderSessionService(
             archive_service, self.pdf_image_service, path_issue_service=self.path_issue_service
         )
@@ -528,7 +530,9 @@ class AppContext(RuntimeAccess):
             # Stage the new strategy's dependent services before retiring the
             # old pool. A failure leaves the current Reader and Library usable.
             pool = _create_archive_extraction_cache(self.paths, settings, self.path_issue_service)
-            archive = ArchiveImageService(extraction_pool=pool)
+            archive = ArchiveImageService(
+                extraction_pool=pool, session_temp_root=self.paths.session_temp_root
+            )
             session = ReaderSessionService(
                 archive, self.pdf_image_service, path_issue_service=self.path_issue_service
             )
@@ -812,6 +816,7 @@ def _create_path_service(config: AppConfig, settings_store: SettingsStore, setti
         config.app_author,
         storage_root=Path(settings.storage_location),
         support_root=settings_store.support_root,
+        cache_root=settings_store.cache_root,
     )
 
 

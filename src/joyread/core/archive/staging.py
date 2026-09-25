@@ -47,14 +47,14 @@ _sweep_lock = Lock()
 _sweep_started = False
 
 
-def create_spill_directory() -> Path:
+def create_spill_directory(root: Path | None = None) -> Path:
     """A directory for nested archives, stamped with the process that owns it.
 
     The process id is what lets the sweep tell a tree abandoned by a crashed
     launch from one a running JoyRead is still reading out of.
     """
 
-    return Path(tempfile.mkdtemp(prefix=f"{_SPILL_PREFIX}{os.getpid()}-"))
+    return Path(tempfile.mkdtemp(prefix=f"{_SPILL_PREFIX}{os.getpid()}-", dir=root))
 
 
 def sweep_orphaned_staging(
@@ -102,7 +102,7 @@ def sweep_orphaned_staging(
     return removed
 
 
-def sweep_orphaned_staging_in_background() -> None:
+def sweep_orphaned_staging_in_background(root: Path | None = None) -> None:
     """Run the sweep once per process, off whatever thread starts the app."""
 
     global _sweep_started
@@ -112,14 +112,15 @@ def sweep_orphaned_staging_in_background() -> None:
         _sweep_started = True
     Thread(
         target=_sweep_quietly,
+        args=(root,),
         name="joyread-staging-sweep",
         daemon=True,
     ).start()
 
 
-def _sweep_quietly() -> None:
+def _sweep_quietly(root: Path | None) -> None:
     try:
-        sweep_orphaned_staging()
+        sweep_orphaned_staging(root)
     except Exception:
         # Housekeeping must never be the reason a launch reports a problem.
         logger.warning("Archive staging sweep failed", exc_info=True)

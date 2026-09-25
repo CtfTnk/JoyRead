@@ -450,6 +450,7 @@ class ArchiveImageService:
         *,
         extraction_pool: ArchiveExtractionCache | None = None,
         backend_resolver: ExtractionBackendResolver | None = None,
+        session_temp_root: Path | None = None,
     ) -> None:
         if extraction_pool is not None and page_cache_dir is not None:
             raise ValueError("Pass either extraction_pool or page_cache_dir, not both.")
@@ -461,6 +462,7 @@ class ArchiveImageService:
             self._page_cache = ArchiveExtractionPool(Path(page_cache_dir), max_bytes=1 << 40)
         else:
             self._page_cache = ArchiveExtractionPool(None, max_bytes=0)
+        self._session_temp_root = Path(session_temp_root) if session_temp_root is not None else None
         self._backend_resolver = backend_resolver or ExtractionBackendResolver()
         # rarfile stores executable configuration in module globals.  Keep
         # configuration and a delegated read atomic across service instances.
@@ -790,7 +792,9 @@ class ArchiveImageService:
             # scanner or a slow unmap would raise here and turn a finished
             # conversion into a failed one.
             with TemporaryDirectory(
-                prefix="joyread-canonical-", ignore_cleanup_errors=True
+                prefix="joyread-canonical-",
+                dir=self._session_temp_root,
+                ignore_cleanup_errors=True,
             ) as workspace:
                 reader = _StagedPageReader(
                     Path(workspace),
@@ -985,7 +989,7 @@ class ArchiveImageService:
         # what makes the 7-Zip helper reachable for them at all. Ownership
         # passes to the session on success; every path out before that has to
         # remove it, or an archive that fails to open leaks its nested bytes.
-        spill_dir = create_spill_directory()
+        spill_dir = create_spill_directory(self._session_temp_root)
         try:
             context = _ScanContext(
                 password_provider=password_provider,

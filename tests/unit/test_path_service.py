@@ -46,6 +46,48 @@ def test_storage_root_matches_storage_root_mode(tmp_path: Path) -> None:
 
     assert service.storage_root == (tmp_path / "lib").resolve()
     assert service.resolver.storage_root == (tmp_path / "lib").resolve()
+    assert service.paths.cache == tmp_path / "support" / "Cache"
+    assert service.paths.thumbnails == tmp_path / "lib" / "Thumbnails"
+    assert not service.paths.cache.is_relative_to(service.storage_root)
+
+
+def test_storage_root_without_support_uses_platform_cache(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(
+        PathService, "_platform_path", lambda self, kind: tmp_path / kind
+    )
+    service = PathService(storage_root=tmp_path / "library")
+
+    assert service.paths.cache == tmp_path / "cache"
+    assert not service.paths.cache.is_relative_to(service.storage_root)
+
+
+def test_unavailable_cache_does_not_prevent_library_directories(tmp_path: Path) -> None:
+    cache_root = tmp_path / "unavailable-cache"
+    cache_root.write_text("file, not directory", encoding="utf-8")
+    service = PathService(
+        storage_root=tmp_path / "lib",
+        support_root=tmp_path / "support",
+        cache_root=cache_root,
+    )
+
+    service.ensure_directories()
+
+    assert service.paths.books.is_dir()
+    assert service.paths.database.is_dir()
+    assert cache_root.is_file()
+
+
+def test_platform_paths_keep_covers_with_library_and_cache_separate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        PathService, "_platform_path", lambda self, kind: tmp_path / kind
+    )
+    service = PathService(session_temp_root=tmp_path / "session")
+
+    assert service.paths.thumbnails == tmp_path / "data" / "Thumbnails"
+    assert service.paths.cache == tmp_path / "cache"
+    assert service.session_temp_root == tmp_path / "session"
 
 
 def test_resolve_builds_absolute_under_location(tmp_path: Path) -> None:

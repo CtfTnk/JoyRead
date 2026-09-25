@@ -429,13 +429,16 @@ On macOS:
 | --- | --- |
 | Library (books, covers, database) | `~/Library/Application Support/JoyRead-Library` |
 | Settings and logs | `~/Library/Application Support/JoyRead` |
+| Rebuildable archive page cache | `~/Library/Caches/JoyRead` |
 
 Books you opened without importing are not here — they stay wherever you keep
 them.
 
-**Library Location** in Settings → Privacy → Storage moves the whole library
-somewhere else, an external drive included. JoyRead closes any open readers first, saving
-your place in each, then moves the files. **Select Existing Library** points
+**Library Location** in Settings → Privacy → Storage moves your books, covers,
+database, and backups somewhere else, an external drive included. The page
+cache stays in the application's cache location and is rebuilt when needed.
+JoyRead closes any open readers first, saving your place in each, then moves the
+files. **Select Existing Library** points
 JoyRead at a library folder that already exists — useful if you moved it by hand
 or want to switch between two.
 
@@ -487,9 +490,10 @@ encrypted ZIP. Set **Convert archives on import** to *Always* and re-import it,
 and check that the extraction pool has room.
 
 **Something is inconsistent.** Settings → General → **Verify Library & Clean
-Cache** checks the whole managed library — changed files, duplicates, missing
-files, orphaned files, reclaimable cache — shows you what it found, and asks
-before changing anything.
+Cache** checks the selected library — changed files, duplicates, missing files,
+orphaned files, and unused generated covers — shows you what it found, and asks
+before changing anything. The shared archive page cache has its own size limit
+and can be cleared in Settings → Archive & Cache.
 
 **EPUB does not open.** EPUB support is written but switched off until it is
 finished. See the Known limitations section of the

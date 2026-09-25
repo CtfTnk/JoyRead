@@ -24,9 +24,9 @@ from joyread.infrastructure.config.storage_names import LIBRARY_DIRECTORY_NAME
 from joyread.infrastructure.logging import operation_scope
 
 try:
-    from platformdirs import user_config_path, user_data_path
+    from platformdirs import user_cache_path, user_config_path, user_data_path
 except ImportError:  # pragma: no cover - platformdirs is a project dependency.
-    user_config_path = user_data_path = None
+    user_cache_path = user_config_path = user_data_path = None
 
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,7 @@ class SettingsStore:
         app_author: str = "JoyRead",
         support_root: Path | None = None,
         default_storage_root: Path | None = None,
+        cache_root: Path | None = None,
     ) -> None:
         self._app_name = app_name
         self._app_author = app_author
@@ -130,6 +131,17 @@ class SettingsStore:
         self._default_storage_root = (
             default_storage_root or self._default_storage_root_for_environment()
         ).expanduser().resolve()
+        if cache_root is not None:
+            resolved_cache_root = cache_root
+        elif support_root is not None:
+            resolved_cache_root = self._support_root / "Cache"
+        elif _looks_like_source_checkout(Path.cwd()):
+            resolved_cache_root = Path.cwd() / ".joyread_cache"
+        elif user_cache_path is not None:
+            resolved_cache_root = Path(user_cache_path(app_name, app_author))
+        else:
+            resolved_cache_root = Path.home() / ".cache" / app_name
+        self._cache_root = resolved_cache_root.expanduser().resolve()
 
     @property
     def support_root(self) -> Path:
@@ -140,6 +152,12 @@ class SettingsStore:
         """The app's own default JoyRead library root (recovery's last resort)."""
 
         return self._default_storage_root
+
+    @property
+    def cache_root(self) -> Path:
+        """Stable application cache, independent of the selected Library."""
+
+        return self._cache_root
 
     @property
     def config_dir(self) -> Path:
@@ -354,6 +372,7 @@ def create_environment_settings_store(
         app_author,
         support_root=root / ".joyread_support",
         default_storage_root=root / LIBRARY_DIRECTORY_NAME,
+        cache_root=root / ".joyread_cache",
     )
 
 

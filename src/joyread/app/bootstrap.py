@@ -234,7 +234,7 @@ def _build_primary_runtime(environment: _StartupEnvironment) -> _ApplicationRunt
     # startup cost a secondary process pays.
     from joyread.core.archive.staging import sweep_orphaned_staging_in_background
 
-    sweep_orphaned_staging_in_background()
+    sweep_orphaned_staging_in_background(context.paths.session_temp_root)
     startup_trace.mark("context_ready")
 
     app.setWindowIcon(QIcon(str(context.resources.app_icon_path())))

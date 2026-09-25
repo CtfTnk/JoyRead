@@ -39,7 +39,6 @@ REQUIRED_SUBDIRECTORIES: tuple[str, ...] = (
     WritableLocation.BOOKS,
     WritableLocation.DATABASE,
     WritableLocation.THUMBNAILS,
-    WritableLocation.CACHE,
     WritableLocation.PLUGINS,
     WritableLocation.BACKUPS,
 )

@@ -26,6 +26,7 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionCache,
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
+    managed_document_cache_key,
 )
 from joyread.core.services.cache_service import ReaderCacheService
 from joyread.core.services.hash_service import HashService
@@ -127,6 +128,9 @@ class ReaderRuntime:
     def reload_settings(self) -> AppSettings:
         return self.preferences.refresh()
 
+    def managed_cache_key(self, file_id: str) -> str:
+        return managed_document_cache_key(file_id, self.paths.storage_root)
+
     def close(self) -> None:
         """Release a standalone Reader runtime in producer-to-engine order."""
 
@@ -150,8 +154,8 @@ def create_reader_runtime(
 ) -> ReaderRuntime:
     """Build Reader services without constructing a Library database.
 
-    The current storage-rooted extraction pool is preserved until P3 moves
-    reader caches to an application cache root.
+    Only settings and the application cache are needed for an external file.
+    The selected Library path is recorded but never created by this factory.
     """
 
     paths = paths or PathService(
@@ -159,12 +163,14 @@ def create_reader_runtime(
         config.app_author,
         storage_root=Path(settings.storage_location),
         support_root=settings_store.support_root,
+        cache_root=settings_store.cache_root,
     )
-    paths.ensure_directories()
     resources = resources or ResourceLoader()
     path_issue_service = path_issue_service or PathIssueService(WindowsLongPathCapability())
     archive_pool = create_archive_extraction_cache(paths, settings, path_issue_service)
-    archive_service = ArchiveImageService(extraction_pool=archive_pool)
+    archive_service = ArchiveImageService(
+        extraction_pool=archive_pool, session_temp_root=paths.session_temp_root
+    )
     pdf_service = PdfImageService()
     session_service = ReaderSessionService(
         archive_service, pdf_service, path_issue_service=path_issue_service

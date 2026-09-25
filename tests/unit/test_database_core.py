@@ -382,7 +382,7 @@ def test_settings_config_is_outside_storage_root(tmp_path: Path) -> None:
     assert store.settings_path.is_relative_to(tmp_path / "support")
     assert not store.settings_path.is_relative_to(paths.paths.books.parent)
     assert paths.paths.config.is_relative_to(tmp_path / "support")
-    assert paths.paths.cache == tmp_path / "storage" / "Cache"
+    assert paths.paths.cache == tmp_path / "support" / "Cache"
     assert paths.paths.thumbnails == tmp_path / "storage" / "Thumbnails"
 
 
@@ -1118,6 +1118,9 @@ def _migration_service(store: SettingsStore) -> StorageMigrationService:
 def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path: Path) -> None:
     old = tmp_path / "old"
     _seed_library(old)
+    legacy_cache = old / "Cache"
+    legacy_cache.mkdir()
+    (legacy_cache / "discardable.zip").write_bytes(b"old cache")
     store = SettingsStore(support_root=tmp_path / "support", default_storage_root=old)
     store.save(AppSettings(storage_location=str(old)))
     parent = tmp_path / "elsewhere"
@@ -1128,6 +1131,7 @@ def test_move_to_parent_copies_library_updates_settings_and_removes_old(tmp_path
     assert result.target_root == target.resolve()
     assert (target / "Books" / "ab" / "book.cbz").exists()
     assert (target / "Database" / "joyread.sqlite3").exists()
+    assert not (target / "Cache").exists()
     assert store.load().storage_location == str(target.resolve())
     assert not old.exists()  # old root removed after a successful move
 

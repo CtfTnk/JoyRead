@@ -30,6 +30,7 @@ from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionCache,
     archive_cache_storage_key,
+    managed_document_cache_key,
 )
 from joyread.core.services.hash_service import HashService
 from joyread.core.models.storage_layout import (
@@ -922,7 +923,16 @@ class LibraryMaintenanceService:
         in this audit.
         """
 
-        known_keys = {archive_cache_storage_key(f"file:{item.file_id}") for item in items}
+        if not self._paths.paths.cache.is_relative_to(self._paths.storage_root):
+            # The application cache is shared by all Library locations. An
+            # audit of one Library cannot label another's bundles as orphans.
+            return []
+        known_keys = {
+            archive_cache_storage_key(
+                managed_document_cache_key(item.file_id, self._paths.storage_root)
+            )
+            for item in items
+        }
         orphans: list[LibraryAuditOrphan] = []
         zip_root = self._paths.paths.cache / ".archive_zip_bundles"
         if zip_root.exists():
@@ -1145,7 +1155,7 @@ class LibraryMaintenanceService:
         if cache is not None:
             purge = getattr(cache, "purge", None)
             if callable(purge):
-                purge(f"file:{file_id}")
+                purge(managed_document_cache_key(file_id, self._paths.storage_root))
         if self._invalidate_file_cache is not None:
             self._invalidate_file_cache(file_id)
         covers_root = self._paths.paths.thumbnails / "covers"

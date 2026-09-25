@@ -115,7 +115,8 @@ class ReaderShellWidget(ReaderShellBase):
             ReaderDocumentRuntime(
                 reader.reader_session_service,
                 document_cache_key=(
-                    f"file:{book.file_id}" if book is not None and book.file_id else None
+                    reader.managed_cache_key(book.file_id)
+                    if book is not None and book.file_id else None
                 ),
                 archive_extraction_cache=reader.archive_extraction_pool,
                 hash_service=reader.hash_service,

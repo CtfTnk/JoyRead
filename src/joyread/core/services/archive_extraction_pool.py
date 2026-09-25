@@ -50,6 +50,48 @@ from joyread.core.services.path_issue_service import PathIssueService
 
 logger = logging.getLogger(__name__)
 _MANIFEST_SCHEMA_VERSION = 3
+_SESSION_MARKER_PREFIX = ".joyread-session-"
+
+
+def _session_marker(directory: Path, book_key: str) -> Path:
+    return directory / f"{_SESSION_MARKER_PREFIX}{book_key}"
+
+
+def _write_session_marker(directory: Path | None, book_key: str) -> bool:
+    """Persist the privacy promise before extracted plaintext can be cached."""
+
+    if directory is None:
+        return True
+    marker = _session_marker(directory, book_key)
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return marker.is_file() and not marker.is_symlink()
+    except OSError as exc:
+        logger.warning("Archive cache could not persist a session privacy marker: %s", exc)
+        return False
+    os.close(descriptor)
+    return True
+
+
+def _remove_session_marker(directory: Path | None, book_key: str) -> None:
+    if directory is None:
+        return
+    try:
+        _session_marker(directory, book_key).unlink(missing_ok=True)
+    except OSError as exc:
+        logger.warning("Archive cache could not remove a session privacy marker: %s", exc)
+
+
+def _marked_session_keys(entries: list[Path]) -> set[str]:
+    return {
+        entry.name[len(_SESSION_MARKER_PREFIX):]
+        for entry in entries
+        if entry.name.startswith(_SESSION_MARKER_PREFIX)
+        and entry.is_file()
+        and not entry.is_symlink()
+    }
 
 
 class ArchiveExtractionCache(Protocol):
@@ -221,6 +263,7 @@ class ArchiveExtractionPool(_UsageNotifier):
         #: Documents whose bytes must not outlive their last live lease --
         #: today, encrypted archives when the privacy setting asks for it.
         self._session_scoped: set[str] = set()
+        self._uncacheable_session_keys: set[str] = set()
         self._strict_eviction_pending = False
 
     @property
@@ -254,6 +297,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         if book_key is None:
             return None
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return None
             entry = self._index.get(book_key)
             if entry is None or not entry.path.exists():
                 if entry is not None:
@@ -317,6 +362,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         if not wanted:
             return frozenset()
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return frozenset()
             entry = self._index.get(book_key)
             if entry is None or not entry.path.exists():
                 if entry is not None:
@@ -394,6 +441,8 @@ class ArchiveExtractionPool(_UsageNotifier):
             _identity_kind(document_cache_key),
         )
         with self._lock:
+            if not self._can_write_locked(book_key):
+                return False
             entry = self._index.get(book_key)
             if entry is not None and not entry.path.exists():
                 self._forget_locked(book_key)
@@ -561,6 +610,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         if book_key is None:
             return False
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return False
             self._building[book_key] = self._building.get(book_key, 0) + 1
         return True
 
@@ -605,7 +656,25 @@ class ArchiveExtractionPool(_UsageNotifier):
         if book_key is None:
             return
         with self._lock:
+            if not _write_session_marker(self._directory, book_key):
+                # Without an on-disk marker a crash could leave decrypted
+                # pages in the persistent pool. Read directly for this session.
+                self._uncacheable_session_keys.add(book_key)
+                self._purge_locked(book_key)
             self._session_scoped.add(book_key)
+
+    def _can_write_locked(self, book_key: str) -> bool:
+        if book_key in self._uncacheable_session_keys:
+            return False
+        if book_key in self._session_scoped and not _write_session_marker(
+            self._directory, book_key
+        ):
+            # The OS may have removed the cache root during this Reader's
+            # lifetime. Refuse new plaintext without a fresh crash marker.
+            self._uncacheable_session_keys.add(book_key)
+            self._purge_locked(book_key)
+            return False
+        return True
 
     def _purge_locked(self, book_key: str) -> None:
         # The disk sweep runs first so ``_forget_locked`` finds nothing left to
@@ -634,6 +703,12 @@ class ArchiveExtractionPool(_UsageNotifier):
         if source_key == target_key:
             return True
         with self._lock:
+            if source_key in self._uncacheable_session_keys:
+                return False
+            if source_key in self._session_scoped and not _write_session_marker(
+                self._directory, target_key
+            ):
+                return False
             source = self._index.get(source_key)
             if source is None or not source.path.exists():
                 # The bundle is gone but its accounting is not. Leaving the
@@ -764,7 +839,13 @@ class ArchiveExtractionPool(_UsageNotifier):
             purged = False
             if book_key in self._session_scoped and book_key not in self._active:
                 self._purge_locked(book_key)
+                if self._directory is None or not any(
+                    (self._directory / f"{book_key}{suffix}").exists()
+                    for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}")
+                ):
+                    _remove_session_marker(self._directory, book_key)
                 self._session_scoped.discard(book_key)
+                self._uncacheable_session_keys.discard(book_key)
                 purged = True
             if self._strict_eviction_pending:
                 self._evict_locked()
@@ -806,6 +887,8 @@ class ArchiveExtractionPool(_UsageNotifier):
         if not safe_payloads:
             return False
         with self._lock:
+            if not self._can_write_locked(book_key):
+                return False
             existing = self._index.get(book_key)
             bundle_path = (
                 existing.path
@@ -823,6 +906,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                 return False
             try:
                 bundle_path.parent.mkdir(parents=True, exist_ok=True)
+                if not self._can_write_locked(book_key):
+                    return False
+                if not (self._directory / self._SCHEMA_MARKER).exists():
+                    # The OS may clear Cache while JoyRead is running. New
+                    # writes need a marker or the next launch discards them.
+                    self._write_schema_marker()
                 self._append_bundle_locked(bundle_path, safe_payloads)
                 stat = bundle_path.stat()
             except (BadZipFile, OSError) as exc:
@@ -894,6 +983,11 @@ class ArchiveExtractionPool(_UsageNotifier):
                 try:
                     for path in self._directory.iterdir():
                         if path.name == self._SCHEMA_MARKER or path in survivors:
+                            continue
+                        if (
+                            path.name.startswith(_SESSION_MARKER_PREFIX)
+                            and path.name[len(_SESSION_MARKER_PREFIX):] in self._session_scoped
+                        ):
                             continue
                         if not path.is_symlink() and path.is_file():
                             path.unlink(missing_ok=True)
@@ -989,10 +1083,13 @@ class ArchiveExtractionPool(_UsageNotifier):
                     "Archive pool reconcile failed to list %s: %s", self._directory, exc
                 )
                 return
+            session_keys = _marked_session_keys(entries)
             for path in entries:
                 if not path.is_file():
                     continue
                 if path.name == self._SCHEMA_MARKER:
+                    continue
+                if path.name.startswith(_SESSION_MARKER_PREFIX):
                     continue
                 if path.name.endswith(".tmp.zip") or path.suffix == ".tmp":
                     # Orphan ``.tmp`` files come from an interrupted write —
@@ -1020,6 +1117,19 @@ class ArchiveExtractionPool(_UsageNotifier):
                     except OSError as exc:
                         logger.warning("Archive cache ephemeral cleanup failed: %s", exc)
                     continue
+                book_key = (
+                    path.name[: -len(".partial.zip")]
+                    if path.name.endswith(".partial.zip")
+                    else path.stem
+                )
+                if book_key in session_keys:
+                    # A previous process ended before releasing a private
+                    # document. Never publish its plaintext into the new index.
+                    try:
+                        path.unlink(missing_ok=True)
+                    except OSError as exc:
+                        logger.warning("Archive cache private crash cleanup failed: %s", exc)
+                    continue
                 manifest_payload: bytes | None = None
                 try:
                     with ZipFile(path, "r") as archive:
@@ -1036,11 +1146,6 @@ class ArchiveExtractionPool(_UsageNotifier):
                     except OSError as cleanup_exc:
                         logger.warning("Archive cache corrupt-bundle cleanup failed: %s", cleanup_exc)
                     continue
-                book_key = (
-                    path.name[: -len(".partial.zip")]
-                    if path.name.endswith(".partial.zip")
-                    else path.stem
-                )
                 if (
                     path.name.endswith(".partial.zip")
                     and _ready_manifest_is_publishable(manifest_payload, book_key)
@@ -1074,6 +1179,12 @@ class ArchiveExtractionPool(_UsageNotifier):
                         continue
                     scanned.remove(previous)
                 scanned.append((book_key, _PoolEntry(path, stat.st_size, stat.st_mtime)))
+            for book_key in session_keys:
+                if not any(
+                    (self._directory / f"{book_key}{suffix}").exists()
+                    for suffix in (self._ZIP_SUFFIX, f".partial{self._ZIP_SUFFIX}")
+                ):
+                    _remove_session_marker(self._directory, book_key)
             scanned.sort(key=lambda item: item[1].mtime)
             for book_key, entry in scanned:
                 self._index[book_key] = entry
@@ -1223,6 +1334,7 @@ class ArchiveExtractionPool(_UsageNotifier):
         if source_key in self._session_scoped:
             self._session_scoped.discard(source_key)
             self._session_scoped.add(target_key)
+            _remove_session_marker(self._directory, source_key)
 
     def _move_building_locked(self, source_key: str, target_key: str) -> None:
         count = self._building.pop(source_key, 0)
@@ -1302,6 +1414,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
         #: Documents whose bytes must not outlive their last live lease --
         #: today, encrypted archives when the privacy setting asks for it.
         self._session_scoped: set[str] = set()
+        self._uncacheable_session_keys: set[str] = set()
         self._strict_eviction_pending = False
 
     @property
@@ -1334,6 +1447,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
             return None
         entry_key = self._entry_key_for(entry_name)
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return None
             entry = self._index.get((book_key, entry_key))
             if entry is None or not entry.path.exists():
                 if entry is not None:
@@ -1370,6 +1485,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if book_key is None:
             return frozenset()
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return frozenset()
             return frozenset(
                 entry_name
                 for entry_name in entry_names
@@ -1416,6 +1533,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if book_key is None:
             return False
         with self._lock:
+            if not self._can_write_locked(book_key):
+                return False
             missing = [
                 name
                 for name in required_entries
@@ -1490,6 +1609,8 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if book_key is None:
             return False
         with self._lock:
+            if book_key in self._uncacheable_session_keys:
+                return False
             self._building[book_key] = self._building.get(book_key, 0) + 1
         return True
 
@@ -1529,7 +1650,21 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if book_key is None:
             return
         with self._lock:
+            if not _write_session_marker(self._directory, book_key):
+                self._uncacheable_session_keys.add(book_key)
+                self._forget_book_locked(book_key)
             self._session_scoped.add(book_key)
+
+    def _can_write_locked(self, book_key: str) -> bool:
+        if book_key in self._uncacheable_session_keys:
+            return False
+        if book_key in self._session_scoped and not _write_session_marker(
+            self._directory, book_key
+        ):
+            self._uncacheable_session_keys.add(book_key)
+            self._forget_book_locked(book_key)
+            return False
+        return True
 
     def promote(self, source_cache_key: str, target_cache_key: str) -> bool:
         self._ensure_reconciled()
@@ -1540,6 +1675,12 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if source_key == target_key:
             return True
         with self._lock:
+            if source_key in self._uncacheable_session_keys:
+                return False
+            if source_key in self._session_scoped and not _write_session_marker(
+                self._directory, target_key
+            ):
+                return False
             if self._directory is None:
                 return False
             source_dir = self._directory / source_key
@@ -1634,7 +1775,10 @@ class HiddenImageExtractionPool(_UsageNotifier):
             purged = False
             if book_key in self._session_scoped and book_key not in self._active:
                 self._forget_book_locked(book_key)
+                if self._directory is None or not (self._directory / book_key).exists():
+                    _remove_session_marker(self._directory, book_key)
                 self._session_scoped.discard(book_key)
+                self._uncacheable_session_keys.discard(book_key)
                 purged = True
             if self._strict_eviction_pending:
                 self._evict_locked()
@@ -1663,6 +1807,9 @@ class HiddenImageExtractionPool(_UsageNotifier):
         requested = [(name, data) for name, data in payloads.items() if name]
         if not requested:
             return False
+        with self._lock:
+            if not self._can_write_locked(book_key):
+                return False
         written: list[tuple[tuple[str, str], _PoolEntry]] = []
         for entry_name, data in requested:
             result = self._write_entry(book_key, entry_name, data)
@@ -1710,6 +1857,13 @@ class HiddenImageExtractionPool(_UsageNotifier):
             return None
         try:
             final_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._lock:
+                if not self._can_write_locked(book_key):
+                    return None
+            if self._directory is not None and not (
+                self._directory / self._SCHEMA_MARKER
+            ).exists():
+                self._write_schema_marker()
             tmp_path.write_bytes(data)
             os.replace(tmp_path, final_path)
             stat = final_path.stat()
@@ -1775,6 +1929,11 @@ class HiddenImageExtractionPool(_UsageNotifier):
                     children = ()
                 for child in children:
                     if child.name == self._SCHEMA_MARKER or child.name in survivor_books:
+                        continue
+                    if (
+                        child.name.startswith(_SESSION_MARKER_PREFIX)
+                        and child.name[len(_SESSION_MARKER_PREFIX):] in self._session_scoped
+                    ):
                         continue
                     try:
                         if child.is_dir() and not child.is_symlink():
@@ -1860,8 +2019,17 @@ class HiddenImageExtractionPool(_UsageNotifier):
             except OSError as exc:
                 logger.warning("Hidden image cache reconcile could not list directory: %s", exc)
                 return
+            session_keys = _marked_session_keys(book_dirs)
             for book_dir in book_dirs:
                 if book_dir.name == self._SCHEMA_MARKER:
+                    continue
+                if book_dir.name.startswith(_SESSION_MARKER_PREFIX):
+                    continue
+                if book_dir.name in session_keys and book_dir.is_dir() and not book_dir.is_symlink():
+                    try:
+                        shutil.rmtree(book_dir)
+                    except OSError as exc:
+                        logger.warning("Hidden image cache private crash cleanup failed: %s", exc)
                     continue
                 if not book_dir.is_dir():
                     try:
@@ -1891,6 +2059,9 @@ class HiddenImageExtractionPool(_UsageNotifier):
                     except OSError:
                         continue
                     scanned.append(((book_dir.name, path.stem), _PoolEntry(path, stat.st_size, stat.st_mtime)))
+            for book_key in session_keys:
+                if not (self._directory / book_key).exists():
+                    _remove_session_marker(self._directory, book_key)
             scanned.sort(key=lambda item: item[1].mtime)
             for key, entry in scanned:
                 self._index[key] = entry
@@ -1989,6 +2160,7 @@ class HiddenImageExtractionPool(_UsageNotifier):
         if source_key in self._session_scoped:
             self._session_scoped.discard(source_key)
             self._session_scoped.add(target_key)
+            _remove_session_marker(self._directory, source_key)
 
     def _move_building_locked(self, source_key: str, target_key: str) -> None:
         count = self._building.pop(source_key, 0)
@@ -2071,6 +2243,14 @@ def archive_cache_storage_key(document_cache_key: str) -> str:
     }[kind]
     digest = hashlib.sha256(f"archive-cache-v3:{key}".encode("utf-8")).hexdigest()
     return f"{prefix}-{digest}"
+
+
+def managed_document_cache_key(file_id: str, storage_root: Path) -> str:
+    """Keep equal file IDs from separate Libraries out of each other's cache."""
+
+    root = os.path.normcase(str(Path(storage_root).expanduser().resolve()))
+    namespace = hashlib.sha256(root.encode("utf-8")).hexdigest()[:16]
+    return f"file:{namespace}:{file_id}"
 
 
 def _identity_kind(document_cache_key: str) -> str:

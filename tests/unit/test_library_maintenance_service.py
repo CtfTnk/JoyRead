@@ -11,7 +11,10 @@ from PIL import Image
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
-from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
+from joyread.core.services.archive_extraction_pool import (
+    ArchiveExtractionPool,
+    managed_document_cache_key,
+)
 from joyread.core.models.import_policy import CanonicalImportPolicy
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.import_service import ImportService
@@ -128,7 +131,8 @@ def test_audit_changed_file_renames_resets_navigation_and_invalidates_artifacts(
     cover = paths.paths.thumbnails / "covers" / f"{book.uuid}-generated-100x120.png"
     cover.parent.mkdir(parents=True, exist_ok=True)
     cover.write_bytes(b"generated")
-    cache.put(f"file:{book.file_id}", "00000000", b"cached")
+    cache_key = managed_document_cache_key(book.file_id, paths.storage_root)
+    cache.put(cache_key, "00000000", b"cached")
 
     _write_cbz(original_path, "#cc4422")
     plan = maintenance.scan()
@@ -146,7 +150,7 @@ def test_audit_changed_file_renames_resets_navigation_and_invalidates_artifacts(
     assert not original_path.exists()
     assert repository.get_progress(book.uuid) is None
     assert repository.list_bookmarks(book.uuid) == []
-    assert cache.get(f"file:{book.file_id}", "00000000") is None
+    assert cache.get(cache_key, "00000000") is None
     assert not cover.exists()
     assert invalidated == [book.file_id]
 
@@ -243,7 +247,9 @@ def test_audit_merges_changed_file_when_its_hash_already_exists(maintenance_stac
     assert remaining == 0
 
 
-def test_audit_cleans_orphan_book_generated_cover_and_extraction_cache(maintenance_stack, tmp_path: Path) -> None:
+def test_audit_leaves_global_cache_to_its_lru_while_cleaning_library_orphans(
+    maintenance_stack, tmp_path: Path
+) -> None:
     paths, _database, cache, importer, maintenance, repository, _invalidated = maintenance_stack
     source = tmp_path / "source" / "Managed.cbz"
     _write_cbz(source, "#224466")
@@ -256,20 +262,22 @@ def test_audit_cleans_orphan_book_generated_cover_and_extraction_cache(maintenan
     generated.write_bytes(b"generated")
     custom = covers / "no-longer-a-book-custom.png"
     custom.write_bytes(b"custom")
-    cache.put("file:no-longer-a-file", "00000000", b"cached")
+    other_library_key = "file:no-longer-a-file"
+    cache.put(other_library_key, "00000000", b"cached")
 
     plan = maintenance.scan()
     assert orphan_book in {orphan.path for orphan in plan.orphan_files}
     cache_paths = {orphan.path for orphan in plan.orphan_cache_files}
     assert generated in cache_paths
-    assert any(path.parent == paths.paths.cache / ".archive_zip_bundles" for path in cache_paths)
+    assert not any(path.parent == paths.paths.cache / ".archive_zip_bundles" for path in cache_paths)
 
     report = maintenance.apply(plan)
     assert report.cleaned_file_count == 1
-    assert report.cleaned_cache_count >= 2
+    assert report.cleaned_cache_count == 1
     assert not orphan_book.exists()
     assert not generated.exists()
     assert custom.exists()
+    assert cache.get(other_library_key, "00000000") == b"cached"
 
 
 def test_recover_pending_rename_journal_finishes_database_update(maintenance_stack, tmp_path: Path) -> None:

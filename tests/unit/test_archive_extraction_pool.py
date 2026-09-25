@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 from pathlib import Path
 from zipfile import ZipFile
@@ -16,6 +17,7 @@ from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionPool,
     HiddenImageExtractionPool,
     archive_cache_storage_key,
+    managed_document_cache_key,
 )
 
 
@@ -41,6 +43,17 @@ def test_put_and_get_round_trip_via_source_path_and_entry_name(tmp_path: Path) -
     # A miss for an unknown entry in the same bundle does not nuke the bundle.
     assert pool.get(source, "missing.png") is None
     assert pool.get(source, "001.png") == b"PNG-PAYLOAD"
+
+
+def test_managed_cache_identity_is_scoped_to_its_library(tmp_path: Path) -> None:
+    first = managed_document_cache_key("same-file-id", tmp_path / "library-a")
+    second = managed_document_cache_key("same-file-id", tmp_path / "library-b")
+    pool = ArchiveExtractionPool(tmp_path / "shared-cache", max_bytes=4096)
+
+    assert first != second
+    assert pool.put(first, "001.png", b"first library")
+    assert pool.get(second, "001.png") is None
+    assert pool.get(first, "001.png") == b"first library"
 
 
 def test_each_source_archive_gets_a_single_zip_bundle(tmp_path: Path) -> None:
@@ -902,14 +915,123 @@ def test_session_scoped_document_is_dropped_on_its_last_release(tmp_path: Path) 
         pool.put(source, "pages/00000000", b"secret page")
         pool.mark_session_scoped(source)
         assert pool.current_bytes > 0, type(pool).__name__
+        assert any(
+            path.name.startswith(".joyread-session-") for path in pool.directory.iterdir()
+        )
 
         pool.release(source)
         assert pool.current_bytes > 0, f"{type(pool).__name__}: a live lease still needs it"
+        assert any(
+            path.name.startswith(".joyread-session-") for path in pool.directory.iterdir()
+        )
 
         pool.release(source)
 
         assert pool.current_bytes == 0, type(pool).__name__
         assert pool.get(source, "pages/00000000") is None, type(pool).__name__
+        assert not any(
+            path.name.startswith(".joyread-session-") for path in pool.directory.iterdir()
+        )
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_private_cache_is_reclaimed_after_a_crash(tmp_path: Path, pool_type) -> None:
+    directory = tmp_path / "cache"
+    key = "file:encrypted-book"
+    pool = pool_type(directory, max_bytes=1 << 20)
+    pool.acquire(key)
+    pool.mark_session_scoped(key)
+    assert pool.put(key, "001.png", b"decrypted page")
+    assert any(path.name.startswith(".joyread-session-") for path in directory.iterdir())
+
+    # Simulate process death: no release, then a fresh pool scans the same root.
+    restarted = pool_type(directory, max_bytes=1 << 20)
+    assert restarted.get(key, "001.png") is None
+    assert restarted.current_bytes == 0
+    assert not any(path.name.startswith(".joyread-session-") for path in directory.iterdir())
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_hash_promotion_keeps_private_crash_cleanup(tmp_path: Path, pool_type) -> None:
+    directory = tmp_path / "cache"
+    pool = pool_type(directory, max_bytes=1 << 20)
+    source = "session:reader"
+    promoted = "external:sha256:encrypted-book"
+    pool.acquire(source)
+    pool.mark_session_scoped(source)
+    assert pool.put(source, "001.png", b"decrypted page")
+    assert pool.promote(source, promoted)
+
+    restarted = pool_type(directory, max_bytes=1 << 20)
+    assert restarted.get(promoted, "001.png") is None
+    assert restarted.current_bytes == 0
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_private_cache_write_is_disabled_when_crash_marker_cannot_be_saved(
+    tmp_path: Path, pool_type, monkeypatch
+) -> None:
+    monkeypatch.setattr(pool_module, "_write_session_marker", lambda *_args: False)
+    pool = pool_type(tmp_path / "cache", max_bytes=1 << 20)
+    key = "file:encrypted-book"
+    pool.acquire(key)
+    pool.mark_session_scoped(key)
+
+    assert not pool.put(key, "001.png", b"decrypted page")
+    assert pool.current_bytes == 0
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_pool_recovers_after_the_os_removes_its_cache_directory(
+    tmp_path: Path, pool_type
+) -> None:
+    directory = tmp_path / "cache"
+    pool = pool_type(directory, max_bytes=1 << 20)
+    assert pool.put("file:old", "001.png", b"old page")
+    shutil.rmtree(directory)
+
+    assert pool.get("file:old", "001.png") is None
+    assert pool.put("file:new", "001.png", b"new page")
+
+    restarted = pool_type(directory, max_bytes=1 << 20)
+    assert restarted.get("file:new", "001.png") == b"new page"
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_private_cache_recreates_its_crash_marker_after_os_cleanup(
+    tmp_path: Path, pool_type
+) -> None:
+    directory = tmp_path / "cache"
+    key = "file:encrypted-book"
+    pool = pool_type(directory, max_bytes=1 << 20)
+    pool.acquire(key)
+    pool.mark_session_scoped(key)
+    assert pool.put(key, "001.png", b"first page")
+    shutil.rmtree(directory)
+
+    assert pool.put(key, "002.png", b"second page")
+    restarted = pool_type(directory, max_bytes=1 << 20)
+    assert restarted.get(key, "002.png") is None
+    assert restarted.current_bytes == 0
+
+
+@pytest.mark.parametrize("pool_type", (ArchiveExtractionPool, HiddenImageExtractionPool))
+def test_clearing_cache_keeps_a_live_private_document_marked(
+    tmp_path: Path, pool_type
+) -> None:
+    directory = tmp_path / "cache"
+    key = "file:encrypted-book"
+    pool = pool_type(directory, max_bytes=1 << 20)
+    pool.acquire(key)
+    pool.mark_session_scoped(key)
+    assert pool.put(key, "001.png", b"first page")
+
+    pool.clear()
+    assert pool.put(key, "002.png", b"second page")
+
+    restarted = pool_type(directory, max_bytes=1 << 20)
+    assert restarted.get(key, "002.png") is None
+    assert restarted.current_bytes == 0
 
 
 def test_an_unmarked_document_survives_its_last_release(tmp_path: Path) -> None:
