@@ -1,10 +1,12 @@
-"""In-memory cache primitives and the app-scope cache coordinator.
+"""In-memory cache primitives and the P2 runtime cache boundaries.
 
-The coordinator (``CacheService``) owns four shared caches:
+``ReaderCacheService`` owns Reader frames, topic thumbnails, and extraction
+pool access. ``LibraryCacheService`` owns the cover-path index. ``CacheService``
+joins them for existing Library thumbnail callers without duplicating storage:
 
 - ``reader_page_cache`` — viewport-sized immutable frames in one byte-budgeted
   LRU shared across every open reader window. Reader viewmodels receive a
-  ``NamespacedPageCache`` adapter from :meth:`CacheService.issue_reader_namespace`
+  ``NamespacedPageCache`` adapter from :meth:`ReaderCacheService.issue_reader_namespace`
   so that closing a window can purge only that session's bytes.
 - ``cover_index`` — a small in-memory map of book uuid to cover file path. The
   cover bytes themselves live on disk under ``Thumbnails/covers/``; this cache
@@ -475,32 +477,66 @@ class ThumbnailCacheClient:
         return self._backing.promote_source(source_id, target_id)
 
 
-class CacheService:
-    """App-scope coordinator for shared caches.
+class ReaderCacheService:
+    """Reader frames, topic thumbnails, and extraction pool.
 
-    Prepared reader frames are shared across every open reader window through
-    a single byte-budgeted LRU. Each :class:`ReaderViewModel` receives a
-    :class:`NamespacedPageCache` issued by :meth:`issue_reader_namespace` so
-    that the shared budget is enforced globally but per-session cleanup stays
-    deterministic.
+    This can be constructed without a Library index or database. Reader page
+    namespaces share one budget and remain independently purgeable.
     """
-
-    _COVER_PATH_OVERHEAD_BYTES = 256
 
     def __init__(
         self,
         archive_extraction_pool: ArchiveExtractionCache,
         reader_page_cache_max_bytes: int,
         thumbnail_cache_max_bytes: int = 64 * 1024 * 1024,
-        cover_index_max_items: int = 1024,
         reader_frame_sizer: Callable[[object], int] | None = None,
+        *,
+        page_cache: BoundedByteCache[tuple, object] | None = None,
+        thumbnail_cache: SharedThumbnailCache | None = None,
     ) -> None:
         self.archive_extraction_pool = archive_extraction_pool
-        self.reader_page_cache: BoundedByteCache[tuple, object] = BoundedByteCache(
-            max_bytes=reader_page_cache_max_bytes,
-            sizer=reader_frame_sizer,
+        self.reader_page_cache = (
+            page_cache
+            if page_cache is not None
+            else BoundedByteCache(
+                max_bytes=reader_page_cache_max_bytes,
+                sizer=reader_frame_sizer,
+            )
         )
-        self.thumbnail_cache = SharedThumbnailCache(max_bytes=thumbnail_cache_max_bytes)
+        self.thumbnail_cache = (
+            thumbnail_cache
+            if thumbnail_cache is not None
+            else SharedThumbnailCache(max_bytes=thumbnail_cache_max_bytes)
+        )
+
+    def issue_reader_namespace(self) -> NamespacedPageCache:
+        return NamespacedPageCache(self.reader_page_cache)
+
+    def issue_thumbnail_client(self, client_id: str | None = None) -> ThumbnailCacheClient:
+        return self.thumbnail_cache.issue_client(client_id)
+
+    def purge_thumbnail_source(self, document_cache_key: str) -> int:
+        prefix = f"{document_cache_key}:"
+        return self.thumbnail_cache.purge(lambda key: key.source_id.startswith(prefix))
+
+    def with_archive_pool(self, pool: ArchiveExtractionCache) -> ReaderCacheService:
+        """Stage a new pool while retaining shared frame/thumbnail budgets."""
+
+        return ReaderCacheService(
+            pool,
+            self.reader_page_cache.max_bytes,
+            self.thumbnail_cache.max_bytes,
+            page_cache=self.reader_page_cache,
+            thumbnail_cache=self.thumbnail_cache,
+        )
+
+
+class LibraryCacheService:
+    """Library cover-path index; the actual cover bytes remain on disk."""
+
+    _COVER_PATH_OVERHEAD_BYTES = 256
+
+    def __init__(self, cover_index_max_items: int = 1024) -> None:
         # The cover index stores filesystem path strings only; the bytes live
         # on disk. Budget the in-memory mirror by an approximate per-entry
         # overhead so a runaway cover index cannot squeeze the reader cache.
@@ -509,19 +545,67 @@ class CacheService:
             sizer=lambda value: len(value) + self._COVER_PATH_OVERHEAD_BYTES,
         )
 
+
+class CacheService:
+    """Compatibility adapter joining caches owned by two runtimes.
+
+    ThumbnailService still uses this facade because its detail previews share
+    the Reader's in-memory thumbnail cache, while its cover index belongs to
+    the Library. Callers can migrate to the typed owners without changing the
+    cache identities or budgets during P2.
+    """
+
+    def __init__(
+        self,
+        archive_extraction_pool: ArchiveExtractionCache,
+        reader_page_cache_max_bytes: int,
+        thumbnail_cache_max_bytes: int = 64 * 1024 * 1024,
+        cover_index_max_items: int = 1024,
+        reader_frame_sizer: Callable[[object], int] | None = None,
+        *,
+        reader_caches: ReaderCacheService | None = None,
+        library_caches: LibraryCacheService | None = None,
+    ) -> None:
+        self.reader_caches = reader_caches or ReaderCacheService(
+            archive_extraction_pool,
+            reader_page_cache_max_bytes,
+            thumbnail_cache_max_bytes,
+            reader_frame_sizer,
+        )
+        self.library_caches = library_caches or LibraryCacheService(cover_index_max_items)
+
+    @property
+    def archive_extraction_pool(self) -> ArchiveExtractionCache:
+        return self.reader_caches.archive_extraction_pool
+
+    @archive_extraction_pool.setter
+    def archive_extraction_pool(self, value: ArchiveExtractionCache) -> None:
+        self.reader_caches.archive_extraction_pool = value
+
+    @property
+    def reader_page_cache(self) -> BoundedByteCache[tuple, object]:
+        return self.reader_caches.reader_page_cache
+
+    @property
+    def thumbnail_cache(self) -> SharedThumbnailCache:
+        return self.reader_caches.thumbnail_cache
+
+    @property
+    def cover_index(self) -> BoundedByteCache[str, str]:
+        return self.library_caches.cover_index
+
     def issue_reader_namespace(self) -> NamespacedPageCache:
         """Mint a fresh reader-page namespace bound to the shared budget."""
 
-        return NamespacedPageCache(self.reader_page_cache)
+        return self.reader_caches.issue_reader_namespace()
 
     def issue_thumbnail_client(self, client_id: str | None = None) -> ThumbnailCacheClient:
-        return self.thumbnail_cache.issue_client(client_id)
+        return self.reader_caches.issue_thumbnail_client(client_id)
 
     def purge_thumbnail_source(self, document_cache_key: str) -> int:
         """Invalidate only thumbnail variants derived from one managed file."""
 
-        prefix = f"{document_cache_key}:"
-        return self.thumbnail_cache.purge(lambda key: key.source_id.startswith(prefix))
+        return self.reader_caches.purge_thumbnail_source(document_cache_key)
 
     def apply_cache_budgets(
         self,

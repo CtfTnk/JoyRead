@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import QTimer
@@ -104,39 +105,29 @@ class _FailingTaskService(_RecordingTaskService):
 
 
 def _close_test_context(calls: list[str], task_service=None) -> AppContext:  # noqa: ANN001
+    return _minimal_context(
+        SimpleNamespace(
+            archive_warmup_coordinator=None,
+            task_service=task_service or _RecordingTaskService(calls),
+        ),
+        SimpleNamespace(
+            thumbnail_service=None,
+            database_interpreter=_RecordingDatabase(calls),
+        ),
+    )
+
+
+def _minimal_context(reader, library) -> AppContext:  # noqa: ANN001
     return AppContext(
         config=None,  # type: ignore[arg-type]
         settings=None,  # type: ignore[arg-type]
         settings_store=None,  # type: ignore[arg-type]
         paths=None,  # type: ignore[arg-type]
-        resources=None,  # type: ignore[arg-type]
-        database_interpreter=_RecordingDatabase(calls),  # type: ignore[arg-type]
-        book_repository=None,  # type: ignore[arg-type]
-        tag_repository=None,  # type: ignore[arg-type]
-        archive_extraction_pool=None,  # type: ignore[arg-type]
-        archive_image_service=None,  # type: ignore[arg-type]
-        reader_session_service=None,  # type: ignore[arg-type]
-        pdf_image_service=None,  # type: ignore[arg-type]
-        library_service=None,  # type: ignore[arg-type]
-        task_service=task_service or _RecordingTaskService(calls),  # type: ignore[arg-type]
-        cache_service=None,  # type: ignore[arg-type]
-        hash_service=None,  # type: ignore[arg-type]
-        tag_service=None,  # type: ignore[arg-type]
-        import_service=None,  # type: ignore[arg-type]
-        library_maintenance_coordinator=None,  # type: ignore[arg-type]
-        library_maintenance_service=None,  # type: ignore[arg-type]
-        export_service=None,  # type: ignore[arg-type]
+        reader_runtime=reader,  # type: ignore[arg-type]
+        library_runtime=library,  # type: ignore[arg-type]
         storage_migration_service=None,  # type: ignore[arg-type]
         storage_validation_service=None,  # type: ignore[arg-type]
         storage_recovery_service=None,  # type: ignore[arg-type]
-        thumbnail_service=None,  # type: ignore[arg-type]
-        hidden_space_service=None,  # type: ignore[arg-type]
-        path_issue_service=None,  # type: ignore[arg-type]
-        main_window_viewmodel=None,  # type: ignore[arg-type]
-        path_issue_viewmodel=None,  # type: ignore[arg-type]
-        shelf_viewmodel=None,  # type: ignore[arg-type]
-        settings_viewmodel=None,  # type: ignore[arg-type]
-        tag_management_viewmodel=None,  # type: ignore[arg-type]
     )
 
 
@@ -515,13 +506,15 @@ class _RecordingThumbnailService:
 
 
 def _quiesce_context(calls: list[str], pending: int = 0) -> AppContext:
-    fields = {name: None for name in AppContext.__dataclass_fields__}
-    fields.update(
+    return _minimal_context(
+        SimpleNamespace(
         task_service=_QuiesceRecordingTaskService(calls, pending),
         archive_warmup_coordinator=_RecordingWarmupCoordinator(calls),
+        ),
+        SimpleNamespace(
         thumbnail_service=_RecordingThumbnailService(calls),
+        ),
     )
-    return AppContext(**fields)  # type: ignore[arg-type]
 
 
 def test_quiesce_stops_warmup_before_cancelling_tasks() -> None:

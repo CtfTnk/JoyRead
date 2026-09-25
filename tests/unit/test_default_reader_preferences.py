@@ -67,12 +67,11 @@ def test_reader_defaults_apply_to_temporary_and_new_books_but_not_saved_books() 
             return self.settings
 
     library = Library()
-    context = SimpleNamespace(library_service=library)
     book = SimpleNamespace(uuid="book-1")
-    assert _reader_settings_for_book(context, None, defaults) == defaults
-    assert _reader_settings_for_book(context, book, defaults) == defaults
+    assert _reader_settings_for_book(library, None, defaults) == defaults
+    assert _reader_settings_for_book(library, book, defaults) == defaults
     library.settings = saved
-    assert _reader_settings_for_book(context, book, defaults) == saved
+    assert _reader_settings_for_book(library, book, defaults) == saved
 
 
 def test_reading_section_controls_persist_and_retranslate(qtbot, tmp_path: Path) -> None:

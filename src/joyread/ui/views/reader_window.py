@@ -5,16 +5,23 @@ from __future__ import annotations
 from joyread.ui.widgets.localized_text import set_localized
 
 from pathlib import Path
+from typing import Protocol
 
 from PySide6.QtCore import Qt, Signal as QtSignal
 from PySide6.QtGui import QCloseEvent, QKeyEvent
 from PySide6.QtWidgets import QMainWindow, QWidget
 
-from joyread.app.app_context import AppContext
+from joyread.app.reader_library_port import ReaderLibraryPort
+from joyread.app.reader_runtime import ReaderRuntime
 from joyread.core.models.book import Book
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.widgets.window_gestures import install_system_resize_border
+
+
+class ReaderWindowContext(Protocol):
+    reader_runtime: ReaderRuntime | None
+    library_service: ReaderLibraryPort
 
 
 class ReaderWindow(QMainWindow):
@@ -25,7 +32,7 @@ class ReaderWindow(QMainWindow):
 
     def __init__(
         self,
-        context: AppContext,
+        context: ReaderRuntime | ReaderWindowContext,
         source_path: str | Path,
         *,
         book: Book | None = None,
@@ -44,9 +51,18 @@ class ReaderWindow(QMainWindow):
         self.resize(Theme.reader_width, Theme.reader_height)
         self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
 
+        reader = context if isinstance(context, ReaderRuntime) else context.reader_runtime
+        if reader is None:
+            raise RuntimeError("ReaderWindow requires a ReaderRuntime")
+        library_port = (
+            context.library_service
+            if book is not None and not isinstance(context, ReaderRuntime)
+            else None
+        )
         self.shell = ReaderShellWidget(
-            context,
+            reader,
             source_path,
+            library_port=library_port,
             book=book,
             title=title,
             show_back_button=False,

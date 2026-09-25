@@ -36,10 +36,6 @@ class _FailingLibrary:
         raise self._exc
 
 
-def _fake_context(library) -> SimpleNamespace:  # noqa: ANN001 - test stub.
-    return SimpleNamespace(library_service=library)
-
-
 def _fake_book(uuid: str) -> SimpleNamespace:
     return SimpleNamespace(uuid=uuid)
 
@@ -48,11 +44,10 @@ def test_reader_settings_for_book_logs_when_repo_raises(caplog: pytest.LogCaptur
     from joyread.ui.views.reader_shell import _reader_settings_for_book
 
     library = _FailingLibrary(sqlite3.OperationalError("no such column: vertical_fit_width"))
-    context = _fake_context(library)
     book = _fake_book("book-42")
 
     with caplog.at_level(logging.ERROR, logger="joyread.ui.views.reader_shell"):
-        settings = _reader_settings_for_book(context, book)
+        settings = _reader_settings_for_book(library, book)
 
     assert settings == ReaderSettings()
     assert any(
@@ -65,11 +60,10 @@ def test_reader_progress_for_book_logs_when_repo_raises(caplog: pytest.LogCaptur
     from joyread.ui.views.reader_shell import _reader_progress_for_book
 
     library = _FailingLibrary(sqlite3.OperationalError("disk image is malformed"))
-    context = _fake_context(library)
     book = _fake_book("book-99")
 
     with caplog.at_level(logging.ERROR, logger="joyread.ui.views.reader_shell"):
-        progress = _reader_progress_for_book(context, book)
+        progress = _reader_progress_for_book(library, book)
 
     assert progress is None
     assert any("book-99" in record.getMessage() for record in caplog.records)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from joyread.ui.viewmodels.shelf_sorting import ShelfSorting
+from joyread.ui.viewmodels.shelf_enums import SortField, ViewMode
 
 import logging
 from math import ceil
@@ -35,18 +36,6 @@ from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStr
 
 
 logger = logging.getLogger(__name__)
-
-
-class ViewMode(StrEnum):
-    GRID = "grid"
-    LIST = "list"
-
-
-class SortField(StrEnum):
-    CUSTOM = "Custom"
-    ADD_TIME = "Add Time"
-    TITLE = "Title"
-    AUTHOR = "Author"
 
 
 class FileFilter(StrEnum):

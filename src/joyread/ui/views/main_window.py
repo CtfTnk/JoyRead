@@ -698,8 +698,9 @@ class MainWindow(QMainWindow):
             )
         else:
             self._embedded_reader = ReaderShellWidget(
-                self._context,
+                self._context.reader_runtime,
                 path,
+                library_port=self._context.library_service if book is not None else None,
                 book=book,
                 show_back_button=True,
                 start_page_index=start_page_index,

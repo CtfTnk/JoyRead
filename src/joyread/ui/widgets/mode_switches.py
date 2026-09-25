@@ -15,7 +15,7 @@ from PySide6.QtWidgets import QButtonGroup, QFrame, QHBoxLayout, QToolButton, QW
 
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.shelf_viewmodel import ViewMode
+from joyread.ui.viewmodels.shelf_enums import ViewMode
 
 
 @dataclass(frozen=True)

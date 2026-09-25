@@ -685,6 +685,17 @@ class SettingsViewModel:
     def set_page_prefetch_after(self, value: int) -> None:
         self._set_prefetch_count("page_prefetch_after", value, PREFETCH_AFTER_DEFAULT, PREFETCH_AFTER_MAX)
 
+    def sync_page_prefetch(self, before: int, after: int) -> None:
+        """Reflect a Reader panel edit without persisting the same values twice."""
+
+        before = prefetch_count(before, default=PREFETCH_BEFORE_DEFAULT, maximum=PREFETCH_BEFORE_MAX)
+        after = prefetch_count(after, default=PREFETCH_AFTER_DEFAULT, maximum=PREFETCH_AFTER_MAX)
+        if (before, after) == (self.page_prefetch_before, self.page_prefetch_after):
+            return
+        self.page_prefetch_before = before
+        self.page_prefetch_after = after
+        self.prefetch_window_changed.emit()
+
     def _set_prefetch_count(self, field: str, value: int, default: int, maximum: int) -> None:
         value = prefetch_count(value, default=default, maximum=maximum)
         if value == getattr(self, field):

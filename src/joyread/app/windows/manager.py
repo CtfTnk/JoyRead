@@ -5,14 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterable
 import logging
 from pathlib import Path
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
 from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from joyread.app import startup_trace
-from joyread.app.app_context import AppContext
 from joyread.app.launch.intent import canonical_path_key, normalize_launch_paths
 from joyread.app.windows.activation import (
     ReopenDecision,
@@ -23,13 +22,15 @@ from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.windows.ownership import WindowOwnership, ordered_close_sequence
 from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
-from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.window_geometry import WindowGeometryController, fitted_window_rect
 from joyread.infrastructure import windows_activation
 
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from joyread.app.app_context import AppContext
 
 MainWindowFactory = Callable[[StandaloneReaderLauncher], QMainWindow]
 ReaderWindowFactory = Callable[[StandaloneReaderRequest], QMainWindow]
@@ -332,6 +333,10 @@ class ApplicationWindowManager(QObject):
         return None
 
     def _create_main_window(self, launcher: StandaloneReaderLauncher) -> QMainWindow:
+        # No Library widget import is needed until the user actually asks for
+        # the Library window. Cold Reader opens keep this UI tree out of scope.
+        from joyread.ui.views.main_window import MainWindow
+
         return MainWindow(
             self._context,
             standalone_reader_launcher=launcher,

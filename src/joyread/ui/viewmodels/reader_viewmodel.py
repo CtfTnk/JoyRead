@@ -49,7 +49,7 @@ from joyread.core.services.cache_service import (
     ThumbnailSourceIdentity,
 )
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
-from joyread.core.services.library_service import LibraryService
+from joyread.app.reader_library_port import ReaderLibraryPort
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 from joyread.core.services.thumbnail_service import ThumbnailRenderer
@@ -100,7 +100,7 @@ class ReaderViewModel:
         document_runtime: ReaderDocumentRuntime,
         task_service: TaskExecutor,
         page_cache: NamespacedPageCache,
-        library_service: LibraryService | None = None,
+        library_service: ReaderLibraryPort | None = None,
         *,
         book_uuid: str | None = None,
         title: str = "Reader",
@@ -459,7 +459,7 @@ class ReaderViewModel:
         page_index = self.current_index
         default_name = self.title.strip() or t("reader.bookmark_default")
 
-        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+        def work(service: ReaderLibraryPort, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
             service.add_bookmark(book_uuid, default_name, page_index)
             return _bookmark_items(service.list_bookmarks(book_uuid))
 
@@ -470,7 +470,7 @@ class ReaderViewModel:
         if not self.can_use_bookmarks or not bookmark_uuid or not cleaned:
             return
 
-        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+        def work(service: ReaderLibraryPort, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
             service.rename_bookmark(book_uuid, bookmark_uuid, cleaned)
             return _bookmark_items(service.list_bookmarks(book_uuid))
 
@@ -480,7 +480,7 @@ class ReaderViewModel:
         if not self.can_use_bookmarks or not bookmark_uuid:
             return
 
-        def work(service: LibraryService, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
+        def work(service: ReaderLibraryPort, book_uuid: str) -> tuple[ReaderBookmarkItem, ...]:
             service.delete_bookmark(book_uuid, bookmark_uuid)
             return _bookmark_items(service.list_bookmarks(book_uuid))
 
@@ -1146,7 +1146,7 @@ class ReaderViewModel:
     def _submit_bookmark_task(
         self,
         name: str,
-        work: Callable[[LibraryService, str], tuple[ReaderBookmarkItem, ...]],
+        work: Callable[[ReaderLibraryPort, str], tuple[ReaderBookmarkItem, ...]],
         *,
         refresh_on_failure: bool = True,
     ) -> None:

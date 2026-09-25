@@ -3,33 +3,28 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
-from joyread.core.archive.limits import GIB, MEGAPIXEL
-from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
+from joyread.core.models.cache import normalize_archive_cache_strategy
 from joyread.core.models.import_policy import normalize_canonical_import_policy
-from joyread.core.repositories.book_repository import BookRepository
-from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
-from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
-from joyread.core.repositories.tag_repository import TagRepository
 from joyread.core.reader import ReaderSessionService
-from joyread.core.services.archive_extraction_pool import (
-    ArchiveExtractionCache,
-    ArchiveExtractionPool,
-    HiddenImageExtractionPool,
-)
+from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.app.archive_pool_usage_bridge import ArchivePoolUsageBridge
+from joyread.app.reader_runtime import (
+    ReaderRuntime,
+    archive_open_limits_from_settings as _archive_open_limits_from_settings,
+    create_archive_extraction_cache as _create_archive_extraction_cache,
+    create_reader_runtime,
+)
+from joyread.app.library_runtime import LibraryRuntime, create_library_runtime
+from joyread.app.runtime_access import RuntimeAccess
 from joyread.app.path_issue_bridge import PathIssueBridge
-from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.cache_service import CacheService
-from joyread.core.services.export_service import ExportService
 from joyread.core.services.hash_service import HashService
-from joyread.core.services.hidden_space_service import HiddenSpaceService
 from joyread.core.services.import_service import ImportService
-from joyread.core.services.library_service import LibraryService
 from joyread.core.services.path_issue_service import PathIssueService
 from joyread.core.services.library_maintenance_service import (
     LibraryMaintenanceCoordinator,
@@ -45,11 +40,8 @@ from joyread.core.services.storage_validation_service import (
     StorageValidationResult,
     StorageValidationService,
 )
-from joyread.core.services.tag_service import TagService
 from joyread.infrastructure.pdf_document_thread import shutdown_pdf_thread
 from joyread.infrastructure.pdf_image_service import PdfImageService
-from joyread.infrastructure.qt_task_service import TaskService
-from joyread.infrastructure.reader_image_decoder import qimage_frame_bytes
 from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.core.services.thumbnail_service import ThumbnailService
 from joyread.infrastructure.config.app_config import AppConfig
@@ -59,17 +51,11 @@ from joyread.infrastructure.config.settings_store import (
     create_environment_settings_store,
 )
 from joyread.infrastructure.i18n import locale_service
-from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
-from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
+from joyread.infrastructure.database import DatabaseInterpreter
+from joyread.infrastructure.filesystem.path_service import PathService
 from joyread.infrastructure.filesystem.windows_long_paths import WindowsLongPathCapability
 from joyread.infrastructure.logging import log_event, operation_scope
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
-from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.main_window_viewmodel import MainWindowViewModel
-from joyread.ui.viewmodels.path_issue_viewmodel import PathIssueViewModel
-from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
-from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
-from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 
 
 logger = logging.getLogger(__name__)
@@ -93,48 +79,22 @@ class StorageTransition:
 
 
 @dataclass
-class AppContext:
-    """Runtime dependency graph for the application.
+class AppContext(RuntimeAccess):
+    """Application lifecycle and storage-transition coordinator.
 
-    Keep construction here instead of inside widgets. Views receive already
-    wired ViewModels and services, which preserves the MVVM rule that UI code
-    should not know how SQLite, cache directories, or import services are built.
+    ReaderRuntime and LibraryRuntime own their services. The inherited accessors
+    keep existing callers working while they move to the narrow runtime ports.
     """
 
     config: AppConfig
     settings: AppSettings
     settings_store: SettingsStore
     paths: PathService
-    resources: ResourceLoader
-    database_interpreter: DatabaseInterpreter
-    book_repository: BookRepository
-    tag_repository: TagRepository
-    archive_extraction_pool: ArchiveExtractionCache
-    archive_image_service: ArchiveImageService
-    reader_session_service: ReaderSessionService
-    pdf_image_service: PdfImageService
-    library_service: LibraryService
-    task_service: TaskService
-    cache_service: CacheService
-    hash_service: HashService
-    tag_service: TagService
-    import_service: ImportService
-    library_maintenance_coordinator: LibraryMaintenanceCoordinator
-    library_maintenance_service: LibraryMaintenanceService
-    export_service: ExportService
+    reader_runtime: ReaderRuntime
+    library_runtime: LibraryRuntime
     storage_migration_service: StorageMigrationService
     storage_validation_service: StorageValidationService
     storage_recovery_service: StorageRecoveryService
-    thumbnail_service: ThumbnailService
-    hidden_space_service: HiddenSpaceService
-    path_issue_service: PathIssueService
-    main_window_viewmodel: MainWindowViewModel
-    path_issue_viewmodel: PathIssueViewModel
-    shelf_viewmodel: ShelfViewModel
-    settings_viewmodel: SettingsViewModel
-    tag_management_viewmodel: TagManagementViewModel
-    thumbnail_renderer: QtThumbnailRenderer | None = None
-    archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None
     #: Carries live pool usage from caching workers to the settings page.
     archive_pool_usage_bridge: ArchivePoolUsageBridge | None = None
     #: Queues worker-side path diagnostics onto the GUI thread.
@@ -452,12 +412,10 @@ class AppContext:
             self._reload_storage_from_settings_bound()
 
     def _reload_storage_from_settings_bound(self) -> None:
-        # Rebuild every storage-rooted service in the right order: settings →
-        # path service → archive pool → archive reading stack → database. A
-        # piecemeal swap risks dangling references to the previous storage
-        # root, so the whole subtree is reconstructed atomically here.
-        self.thumbnail_service.close()
-        self.settings = self.settings_store.load()
+        # Stage the entire graph before publishing any new service. A failed
+        # database migration or maintenance replay must release its partial
+        # graph and leave the existing runtime identities intact.
+        settings = self.settings_store.load()
         log_event(
             logger,
             logging.INFO,
@@ -466,71 +424,56 @@ class AppContext:
             category="storage",
             status="started",
         )
-        self.paths = _create_path_service(self.config, self.settings_store, self.settings)
-        self.paths.ensure_directories()
-        # The cache directory follows the storage root, so changing storage
-        # rebuilds the pool against the new location. Bytes left behind under
-        # the old root are harmless: they sit inside the old extraction
-        # directory and will simply not be referenced again.
-        self.archive_extraction_pool = _create_archive_extraction_cache(
-            self.paths, self.settings, self.path_issue_service
+        paths = _create_path_service(self.config, self.settings_store, settings)
+        paths.ensure_directories()
+        pool = _create_archive_extraction_cache(paths, settings, self.path_issue_service)
+        archive_service = ArchiveImageService(extraction_pool=pool)
+        session_service = ReaderSessionService(
+            archive_service, self.pdf_image_service, path_issue_service=self.path_issue_service
         )
-        self._rebuild_archive_reading_services()
-        self.database_interpreter = _create_database_interpreter(self.paths)
-        self.book_repository = _create_sqlite_book_repository(self.database_interpreter, self.paths)
-        self.tag_repository = SqliteTagRepository(self.database_interpreter)
-        self.tag_service = TagService(self.tag_repository)
-        self.library_service = LibraryService(self.book_repository)
-        # Hidden Space caches the library service reference, so it has to
-        # follow the storage rebuild — otherwise its operations would still
-        # hit the old (closed) database.
-        self.hidden_space_service = HiddenSpaceService(self.settings_store, self.library_service)
-        self.thumbnail_service = ThumbnailService(
-            self.paths,
-            self.archive_image_service,
-            self.cache_service,
-            self.reader_session_service,
-            nested_archive_max_depth=self.settings.nested_archive_max_depth,
-            archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
-            archive_limits=_archive_open_limits_from_settings(self.settings),
-            thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
+        reader = replace(
+            self.reader_runtime,
+            paths=paths,
+            archive_extraction_pool=pool,
+            archive_image_service=archive_service,
+            reader_session_service=session_service,
+            cache_service=self.reader_runtime.cache_service.with_archive_pool(pool),
         )
-        self.import_service = ImportService(
-            self.paths,
-            self.database_interpreter,
-            self.archive_image_service,
-            self.hash_service,
-            self.settings.hash_algorithm,
-            path_issue_service=self.path_issue_service,
-            tag_service=self.tag_service,
-            archive_limits=_archive_open_limits_from_settings(self.settings),
-            verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
-            maintenance_coordinator=self.library_maintenance_coordinator,
-            pdf_service=self.pdf_image_service,
-            canonical_import_policy=normalize_canonical_import_policy(
-                self.settings.canonical_import_policy
-            ),
+        library = create_library_runtime(reader, self.config, settings, self.settings_store)
+
+        old_library = self.library_runtime
+        shelf = old_library.shelf_viewmodel
+        settings_vm = old_library.settings_viewmodel
+        tag_vm = old_library.tag_management_viewmodel
+        main_vm = old_library.main_window_viewmodel
+        try:
+            shelf.replace_services(library.library_service, library.thumbnail_service, library.tag_service)
+            settings_vm.set_hidden_space_service(library.hidden_space_service)
+            tag_vm.replace_service(library.tag_service)
+        except BaseException:
+            library.close()
+            raise
+        library.shelf_viewmodel = shelf
+        library.settings_viewmodel = settings_vm
+        library.tag_management_viewmodel = tag_vm
+        library.main_window_viewmodel = main_vm
+
+        self.reader_runtime = reader
+        self.library_runtime = library
+        self.settings = settings
+        self.paths = paths
+        self.archive_warmup_coordinator.replace_session_service(session_service)
+        self.cache_service.apply_cache_budgets(
+            reader_page_cache_bytes=settings.reader_page_cache_mb * 1024 * 1024,
+            thumbnail_cache_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
         )
-        self.library_maintenance_service = _create_library_maintenance_service(
-            self.paths,
-            self.database_interpreter,
-            self.hash_service,
-            self.archive_image_service,
-            self.thumbnail_service,
-            self.archive_extraction_pool,
-            _archive_open_limits_from_settings(self.settings),
-            self.library_maintenance_coordinator,
-            self.pdf_image_service,
-        )
-        self.export_service = ExportService(self.book_repository, self.hash_service)
-        self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
-        self.settings_viewmodel.set_hidden_space_service(self.hidden_space_service)
-        self.settings_viewmodel.set_storage_location(self.settings.storage_location)
-        self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
-        # Tag VM holds the service reference and re-reads the DB on refresh,
-        # so swap the underlying service to the rebuilt one.
-        self.tag_management_viewmodel.replace_service(self.tag_service)
+        self.attach_archive_pool_usage_bridge()
+        settings_vm.set_storage_location(settings.storage_location)
+        settings_vm.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
+        self.library_maintenance_recovery_conflicts = library.maintenance_recovery_conflicts
         self._refresh_settings_pool_usage()
+        self._sync_runtime_ownership()
+        old_library.close()
 
     def apply_cache_settings(self) -> None:
         """Push the current settings into every cache that owns a live budget.
@@ -547,77 +490,117 @@ class AppContext:
         """Apply cache settings while the public operation is already bound."""
 
         previous_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
-        self.settings = self.settings_store.load()
-        next_strategy = normalize_archive_cache_strategy(self.settings.archive_cache_strategy)
+        settings = self.settings_store.load()
+        next_strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
         logger.info(
             "Applying cache settings: strategy=%s->%s reader_mb=%s pool_gb=%s thumbnail_mb=%s",
             previous_strategy.value,
             next_strategy.value,
-            self.settings.reader_page_cache_mb,
-            self.settings.archive_extraction_pool_gb,
-            self.settings.thumbnail_cache_mb,
+            settings.reader_page_cache_mb,
+            settings.archive_extraction_pool_gb,
+            settings.thumbnail_cache_mb,
         )
         if next_strategy != previous_strategy:
-            # Strategy change isn't a resize — `ArchiveExtractionPool` and
-            # `HiddenImageExtractionPool` use completely different on-disk
-            # layouts. The old pool's bytes must be cleared and the dependent
-            # archive/thumbnail/import services rebuilt against the new pool
-            # so they don't keep a reference to the old object.
-            self.thumbnail_service.close()
-            self.archive_extraction_pool.clear()
-            self.archive_extraction_pool = _create_archive_extraction_cache(
-                self.paths, self.settings, self.path_issue_service
+            # Stage the new strategy's dependent services before retiring the
+            # old pool. A failure leaves the current Reader and Library usable.
+            pool = _create_archive_extraction_cache(self.paths, settings, self.path_issue_service)
+            archive = ArchiveImageService(extraction_pool=pool)
+            session = ReaderSessionService(
+                archive, self.pdf_image_service, path_issue_service=self.path_issue_service
             )
-            self._rebuild_archive_reading_services()
-            self.thumbnail_service = ThumbnailService(
-                self.paths,
-                self.archive_image_service,
-                self.cache_service,
-                self.reader_session_service,
-                nested_archive_max_depth=self.settings.nested_archive_max_depth,
-                archive_global_file_max_depth=self.settings.archive_global_file_max_depth,
-                archive_limits=_archive_open_limits_from_settings(self.settings),
-                thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
+            reader_cache = self.reader_runtime.cache_service.with_archive_pool(pool)
+            cache = CacheService(
+                pool,
+                settings.reader_page_cache_mb * 1024 * 1024,
+                settings.thumbnail_cache_mb * 1024 * 1024,
+                self.config.cover_index_max_items,
+                reader_caches=reader_cache,
+                library_caches=self.library_runtime.library_caches,
             )
-            self.import_service = ImportService(
-                self.paths,
-                self.database_interpreter,
-                self.archive_image_service,
-                self.hash_service,
-                self.settings.hash_algorithm,
-                path_issue_service=self.path_issue_service,
-                tag_service=self.tag_service,
-                archive_limits=_archive_open_limits_from_settings(self.settings),
-                verify_imported_file_integrity=self.settings.verify_imported_file_integrity,
-                maintenance_coordinator=self.library_maintenance_coordinator,
-                pdf_service=self.pdf_image_service,
-                canonical_import_policy=normalize_canonical_import_policy(
-                    self.settings.canonical_import_policy
-                ),
-            )
-            self.library_maintenance_service = _create_library_maintenance_service(
-                self.paths,
-                self.database_interpreter,
-                self.hash_service,
-                self.archive_image_service,
-                self.thumbnail_service,
-                self.archive_extraction_pool,
-                _archive_open_limits_from_settings(self.settings),
-                self.library_maintenance_coordinator,
-                self.pdf_image_service,
-            )
+            old_thumbnail = self.thumbnail_service
+            thumbnail = None
+            shelf_rebind_attempted = False
+            try:
+                thumbnail = ThumbnailService(
+                    self.paths,
+                    archive,
+                    cache,
+                    session,
+                    nested_archive_max_depth=settings.nested_archive_max_depth,
+                    archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                    archive_limits=_archive_open_limits_from_settings(settings),
+                    thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
+                )
+                importer = ImportService(
+                    self.paths,
+                    self.database_interpreter,
+                    archive,
+                    self.hash_service,
+                    settings.hash_algorithm,
+                    path_issue_service=self.path_issue_service,
+                    tag_service=self.tag_service,
+                    archive_limits=_archive_open_limits_from_settings(settings),
+                    verify_imported_file_integrity=settings.verify_imported_file_integrity,
+                    maintenance_coordinator=self.library_maintenance_coordinator,
+                    pdf_service=self.pdf_image_service,
+                    canonical_import_policy=normalize_canonical_import_policy(
+                        settings.canonical_import_policy
+                    ),
+                )
+                maintenance = _create_library_maintenance_service(
+                    self.paths,
+                    self.database_interpreter,
+                    self.hash_service,
+                    archive,
+                    thumbnail,
+                    pool,
+                    _archive_open_limits_from_settings(settings),
+                    self.library_maintenance_coordinator,
+                    self.pdf_image_service,
+                )
+                shelf_rebind_attempted = True
+                self.shelf_viewmodel.replace_services(self.library_service, thumbnail, self.tag_service)
+            except BaseException:
+                if shelf_rebind_attempted:
+                    try:
+                        self.shelf_viewmodel.replace_services(
+                            self.library_service, old_thumbnail, self.tag_service
+                        )
+                    except Exception:
+                        logger.error("Shelf rollback after cache rebuild failure failed", exc_info=True)
+                if thumbnail is not None:
+                    thumbnail.close()
+                raise
+
+            old_pool = self.archive_extraction_pool
+            self.archive_extraction_pool = pool
+            self.archive_image_service = archive
+            self.reader_session_service = session
+            self.reader_runtime.cache_service = reader_cache
+            self.cache_service = cache
+            self.thumbnail_service = thumbnail
+            self.import_service = importer
+            self.library_maintenance_service = maintenance
+            self.archive_warmup_coordinator.replace_session_service(session)
+            self.attach_archive_pool_usage_bridge()
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
-            self.shelf_viewmodel.replace_services(self.library_service, self.thumbnail_service, self.tag_service)
-            self.cache_service.apply_cache_budgets(
-                reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
-                thumbnail_cache_bytes=self.settings.thumbnail_cache_mb * 1024 * 1024,
+            cache.apply_cache_budgets(
+                reader_page_cache_bytes=settings.reader_page_cache_mb * 1024 * 1024,
+                thumbnail_cache_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
             )
+            try:
+                old_thumbnail.close()
+                old_pool.clear()
+            except Exception:
+                logger.warning("Retired archive cache cleanup failed", exc_info=True)
         else:
             self.cache_service.apply_cache_budgets(
-                reader_page_cache_bytes=self.settings.reader_page_cache_mb * 1024 * 1024,
-                thumbnail_cache_bytes=self.settings.thumbnail_cache_mb * 1024 * 1024,
-                archive_extraction_pool_bytes=self.settings.archive_extraction_pool_gb * 1024 * 1024 * 1024,
+                reader_page_cache_bytes=settings.reader_page_cache_mb * 1024 * 1024,
+                thumbnail_cache_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
+                archive_extraction_pool_bytes=settings.archive_extraction_pool_gb * 1024 * 1024 * 1024,
             )
+        self.settings = settings
+        self._sync_runtime_ownership()
         self._refresh_settings_pool_usage()
 
     def clear_archive_extraction_pool(self) -> None:
@@ -648,18 +631,17 @@ class AppContext:
             return
         bridge.attach(self.archive_extraction_pool)
 
-    def _rebuild_archive_reading_services(self) -> None:
-        logger.debug("Rebuilding archive reader services for cache=%s", type(self.archive_extraction_pool).__name__)
-        self.attach_archive_pool_usage_bridge()
-        self.archive_image_service = ArchiveImageService(extraction_pool=self.archive_extraction_pool)
-        self.reader_session_service = ReaderSessionService(
-            self.archive_image_service,
-            self.pdf_image_service,
-            path_issue_service=self.path_issue_service,
-        )
-        if self.archive_warmup_coordinator is not None:
-            self.archive_warmup_coordinator.replace_session_service(self.reader_session_service)
-        self.cache_service.archive_extraction_pool = self.archive_extraction_pool
+    def _sync_runtime_ownership(self) -> None:
+        """Refresh app-level snapshots after a storage or cache transition.
+
+        Service assignments already target their runtime owner through
+        RuntimeAccess. Only the app-level path and preference snapshots need
+        publication here.
+        """
+
+        self.reader_runtime.paths = self.paths
+        self.library_runtime.paths = self.paths
+        self.reader_runtime.preferences.apply(self.settings)
 
 
 def create_app_context(
@@ -714,120 +696,44 @@ def _create_app_context_bound(
         user_dir=settings_store.locales_dir if settings_store.locales_dir.exists() else None,
         language=settings.language,
     )
-    database_interpreter = _create_database_interpreter(paths)
-    book_repository: BookRepository = _create_sqlite_book_repository(database_interpreter, paths)
-    tag_repository: TagRepository = SqliteTagRepository(database_interpreter)
-    tag_service = TagService(tag_repository)
-    archive_extraction_pool = _create_archive_extraction_cache(paths, settings, path_issue_service)
-    archive_image_service = ArchiveImageService(extraction_pool=archive_extraction_pool)
-    pdf_image_service = PdfImageService()
-    reader_session_service = ReaderSessionService(
-        archive_image_service,
-        pdf_image_service,
+    reader_runtime = create_reader_runtime(
+        config,
+        settings,
+        settings_store,
+        paths=paths,
+        resources=resources,
         path_issue_service=path_issue_service,
     )
-    library_service = LibraryService(book_repository)
-    task_service = TaskService(config.max_background_workers)
-    archive_warmup_coordinator = ArchiveWarmupCoordinator(reader_session_service, task_service)
-    hash_service = HashService()
-    library_maintenance_coordinator = LibraryMaintenanceCoordinator()
-    cache_service = CacheService(
-        archive_extraction_pool=archive_extraction_pool,
-        reader_page_cache_max_bytes=settings.reader_page_cache_mb * 1024 * 1024,
-        thumbnail_cache_max_bytes=settings.thumbnail_cache_mb * 1024 * 1024,
-        cover_index_max_items=config.cover_index_max_items,
-        reader_frame_sizer=qimage_frame_bytes,
+    try:
+        library_runtime = create_library_runtime(reader_runtime, config, settings, settings_store)
+    except BaseException:
+        try:
+            reader_runtime.close()
+        except Exception:
+            logger.error("Reader cleanup after Library construction failure failed", exc_info=True)
+        raise
+    settings_viewmodel = library_runtime.settings_viewmodel
+    settings_viewmodel.prefetch_window_changed.connect(reader_runtime.preferences.refresh)
+    settings_viewmodel.archive_open_limits_changed.connect(reader_runtime.preferences.refresh)
+    reader_runtime.preferences.prefetch_changed.connect(
+        lambda: settings_viewmodel.sync_page_prefetch(
+            reader_runtime.preferences.page_prefetch_before,
+            reader_runtime.preferences.page_prefetch_after,
+        )
     )
-    thumbnail_renderer = QtThumbnailRenderer()
-    import_service = ImportService(
-        paths,
-        database_interpreter,
-        archive_image_service,
-        hash_service,
-        settings.hash_algorithm,
-        path_issue_service=path_issue_service,
-        tag_service=tag_service,
-        archive_limits=_archive_open_limits_from_settings(settings),
-        verify_imported_file_integrity=settings.verify_imported_file_integrity,
-        maintenance_coordinator=library_maintenance_coordinator,
-        pdf_service=pdf_image_service,
-    )
-    export_service = ExportService(book_repository, hash_service)
-    thumbnail_service = ThumbnailService(
-        paths,
-        archive_image_service,
-        cache_service,
-        reader_session_service,
-        nested_archive_max_depth=settings.nested_archive_max_depth,
-        archive_global_file_max_depth=settings.archive_global_file_max_depth,
-        archive_limits=_archive_open_limits_from_settings(settings),
-        thumbnail_renderer=thumbnail_renderer,
-    )
-    library_maintenance_service = _create_library_maintenance_service(
-        paths,
-        database_interpreter,
-        hash_service,
-        archive_image_service,
-        thumbnail_service,
-        archive_extraction_pool,
-        _archive_open_limits_from_settings(settings),
-        library_maintenance_coordinator,
-        pdf_image_service,
-    )
-    maintenance_recovery = library_maintenance_service.recover_pending_journal()
-    hidden_space_service = HiddenSpaceService(settings_store, library_service)
-    main_window_viewmodel = MainWindowViewModel()
-    path_issue_viewmodel = PathIssueViewModel()
-    shelf_viewmodel = ShelfViewModel(
-        library_service,
-        thumbnail_service,
-        task_service,
-        cover_size=(Theme.detail_cover_width, Theme.detail_cover_height),
-        settings=settings,
-        settings_store=settings_store,
-        tag_service=tag_service,
-        archive_warmup_coordinator=archive_warmup_coordinator,
-    )
-    settings_viewmodel = SettingsViewModel(settings, settings_store, hidden_space_service)
-    tag_management_viewmodel = TagManagementViewModel(tag_service)
 
     context = AppContext(
         config=config,
         settings=settings,
         settings_store=settings_store,
         paths=paths,
-        resources=resources,
-        database_interpreter=database_interpreter,
-        book_repository=book_repository,
-        tag_repository=tag_repository,
-        archive_extraction_pool=archive_extraction_pool,
-        archive_image_service=archive_image_service,
-        reader_session_service=reader_session_service,
-        pdf_image_service=pdf_image_service,
-        archive_warmup_coordinator=archive_warmup_coordinator,
-        library_service=library_service,
-        task_service=task_service,
-        cache_service=cache_service,
-        hash_service=hash_service,
-        tag_service=tag_service,
-        import_service=import_service,
-        library_maintenance_coordinator=library_maintenance_coordinator,
-        library_maintenance_service=library_maintenance_service,
-        export_service=export_service,
+        reader_runtime=reader_runtime,
+        library_runtime=library_runtime,
         storage_migration_service=storage_migration_service,
         storage_validation_service=storage_validation_service,
         storage_recovery_service=storage_recovery_service,
-        thumbnail_service=thumbnail_service,
-        thumbnail_renderer=thumbnail_renderer,
-        hidden_space_service=hidden_space_service,
-        path_issue_service=path_issue_service,
-        main_window_viewmodel=main_window_viewmodel,
-        path_issue_viewmodel=path_issue_viewmodel,
-        shelf_viewmodel=shelf_viewmodel,
-        settings_viewmodel=settings_viewmodel,
-        tag_management_viewmodel=tag_management_viewmodel,
         storage_startup_notice=startup.notice,
-        library_maintenance_recovery_conflicts=bool(maintenance_recovery.conflicts),
+        library_maintenance_recovery_conflicts=library_runtime.maintenance_recovery_conflicts,
     )
     # The settings panel renders a live "used / budget" label for the disk
     # pool; provide it a thin lambda so the viewmodel can poll the current
@@ -843,7 +749,7 @@ def _create_app_context_bound(
     )
     context.attach_archive_pool_usage_bridge()
     context.path_issue_bridge = PathIssueBridge()
-    context.path_issue_bridge.issue_detected.connect(path_issue_viewmodel.present)
+    context.path_issue_bridge.issue_detected.connect(reader_runtime.path_issue_viewmodel.present)
     context.path_issue_bridge.attach(path_issue_service)
     # Hook user-driven cache actions back into the live services. Owning the
     # connection in AppContext keeps the viewmodel UI-only and makes the side
@@ -885,43 +791,6 @@ def _create_path_service(config: AppConfig, settings_store: SettingsStore, setti
     )
 
 
-def _create_archive_extraction_cache(
-    paths: PathService,
-    settings: AppSettings,
-    path_issue_service: PathIssueService,
-) -> ArchiveExtractionCache:
-    strategy = normalize_archive_cache_strategy(settings.archive_cache_strategy)
-    max_bytes = settings.archive_extraction_pool_gb * 1024 * 1024 * 1024
-    logger.debug("Creating archive extraction cache strategy=%s max_bytes=%d", strategy.value, max_bytes)
-    if strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES:
-        return HiddenImageExtractionPool(
-            paths.resolve(WritableLocation.CACHE, ".archive_image_pages"),
-            max_bytes=max_bytes,
-            path_issue_service=path_issue_service,
-        )
-    return ArchiveExtractionPool(
-        paths.resolve(WritableLocation.CACHE, ".archive_zip_bundles"),
-        max_bytes=max_bytes,
-        path_issue_service=path_issue_service,
-    )
-
-
-def _create_database_interpreter(paths: PathService) -> DatabaseInterpreter:
-    logger.debug("Creating database interpreter at %s", paths.paths.database / "joyread.sqlite3")
-    database = DatabaseInterpreter(paths.paths.database / "joyread.sqlite3")
-    database.execute(apply_migrations, DatabasePriority.CRITICAL)
-    return database
-
-
-def _create_sqlite_book_repository(database: DatabaseInterpreter, paths: PathService) -> SqliteBookRepository:
-    return SqliteBookRepository(
-        database,
-        resolver=paths.resolver,
-        managed_books_root=paths.paths.books,
-        thumbnails_root=paths.paths.thumbnails,
-    )
-
-
 def _create_library_maintenance_service(
     paths: PathService,
     database: DatabaseInterpreter,
@@ -943,36 +812,4 @@ def _create_library_maintenance_service(
         invalidate_file_cache=thumbnail_service.invalidate_file_cache,
         coordinator=coordinator,
         pdf_service=pdf_service,
-    )
-
-
-def _archive_open_limits_from_settings(settings: AppSettings) -> ArchiveOpenLimits:
-    """Translate persisted settings once at the application composition root."""
-
-    guardrails_enabled = bool(settings.archive_resource_guardrails_enabled)
-
-    def resource_limit(value: int, multiplier: int) -> int | None:
-        if not guardrails_enabled or int(value) == -1:
-            return None
-        return int(value) * multiplier
-
-    return ArchiveOpenLimits(
-        nested_archive_max_depth=(
-            None if settings.nested_archive_max_depth == -1 else settings.nested_archive_max_depth
-        ),
-        global_file_max_depth=(
-            None if settings.archive_global_file_max_depth == -1 else settings.archive_global_file_max_depth
-        ),
-        max_source_bytes=(
-            settings.archive_max_source_size_gb * GIB
-            if settings.archive_max_source_size_enabled
-            else None
-        ),
-        max_extracted_item_bytes=resource_limit(settings.archive_max_extracted_item_gb, GIB),
-        max_operation_bytes=resource_limit(settings.archive_max_operation_data_gb, GIB),
-        max_image_pixels=resource_limit(settings.archive_max_image_megapixels, MEGAPIXEL),
-        external_command_timeout_seconds=resource_limit(
-            settings.archive_external_command_timeout_seconds,
-            1,
-        ),
     )

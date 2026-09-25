@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
-from joyread.ui.viewmodels.shelf_viewmodel import SortField, ViewMode
+from joyread.ui.viewmodels.shelf_enums import SortField, ViewMode
 from joyread.ui.widgets.dropdown_button import FigmaDropdownButton
 from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.mode_switches import ListModeSwitchWidget, SortModeSwitchWidget

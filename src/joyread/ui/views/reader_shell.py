@@ -8,13 +8,14 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QPoint, QRectF, QSize, QTimer, Qt, Signal as QtSignal
-from PySide6.QtGui import QColor, QCloseEvent, QCursor, QIcon, QKeyEvent, QMouseEvent, QPainter, QPainterPath, QPaintEvent
+from PySide6.QtCore import QPoint, QSize, QTimer, Qt, Signal as QtSignal
+from PySide6.QtGui import QCloseEvent, QCursor, QIcon, QKeyEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.app.reader_document_runtime import ReaderDocumentRuntime
-from joyread.app.app_context import AppContext
+from joyread.app.reader_library_port import ReaderLibraryPort
+from joyread.app.reader_runtime import ReaderRuntime
 from joyread.core.models.book import Book
 from joyread.core.reader import (
     ReaderDirection,
@@ -25,7 +26,6 @@ from joyread.core.reader import (
 )
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
-from joyread.infrastructure.thumbnail_renderer import QtThumbnailRenderer
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
@@ -52,9 +52,10 @@ class ReaderShellWidget(ReaderShellBase):
 
     def __init__(
         self,
-        context: AppContext,
+        reader: ReaderRuntime,
         source_path: str | Path,
         *,
+        library_port: ReaderLibraryPort | None = None,
         book: Book | None = None,
         title: str | None = None,
         show_back_button: bool = False,
@@ -62,7 +63,7 @@ class ReaderShellWidget(ReaderShellBase):
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self._context = context
+        self._reader = reader
         self._source_path = Path(source_path)
         self._drag = SystemMoveGesture()
         self._show_back_button = show_back_button
@@ -85,25 +86,25 @@ class ReaderShellWidget(ReaderShellBase):
         # controls behind it.
         self.panel_scrim = FloatingPanelScrim(self)
         self.panel_scrim.hide()
-        self.header = ReaderHeader(context.resources, self)
+        self.header = ReaderHeader(reader.resources, self)
         self.header.set_back_visible(show_back_button)
         self.panel_scrim.set_drag_handle(self.header)
-        self.footer = ReaderFooter(context.resources, self)
-        self.left_arrow = _side_button(context.resources, "icon_left.svg", self)
-        self.right_arrow = _side_button(context.resources, "icon_right.svg", self)
-        self.settings_panel = ReaderSettingsPanel(context.resources, self)
+        self.footer = ReaderFooter(reader.resources, self)
+        self.left_arrow = _side_button(reader.resources, "icon_left.svg", self)
+        self.right_arrow = _side_button(reader.resources, "icon_right.svg", self)
+        self.settings_panel = ReaderSettingsPanel(reader.resources, self)
         self.settings_panel.hide()
-        self.topic_panel = ReaderTopicPanel(context.resources, self)
+        self.topic_panel = ReaderTopicPanel(reader.resources, self)
         self.topic_panel.hide()
-        self.dialog_overlay = JoyReadDialogOverlay(self, context.resources, drag_handle=self.header)
+        self.dialog_overlay = JoyReadDialogOverlay(self, reader.resources, drag_handle=self.header)
         self.dialog_overlay.hide()
         self._path_issue_prompt = PathIssuePromptController(
             self,
             self.dialog_overlay,
-            context.path_issue_viewmodel,
+            reader.path_issue_viewmodel,
         )
 
-        app_settings = context.reload_settings()
+        app_settings = reader.reload_settings()
         logger.info(
             "ReaderShellWidget init: path=%s book=%s embedded=%s",
             self._source_path,
@@ -112,32 +113,32 @@ class ReaderShellWidget(ReaderShellBase):
         )
         self.viewmodel = ReaderViewModel(
             ReaderDocumentRuntime(
-                context.reader_session_service,
+                reader.reader_session_service,
                 document_cache_key=(
                     f"file:{book.file_id}" if book is not None and book.file_id else None
                 ),
-                archive_extraction_cache=context.archive_extraction_pool,
-                hash_service=context.hash_service,
+                archive_extraction_cache=reader.archive_extraction_pool,
+                hash_service=reader.hash_service,
                 purge_encrypted_cache_on_close=bool(
                     getattr(app_settings, "purge_encrypted_cache_on_close", True)
                 ),
             ),
-            context.task_service,
-            context.cache_service.issue_reader_namespace(),
-            context.library_service if book is not None else None,
+            reader.task_service,
+            reader.cache_service.issue_reader_namespace(),
+            library_port if book is not None else None,
             book_uuid=book.uuid if book is not None else None,
             title=title or (book.title if book is not None else self._source_path.stem),
-            settings=_reader_settings_for_book(context, book, app_settings.default_reader_settings),
-            progress=_reader_progress_for_book(context, book, start_page_index),
-            prefetch_before=context.settings_viewmodel.page_prefetch_before,
-            prefetch_after=context.settings_viewmodel.page_prefetch_after,
+            settings=_reader_settings_for_book(library_port, book, app_settings.default_reader_settings),
+            progress=_reader_progress_for_book(library_port, book, start_page_index),
+            prefetch_before=reader.preferences.page_prefetch_before,
+            prefetch_after=reader.preferences.page_prefetch_after,
             nested_archive_max_depth=app_settings.nested_archive_max_depth,
             archive_global_file_max_depth=app_settings.archive_global_file_max_depth,
-            archive_limits=context.settings_viewmodel.archive_open_limits,
-            thumbnail_cache_client=context.cache_service.issue_thumbnail_client(),
-            archive_warmup_coordinator=context.archive_warmup_coordinator,
+            archive_limits=reader.preferences.archive_open_limits,
+            thumbnail_cache_client=reader.cache_service.issue_thumbnail_client(),
+            archive_warmup_coordinator=reader.archive_warmup_coordinator,
             page_decoder=QtPageFrameDecoder(),
-            thumbnail_renderer=context.thumbnail_renderer or QtThumbnailRenderer(),
+            thumbnail_renderer=reader.thumbnail_renderer,
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
@@ -158,13 +159,13 @@ class ReaderShellWidget(ReaderShellBase):
         self._open_timer.start(0)
 
     def _sync_prefetch_window(self) -> None:
-        settings = self._context.settings_viewmodel
-        self.viewmodel.set_prefetch_window(settings.page_prefetch_before, settings.page_prefetch_after)
-        self.settings_panel.set_prefetch_window(settings.page_prefetch_before, settings.page_prefetch_after)
+        preferences = self._reader.preferences
+        self.viewmodel.set_prefetch_window(preferences.page_prefetch_before, preferences.page_prefetch_after)
+        self.settings_panel.set_prefetch_window(preferences.page_prefetch_before, preferences.page_prefetch_after)
 
     def cancel(self) -> None:
         self.preview.close()
-        self._context.settings_viewmodel.prefetch_window_changed.disconnect(self._sync_prefetch_window)
+        self._reader.preferences.prefetch_changed.disconnect(self._sync_prefetch_window)
         if hasattr(self, "_open_timer"):
             self._open_timer.stop()
         self._rapid_navigation_timer.stop()
@@ -216,10 +217,10 @@ class ReaderShellWidget(ReaderShellBase):
         self.settings_panel.vertical_fit_width_changed.connect(self.viewmodel.set_vertical_fit_width)
         self.settings_panel.page_spacing_changed.connect(self.viewmodel.set_page_spacing)
         self.settings_panel.zoom_percent_changed.connect(self.viewmodel.set_vertical_zoom_percent)
-        self.settings_panel.prefetch_before_changed.connect(self._context.settings_viewmodel.set_page_prefetch_before)
-        self.settings_panel.prefetch_after_changed.connect(self._context.settings_viewmodel.set_page_prefetch_after)
-        self._context.settings_viewmodel.prefetch_window_changed.connect(self._sync_prefetch_window)
-        self.destroyed.connect(lambda: self._context.settings_viewmodel.prefetch_window_changed.disconnect(self._sync_prefetch_window))
+        self.settings_panel.prefetch_before_changed.connect(self._reader.preferences.set_page_prefetch_before)
+        self.settings_panel.prefetch_after_changed.connect(self._reader.preferences.set_page_prefetch_after)
+        self._reader.preferences.prefetch_changed.connect(self._sync_prefetch_window)
+        self.destroyed.connect(lambda: self._reader.preferences.prefetch_changed.disconnect(self._sync_prefetch_window))
         self._sync_prefetch_window()
         self.viewmodel.state_changed.connect(self._sync_state)
         self.viewmodel.layout_changed.connect(self._sync_layout)
@@ -629,13 +630,15 @@ class ReaderShellWidget(ReaderShellBase):
 
 
 def _reader_settings_for_book(
-    context: AppContext, book: Book | None, defaults: ReaderSettings | None = None,
+    library_port: ReaderLibraryPort | None,
+    book: Book | None,
+    defaults: ReaderSettings | None = None,
 ) -> ReaderSettings:
     defaults = defaults or ReaderSettings()
-    if book is None:
+    if book is None or library_port is None:
         return defaults
     try:
-        return context.library_service.get_reader_settings(book.uuid) or defaults
+        return library_port.get_reader_settings(book.uuid) or defaults
     except Exception as exc:
         # Falling back silently here is how the ``vertical_fit_width`` schema
         # drift hid for so long: bookkeeping read errors made every reload
@@ -650,14 +653,14 @@ def _reader_settings_for_book(
 
 
 def _reader_progress_for_book(
-    context: AppContext,
+    library_port: ReaderLibraryPort | None,
     book: Book | None,
     start_page_index: int | None = None,
 ) -> ReaderProgress | None:
     progress: ReaderProgress | None = None
-    if book is not None:
+    if book is not None and library_port is not None:
         try:
-            progress = context.library_service.get_progress(book.uuid)
+            progress = library_port.get_progress(book.uuid)
         except Exception as exc:
             logger.error(
                 "Loading reader progress failed for book=%s; ignoring stored progress: %s",
