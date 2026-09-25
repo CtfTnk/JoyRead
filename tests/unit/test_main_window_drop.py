@@ -9,6 +9,7 @@ overlay, and reaching the reader and import pipelines -- have no other coverage.
 from __future__ import annotations
 
 from pathlib import Path
+from threading import Event
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
@@ -19,6 +20,9 @@ from PySide6.QtWidgets import QWidget
 from shiboken6 import isValid
 
 from joyread.app.app_context import create_app_context
+from joyread.app.open_policy import LibraryState
+from joyread.core.services.import_service import ImportBatchResult, ImportItemResult
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.widgets.drop_zone_overlay import IMPORT_ZONE, READ_ZONE
 
@@ -155,10 +159,170 @@ def test_dropping_on_read_opens_a_reader_without_importing(window, tmp_path, qtb
     assert main._context.book_repository.list_books() == []
 
 
-def test_dropping_on_import_submits_an_import_and_opens_no_reader(
+def test_read_drop_preference_imports_once_without_delaying_reader(
     window, tmp_path, monkeypatch, qtbot
 ) -> None:
     main, launches = window
+    main._context.settings_viewmodel.set_import_on_read_drop(True)
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    imported: list[tuple[Path, ...]] = []
+    original = main._context.import_service.import_files
+
+    def record(paths, **kwargs):  # noqa: ANN001, ANN202
+        imported.append(tuple(paths))
+        return original(paths, **kwargs)
+
+    monkeypatch.setattr(main._context.import_service, "import_files", record)
+    mime = _mime(source)
+    _enter(main, mime, QPoint(600, 400))
+    assert main.drop_zone_overlay._read_import_enabled
+    event = _drop(main, mime, READ_ZONE)
+
+    assert event.isAccepted()
+    assert launches == []
+    qtbot.waitUntil(lambda: len(launches) == 1)
+    assert launches[0].path == source
+    qtbot.waitUntil(lambda: len(main._context.book_repository.list_books()) == 1)
+    assert imported == [(source,)]
+
+
+def test_unavailable_library_read_drop_is_read_only_and_import_is_refused(
+    window, tmp_path, monkeypatch, qtbot
+) -> None:
+    main, launches = window
+    main._context.settings_viewmodel.set_import_on_read_drop(True)
+    monkeypatch.setattr(main, "_library_state", lambda: LibraryState.FAILED)
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    mime = _mime(source)
+    assert _enter(main, mime, QPoint(600, 400)).isAccepted()
+    assert not main.drop_zone_overlay._read_import_enabled
+    assert not main.drop_zone_overlay._import_enabled
+    assert not _drop(main, mime, IMPORT_ZONE).isAccepted()
+
+    _enter(main, mime, QPoint(600, 400))
+    assert _drop(main, mime, READ_ZONE).isAccepted()
+    qtbot.waitUntil(lambda: len(launches) == 1)
+    assert main._context.book_repository.list_books() == []
+
+    folder = tmp_path / "drop" / "folder"
+    folder.mkdir()
+    assert not _enter(main, _mime(folder), QPoint(600, 400)).isAccepted()
+
+
+def test_read_drop_reports_lost_import_availability_after_release(
+    window, tmp_path, monkeypatch, qtbot
+) -> None:
+    main, launches = window
+    main._context.settings_viewmodel.set_import_on_read_drop(True)
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    mime = _mime(source)
+    _enter(main, mime, QPoint(600, 400))
+    assert _drop(main, mime, READ_ZONE).isAccepted()
+
+    # The application changes state before Qt handles the scheduled command.
+    monkeypatch.setattr(main, "_library_state", lambda: LibraryState.LOADING)
+    qtbot.waitUntil(lambda: len(launches) == 1)
+
+    assert launches[0].path == source
+    assert main.dialog_overlay.panel.title_text == t("dialog.import_failed_title")
+    assert main._context.book_repository.list_books() == []
+
+
+def test_open_book_ignores_read_drop_preference(window, tmp_path, monkeypatch) -> None:
+    main, launches = window
+    main._context.settings_viewmodel.set_import_on_read_drop(True)
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+
+    def reject_import(*_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("Open Book must not import")
+
+    monkeypatch.setattr(main._context.import_service, "import_files", reject_import)
+    main.open_reader_for_file(source)
+
+    assert len(launches) == 1
+    assert launches[0].path == source
+    assert main._context.book_repository.list_books() == []
+
+
+def test_explicit_open_and_import_adds_one_book(window, tmp_path, monkeypatch, qtbot) -> None:
+    main, launches = window
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    imported: list[tuple[Path, ...]] = []
+    original = main._context.import_service.import_files
+
+    def record(paths, **kwargs):  # noqa: ANN001, ANN202
+        imported.append(tuple(paths))
+        return original(paths, **kwargs)
+
+    monkeypatch.setattr(main._context.import_service, "import_files", record)
+    main.open_reader_for_file(source, import_mode=True)
+
+    assert len(launches) == 1
+    assert launches[0].path == source
+    qtbot.waitUntil(lambda: len(main._context.book_repository.list_books()) == 1)
+    assert imported == [(source,)]
+
+
+def test_explicit_open_and_import_requires_ready_library(window, tmp_path, monkeypatch) -> None:
+    main, launches = window
+    monkeypatch.setattr(main, "_library_state", lambda: LibraryState.FAILED)
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    main.open_reader_for_file(source, import_mode=True)
+
+    assert launches == []
+    assert main._context.book_repository.list_books() == []
+    assert main.dialog_overlay.panel.title_text == t("dialog.import_failed_title")
+
+
+def test_cancel_open_and_import_keeps_reader_open(window, tmp_path, monkeypatch, qtbot) -> None:
+    main, launches = window
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+    started = Event()
+    stopped = Event()
+
+    def wait_for_cancel(_paths, *, is_cancelled, **_kwargs):  # noqa: ANN001, ANN202
+        started.set()
+        if not stopped.wait(2.0):
+            raise AssertionError("Import was not cancelled")
+        assert is_cancelled()
+        return ImportBatchResult("cancelled", 0, 0, 0, 0, ())
+
+    monkeypatch.setattr(main._context.import_service, "import_files", wait_for_cancel)
+    main.open_reader_for_file(source, import_mode=True)
+    assert len(launches) == 1
+    qtbot.waitUntil(started.is_set)
+    main.dialog_overlay.panel.rejected.emit()
+    stopped.set()
+    qtbot.waitUntil(lambda: main._context.task_service.pending_task_count() == 0)
+    assert launches[0].path == source
+    assert not main.dialog_overlay.isVisible()
+
+
+def test_failed_open_and_import_keeps_reader_open(window, tmp_path, monkeypatch, qtbot) -> None:
+    main, launches = window
+    source = _cbz(tmp_path / "drop" / "a.cbz")
+
+    def rejected(_paths, **_kwargs):  # noqa: ANN001, ANN202
+        return ImportBatchResult(
+            "failed", 0, 0, 1, 0,
+            (ImportItemResult(str(source), "skipped", message="Encrypted source"),),
+        )
+
+    monkeypatch.setattr(main._context.import_service, "import_files", rejected)
+    main.open_reader_for_file(source, import_mode=True)
+    qtbot.waitUntil(
+        lambda: main.dialog_overlay.panel.title_text == t("dialog.open_import_failed_title")
+    )
+    assert len(launches) == 1
+    assert launches[0].path == source
+
+
+@pytest.mark.parametrize("read_drop_preference", (False, True))
+def test_dropping_on_import_submits_an_import_and_opens_no_reader(
+    window, tmp_path, monkeypatch, qtbot, read_drop_preference
+) -> None:
+    main, launches = window
+    main._context.settings_viewmodel.set_import_on_read_drop(read_drop_preference)
     submitted: list[str] = []
     # Imports stream progress, so they go through ``submit_stream`` rather than
     # ``submit`` -- the drop path has to reach the same submission as every

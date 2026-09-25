@@ -24,6 +24,7 @@ from joyread.ui.widgets.drop_zone_overlay import (
     READ_ZONE,
     DropZoneOverlay,
     _blurred,
+    _read_subtitle,
 )
 
 
@@ -79,6 +80,29 @@ def test_dropping_on_read_emits_the_single_path(overlay, tmp_path) -> None:
     assert widget.handle_drop(_center_of(widget, READ_ZONE))
 
     assert seen == [source.resolve()]
+
+
+def test_unavailable_library_disables_import_but_keeps_read_only(overlay, tmp_path) -> None:
+    widget = overlay()
+    source = _cbz(tmp_path, "a.cbz")
+    widget.configure_actions(read_import_enabled=True, import_enabled=False)
+    widget.begin(classify_drop_paths([source]))
+    imported: list[tuple] = []
+    read: list[Path] = []
+    widget.import_requested.connect(imported.append)
+    widget.read_requested.connect(read.append)
+
+    widget.update_hover(_center_of(widget, IMPORT_ZONE))
+    assert widget.hover_zone is None
+    assert not widget.handle_drop(_center_of(widget, IMPORT_ZONE))
+    assert imported == []
+
+    widget.begin(classify_drop_paths([source]))
+    assert widget.handle_drop(_center_of(widget, READ_ZONE))
+    assert read == [source.resolve()]
+    assert _read_subtitle(
+        classify_drop_paths([source]), read_import_enabled=False, import_enabled=False
+    ) == locale_service.t("dialog.drop_read_library_unavailable")
 
 
 def test_dropping_on_import_emits_every_path(overlay, tmp_path) -> None:

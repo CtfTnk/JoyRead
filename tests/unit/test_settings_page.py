@@ -45,7 +45,7 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.state_changed.connect(lambda: changes.append(None))
 
     viewmodel.set_section(SettingsSectionKey.TAGS)
-    viewmodel.set_import_book_when_opening(True)
+    viewmodel.set_import_on_read_drop(True)
     viewmodel.set_individual_read_window(True)
     viewmodel.set_language("English")
     viewmodel.set_storage_location("~/Documents/JoyRead-Library-Test")
@@ -62,7 +62,7 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     viewmodel.set_archive_external_command_timeout_seconds(900)
 
     assert viewmodel.current_section == SettingsSectionKey.TAGS
-    assert viewmodel.import_book_when_opening is True
+    assert viewmodel.import_on_read_drop is True
     assert viewmodel.individual_read_window is True
     assert viewmodel.storage_location == "~/Documents/JoyRead-Library-Test"
     assert viewmodel.archive_cache_strategy == ArchiveCacheStrategy.HIDDEN_IMAGE_FILES
@@ -78,6 +78,24 @@ def test_settings_viewmodel_tracks_section_and_general_options() -> None:
     assert viewmodel.archive_max_image_megapixels == 800
     assert viewmodel.archive_external_command_timeout_seconds == 900
     assert len(changes) == 15
+
+
+def test_legacy_open_import_setting_does_not_enable_read_drop(tmp_path) -> None:
+    store = SettingsStore(
+        support_root=tmp_path / "support",
+        default_storage_root=tmp_path / "storage",
+    )
+    store.load()
+    raw = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    raw.pop("import_on_read_drop")
+    raw["import_book_when_opening"] = True
+    store.settings_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert store.load().import_on_read_drop is False
+    store.update(language="English")
+    saved = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert saved["import_on_read_drop"] is False
+    assert "import_book_when_opening" not in saved
 
 
 def test_settings_viewmodel_accepts_unlimited_depth_and_ignores_invalid_sentinels() -> None:

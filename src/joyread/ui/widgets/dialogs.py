@@ -765,16 +765,12 @@ class JoyReadDialogPanel(QFrame):
         self._set_content_widget(DialogMessageContent(message))
         self._set_buttons(((button_text, self.accepted.emit),))
 
-    def set_progress(self, title: str, message: str) -> None:
-        """A dialog that reports and cannot be dismissed.
-
-        No buttons: the work is already running and there is nothing for the
-        user to decide.
-        """
+    def set_progress(self, title: str, message: str, *, cancellable: bool = False) -> None:
+        """Show task progress, with a cancel button for cooperative tasks."""
 
         self._set_title(title)
         self._set_content_widget(DialogProgressContent(message))
-        self._set_buttons(())
+        self._set_buttons(((t("dialog.btn_cancel"), self.rejected.emit),) if cancellable else ())
 
     def is_showing_progress(self) -> bool:
         """Whether the current content belongs to a running task."""
@@ -1024,15 +1020,23 @@ class JoyReadDialogOverlay(QWidget):
         self._panel._refresh_size()
         self._position_panel()
 
-    def show_progress(self, title: str, message: str) -> None:
-        """Show an undismissable progress dialog. Close it with :meth:`close_progress`."""
+    def show_progress(
+        self, title: str, message: str, *, on_cancel: Callable[[], None] | None = None
+    ) -> None:
+        """Show progress; offer cancellation only for cooperative tasks."""
 
         self._on_accept = None
-        self._on_reject = None
+        self._on_reject = on_cancel
         self._on_skip = None
         self._before_accept = None
-        self._panel.set_progress(title, message)
+        self._panel.set_progress(title, message, cancellable=on_cancel is not None)
         self._show_centered()
+
+    def close_progress(self) -> None:
+        """Dismiss the current progress panel without closing another dialog."""
+
+        if self.isVisible() and self._panel.is_showing_progress():
+            self._clear_and_hide()
 
     def update_progress(self, message: str) -> None:
         """Update the visible progress text, if a progress dialog is showing.
@@ -1320,7 +1324,7 @@ class JoyReadDialogOverlay(QWidget):
             callback()
 
     def _reject(self) -> None:
-        if self._panel.is_showing_progress():
+        if self._panel.is_showing_progress() and self._on_reject is None:
             # Escape has nothing to dismiss here. Clearing ``_on_reject`` stops
             # the callback but not the hide, so Escape used to make the dialog
             # vanish while the import carried on -- leaving the user with no

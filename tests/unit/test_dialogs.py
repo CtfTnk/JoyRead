@@ -794,6 +794,31 @@ def test_dialog_confirm_cancel_callbacks_close_overlay(qtbot) -> None:
     assert result == ["cancel", "confirm"]
 
 
+def test_cancellable_progress_button_stops_task_without_rejecting_plain_progress(qtbot) -> None:
+    apply_theme()
+    root = QWidget()
+    qtbot.addWidget(root)
+    root.resize(Theme.window_width, Theme.window_height)
+    overlay = JoyReadDialogOverlay(root)
+    overlay.setGeometry(0, 0, root.width(), root.height())
+    root.show()
+
+    cancelled: list[bool] = []
+    overlay.show_progress("Importing", "Preparing…", on_cancel=lambda: cancelled.append(True))
+    QApplication.processEvents()
+    buttons = overlay.panel.findChildren(DialogTextButton)
+    assert len(buttons) == 1
+    qtbot.mouseClick(buttons[0], Qt.MouseButton.LeftButton)
+    assert cancelled == [True]
+    assert overlay.isHidden()
+
+    overlay.show_progress("Importing", "Preparing…")
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    assert overlay.isVisible()
+    overlay.close_progress()
+    assert overlay.isHidden()
+
+
 def test_dialog_password_input_cancel_callback_and_unicode_text(qtbot) -> None:
     apply_theme()
     root = QWidget()

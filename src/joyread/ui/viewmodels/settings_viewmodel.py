@@ -29,6 +29,7 @@ from joyread.core.services.hidden_space_service import (
     HiddenSpaceService,
 )
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.app.open_policy import LibraryState, OpenDisposition, OpenOrigin, decide_open
 from joyread.infrastructure.i18n import locale_service
 from joyread.ui.viewmodels.signals import Signal
 
@@ -171,7 +172,7 @@ class SettingsViewModel:
         )
         self.current_section = SettingsSectionKey.GENERAL
         self.language = settings.language
-        self.import_book_when_opening = settings.import_book_when_opening
+        self.import_on_read_drop = settings.import_on_read_drop
         self.verify_imported_file_integrity = bool(
             getattr(settings, "verify_imported_file_integrity", True)
         )
@@ -314,12 +315,24 @@ class SettingsViewModel:
         # Language has its own presentation event: a generic rebuild loses edits.
         self.language_changed.emit()
 
-    def set_import_book_when_opening(self, enabled: bool) -> None:
-        if enabled == self.import_book_when_opening:
+    def set_import_on_read_drop(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.import_on_read_drop:
             return
-        self.import_book_when_opening = enabled
-        self._persist(import_book_when_opening=enabled)
+        self.import_on_read_drop = enabled
+        self._persist(import_on_read_drop=enabled)
         self.state_changed.emit()
+
+    def drop_disposition(self, origin: OpenOrigin, library_state: LibraryState) -> OpenDisposition:
+        """Resolve a Library drop using the dedicated preference."""
+
+        if origin not in (OpenOrigin.DROP_READ, OpenOrigin.DROP_IMPORT):
+            raise ValueError(f"Not a drop origin: {origin!r}")
+        return decide_open(
+            origin,
+            library_state=library_state,
+            import_on_read_drop=self.import_on_read_drop,
+        )
 
     def set_verify_imported_file_integrity(self, enabled: bool) -> None:
         enabled = bool(enabled)

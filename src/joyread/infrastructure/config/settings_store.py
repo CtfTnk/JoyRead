@@ -52,7 +52,9 @@ class AppSettings:
     last_good_storage_location: str | None = None
     hash_algorithm: str = "sha256"
     language: str = "System"
-    import_book_when_opening: bool = False
+    # Only a file dropped on the Library Read zone may use this preference.
+    # The old import_book_when_opening key is deliberately not migrated.
+    import_on_read_drop: bool = False
     # When enabled, the source is hashed before copy and the staging copy must
     # produce the same digest. Disabling it avoids a separate source pass while
     # retaining a content hash calculated during the required copy pass.
@@ -199,7 +201,7 @@ class SettingsStore:
             last_good_storage_location=_coerce_optional_str(raw.get("last_good_storage_location")),
             hash_algorithm=str(raw.get("hash_algorithm") or "sha256"),
             language=str(raw.get("language") or "System"),
-            import_book_when_opening=bool(raw.get("import_book_when_opening", False)),
+            import_on_read_drop=bool(raw.get("import_on_read_drop", False)),
             verify_imported_file_integrity=bool(raw.get("verify_imported_file_integrity", True)),
             individual_read_window=bool(raw.get("individual_read_window", False)),
             default_reader_settings=_reader_settings(raw.get("default_reader_settings")),

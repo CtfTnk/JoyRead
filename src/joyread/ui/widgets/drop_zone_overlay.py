@@ -100,6 +100,8 @@ class DropZoneOverlay(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         self._payload = DropPayload()
+        self._read_import_enabled = False
+        self._import_enabled = True
         self._active = False
         self._hover_zone: str | None = None
         self._confirming = False
@@ -194,6 +196,25 @@ class DropZoneOverlay(QWidget):
     def is_confirming(self) -> bool:
         return self._confirming
 
+    def configure_actions(self, *, read_import_enabled: bool, import_enabled: bool) -> None:
+        """Apply the ViewModel's drop decisions to labels and hit testing."""
+
+        next_import_enabled = bool(import_enabled)
+        next_read_import_enabled = bool(read_import_enabled and import_enabled)
+        if (
+            self._read_import_enabled == next_read_import_enabled
+            and self._import_enabled == next_import_enabled
+        ):
+            return
+        self._read_import_enabled = next_read_import_enabled
+        self._import_enabled = next_import_enabled
+        if not self._import_enabled and self._hover_zone == IMPORT_ZONE:
+            self._set_hover(None)
+        self.update()
+
+    def can_accept(self, payload: DropPayload) -> bool:
+        return payload.can_read or (self._import_enabled and payload.can_import)
+
     def set_content_area(self, widget: QWidget | None) -> None:
         """The region this overlay covers, and the image it blurs behind itself.
 
@@ -237,7 +258,7 @@ class DropZoneOverlay(QWidget):
     def begin(self, payload: DropPayload) -> None:
         """Raise the overlay for *payload*. Ignored for an empty payload."""
 
-        if not payload.can_import:
+        if not self.can_accept(payload):
             return
         self._confirm_timer.stop()
         self._confirm_animation.stop()
@@ -321,7 +342,7 @@ class DropZoneOverlay(QWidget):
 
         payload = self._payload
         zone = self._zone_at(point)
-        if not self._active or zone is None or not payload.can_import:
+        if not self._active or zone is None or not self.can_accept(payload):
             self.end()
             return False
 
@@ -338,6 +359,9 @@ class DropZoneOverlay(QWidget):
             self.read_requested.emit(read_path)
             return True
 
+        if not self._import_enabled:
+            self.end()
+            return False
         paths = payload.import_paths
         self.show_import_confirmation(payload.item_count)
         self.import_requested.emit(paths)
@@ -377,6 +401,8 @@ class DropZoneOverlay(QWidget):
         # A disabled Read zone never reads as hovered: the pointer being over it
         # must not suggest a release there would do something.
         if zone == READ_ZONE and not self._payload.can_read:
+            zone = None
+        if zone == IMPORT_ZONE and not self._import_enabled:
             zone = None
         if zone == self._hover_zone:
             return
@@ -592,7 +618,11 @@ class DropZoneOverlay(QWidget):
             rects[READ_ZONE],
             glyph=self._read_glyph if readable else self._read_glyph_disabled,
             title=t("dialog.drop_read_title"),
-            subtitle=_read_subtitle(self._payload),
+            subtitle=_read_subtitle(
+                self._payload,
+                read_import_enabled=self._read_import_enabled,
+                import_enabled=self._import_enabled,
+            ),
             enabled=readable,
             hover=self._hover_progress[READ_ZONE],
         )
@@ -601,8 +631,11 @@ class DropZoneOverlay(QWidget):
             rects[IMPORT_ZONE],
             glyph=self._import_glyph,
             title=t("dialog.drop_import_title"),
-            subtitle=t("dialog.drop_import_subtitle"),
-            enabled=True,
+            subtitle=t(
+                "dialog.drop_import_subtitle"
+                if self._import_enabled else "dialog.drop_import_unavailable"
+            ),
+            enabled=self._import_enabled,
             hover=self._hover_progress[IMPORT_ZONE],
         )
 
@@ -814,12 +847,18 @@ def _confirm_text(count: int) -> str:
     return t("dialog.drop_confirm_importing_many", count=str(count))
 
 
-def _read_subtitle(payload: DropPayload) -> str:
+def _read_subtitle(
+    payload: DropPayload, *, read_import_enabled: bool, import_enabled: bool
+) -> str:
     reason = payload.read_unavailable
     if reason is ReadUnavailable.FOLDER:
         return t("dialog.drop_read_blocked_folder")
     if reason is ReadUnavailable.MULTIPLE_ITEMS:
         return t("dialog.drop_read_blocked_multiple")
+    if not import_enabled:
+        return t("dialog.drop_read_library_unavailable")
+    if read_import_enabled:
+        return t("dialog.drop_read_and_import_subtitle")
     return t("dialog.drop_read_subtitle")
 
 

@@ -59,7 +59,7 @@ Find all packages and checksums on the [release page](https://github.com/CtfTnk/
 3. **Make the shelf yours.** Switch between cards and lists, create collections, add tags, and mark favourites.
 4. **Start reading.** Open a book from the shelf, or use **Open With → JoyRead** in your file manager. File associations depend on installation and desktop integration.
 
-**Read** opens a file in place: by default, it does not copy the file or add a library entry. **Import** makes a managed copy while preserving the original. If **Import book when opening** is enabled in Settings, opening also attempts an import; encrypted comics still cannot be imported.
+**Read** opens one file in place without adding it to the library. **Import** makes a managed copy while preserving the original. The Settings option **Import when dropped on Library Read** makes that specific Read-zone drop also import; Open Book and the operating system's Open With remain read-only. **Open & Import** explicitly reads while importing in the background. Encrypted comics can be read with a password but cannot be imported.
 
 ## A closer look
 

@@ -425,10 +425,10 @@ class SettingsPageWidget(QFrame):
         language.value_changed.connect(lambda label: self._viewmodel.set_language(language_value_from_display(label)))
 
         import_switch = SettingsSwitchItem(
-            t("settings.import_when_opening"),
-            self._viewmodel.import_book_when_opening,
+            t("settings.import_on_read_drop"),
+            self._viewmodel.import_on_read_drop,
         )
-        import_switch.toggled.connect(self._viewmodel.set_import_book_when_opening)
+        import_switch.toggled.connect(self._viewmodel.set_import_on_read_drop)
 
         verify_import_switch = SettingsSwitchItem(
             t("settings.verify_imported_file_integrity"),
@@ -477,11 +477,11 @@ class SettingsPageWidget(QFrame):
         return [
             general_banner,
             language,
-            import_switch,
             verify_import_switch,
             window_switch,
             reset_window,
             import_banner,
+            import_switch,
             import_folder_depth_item,
             canonical_policy_item,
             library_banner,

@@ -7,6 +7,7 @@ from joyread.ui.widgets.localized_text import set_localized
 import logging
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from threading import Event
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal, Slot
 from PySide6.QtGui import (
@@ -20,6 +21,12 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.app.app_context import AppContext, StorageTransition
+from joyread.app.open_policy import (
+    LibraryState,
+    OpenDisposition,
+    OpenOrigin,
+    decide_open,
+)
 from joyread.app.cover_editor import PreparedCoverSource
 from joyread.app.storage_transition import TransitionConsequences, describe_consequences
 from joyread.app.storage_transition_driver import StorageTransitionController
@@ -36,12 +43,13 @@ from joyread.core.models.tag import Tag
 from joyread.core.file_types import SUPPORTED_READER_EXTENSIONS
 from joyread.core.services.import_service import (
     BOOK_EXTENSIONS,
+    ImportBatchResult,
     ImportProgress,
     ImportStage,
 )
 from joyread.core.services.library_maintenance_service import LibraryAuditPlan, LibraryAuditReport
 from joyread.core.services.storage_validation_service import StorageValidationCode
-from joyread.app.tasking import TaskPriority
+from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
@@ -78,6 +86,9 @@ class MainWindow(QMainWindow):
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
         self._closing = False
+        # MainWindow is currently built only after AppContext has opened the
+        # Library. P4 will replace this bridge with the async LibraryRuntime.
+        self._library_failed = False
         # Absent unless the composition root wired the novel reader in, which
         # is what makes an .epub unopenable rather than a special case here.
         self._novel_reader_provider = novel_reader_provider
@@ -174,13 +185,10 @@ class MainWindow(QMainWindow):
         )
         self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
         self.drop_zone_overlay.set_content_area(view_panel)
-        # Accept the drop and return to Qt/native drag handling before opening
-        # windows or dialogs. A synchronous Reader activation happens inside
-        # the OLE drop callback and can be undone by the drag source's cleanup.
-        # Queue the committed paths, not the transient QDropEvent/mime object.
-        self.drop_zone_overlay.read_requested.connect(
-            self.open_reader_for_file, Qt.ConnectionType.QueuedConnection
-        )
+        # Capture the shown Read policy synchronously, then return to native
+        # drag handling before creating windows or dialogs. A Reader activated
+        # inside OLE's drop callback can be undone by the source's cleanup.
+        self.drop_zone_overlay.read_requested.connect(self._queue_read_drop)
         self.drop_zone_overlay.import_requested.connect(
             self._import_dropped_paths, Qt.ConnectionType.QueuedConnection
         )
@@ -360,6 +368,12 @@ class MainWindow(QMainWindow):
     def open_reader_for_file(self, path: str | Path, import_mode: bool = False) -> None:
         if self._closing:
             return
+        if import_mode and decide_open(
+            OpenOrigin.LIBRARY_OPEN_AND_IMPORT,
+            library_state=self._library_state(),
+        ) is OpenDisposition.BLOCKED:
+            self._show_library_unavailable()
+            return
         source_path = Path(path)
         logger.info("open_reader_for_file path=%s import_mode=%s", source_path, import_mode)
         if self._is_shelved_epub(source_path):
@@ -405,18 +419,40 @@ class MainWindow(QMainWindow):
     def _start_open_and_import(self, source_path: Path, settings) -> None:  # noqa: ANN001
         logger.info("Open & Import starting path=%s", source_path)
         self._show_reader_window(source_path, title=source_path.stem)
-        self._context.task_service.submit(
+        cancelled = Event()
+        # The runnable may start before submit() returns its handle. Once it
+        # does, a storage-transition quiesce must also stop ImportService.
+        handles: list[TaskHandle[ImportBatchResult]] = []
+        self.dialog_overlay.show_progress(
+            t("dialog.import_progress_title"),
+            t("dialog.import_progress_preparing"),
+            on_cancel=cancelled.set,
+        )
+        handle = self._context.task_service.submit(
             "open-and-import-file",
             lambda: self._context.import_service.import_files(
                 [source_path],
                 nested_archive_max_depth=settings.nested_archive_max_depth,
                 archive_global_file_max_depth=settings.archive_global_file_max_depth,
+                is_cancelled=lambda: cancelled.is_set() or bool(
+                    handles and handles[0].status is TaskStatus.CANCELLED
+                ),
             ),
-            on_success=self._handle_open_and_import_finished,
-            on_failure=lambda error: self.dialog_overlay.show_info(t("dialog.open_import_failed_title"), t("error.operation_failed", detail=str(error))),
+            on_success=lambda result: self._handle_open_and_import_finished(
+                result, cancelled=cancelled.is_set()
+            ),
+            on_failure=lambda error: self._handle_open_and_import_failed(
+                error, cancelled=cancelled.is_set()
+            ),
         )
+        handles.append(handle)
+        if handle.status is TaskStatus.CANCELLED:
+            self.dialog_overlay.close_progress()
 
     def _select_reader_file(self, import_mode: bool) -> None:
+        if import_mode and self._library_state() is not LibraryState.READY:
+            self._show_library_unavailable()
+            return
         readable_suffixes = sorted(SUPPORTED_READER_EXTENSIONS)
         extensions = " ".join(f"*{suffix}" for suffix in readable_suffixes)
         # Keep the platform-native picker. On macOS this can briefly involve
@@ -435,6 +471,50 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Drag and drop
     # ------------------------------------------------------------------
+
+    def _library_state(self) -> LibraryState:
+        if self._library_failed:
+            return LibraryState.FAILED
+        if self._storage_transition.busy or self._context.storage_rebuild_required:
+            return LibraryState.LOADING
+        return LibraryState.READY
+
+    def _show_library_unavailable(self) -> None:
+        self.dialog_overlay.show_info(
+            t("dialog.import_failed_title"), t("dialog.library_import_unavailable")
+        )
+
+    def _refresh_drop_policy(self) -> None:
+        viewmodel = self._context.settings_viewmodel
+        state = self._library_state()
+        read = viewmodel.drop_disposition(OpenOrigin.DROP_READ, state)
+        import_ = viewmodel.drop_disposition(OpenOrigin.DROP_IMPORT, state)
+        self.drop_zone_overlay.configure_actions(
+            read_import_enabled=read is OpenDisposition.READ_AND_IMPORT,
+            import_enabled=import_ is OpenDisposition.IMPORT_ONLY,
+        )
+
+    @Slot(object)
+    def _queue_read_drop(self, path: Path) -> None:
+        expected_import = self._context.settings_viewmodel.drop_disposition(
+            OpenOrigin.DROP_READ, self._library_state()
+        ) is OpenDisposition.READ_AND_IMPORT
+        QTimer.singleShot(
+            0, lambda: self._read_dropped_file(path, expected_import=expected_import)
+        )
+
+    def _read_dropped_file(self, path: Path, *, expected_import: bool) -> None:
+        if self._closing:
+            return
+        disposition = self._context.settings_viewmodel.drop_disposition(
+            OpenOrigin.DROP_READ, self._library_state()
+        )
+        can_import = disposition is OpenDisposition.READ_AND_IMPORT
+        if expected_import and not can_import:
+            self._show_library_unavailable()
+        self.open_reader_for_file(
+            path, import_mode=expected_import and can_import
+        )
 
     def _drops_blocked(self) -> bool:
         """Whether anything is covering the library right now.
@@ -461,7 +541,8 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         payload = payload_from_mime_urls(mime.urls())
-        if not payload.can_import:
+        self._refresh_drop_policy()
+        if not self.drop_zone_overlay.can_accept(payload):
             # Nothing here can be read or imported. Refusing outright lets the
             # OS show a no-drop cursor, which is more honest than raising a UI
             # that could not act on the release.
@@ -478,7 +559,8 @@ class MainWindow(QMainWindow):
         event.acceptProposedAction()
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # noqa: N802
-        if not self.drop_zone_overlay.payload.can_import:
+        self._refresh_drop_policy()
+        if not self.drop_zone_overlay.can_accept(self.drop_zone_overlay.payload):
             event.ignore()
             return
         self.drop_zone_overlay.update_hover(self._to_overlay(event.position().toPoint()))
@@ -496,6 +578,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.drop_zone_overlay.end()
             return
+        self._refresh_drop_policy()
         committed = self.drop_zone_overlay.handle_drop(
             self._to_overlay(event.position().toPoint())
         )
@@ -512,6 +595,11 @@ class MainWindow(QMainWindow):
     @Slot(tuple)
     def _import_dropped_paths(self, paths: tuple[Path, ...]) -> None:
         if self._closing or not paths:
+            return
+        if self._context.settings_viewmodel.drop_disposition(
+            OpenOrigin.DROP_IMPORT, self._library_state()
+        ) is OpenDisposition.BLOCKED:
+            self._show_library_unavailable()
             return
         settings = self._settings_for_import()
         logger.info("Import from drop count=%d", len(paths))
@@ -709,10 +797,13 @@ class MainWindow(QMainWindow):
         self._refresh_sidebar_collections()
         self.shelf_view.render()
 
-    def _handle_open_and_import_finished(self, result) -> None:  # noqa: ANN001
+    def _handle_open_and_import_finished(self, result, *, cancelled: bool = False) -> None:  # noqa: ANN001
         """Refresh the shelf without coupling Reader lifetime to import result."""
 
+        self.dialog_overlay.close_progress()
         self._reload_after_background_import()
+        if cancelled:
+            return
         problem = next(
             (item for item in result.items if item.status not in {"imported", "duplicate"}),
             None,
@@ -723,6 +814,14 @@ class MainWindow(QMainWindow):
                 problem.message or t("dialog.open_import_unsupported"),
             )
 
+    def _handle_open_and_import_failed(self, error: Exception, *, cancelled: bool) -> None:
+        self.dialog_overlay.close_progress()
+        if not cancelled:
+            self.dialog_overlay.show_info(
+                t("dialog.open_import_failed_title"),
+                t("error.operation_failed", detail=str(error)),
+            )
+
     def _submit_import(self, name: str, run) -> None:  # noqa: ANN001
         """Run an import off the UI thread with a live progress dialog.
 
@@ -731,6 +830,9 @@ class MainWindow(QMainWindow):
         rewrites every page, so a silent wait is much longer than it used to be.
         """
 
+        if self._library_state() is not LibraryState.READY:
+            self._show_library_unavailable()
+            return
         self.dialog_overlay.show_progress(
             t("dialog.import_progress_title"), t("dialog.import_progress_preparing")
         )
@@ -1244,7 +1346,9 @@ class MainWindow(QMainWindow):
 
         try:
             self._context.finish_storage_transition(transition)
+            self._library_failed = False
         except Exception as error:
+            self._library_failed = True
             logger.warning("Storage transition reload failed: %s", error, exc_info=True)
             self.dialog_overlay.show_info(t("dialog.storage_title"), t("error.operation_failed", detail=str(error)))
             return

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -20,7 +21,7 @@ def _close_logging_runtime():
     shutdown_logging(timeout_seconds=2.0)
 
 
-def test_os_document_open_never_imports_even_with_legacy_setting_enabled(
+def test_os_document_open_never_imports_even_with_drop_preference_enabled(
     qtbot, tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
@@ -28,7 +29,11 @@ def test_os_document_open_never_imports_even_with_legacy_setting_enabled(
     # an orphan settings file would trigger the recovery dialog instead.
     prepared = create_app_context()
     prepared.close()
-    create_environment_settings_store().update(import_book_when_opening=True)
+    store = create_environment_settings_store()
+    legacy = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    legacy["import_book_when_opening"] = True
+    legacy["import_on_read_drop"] = True
+    store.settings_path.write_text(json.dumps(legacy), encoding="utf-8")
     source = tmp_path / "external.cbz"
     source.write_bytes(b"")
 

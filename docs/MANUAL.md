@@ -45,23 +45,32 @@ difference matters:
 wherever it already is. JoyRead does not copy it, and does not add it to your
 shelf. Use this for something you want to read once.
 
-**Import a book into the library.** *Actions → Open & Import* opens a file and
-adds it, and *Actions → Import → Import Files…* / *Import Folder…* add books
-without opening them. An imported book is copied into JoyRead's managed library
-folder, so moving or deleting the original afterwards does not affect it.
+**Import a book into the library.** *Actions → Open & Import* opens the original
+file immediately and imports a managed copy in the background. The Library
+shows a progress dialog with **Cancel** for that import; cancelling or failing
+to import does not close the Reader. *Actions → Import → Import Files…* /
+*Import Folder…* add books without opening them. An imported book is copied
+into JoyRead's managed library folder, so moving or deleting the original
+afterwards does not affect it.
 
 *Import Folder…* only descends one level by default. Raise **Import folder
 depth** in Settings → General if your books are nested more deeply.
 
-You can also drag supported files onto the Library window: drop onto **Read**
-to open directly, or **Import** to add managed copies. Your operating system's
-**Open With** menu can select JoyRead once its file associations are registered.
+You can also drag supported files onto the Library window. Drop one file onto
+**Read** to open it directly. Turn on **Import when dropped on Library Read**
+in Settings → General if you also want that specific drop to import a copy.
+Drop files or folders onto **Import** to add managed copies without reading.
+The Read zone does not accept multiple files or a folder. If the Library is
+unavailable, Read is labelled read-only and Import is disabled.
 
-If you would rather every book you open be imported automatically, turn on
-**Import book when opening** in Settings → General.
+Your operating system's **Open With** menu can select JoyRead once its file
+associations are registered. It only reads the file, regardless of the drag
+preference. The *Actions → Open Book* command also remains read-only.
 
-Encrypted comics can be read with a password, but cannot be imported, including
-when import-on-open is enabled.
+Encrypted comics can be read with a password, but cannot be imported. If an
+Open & Import or Read-zone import encounters one, the import reports a failure
+while the Reader stays open. Cancel an in-progress Open & Import from the
+Library progress dialog; any already completed import remains in the Library.
 
 ### Metadata and book details
 
@@ -349,7 +358,7 @@ password. It cannot be undone, and it asks you to type `delete` first.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Language | English | English, 日本語, or 简体中文. |
-| Import book when opening | Off | Import every book you open, instead of opening it in place. |
+| Import when dropped on Library Read | Off | Also import a single file dropped on the Library Read zone. Open Book and system Open With stay read-only. |
 | Verify imported file integrity | On | Hash imported files so JoyRead can detect later corruption. |
 | Individual Read Window | Off | Open each book in its own window. |
 | Import folder depth | 1 | How deep *Import Folder…* descends. |
