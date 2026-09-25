@@ -215,6 +215,7 @@ def test_deferred_library_window_paints_before_database_construction(
             window.title_bar, window.sidebar, window.settings_view,
             window.dialog_overlay, window.drop_zone_overlay,
         )
+        pending_toolbar = window._pending_toolbar
         context.start_library_load()
         qtbot.waitUntil(started.is_set)
         assert context.library_state is LibraryState.LOADING
@@ -230,6 +231,8 @@ def test_deferred_library_window_paints_before_database_construction(
             window.title_bar, window.sidebar, window.settings_view,
             window.dialog_overlay, window.drop_zone_overlay,
         )
+        assert window.shelf_view.toolbar is pending_toolbar
+        assert window.shelf_view._detail_panel is None
         assert window.settings_view.page._library_ready
         assert context.shelf_viewmodel.books == []
     finally:

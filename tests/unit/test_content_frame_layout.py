@@ -1054,6 +1054,7 @@ def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
     QApplication.processEvents()
 
     book = viewmodel.visible_books[0]
+    assert view._detail_panel is None
     viewmodel.show_detail(book.uuid)
     QApplication.processEvents()
 

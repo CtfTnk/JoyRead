@@ -55,6 +55,8 @@ class ShelfView(QWidget):
         viewmodel: ShelfViewModel,
         resources: ResourceLoader,
         parent: QWidget | None = None,
+        *,
+        toolbar: TopToolbarWidget | None = None,
     ) -> None:
         super().__init__(parent)
         logger.info("ShelfView init")
@@ -86,7 +88,8 @@ class ShelfView(QWidget):
         )
         layout.setSpacing(10)
 
-        self.toolbar = TopToolbarWidget(resources)
+        self.toolbar = toolbar if toolbar is not None else TopToolbarWidget(resources)
+        self.toolbar.setEnabled(True)
         self.toolbar.search_changed.connect(self._viewmodel.set_search_query)
         self.toolbar.filter_changed.connect(self._viewmodel.set_filter)
         self.toolbar.tag_filter_requested.connect(self.tag_filter_requested.emit)
@@ -128,22 +131,7 @@ class ShelfView(QWidget):
         self._detail_panel_scrim = FloatingPanelScrim(self)
         self._detail_panel_scrim.hide()
 
-        self.detail_panel = BookDetailPanel(resources, self)
-        self.detail_panel.hide()
-        self.detail_panel.read_requested.connect(self._viewmodel.open_book)
-        self.detail_panel.read_at_index_requested.connect(self._viewmodel.open_book_at)
-        self.detail_panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
-        self.detail_panel.menu_requested.connect(self._show_book_menu)
-        self.detail_panel.cover_edit_requested.connect(self.cover_edit_requested.emit)
-        self.detail_panel.thumbnail_interest_changed.connect(self._handle_detail_thumbnail_interest)
-        self.detail_panel.thumbnail_interest_released.connect(
-            self._viewmodel.release_detail_thumbnail_interest
-        )
-        self.detail_panel.title_change_requested.connect(self._viewmodel.update_book_title)
-        self.detail_panel.author_change_requested.connect(self._viewmodel.update_book_author)
-        self.detail_panel.language_menu_requested.connect(self._show_language_menu)
-        self.detail_panel.tag_filter_requested.connect(self.detail_tag_filter_requested.emit)
-        self.detail_panel.tag_allocation_requested.connect(self.detail_tag_allocation_requested.emit)
+        self._detail_panel: BookDetailPanel | None = None
         self._detail_panel_scrim.set_dismiss_callback(self._handle_blank_clicked)
 
         self._escape_shortcut = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
@@ -155,7 +143,36 @@ class ShelfView(QWidget):
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
         self._viewmodel.page_thumbnail_ready.connect(self._handle_page_thumbnail_ready)
-        self._viewmodel.detail_thumbnail_source_ready.connect(self.detail_panel.set_thumbnail_page_count)
+        self._viewmodel.detail_thumbnail_source_ready.connect(self._set_detail_thumbnail_page_count)
+
+    @property
+    def detail_panel(self) -> BookDetailPanel:
+        """Create the detail editor when a book is actually opened."""
+
+        if self._detail_panel is None:
+            panel = BookDetailPanel(self._resources, self)
+            panel.hide()
+            panel.read_requested.connect(self._viewmodel.open_book)
+            panel.read_at_index_requested.connect(self._viewmodel.open_book_at)
+            panel.favourite_requested.connect(self._viewmodel.toggle_favourite)
+            panel.menu_requested.connect(self._show_book_menu)
+            panel.cover_edit_requested.connect(self.cover_edit_requested.emit)
+            panel.thumbnail_interest_changed.connect(self._handle_detail_thumbnail_interest)
+            panel.thumbnail_interest_released.connect(
+                self._viewmodel.release_detail_thumbnail_interest
+            )
+            panel.title_change_requested.connect(self._viewmodel.update_book_title)
+            panel.author_change_requested.connect(self._viewmodel.update_book_author)
+            panel.language_menu_requested.connect(self._show_language_menu)
+            panel.tag_filter_requested.connect(self.detail_tag_filter_requested.emit)
+            panel.tag_allocation_requested.connect(self.detail_tag_allocation_requested.emit)
+            self._detail_panel = panel
+            self._position_detail_panel()
+        return self._detail_panel
+
+    def _set_detail_thumbnail_page_count(self, book_uuid: str, page_count: int) -> None:
+        if self._detail_panel is not None:
+            self._detail_panel.set_thumbnail_page_count(book_uuid, page_count)
 
     def event(self, event) -> bool:
         result = super().event(event)
@@ -182,7 +199,7 @@ class ShelfView(QWidget):
             self._pending_cover_requests.update(self._cover_request_books)
             if self._pending_cover_requests:
                 self._cover_request_timer.start(0)
-            if self.detail_panel.isVisible():
+            if self._detail_panel is not None and self._detail_panel.isVisible():
                 self._render_detail_panel()
 
     def _show_sort_error(self, message: str) -> None:
@@ -363,8 +380,9 @@ class ShelfView(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if (
             event.button() == Qt.MouseButton.LeftButton
-            and self.detail_panel.isVisible()
-            and not self.detail_panel.geometry().contains(event.position().toPoint())
+            and self._detail_panel is not None
+            and self._detail_panel.isVisible()
+            and not self._detail_panel.geometry().contains(event.position().toPoint())
         ):
             self._handle_blank_clicked()
             event.accept()
@@ -391,7 +409,8 @@ class ShelfView(QWidget):
         book_uuid = self._viewmodel.detail_book_uuid
         book = self._book_by_uuid(book_uuid) if book_uuid is not None else None
         if book is None:
-            self.detail_panel.hide()
+            if self._detail_panel is not None:
+                self._detail_panel.hide()
             self._detail_panel_scrim.hide()
             return
         self.detail_panel.set_book(
@@ -414,25 +433,27 @@ class ShelfView(QWidget):
             )
 
     def _position_detail_panel(self) -> None:
-        if not hasattr(self, "detail_panel"):
+        if self._detail_panel is None:
             return
         left = Theme.detail_panel_horizontal_margin
         top = Theme.detail_panel_top_margin
         width = max(0, self.width() - (left * 2))
         height = max(0, self.height() - top)
-        self.detail_panel.setGeometry(left, top, width, height)
+        self._detail_panel.setGeometry(left, top, width, height)
 
     def _handle_cover_ready(self, book_uuid: str, path: Path) -> None:
         if book_uuid in self._cover_request_books:
             self._known_cover_paths[book_uuid] = path
         self.grid.set_cover_path(book_uuid, path)
         self.list_view.set_cover_path(book_uuid, path)
-        self.detail_panel.set_cover_path(book_uuid, path)
+        if self._detail_panel is not None:
+            self._detail_panel.set_cover_path(book_uuid, path)
 
     def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._is_popup_interaction_active():
             return
-        self.detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
+        if self._detail_panel is not None:
+            self._detail_panel.set_page_thumbnail(book_uuid, page_index, image_bytes)
 
     def _handle_detail_thumbnail_interest(
         self,
@@ -474,7 +495,7 @@ class ShelfView(QWidget):
 
     def _resume_detail_thumbnail_loading_if_needed(self) -> None:
         book_uuid = self._viewmodel.detail_book_uuid
-        if book_uuid is not None and self.detail_panel.isVisible():
+        if book_uuid is not None and self._detail_panel is not None and self._detail_panel.isVisible():
             self._viewmodel.refresh_detail_thumbnail_interest(book_uuid)
             self.detail_panel.refresh_thumbnail_interest()
 

@@ -140,6 +140,9 @@ class MainWindow(QMainWindow):
             assert layout is not None
             pending_shelf = self._pending_shelf
             assert pending_shelf is not None
+            pending_toolbar = self._pending_toolbar
+            pending_shelf.layout().removeWidget(pending_toolbar)
+            pending_toolbar.setParent(None)
             pending_shelf.removeEventFilter(self)
             # Dialog and drop overlays outlive the placeholder they covered.
             self.dialog_overlay.hide()
@@ -184,7 +187,11 @@ class MainWindow(QMainWindow):
         context.shelf_viewmodel.sidebar_sections_changed.connect(self._sync_sidebar_sections)
         self.destroyed.connect(lambda: context.shelf_viewmodel.sidebar_sections_changed.disconnect(self._sync_sidebar_sections))
         self._sync_sidebar_sections()
-        self.shelf_view = ShelfView(context.shelf_viewmodel, context.resources)
+        self.shelf_view = ShelfView(
+            context.shelf_viewmodel,
+            context.resources,
+            toolbar=pending_toolbar if reuse_shell else None,
+        )
         self.content_stack = QStackedWidget()
         self.content_stack.setObjectName("MainContentStack")
         self.content_stack.addWidget(self.shelf_view)
