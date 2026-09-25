@@ -74,7 +74,7 @@ def _row(payload: dict[str, object]) -> str:
     name = f"{scenario}/{payload['document'] and Path(str(payload['document'])).suffix[1:] or 'library'}/{payload['app_cache']}"
     timing = f"{statistics.median(times):.1f} ({min(times):.1f}–{max(times):.1f})" if times else "—"
     rss = f"{statistics.median(memory):.1f}" if memory else "—"
-    return f"| {name} | {len(runs)} | {timing} | {rss} | {failures} |"
+    return f"| {name} | {len(runs)} | {timing} | {rss} | {payload['memory_scope']} | {failures} |"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -130,16 +130,16 @@ def main(argv: list[str] | None = None) -> int:
         "# JoyRead P0 startup measurement index",
         "",
         f"Target: {'packaged ' + str(args.exe.expanduser().resolve()) if args.exe else 'source tree'}.",
-        "All times are milliseconds. Each cell is median (minimum–maximum). Memory is peak RSS, MiB, for the scope named below.",
+        "All times are milliseconds. Each cell is median (minimum–maximum). Memory is peak RSS, MiB, for the scope in its row.",
         "Library/file content times start at JoyRead's in-process trace origin; forwarding times start before spawning the secondary process. The JSON records spawn-to-origin separately.",
         "`first_paint` is a Qt paint event, not proof that the OS compositor has presented the frame.",
-        "The operating system file cache was not controlled. `file` and `openwith` use CLI arguments, not native Finder events.",
+        "The operating system file cache was not controlled. `file` and `openwith` use CLI arguments, not native Finder/Explorer events.",
         "",
-        "| Scenario / file / app cache | Runs | Usable content | Peak RSS median | Failures |",
-        "| --- | ---: | ---: | ---: | ---: |",
+        "| Scenario / file / app cache | Runs | Usable content | Peak RSS median | RSS scope | Failures |",
+        "| --- | ---: | ---: | ---: | --- | ---: |",
         *(_row(payload) for payload in payloads),
         "",
-        f"Memory scope: {payloads[0]['memory_scope'] if payloads else 'unavailable'}.",
+        "RSS scope is reported per scenario. `parent_only` excludes descendants; forwarding still sums the primary and secondary process RSS.",
         f"Failures: {', '.join(failures) if failures else 'none'}.",
         "See the individual JSON and console logs for revision, environment, fixture hashes, and every run.",
     ]
