@@ -226,6 +226,8 @@ def test_reader_first_buffers_file_events_until_gate_then_promotes_on_library_re
     second = tmp_path / "second.cbz"
     first.write_bytes(b"")
     second.write_bytes(b"")
+    warmed: list[bool] = []
+    monkeypatch.setattr(bootstrap, "_warm_tag_romanizers", lambda: warmed.append(True))
     gate = _ManualLaunchGate()
     environment = bootstrap._prepare_startup_environment(["joyread"], gate=gate)
     bootstrap._configure_primary_logging(environment)
@@ -244,6 +246,7 @@ def test_reader_first_buffers_file_events_until_gate_then_promotes_on_library_re
         assert len(manager.reader_windows) == 2
         assert manager.main_window is None
         assert isinstance(runtime.context, ReaderRuntime)
+        assert not warmed
         assert not list((tmp_path / "profile").rglob("*.sqlite3"))
         coordinator.submit(LaunchIntent.open_files((first, second)))
         assert len(manager.reader_windows) == 2
@@ -253,6 +256,7 @@ def test_reader_first_buffers_file_events_until_gate_then_promotes_on_library_re
         assert isinstance(main, MainWindow)
         assert manager._context.reader_runtime is reader
         qtbot.waitUntil(lambda: manager._context.library_runtime is not None, timeout=7000)
+        qtbot.waitUntil(lambda: warmed == [True], timeout=3000)
         assert all(window.isVisible() for window in manager.reader_windows)
     finally:
         if manager.main_window is not None:

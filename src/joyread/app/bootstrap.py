@@ -167,6 +167,16 @@ class _ApplicationRuntime:
             raise
         self.context = context
         self.reader_path_issue_bridge = None
+        # Tag controls need their dictionaries only after the Library loads.
+        # Their imports contend with the worker and the first shelf paint.
+        from joyread.app.open_policy import LibraryState
+
+        def warm_after_library_ready(state: LibraryState) -> None:
+            if state is LibraryState.READY:
+                context.library_state_changed.disconnect(warm_after_library_ready)
+                QTimer.singleShot(200, _warm_tag_romanizers)
+
+        context.library_state_changed.connect(warm_after_library_ready)
         return context
 
     def close(self) -> None:
@@ -404,12 +414,11 @@ def _configure_window_management(
     _install_first_paint_probe(runtime.app)
     coordinator.start(runtime.initial_intent)
     startup_trace.mark("window_shown")
-    # After the window exists, never before it. The warm-up thread spends its
-    # first ~1.5 s importing pykakasi and jaconv, and Python serializes imports:
-    # started any earlier it starves the main thread's own deferred imports and
-    # adds a measured ~295 ms to window construction. Starting it here leaves it
-    # overlapping only the first paint, which is main-thread work of ~10 ms.
-    _warm_tag_romanizers()
+    # Eager callers already have a complete Library. Production Reader-only
+    # launches need no tag dictionaries; deferred Library launches warm them
+    # after their content frame (see ensure_library_context).
+    if not runtime.reader_first:
+        _warm_tag_romanizers()
     return manager, coordinator
 
 
@@ -702,8 +711,8 @@ def _warm_tag_romanizers() -> None:
     Measured at 2761 ms in a source-tree launch, not the ~110 ms this docstring
     claimed before startup instrumentation existed. Its first ~1.5 s is spent
     importing pykakasi and jaconv, and Python serializes imports -- which is why
-    the caller starts it only once the window is up. See the note at its call
-    site in ``_configure_window_management``.
+    the caller starts it only after the relevant Library UI is available. See
+    ``_configure_window_management`` and ``ensure_library_context``.
     """
 
     from joyread.core.tag_indexing import warm_romanizers
