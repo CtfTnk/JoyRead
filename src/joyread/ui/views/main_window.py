@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
 
     def _initialize_ready_ui(self) -> None:
         context = self._context
+        reuse_shell = self._pending_shelf is not None
         if context.thumbnail_renderer is None:
             raise RuntimeError("AppContext must provide a cover preview renderer")
         self._cover_editor_thumbnail_viewmodel = CoverEditorThumbnailViewModel(
@@ -130,35 +131,55 @@ class MainWindow(QMainWindow):
         context.settings_viewmodel.archive_open_limits_changed.connect(
             self._invalidate_archive_thumbnail_sources
         )
-        self.setObjectName("MainWindow")
-        set_localized(self, "setWindowTitle", t("app.name"))
-        # No setWindowIcon: Qt falls back to QApplication::windowIcon(), which
-        # the composition root already set. Re-reading the file here decoded the
-        # same image a second time on the startup path -- 53-69 ms for the .icns
-        # -- to arrive at exactly the icon the window would have inherited.
-        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        self.resize(Theme.window_width, Theme.window_height)
-        self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
+        if reuse_shell:
+            root = self.centralWidget()
+            assert root is not None
+            view_panel = root.layout().itemAt(1).widget()
+            assert view_panel is not None
+            layout = view_panel.layout()
+            assert layout is not None
+            pending_shelf = self._pending_shelf
+            assert pending_shelf is not None
+            pending_shelf.removeEventFilter(self)
+            # Dialog and drop overlays outlive the placeholder they covered.
+            self.dialog_overlay.hide()
+            self.dialog_overlay.setParent(root)
+            layout.removeWidget(pending_shelf)
+            pending_shelf.hide()
+            pending_shelf.setParent(None)
+            pending_shelf.deleteLater()
+            self._pending_shelf = None
+            self.chrome.set_shelf_controls_visible(True)
+            self.sidebar.set_library_ready(True)
+        else:
+            self.setObjectName("MainWindow")
+            set_localized(self, "setWindowTitle", t("app.name"))
+            # QApplication already owns the icon; decoding it here costs a
+            # second pass through the same .icns on the startup path.
+            self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+            self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+            self.resize(Theme.window_width, Theme.window_height)
+            self.setMinimumSize(Theme.window_min_width, Theme.window_min_height)
 
-        root = QWidget()
-        root.setObjectName("RootPanel")
-        root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(0, 0, 0, 0)
-        root_layout.setSpacing(0)
+            root = QWidget()
+            root.setObjectName("RootPanel")
+            root_layout = QVBoxLayout(root)
+            root_layout.setContentsMargins(0, 0, 0, 0)
+            root_layout.setSpacing(0)
+            self.title_bar = TitleBarWidget(context.resources)
+            self.chrome = self.title_bar
+            root_layout.addWidget(self.chrome)
 
-        self.title_bar = TitleBarWidget(context.resources)
-        self.chrome = self.title_bar
-        root_layout.addWidget(self.chrome)
+            view_panel = QWidget()
+            view_panel.setObjectName("ViewPanel")
+            layout = QHBoxLayout(view_panel)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(Theme.main_view_gap)
+            self.sidebar = SidebarWidget(context.resources)
+            layout.addWidget(self.sidebar)
+            root_layout.addWidget(view_panel, stretch=1)
 
-        view_panel = QWidget()
-        view_panel.setObjectName("ViewPanel")
-        layout = QHBoxLayout(view_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(Theme.main_view_gap)
-
-        self.sidebar = SidebarWidget(context.resources)
         self.sidebar.section_expansion_requested.connect(context.shelf_viewmodel.set_sidebar_section_expanded)
         context.shelf_viewmodel.sidebar_sections_changed.connect(self._sync_sidebar_sections)
         self.destroyed.connect(lambda: context.shelf_viewmodel.sidebar_sections_changed.disconnect(self._sync_sidebar_sections))
@@ -167,54 +188,58 @@ class MainWindow(QMainWindow):
         self.content_stack = QStackedWidget()
         self.content_stack.setObjectName("MainContentStack")
         self.content_stack.addWidget(self.shelf_view)
-        layout.addWidget(self.sidebar)
         layout.addWidget(self.content_stack, stretch=1)
-        root_layout.addWidget(view_panel, stretch=1)
-
-        self.settings_view = SettingsView(
-            context.settings_viewmodel,
-            context.resources,
-            root,
-            tag_viewmodel=context.tag_management_viewmodel,
-            drag_handle=self.title_bar,
-        )
-        self.settings_view.close_requested.connect(self._hide_settings_page)
+        if reuse_shell:
+            self.settings_view.page.set_tag_viewmodel(context.tag_management_viewmodel)
+            self.settings_view.page.set_library_ready(True)
+        else:
+            self.settings_view = SettingsView(
+                context.settings_viewmodel,
+                context.resources,
+                root,
+                tag_viewmodel=context.tag_management_viewmodel,
+                drag_handle=self.title_bar,
+            )
+            self.settings_view.close_requested.connect(self._hide_settings_page)
+            self.settings_view.hide()
         self.settings_view.tag_operation_completed.connect(self._handle_tag_operation_result)
         self.settings_view.tag_delete_requested.connect(self._confirm_delete_tags)
         self.settings_view.library_maintenance_requested.connect(self._request_library_maintenance)
-        self.settings_view.hide()
-
-        self._resize_border = install_system_resize_border(self)
+        if not reuse_shell:
+            self._resize_border = install_system_resize_border(self)
 
         self.cover_editor_overlay = CoverEditorOverlay(context.resources, root, drag_handle=self.title_bar)
         self.cover_editor_overlay.hide()
-        self.dialog_overlay = JoyReadDialogOverlay(root, context.resources, drag_handle=self.title_bar)
-        self.dialog_overlay.hide()
+        if not reuse_shell:
+            self.dialog_overlay = JoyReadDialogOverlay(root, context.resources, drag_handle=self.title_bar)
+            self.dialog_overlay.hide()
         self._path_issue_prompt = PathIssuePromptController(
             self,
             self.dialog_overlay,
             context.path_issue_viewmodel,
         )
-        self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
+        if not reuse_shell:
+            self.drop_zone_overlay = DropZoneOverlay(context.resources, root)
+            # Capture the shown Read policy synchronously, then return to
+            # native drag handling before creating windows or dialogs.
+            self.drop_zone_overlay.read_requested.connect(self._queue_read_drop)
+            self.drop_zone_overlay.import_requested.connect(
+                self._import_dropped_paths, Qt.ConnectionType.QueuedConnection
+            )
+            self.setCentralWidget(root)
         self.drop_zone_overlay.set_content_area(view_panel)
-        # Capture the shown Read policy synchronously, then return to native
-        # drag handling before creating windows or dialogs. A Reader activated
-        # inside OLE's drop callback can be undone by the source's cleanup.
-        self.drop_zone_overlay.read_requested.connect(self._queue_read_drop)
-        self.drop_zone_overlay.import_requested.connect(
-            self._import_dropped_paths, Qt.ConnectionType.QueuedConnection
-        )
-        self.setCentralWidget(root)
         self.setAcceptDrops(True)
         self._position_cover_editor_overlay()
         self._position_dialog_overlay()
         self._position_drop_zone_overlay()
 
         self.chrome.set_action_menu_factory(self.shelf_view.create_action_menu)
-        self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
+        if not reuse_shell:
+            self.chrome.sidebar_toggle_requested.connect(self._toggle_sidebar)
         self.chrome.view_mode_changed.connect(context.shelf_viewmodel.set_view_mode)
         self.chrome.sort_changed.connect(context.shelf_viewmodel.set_sort)
-        self.sidebar.navigation_requested.connect(self._handle_navigation)
+        if not reuse_shell:
+            self.sidebar.navigation_requested.connect(self._handle_navigation)
         self.sidebar.collection_menu_requested.connect(self._show_collection_menu)
         self.shelf_view.info_requested.connect(self.dialog_overlay.show_info)
         self.shelf_view.import_requested.connect(self._show_import_menu)
@@ -260,7 +285,8 @@ class MainWindow(QMainWindow):
         )
         self.settings_view.info_requested.connect(self.dialog_overlay.show_info)
         self.settings_view.storage_move_requested.connect(self._request_move_storage)
-        self.settings_view.storage_select_requested.connect(self._request_select_storage)
+        if not reuse_shell:
+            self.settings_view.storage_select_requested.connect(self._request_select_storage)
         self.settings_view.storage_reset_requested.connect(self._request_reset_storage)
         self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
         self.settings_view.hidden_space_verify_requested.connect(self._show_hidden_space_unlock_dialog)
@@ -389,6 +415,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._pending_shelf, stretch=1)
         root_layout.addWidget(view_panel, stretch=1)
         self.setCentralWidget(root)
+        self.setAcceptDrops(True)
 
         self._resize_border = install_system_resize_border(self)
         self.dialog_overlay = JoyReadDialogOverlay(
@@ -444,11 +471,8 @@ class MainWindow(QMainWindow):
             self._context.settings_viewmodel.language_changed.disconnect(self._on_pending_language_changed)
             self.dialog_overlay.hide()
             old_geometry = self.geometry()
-            self._resize_border.deleteLater()
             self.setUpdatesEnabled(False)
             try:
-                self._pending_shelf.removeEventFilter(self)
-                self._pending_shelf = None
                 self._initialize_ready_ui()
                 self.setGeometry(old_geometry)
             finally:

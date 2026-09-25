@@ -183,6 +183,11 @@ class SettingsPageWidget(QFrame):
             self._viewmodel.set_section(SettingsSectionKey.GENERAL)
         self.render()
 
+    def set_tag_viewmodel(self, viewmodel: TagManagementViewModel) -> None:
+        """Bind the Library-owned Tags page when a pending shell becomes ready."""
+
+        self._tag_viewmodel = viewmodel
+
     def _refresh_archive_pool_usage(self) -> None:
         """Update the pool-usage label in place.
 

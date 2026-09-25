@@ -211,6 +211,10 @@ def test_deferred_library_window_paints_before_database_construction(
     try:
         window.show()
         qtbot.waitUntil(window.isVisible)
+        shell_widgets = (
+            window.title_bar, window.sidebar, window.settings_view,
+            window.dialog_overlay, window.drop_zone_overlay,
+        )
         context.start_library_load()
         qtbot.waitUntil(started.is_set)
         assert context.library_state is LibraryState.LOADING
@@ -222,6 +226,11 @@ def test_deferred_library_window_paints_before_database_construction(
         release.set()
         qtbot.waitUntil(lambda: context.library_state is LibraryState.READY, timeout=7000)
         assert window._pending_shelf is None
+        assert shell_widgets == (
+            window.title_bar, window.sidebar, window.settings_view,
+            window.dialog_overlay, window.drop_zone_overlay,
+        )
+        assert window.settings_view.page._library_ready
         assert context.shelf_viewmodel.books == []
     finally:
         release.set()
