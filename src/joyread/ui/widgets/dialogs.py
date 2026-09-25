@@ -113,7 +113,9 @@ _UNBOUNDED_HEIGHT = (1 << 24) - 1
 class DialogMessageContent(QWidget):
     """Centered text content used by info, confirm, and delete prompts."""
 
-    def __init__(self, message: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, message: str, parent: QWidget | None = None, *, rich_text: bool = False
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogMessageContent")
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -129,6 +131,8 @@ class DialogMessageContent(QWidget):
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self._label = LocalizedLabel(message)
+        if rich_text:
+            self._label.setTextFormat(Qt.TextFormat.RichText)
         self._label.setProperty("class", "JoyReadDialogContent")
         self._label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._label.setWordWrap(True)
@@ -807,9 +811,10 @@ class JoyReadDialogPanel(QFrame):
         confirm_text: str,
         *,
         destructive: bool = False,
+        rich_text: bool = False,
     ) -> None:
         self._set_title(title, destructive=destructive)
-        self._set_content_widget(DialogMessageContent(message))
+        self._set_content_widget(DialogMessageContent(message, rich_text=rich_text))
         self._set_buttons(
             (
                 (cancel_text, self.rejected.emit),
@@ -1059,6 +1064,7 @@ class JoyReadDialogOverlay(QWidget):
         cancel_text: str | None = None,
         *,
         destructive: bool = False,
+        rich_text: bool = False,
     ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
@@ -1070,6 +1076,7 @@ class JoyReadDialogOverlay(QWidget):
             cancel_text or t("dialog.btn_cancel"),
             confirm_text or t("dialog.btn_confirm"),
             destructive=destructive,
+            rich_text=rich_text,
         )
         self._show_centered()
 

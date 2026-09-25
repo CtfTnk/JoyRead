@@ -148,7 +148,7 @@
     "library_retry": "Retry",
     "library_skip": "Skip this time",
     "library_database_error_title": "Could not open the library database",
-    "library_database_error_msg": "{detail}\n\nLibrary: {path}\nYour files have not been reset. Retry or skip loading this time.",
+    "library_database_error_msg": "{detail}<br/><br/><b>{path}</b><br/><br/>Your files have not been reset. Retry or skip loading this time.",
     "btn_delete": "Delete",
     "btn_create": "Create",
     "btn_rename": "Rename",

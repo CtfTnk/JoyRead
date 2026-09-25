@@ -148,7 +148,7 @@
     "library_retry": "重试",
     "library_skip": "本次跳过",
     "library_database_error_title": "无法打开书库数据库",
-    "library_database_error_msg": "{detail}\n\n书库：{path}\n原文件未被重置。您可以重试，或本次跳过加载。",
+    "library_database_error_msg": "{detail}<br/><br/><b>{path}</b><br/><br/>原文件未被重置。您可以重试，或本次跳过加载。",
     "btn_delete": "删除",
     "btn_create": "创建",
     "btn_rename": "重命名",

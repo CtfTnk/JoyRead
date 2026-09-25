@@ -148,7 +148,7 @@
     "library_retry": "再試行",
     "library_skip": "今回はスキップ",
     "library_database_error_title": "ライブラリのデータベースを開けません",
-    "library_database_error_msg": "{detail}\n\nライブラリ: {path}\n元のファイルはリセットされていません。再試行するか、今回は読み込みをスキップしてください。",
+    "library_database_error_msg": "{detail}<br/><br/><b>{path}</b><br/><br/>元のファイルはリセットされていません。再試行するか、今回は読み込みをスキップしてください。",
     "btn_delete": "削除",
     "btn_create": "作成",
     "btn_rename": "名前変更",

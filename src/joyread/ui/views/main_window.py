@@ -6,6 +6,7 @@ from joyread.ui.widgets.localized_text import set_localized
 
 import logging
 from collections.abc import Callable, Iterable
+from html import escape as escape_html
 from pathlib import Path
 from threading import Event
 
@@ -474,12 +475,13 @@ class MainWindow(QMainWindow):
             self.dialog_overlay.show_confirm(
                 t("dialog.library_database_error_title"),
                 t("dialog.library_database_error_msg",
-                  path=str(self._context.library_attempted_path),
-                  detail=self._context.library_error_message),
+                  path=escape_html(str(self._context.library_attempted_path)),
+                  detail=escape_html(self._context.library_error_message)),
                 on_confirm=self._context.start_library_load,
                 on_cancel=self._context.skip_library_load,
                 confirm_text=t("dialog.library_retry"),
                 cancel_text=t("dialog.library_skip"),
+                rich_text=True,
             )
         self._refresh_drop_policy()
 

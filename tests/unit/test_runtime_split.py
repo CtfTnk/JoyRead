@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from html import escape as escape_html
 from io import BytesIO
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ from zipfile import ZipFile
 import pytest
 import py7zr
 from PIL import Image
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QPainter, QPdfWriter
 
 from joyread.app.app_context import AppContext, create_app_context
@@ -274,6 +276,26 @@ def test_deferred_library_failure_keeps_reader_and_settings_available(
         assert context.library_state is LibraryState.SKIPPED
         assert not window.dialog_overlay.isVisible()
         assert store.load().storage_location == str(location)
+    finally:
+        window.close()
+        context.close()
+
+
+def test_database_error_dialog_emphasizes_and_escapes_library_path(tmp_path: Path, qtbot) -> None:
+    context = create_app_context(settings_store=_store(tmp_path), defer_library=True)
+    context.library_state = LibraryState.FAILED
+    context.library_error_kind = "database"
+    context.library_error_message = "Could not open <database> & retry"
+    context.library_attempted_path = Path("Library <&> archive")
+    window = MainWindow(context)
+    try:
+        window.show()
+        content = window.dialog_overlay.panel._content_widget
+        label = content._label
+        markup = label.text()
+        assert label.textFormat() is Qt.TextFormat.RichText
+        assert f"<b>{escape_html(str(context.library_attempted_path))}</b>" in markup
+        assert "Could not open &lt;database&gt; &amp; retry" in markup
     finally:
         window.close()
         context.close()
