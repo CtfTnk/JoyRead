@@ -290,12 +290,23 @@ def test_database_error_dialog_emphasizes_and_escapes_library_path(tmp_path: Pat
     window = MainWindow(context)
     try:
         window.show()
+        qtbot.waitUntil(lambda: window.dialog_overlay.size() == window._pending_shelf.size())
         content = window.dialog_overlay.panel._content_widget
         label = content._label
         markup = label.text()
         assert label.textFormat() is Qt.TextFormat.RichText
         assert f"<b>{escape_html(str(context.library_attempted_path))}</b>" in markup
         assert "Could not open &lt;database&gt; &amp; retry" in markup
+        center = window.dialog_overlay.panel.geometry().center()
+        host_center = window.dialog_overlay.rect().center()
+        assert abs(center.x() - host_center.x()) <= 1
+        assert abs(center.y() - host_center.y()) <= 1
+        window.resize(980, 720)
+        qtbot.waitUntil(lambda: window.dialog_overlay.size() == window._pending_shelf.size())
+        center = window.dialog_overlay.panel.geometry().center()
+        host_center = window.dialog_overlay.rect().center()
+        assert abs(center.x() - host_center.x()) <= 1
+        assert abs(center.y() - host_center.y()) <= 1
     finally:
         window.close()
         context.close()

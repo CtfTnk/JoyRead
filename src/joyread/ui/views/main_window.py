@@ -10,7 +10,7 @@ from html import escape as escape_html
 from pathlib import Path
 from threading import Event
 
-from PySide6.QtCore import QPoint, Qt, QTimer, Signal as QtSignal, Slot
+from PySide6.QtCore import QEvent, QPoint, Qt, QTimer, Signal as QtSignal, Slot
 from PySide6.QtGui import (
     QCloseEvent,
     QCursor,
@@ -367,6 +367,7 @@ class MainWindow(QMainWindow):
         self._pending_shelf = QWidget()
         self._pending_shelf.setObjectName("ShelfContent")
         self._pending_shelf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._pending_shelf.installEventFilter(self)
         shelf_layout = QVBoxLayout(self._pending_shelf)
         shelf_layout.setContentsMargins(0, Theme.content_top_padding, 0, 0)
         shelf_layout.setSpacing(10)
@@ -428,6 +429,13 @@ class MainWindow(QMainWindow):
         menu.add_item(t("menu.open_book"), lambda: self._select_reader_file(False))
         return menu
 
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802, ANN001
+        if watched is self._pending_shelf and event.type() == QEvent.Type.Resize:
+            # MainWindow.resizeEvent may run before the child layout resizes
+            # the Bookshelf; the overlay must track that final child rect.
+            self._position_dialog_overlay()
+        return super().eventFilter(watched, event)
+
     def _handle_library_state_changed(self, state: LibraryState) -> None:
         if self._pending_shelf is None or self._closing:
             return
@@ -439,6 +447,7 @@ class MainWindow(QMainWindow):
             self._resize_border.deleteLater()
             self.setUpdatesEnabled(False)
             try:
+                self._pending_shelf.removeEventFilter(self)
                 self._pending_shelf = None
                 self._initialize_ready_ui()
                 self.setGeometry(old_geometry)
