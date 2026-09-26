@@ -1,16 +1,27 @@
 from __future__ import annotations
 
+import gc
 from datetime import datetime
 from math import ceil
 from pathlib import Path
 from types import SimpleNamespace
+from weakref import ref
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
 import shiboken6
 from PIL import Image
-from PySide6.QtCore import QPoint, QPointF, QRectF, QTimer, Qt, qInstallMessageHandler
-from PySide6.QtGui import QContextMenuEvent, QIcon
+from PySide6.QtCore import (
+    QCoreApplication,
+    QEvent,
+    QPoint,
+    QPointF,
+    QRectF,
+    QTimer,
+    Qt,
+    qInstallMessageHandler,
+)
+from PySide6.QtGui import QContextMenuEvent, QFontDatabase, QIcon
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
@@ -26,6 +37,7 @@ from joyread.core.reader import (
     RectF,
 )
 from joyread.infrastructure.i18n import locale_service
+from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.reader_viewmodel import (
     ReaderBookmarkItem,
@@ -439,6 +451,42 @@ def test_reader_window_matches_figma_shell_geometry(qtbot, tmp_path: Path) -> No
 
     window.close()
     context.close()
+
+
+def test_closed_reader_releases_shell_and_viewmodel_in_resident_runtime(qtbot, tmp_path: Path) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+
+    context = create_app_context()
+    shell_refs = []
+    viewmodel_refs = []
+    try:
+        for _ in range(5):
+            window = ReaderWindow(context, source)
+            shell_refs.append(ref(window.shell))
+            viewmodel_refs.append(ref(window.viewmodel))
+            window.show()
+            window.close()
+            qtbot.waitUntil(lambda: not shiboken6.isValid(window), timeout=2000)
+            qtbot.waitUntil(
+                lambda: context.reader_runtime.task_service.pending_task_count() == 0,
+                timeout=2000,
+            )
+            del window
+        qtbot.wait(20)
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        gc.collect()
+        assert all(shell() is None for shell in shell_refs), [
+            shell() is not None for shell in shell_refs
+        ]
+        assert all(viewmodel() is None for viewmodel in viewmodel_refs), [
+            vm() is not None for vm in viewmodel_refs
+        ]
+    finally:
+        context.close()
 
 
 def test_reader_header_switch_icons_survive_hover_and_checked_modes(qtbot, tmp_path: Path) -> None:
@@ -1159,6 +1207,12 @@ def test_reader_settings_numeric_controls_clamp_and_revert_invalid_input(qtbot) 
 
 
 def test_reader_settings_zoom_value_text_fits_three_digits(qtbot) -> None:
+    app = QApplication.instance()
+    assert app is not None
+    resources = ResourceLoader()
+    for path in resources.font_paths():
+        assert QFontDatabase.addApplicationFont(str(path)) >= 0
+    app.setStyleSheet(resources.load_stylesheet())
     context = create_app_context()
     panel = ReaderSettingsPanel(context.resources)
     qtbot.addWidget(panel)
@@ -1256,6 +1310,68 @@ def test_shelf_reader_uses_embedded_mode_when_individual_window_disabled(qtbot, 
 
     window.close()
     context.close()
+
+
+def test_reader_fullscreen_keys_only_apply_while_embedded_reader_is_open(
+    qtbot, tmp_path: Path, monkeypatch
+) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    window = MainWindow(context)
+    window.show()
+    try:
+        qtbot.keyClick(window, Qt.Key.Key_F)
+        assert not window.isFullScreen()
+
+        window.open_reader_for_book(context.shelf_viewmodel.books[0].uuid)
+        assert window._embedded_reader is not None
+        qtbot.keyClick(window._embedded_reader, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        qtbot.keyClick(window._embedded_reader, Qt.Key.Key_Escape)
+        assert not window.isFullScreen()
+
+        qtbot.keyClick(window, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        window._embedded_reader.header._title_control_group.zoom_button.click()
+        assert not window.isFullScreen()
+        qtbot.keyClick(window, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        window._embedded_reader.back_requested.emit()
+        assert window._embedded_reader is None
+        assert not window.isFullScreen()
+        qtbot.keyClick(window, Qt.Key.Key_F)
+        assert not window.isFullScreen()
+    finally:
+        window.close()
+        context.close()
+
+
+def test_standalone_reader_fullscreen_escape_restores_maximized_window(
+    qtbot, tmp_path: Path
+) -> None:
+    source = tmp_path / "reader.cbz"
+    image = tmp_path / "001.png"
+    Image.new("RGB", (20, 30), "#336699").save(image, format="PNG")
+    with ZipFile(source, "w", compression=ZIP_DEFLATED) as archive:
+        archive.write(image, "001.png")
+    context = create_app_context()
+    window = ReaderWindow(context, source)
+    window.showMaximized()
+    try:
+        qtbot.keyClick(window.shell, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        qtbot.keyClick(window.shell, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        window.header._stoplight_controls.zoom_button.click()
+        assert not window.isFullScreen()
+        assert window.isMaximized()
+        qtbot.keyClick(window.shell, Qt.Key.Key_F)
+        assert window.isFullScreen()
+        qtbot.keyClick(window, Qt.Key.Key_Escape)
+        assert not window.isFullScreen()
+        assert window.isMaximized()
+    finally:
+        window.close()
+        context.close()
 
 
 def test_shelf_reader_uses_independent_mode_when_setting_enabled(qtbot, tmp_path: Path, monkeypatch) -> None:

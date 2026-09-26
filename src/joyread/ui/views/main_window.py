@@ -18,6 +18,7 @@ from PySide6.QtGui import (
     QDragLeaveEvent,
     QDragMoveEvent,
     QDropEvent,
+    QKeyEvent,
 )
 from PySide6.QtWidgets import QFileDialog, QHBoxLayout, QMainWindow, QStackedWidget, QVBoxLayout, QWidget
 
@@ -67,6 +68,7 @@ from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
 from joyread.ui.widgets.path_issue_prompt import PathIssuePromptController
+from joyread.ui.widgets.reader_fullscreen import handle_reader_fullscreen_key, leave_reader_fullscreen
 from joyread.ui.widgets.sidebar import SidebarWidget
 from joyread.ui.widgets.window_chrome import TitleBarWidget
 from joyread.ui.widgets.window_gestures import install_system_resize_border
@@ -896,7 +898,7 @@ class MainWindow(QMainWindow):
         if root is None:
             return
         self._hide_settings_page()
-        self._close_embedded_reader()
+        self._close_embedded_reader(restore_window_state=False)
         provider = self._novel_reader_provider
         if provider is not None and self._is_novel_source(path):
             self._embedded_reader = provider.create_embedded_shell(
@@ -926,9 +928,11 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(Theme.reader_min_width, Theme.reader_min_height)
         self._resize_border.raise_border()
 
-    def _close_embedded_reader(self) -> None:
+    def _close_embedded_reader(self, *, restore_window_state: bool = True) -> None:
         if self._embedded_reader is None:
             return
+        if restore_window_state:
+            leave_reader_fullscreen(self)
         logger.debug("Closing embedded reader")
         reader = self._embedded_reader
         self._embedded_reader = None
@@ -956,11 +960,16 @@ class MainWindow(QMainWindow):
         self._closing = True
         if self._context.library_runtime is None:
             self._context.skip_library_load()
-        self._close_embedded_reader()
+        self._close_embedded_reader(restore_window_state=False)
         if hasattr(self, "_cover_editor_thumbnail_viewmodel"):
             self._cover_editor_thumbnail_viewmodel.cancel()
         self.closed.emit()
         super().closeEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        if self._embedded_reader is not None and handle_reader_fullscreen_key(event, self):
+            return
+        super().keyPressEvent(event)
 
     def _invalidate_archive_thumbnail_sources(self) -> None:
         """Refresh the active cover picker after a new limits snapshot."""

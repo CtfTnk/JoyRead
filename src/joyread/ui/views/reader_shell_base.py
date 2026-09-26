@@ -35,6 +35,7 @@ from PySide6.QtWidgets import QWidget
 
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.reader_fullscreen import handle_reader_fullscreen_key
 
 
 class ReaderShellBase(QWidget):
@@ -109,6 +110,8 @@ class ReaderShellBase(QWidget):
         return super().eventFilter(watched, event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if handle_reader_fullscreen_key(event, self.window()):
+            return
         if self.handle_key_press(event):
             return
         super().keyPressEvent(event)
@@ -118,6 +121,9 @@ class ReaderShellBase(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
+        if self.window().isFullScreen():
+            path.addRect(QRectF(self.rect()))
+        else:
+            path.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
         painter.fillPath(path, QColor(Theme.color_reader_background))
         painter.end()

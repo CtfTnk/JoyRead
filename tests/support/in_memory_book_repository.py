@@ -305,7 +305,7 @@ class InMemoryBookRepository:
 
 def _default_books() -> list[Book]:
     rows: list[dict[str, Any]] = [
-        _row("mock-book-01", "Akane-banashi Story 148", "Yuki Suenaga", "CBZ", 0.18, True, 18, "2026-04-30T12:00:00", "test_set/Akane-banashi Story 148 (Yuki Suenaga) (z-library.sk, 1lib.sk, z-lib.sk).cbz", ("collection-a",)),
+        _row("mock-book-01", "Stage Story 148", "Yuki Suenaga", "CBZ", 0.18, True, 18, "2026-04-30T12:00:00", "/mock/library/Stage Story 148.cbz", ("collection-a",)),
         _row("mock-book-02", "Spy x Family Vol. 1", "Tatsuya Endo", "PDF", 0.42, False, 28, "2026-04-27T12:00:00", "/mock/library/Spy x Family Vol. 1.pdf"),
         _row("mock-book-03", "Frieren Beyond Journey", "Kanehito Yamada", "CBZ", 0.73, True, 35, "2026-04-24T12:00:00", "/mock/library/Frieren Beyond Journey.cbz", ("collection-a",)),
         _row("mock-book-04", "Dungeon Meshi Archive", "Ryoko Kui", "ZIP", 0.11, False, 18, "2026-04-21T12:00:00", "/mock/library/Dungeon Meshi Archive.zip"),
@@ -319,7 +319,7 @@ def _default_books() -> list[Book]:
         _row("mock-book-12", "Local PDF Sample", None, "PDF", 0.0, False, 12, "2026-03-28T12:00:00", "/mock/library/Local PDF Sample.pdf", is_missing=True, last_read_at=None),
         _row("mock-book-13", "Mushishi Volume Notes", "Yuki Urushibara", "RAR", 0.58, False, 26, "2026-03-25T12:00:00", "/mock/library/Mushishi Volume Notes.rar"),
         _row("mock-book-14", "Light Novel Draft", "Mock Author", "EPUB", 0.21, False, 14, "2026-03-22T12:00:00", "/mock/library/Light Novel Draft.epub", book_type="Novel", last_read_at=None),
-        _row("mock-book-15", "Delicious in Dungeon v14", "Ryoko Kui", "CBZ", 0.0, False, 192, "2026-05-05T12:00:00", "test_set/Delicious in Dungeon v14 (Ryoko Kui) (z-library.sk, 1lib.sk, z-lib.sk).cbz", last_read_at=None),
+        _row("mock-book-15", "Dungeon Cooking v14", "Ryoko Kui", "CBZ", 0.0, False, 192, "2026-05-05T12:00:00", "/mock/library/Dungeon Cooking v14.cbz", last_read_at=None),
     ]
     return [_book_from_row(row) for row in rows]
 
@@ -361,7 +361,7 @@ def _row(
 
 
 def _book_from_row(row: dict[str, Any]) -> Book:
-    file_path = _resolve_test_path(str(row["file_path"]))
+    file_path = str(row["file_path"])
     return Book(
         uuid=str(row["uuid"]),
         title=str(row["title"]),
@@ -382,13 +382,3 @@ def _book_from_row(row: dict[str, Any]) -> Book:
         page_count=int(row["page_count"]),
         original_file_name=Path(file_path).name,
     )
-
-
-def _resolve_test_path(path: str) -> str:
-    if not path.startswith("test_set/"):
-        return path
-    candidate = Path(__file__).resolve().parents[2] / path
-    if candidate.exists():
-        return str(candidate)
-    matches = sorted(candidate.parent.glob(f"{candidate.stem.split('(')[0].strip()}*{candidate.suffix}"))
-    return str(matches[0] if matches else candidate)

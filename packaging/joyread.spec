@@ -16,13 +16,6 @@ ROOT = Path(SPECPATH).parent
 PACKAGE_ROOT = ROOT / "src" / "joyread"
 PROJECT = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
 APP_NAME = "JoyRead"
-# P0 native Windows checks need a separately selectable executable. Its runtime
-# hook selects an isolated profile; renaming the release EXE alone would still
-# share JoyRead's settings, Library, and single-instance lock.
-P0_REF_BUILD = os.environ.get("JOYREAD_P0_REF_BUILD") == "1"
-if P0_REF_BUILD and platform.system() != "Windows":
-    raise SystemExit("JOYREAD_P0_REF_BUILD is only for Windows P0 desktop checks.")
-BUILD_NAME = "JoyRead-P0Ref" if P0_REF_BUILD else APP_NAME
 VERSION = str(PROJECT["version"])
 VERSION_INFO = runpy.run_path(str(ROOT / "packaging" / "version_info.py"))["package_versions"](VERSION)
 # Reverse-DNS under the project's GitHub namespace. macOS caches UTI
@@ -233,7 +226,7 @@ a = Analysis(
     hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
-    runtime_hooks=[str(ROOT / "scripts" / "p0_ref_runtime.py")] if P0_REF_BUILD else [],
+    runtime_hooks=[],
     excludes=excludes,
     noarchive=False,
     optimize=1,
@@ -323,7 +316,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name=BUILD_NAME,
+    name=APP_NAME,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -339,7 +332,7 @@ collection = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name=BUILD_NAME,
+    name=APP_NAME,
 )
 
 if sys.platform == "darwin":

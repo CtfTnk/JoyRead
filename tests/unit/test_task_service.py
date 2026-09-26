@@ -1,5 +1,9 @@
+import gc
 import logging
 from threading import Event, get_ident
+from weakref import ref
+
+from PySide6.QtCore import QCoreApplication, QEvent
 
 from joyread.core.operation_context import bind_operation, create_operation, current_operation
 from joyread.app.tasking import TaskPriority, TaskStatus
@@ -33,6 +37,30 @@ def test_task_service_submit_runs_callback_on_background_pool(qtbot) -> None:
     qtbot.waitUntil(lambda: handle.status == TaskStatus.COMPLETED, timeout=1000)
     assert handle.result == "done"
     assert results == ["done"]
+
+
+def test_finished_task_releases_its_queued_signal_callbacks(qtbot) -> None:
+    """A resident process must not retain each completed Reader task's VM."""
+
+    class Captured:
+        pass
+
+    service = TaskService(max_workers=1)
+    captured = Captured()
+    captured_ref = ref(captured)
+    handle = service.submit(
+        "release-callback",
+        lambda: None,
+        on_success=lambda _result, value=captured: None,
+    )
+    del captured
+
+    qtbot.waitUntil(lambda: handle._signals is None, timeout=1000)
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    qtbot.wait(0)
+    gc.collect()
+    assert captured_ref() is None
+    service.shutdown(timeout_ms=10)
 
 
 def test_task_service_runs_work_off_gui_and_callbacks_on_gui_thread(qtbot) -> None:

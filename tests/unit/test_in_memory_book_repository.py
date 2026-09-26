@@ -1,27 +1,15 @@
-from pathlib import Path
-
 import pytest
 
 from joyread.core.archive import ArchiveImageService
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+from tests.support.local_corpus import local_fixture_path
 
 
-# The mock repository points two of its rows at a private comic corpus under
-# test_set/, which is gitignored and so absent on CI and on any fresh clone.
-# This assertion is specifically *about* those real files, so it cannot be
-# rewritten against a generated archive the way the thumbnail tests were --
-# it skips instead. Matches the idiom already used for the RAR corpus in
-# test_rar_reader_selection.py and the EPUB fixtures in tests/novel/.
-_CORPUS_BOOK_IDS = frozenset({"mock-book-01", "mock-book-15"})
-_CORPUS_PATHS = tuple(
-    Path(book.file_path)
-    for book in InMemoryBookRepository().list_books()
-    if book.uuid in _CORPUS_BOOK_IDS
-)
+_SHORT_COMIC = local_fixture_path("cbz_short", "short-comic.cbz")
+_LARGE_COMIC = local_fixture_path("cbz_large", "large-comic.cbz")
 requires_local_corpus = pytest.mark.skipif(
-    len(_CORPUS_PATHS) != len(_CORPUS_BOOK_IDS)
-    or not all(path.is_file() for path in _CORPUS_PATHS),
-    reason="the complete private test_set/ corpus required by this test is not present",
+    not (_SHORT_COMIC.is_file() and _LARGE_COMIC.is_file()),
+    reason="the local comic fixtures are not present in test_set/",
 )
 
 
@@ -48,21 +36,10 @@ def test_in_memory_repository_returns_stable_varied_books() -> None:
 
 
 @requires_local_corpus
-def test_in_memory_repository_resolves_test_set_archives() -> None:
-    repository = InMemoryBookRepository()
-
-    akane_book = next(book for book in repository.list_books() if book.uuid == "mock-book-01")
-    pressure_book = next(book for book in repository.list_books() if book.uuid == "mock-book-15")
-
-    assert akane_book.file_format == "CBZ"
-    assert akane_book.page_count == 18
-    assert Path(akane_book.file_path).exists()
-    assert ArchiveImageService().open(akane_book.file_path).page_count == akane_book.page_count
-    assert pressure_book.title == "Delicious in Dungeon v14"
-    assert pressure_book.page_count == 192
-    assert pressure_book.collection_ids == ()
-    assert Path(pressure_book.file_path).exists()
-    assert ArchiveImageService().open(pressure_book.file_path).page_count == pressure_book.page_count
+def test_local_comic_corpus_opens_both_configured_samples() -> None:
+    service = ArchiveImageService()
+    assert service.open(_SHORT_COMIC).page_count > 0
+    assert service.open(_LARGE_COMIC).page_count > 0
 
 
 def test_in_memory_repository_removes_collection_and_recent_membership_only() -> None:

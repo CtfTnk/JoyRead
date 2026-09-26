@@ -6,11 +6,13 @@ from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 from joyread.ui.widgets.elided_label import ElidedLabel
 
 from collections.abc import Iterable
+import sys
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QFontMetrics, QIcon, QMouseEvent
 from PySide6.QtWidgets import (
     QBoxLayout,
+    QGraphicsOpacityEffect,
     QLayout,
     QFrame,
     QHBoxLayout,
@@ -62,6 +64,8 @@ from joyread.ui.viewmodels.settings_viewmodel import (
     SettingsSectionKey,
     SettingsViewModel,
     UNLIMITED_DEPTH,
+    WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+    WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
 )
 from joyread.ui.viewmodels.tag_management_viewmodel import TagManagementViewModel
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
@@ -463,6 +467,47 @@ class SettingsPageWidget(QFrame):
         )
         window_switch.toggled.connect(self._viewmodel.set_individual_read_window)
 
+        windows_background_items: list[QWidget] = []
+        if sys.platform == "win32":
+            windows_background_switch = SettingsSwitchItem(
+                t("settings.windows_background_enabled"),
+                self._viewmodel.windows_background_enabled,
+            )
+            windows_background_switch.toggled.connect(
+                self._viewmodel.set_windows_background_enabled
+            )
+            auto_cleanup_switch = SettingsSwitchItem(
+                t("settings.windows_background_auto_cleanup_enabled"),
+                self._viewmodel.windows_background_auto_cleanup_enabled,
+            )
+            auto_cleanup_switch.setObjectName("WindowsBackgroundAutoCleanupSetting")
+            auto_cleanup_switch.toggled.connect(
+                self._viewmodel.set_windows_background_auto_cleanup_enabled
+            )
+            auto_cleanup_switch.setEnabled(self._viewmodel.windows_background_enabled)
+            cleanup_seconds = SettingsNumericItem(
+                t("settings.windows_background_auto_cleanup_seconds"),
+                self._viewmodel.windows_background_auto_cleanup_seconds,
+                WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
+                WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+                self._resources,
+                suffix=t("settings.windows_background_auto_cleanup_unit"),
+            )
+            cleanup_seconds.setObjectName("WindowsBackgroundCleanupSecondsSetting")
+            cleanup_seconds.value_changed.connect(
+                self._viewmodel.set_windows_background_auto_cleanup_seconds
+            )
+            cleanup_seconds.setEnabled(
+                self._viewmodel.windows_background_enabled
+                and self._viewmodel.windows_background_auto_cleanup_enabled
+            )
+            windows_background_items = [
+                SectionBanner(t("settings.banner_windows_background"), self._resources),
+                windows_background_switch,
+                auto_cleanup_switch,
+                cleanup_seconds,
+            ]
+
         reset_window = SettingsButtonItem(t("settings.window_size"), t("settings.restore_window_size"))
         reset_window.clicked.connect(self._viewmodel.reset_window_sizes)
 
@@ -502,6 +547,7 @@ class SettingsPageWidget(QFrame):
             verify_import_switch,
             window_switch,
             reset_window,
+            *windows_background_items,
             import_banner,
             import_switch,
             import_folder_depth_item,
@@ -933,6 +979,11 @@ class SettingsOptionItem(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setFixedHeight(Theme.settings_item_height)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        # Match Reader settings: dim the whole disabled row, including its
+        # label, track, value, and step icons, while Qt blocks interaction.
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
 
         layout = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
         layout.setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
@@ -976,6 +1027,13 @@ class SettingsOptionItem(QFrame):
         if event.type() in (QEvent.Type.LayoutRequest, QEvent.Type.FontChange):
             self._schedule_reflow()
         return result
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.EnabledChange and hasattr(self, "_opacity_effect"):
+            self._opacity_effect.setOpacity(
+                1.0 if self.isEnabled() else Theme.disabled_settings_row_opacity
+            )
 
     def _schedule_reflow(self) -> None:
         if hasattr(self, "_reflow_timer") and not self._reflow_timer.isActive():
@@ -1076,7 +1134,7 @@ class SettingsButtonItem(SettingsOptionItem):
         self.button.clicked.connect(self.clicked.emit)
 
     def set_enabled(self, enabled: bool) -> None:
-        self.button.setEnabled(enabled)
+        self.setEnabled(enabled)
 
 
 class SettingsAddressItem(QFrame):

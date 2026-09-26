@@ -20,9 +20,10 @@ from joyread.core.archive.formats.rar_backend import (
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveSource
+from tests.support.local_corpus import local_fixture_path
 
-CBR_FIXTURE = Path("test_set/Disney Villains - Gaston 001 (2026) (4 covers) (digital) (Salem-Empire).cbr")
-RAR_FIXTURE = Path("test_set/Code：坦克世界是一款.rar")
+CBR_FIXTURE = local_fixture_path("cbr", "sample.cbr")
+RAR_FIXTURE = local_fixture_path("rar_encrypted", "encrypted-sample.rar")
 
 requires_cbr_fixture = pytest.mark.skipif(
     not CBR_FIXTURE.is_file(), reason="the real RAR corpus is not present"

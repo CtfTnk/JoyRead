@@ -1,4 +1,5 @@
 import json
+import sys
 
 import shiboken6
 from PySide6.QtCore import QPoint, QTimer, Qt
@@ -16,6 +17,7 @@ from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey, Setting
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.settings_view import SettingsView
 from joyread.ui.widgets.menus import FigmaMenu
+from joyread.ui.widgets.section_banner import SectionBanner
 from tests.support.qt_events import MenuLoopWatchdog, flush_deferred_deletes
 from joyread.ui.widgets.settings_page import (
     SettingsAboutText,
@@ -23,6 +25,7 @@ from joyread.ui.widgets.settings_page import (
     SettingsCacheStatusItem,
     SettingsContentPanel,
     SettingsDropdownButton,
+    SettingsNumericItem,
     SettingsOptionItem,
     SettingsPageWidget,
     SettingsSidebarItem,
@@ -37,6 +40,26 @@ def apply_theme() -> None:
     app = QApplication.instance()
     assert app is not None
     app.setStyleSheet(ResourceLoader().load_stylesheet())
+
+
+def _setting_row(page: SettingsPageWidget, key: str, *, occurrence: int = 0) -> SettingsOptionItem:
+    content = page.findChild(SettingsContentPanel)
+    assert content is not None
+    layout = content.widget().layout()
+    matches = [
+        item
+        for index in range(layout.count())
+        if isinstance(item := layout.itemAt(index).widget(), SettingsOptionItem)
+        and item._name_cell.findChild(QLabel).text() == locale_service.t(key)
+    ]
+    return matches[occurrence]
+
+
+def _assert_row_state(row: SettingsOptionItem, enabled: bool) -> None:
+    assert row.isEnabled() is enabled
+    assert row.graphicsEffect().opacity() == (
+        1.0 if enabled else Theme.disabled_settings_row_opacity
+    )
 
 
 def test_settings_viewmodel_tracks_section_and_general_options() -> None:
@@ -213,15 +236,155 @@ def test_settings_page_matches_figma_panel_sidebar_and_content_geometry(qtbot) -
     for earlier, later in zip(upper_order, upper_order[1:]):
         assert sidebar_item_positions[later] - sidebar_item_positions[earlier] == step
     assert sidebar_item_positions["About"] > Theme.settings_panel_height - 80
-    # Five General rows including window-size reset (Storage moved to Privacy), the two genuinely
-    # import-only rows (folder depth and the conversion policy), and the Library
-    # maintenance action. Archive, Cache, and the two shared archive depth rows
-    # are in their own scope now.
-    assert len(setting_items) == 8
+    # Windows alone adds the resident-process controls to General. Other
+    # platforms retain the original rows and lifetime policy.
+    assert len(setting_items) == 8 + 3 * int(sys.platform == "win32")
+    names = {item._name_cell.findChild(QLabel).text() for item in setting_items}
+    background_keys = (
+        "settings.windows_background_enabled",
+        "settings.windows_background_auto_cleanup_enabled",
+        "settings.windows_background_auto_cleanup_seconds",
+    )
+    for key in background_keys:
+        assert (locale_service.t(key) in names) == (sys.platform == "win32")
+    content_layout = content.widget().layout()
+    content_widgets = [
+        content_layout.itemAt(index).widget() for index in range(content_layout.count())
+    ]
+    background_header = next(
+        (
+            widget for widget in content_widgets
+            if isinstance(widget, SectionBanner)
+            and widget._label.text() == locale_service.t("settings.banner_windows_background")
+        ),
+        None,
+    )
+    assert (background_header is not None) == (sys.platform == "win32")
+    if background_header is not None:
+        for offset, key in enumerate(background_keys, start=1):
+            row = next(
+                item for item in setting_items
+                if item._name_cell.findChild(QLabel).text() == locale_service.t(key)
+            )
+            assert content_widgets.index(row) == content_widgets.index(background_header) + offset
     spin_buttons = page.findChildren(SettingsSpinButtonSmall)
-    assert len(spin_buttons) == 1
+    assert len(spin_buttons) == 1 + int(sys.platform == "win32")
     assert {spin.size().width() for spin in spin_buttons} == {Theme.settings_spin_width}
     assert {spin.size().height() for spin in spin_buttons} == {Theme.settings_spin_height}
+
+
+def test_windows_background_cleanup_controls_follow_parent_switches(qtbot) -> None:
+    if sys.platform != "win32":
+        return
+    apply_theme()
+    settings = AppSettings(
+        storage_location="~/Library",
+        windows_background_enabled=False,
+        windows_background_auto_cleanup_enabled=False,
+    )
+    viewmodel = SettingsViewModel(settings)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    page.show()
+    auto_key = "settings.windows_background_auto_cleanup_enabled"
+    seconds_key = "settings.windows_background_auto_cleanup_seconds"
+    _assert_row_state(_setting_row(page, auto_key), False)
+    _assert_row_state(_setting_row(page, seconds_key), False)
+    qtbot.mouseClick(_setting_row(page, auto_key).switch, Qt.MouseButton.LeftButton)
+    assert not viewmodel.windows_background_auto_cleanup_enabled
+
+    # Even a saved ON preference cannot enable the dependent row until the
+    # background process is enabled again.
+    viewmodel.set_windows_background_auto_cleanup_enabled(True)
+    _assert_row_state(_setting_row(page, auto_key), False)
+    _assert_row_state(_setting_row(page, seconds_key), False)
+
+    viewmodel.set_windows_background_enabled(True)
+    _assert_row_state(_setting_row(page, auto_key), True)
+    _assert_row_state(_setting_row(page, seconds_key), True)
+
+    viewmodel.set_windows_background_auto_cleanup_enabled(False)
+    _assert_row_state(_setting_row(page, auto_key), True)
+    _assert_row_state(_setting_row(page, seconds_key), False)
+    viewmodel.set_windows_background_auto_cleanup_enabled(True)
+    seconds = _setting_row(page, seconds_key)
+    _assert_row_state(seconds, True)
+    assert seconds.spinbox.value == 60
+    assert seconds.spinbox._unit_label.text() == locale_service.t(
+        "settings.windows_background_auto_cleanup_unit"
+    )
+
+    viewmodel.set_windows_background_enabled(False)
+    _assert_row_state(_setting_row(page, auto_key), False)
+    _assert_row_state(_setting_row(page, seconds_key), False)
+
+
+def test_reading_default_dependent_rows_follow_both_custom_switches(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    viewmodel.set_default_reader_preference("custom_enabled", False)
+    viewmodel.set_default_reader_preference("vertical_custom_enabled", False)
+    viewmodel.set_default_reader_preference("vertical_fit_width", True)
+    viewmodel.set_section(SettingsSectionKey.READING)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+
+    horizontal, vertical = (
+        _setting_row(page, "reader.enable_custom", occurrence=index)
+        for index in (0, 1)
+    )
+    _assert_row_state(horizontal, True)
+    _assert_row_state(vertical, True)
+    for key in ("reader.single_page", "reader.fit_mode", "reader.fit_width_toggle", "reader.gap", "reader.zoom"):
+        _assert_row_state(_setting_row(page, key), False)
+
+    horizontal.switch.set_checked(True)
+    _assert_row_state(_setting_row(page, "reader.single_page"), True)
+    _assert_row_state(_setting_row(page, "reader.fit_mode"), True)
+    vertical.switch.set_checked(True)
+    _assert_row_state(_setting_row(page, "reader.fit_width_toggle"), True)
+    _assert_row_state(_setting_row(page, "reader.gap"), True)
+    _assert_row_state(_setting_row(page, "reader.zoom"), False)
+
+    _setting_row(page, "reader.fit_width_toggle").switch.set_checked(False)
+    _assert_row_state(_setting_row(page, "reader.zoom"), True)
+    vertical.switch.set_checked(False)
+    for key in ("reader.fit_width_toggle", "reader.gap", "reader.zoom"):
+        _assert_row_state(_setting_row(page, key), False)
+
+
+def test_archive_limit_dependent_rows_follow_their_gate_switches(qtbot) -> None:
+    apply_theme()
+    viewmodel = SettingsViewModel()
+    viewmodel.set_archive_max_source_size_enabled(False)
+    viewmodel.set_archive_resource_guardrails_enabled(False)
+    viewmodel.set_section(SettingsSectionKey.ARCHIVE)
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+
+    archive_limit = "settings.archive_max_source_size"
+    guardrail_limits = (
+        "settings.archive_max_extracted_item",
+        "settings.archive_max_operation_data",
+        "settings.archive_max_image_megapixels",
+        "settings.archive_external_command_timeout",
+    )
+    for key in (archive_limit, *guardrail_limits):
+        _assert_row_state(_setting_row(page, key), False)
+    _assert_row_state(_setting_row(page, "settings.reader_page_cache"), True)
+
+    viewmodel.set_archive_max_source_size_enabled(True)
+    _assert_row_state(_setting_row(page, archive_limit), True)
+    for key in guardrail_limits:
+        _assert_row_state(_setting_row(page, key), False)
+
+    viewmodel.set_archive_resource_guardrails_enabled(True)
+    for key in guardrail_limits:
+        _assert_row_state(_setting_row(page, key), True)
+    viewmodel.set_archive_max_source_size_enabled(False)
+    _assert_row_state(_setting_row(page, archive_limit), False)
+    for key in guardrail_limits:
+        _assert_row_state(_setting_row(page, key), True)
 
 
 def test_general_tab_library_maintenance_button_emits_viewmodel_request(qtbot) -> None:

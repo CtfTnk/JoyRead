@@ -274,6 +274,17 @@ class ThumbnailService:
             },
         )
 
+    def clear_idle_memory(self) -> None:
+        """Drop the rebuildable cover-variant index without closing the service.
+
+        Windows residency retains the Library graph after every window closes.
+        Its next cover lookup can rebuild this index from persistent covers;
+        live thumbnail-source leases and disk cache entries are untouched.
+        """
+
+        with self._cover_variants_lock:
+            self._cover_variants = None
+
     def issue_thumbnail_cache_client(self, client_id: str) -> ThumbnailCacheClient:
         """Lease the app-wide rendered-thumbnail cache for one viewport."""
 

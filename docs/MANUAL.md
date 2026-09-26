@@ -36,6 +36,29 @@ Opening a file through your system's Open With instead starts directly in its
 Reader. It does not load the Library or import the file. You can open the
 Library later without closing that Reader.
 
+On Windows, **Enable background mode** is on by default under Settings →
+General → **Faster Subsequent Windows**. Closing the last window first explains that
+JoyRead will stay ready for faster later opens. Choose **Keep running** to close
+the window while retaining the background process, or **Quit JoyRead** to exit
+completely. Check **Don't show this again** to suppress future notices when
+choosing Keep running; pressing Esc keeps the window open. The taskbar
+notification icon can reopen JoyRead. Its
+right-click menu opens the Library, picks a comic or PDF to read without
+importing, shows JoyRead's current physical memory use in MB below the Clear
+command, clears rebuildable memory caches, or quits JoyRead completely. Cache
+cleanup waits until every window and background task is finished. Turning the
+setting off restores normal exit on the last close. Turning it on again resets
+the reminder, so the next final close explains background mode once more.
+The same Windows-only group has **Automatically clear memory caches** and an
+**Idle cleanup delay** in seconds. Automatic cleanup is on by default after
+60 seconds with no windows; the delay is adjustable from 1 to 3600 seconds.
+Turning automatic cleanup off leaves the tray's manual Clear command available.
+The automatic-cleanup switch is unavailable while background mode is off;
+the delay control becomes available when both switches are on. Dependent
+settings in Reading Defaults and Archive & Cache also fade and become
+unavailable while their controlling switch is off.
+JoyRead does not start automatically when you sign in to Windows.
+
 The window is split into a sidebar on the left and the shelf on the right. The
 sidebar holds **Book Shelf** (with **All**, **Recent**, **Favourites**, and
 **Hidden**), your **Collections**, and **Settings**. The toolbar button at the
@@ -268,11 +291,14 @@ window instead, which is what you want when comparing two books side by side.
 | ← / → | Previous / next page, following your reading direction |
 | Scroll wheel or trackpad | Scroll, in vertical mode |
 | Right-click | Show the controls |
-| Esc | Close the open panel, or leave the reader |
+| F | Enter full screen while reading |
+| Esc | Leave full screen, close the open panel, or leave the reader |
 
 The reader's chrome — the header and the page bar — fades out shortly after you
 stop moving the pointer, so nothing sits on top of the page while you read. Move
 the pointer or right-click to bring it back.
+Returning from a Reader inside the main window also leaves full screen.
+The Reader's maximize button exits full screen when pressed in that state.
 
 ### Layout
 

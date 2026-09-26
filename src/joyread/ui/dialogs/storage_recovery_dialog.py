@@ -22,6 +22,7 @@ class StorageRecoveryDialogResult(IntEnum):
 class StorageRecoveryDialog(QDialog):
     def __init__(self, current: str, message: str, parent: QDialog | None = None) -> None:
         super().__init__(parent)
+        self.setObjectName("StorageRecoveryDialog")
         set_localized(self, "setWindowTitle", t("startup.library_unavailable"))
         self.setMinimumWidth(STORAGE_RECOVERY_DIALOG_MIN_WIDTH)
 

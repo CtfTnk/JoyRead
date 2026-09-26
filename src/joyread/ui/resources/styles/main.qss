@@ -500,6 +500,74 @@ QWidget#SettingsOverlay {
     border: none;
 }
 
+/* Windows resident controls use JoyRead's light palette even when Windows
+   supplies dark native popup surfaces. Keep the scope on these two additions. */
+QDialog#WindowsBackgroundNoticeDialog,
+QDialog#StorageRecoveryDialog {
+    background: __WINDOW_COLOR__;
+    color: __TEXT_COLOR__;
+}
+
+QDialog#WindowsBackgroundNoticeDialog QLabel,
+QDialog#WindowsBackgroundNoticeDialog QCheckBox,
+QDialog#StorageRecoveryDialog QLabel {
+    background: transparent;
+    color: __TEXT_COLOR__;
+}
+
+QDialog#WindowsBackgroundNoticeDialog QCheckBox::indicator {
+    width: 16px;
+    height: 16px;
+    background: __WINDOW_COLOR__;
+    border: 1px solid __BUTTON_EDGE__;
+    border-radius: 3px;
+}
+
+QDialog#WindowsBackgroundNoticeDialog QCheckBox::indicator:checked {
+    background: __SELECTED_COLOR__;
+    image: url(__ICON_DIR__/icon_confirm.svg);
+}
+
+QDialog#WindowsBackgroundNoticeDialog QPushButton,
+QDialog#StorageRecoveryDialog QPushButton {
+    background: __WINDOW_COLOR__;
+    color: __TEXT_COLOR__;
+    border: 1px solid __BUTTON_EDGE__;
+    border-radius: __DIALOG_BUTTON_RADIUS__;
+    padding: 6px 10px;
+}
+
+QDialog#WindowsBackgroundNoticeDialog QPushButton:hover,
+QDialog#WindowsBackgroundNoticeDialog QPushButton:focus,
+QDialog#StorageRecoveryDialog QPushButton:hover,
+QDialog#StorageRecoveryDialog QPushButton:focus {
+    background: __SELECTED_COLOR__;
+}
+
+QMenu#JoyReadWindowsTrayMenu {
+    background: __WINDOW_COLOR__;
+    color: __TEXT_COLOR__;
+    border: 1px solid __BUTTON_EDGE__;
+}
+
+QMenu#JoyReadWindowsTrayMenu::item {
+    background: transparent;
+    color: __TEXT_COLOR__;
+}
+
+QMenu#JoyReadWindowsTrayMenu::item:selected {
+    background: __SELECTED_COLOR__;
+    color: __TEXT_COLOR__;
+}
+
+QMenu#JoyReadWindowsTrayMenu::item:disabled {
+    color: __SIDEBAR_SECTION_COLOR__;
+}
+
+QMenu#JoyReadWindowsTrayMenu::separator {
+    background: __BUTTON_INNER_EDGE__;
+}
+
 /* General popup dialog */
 QWidget#JoyReadDialogOverlay {
     background: transparent;

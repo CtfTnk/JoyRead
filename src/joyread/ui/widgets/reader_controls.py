@@ -27,6 +27,7 @@ from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
+from joyread.ui.widgets.reader_fullscreen import leave_reader_fullscreen
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
 from joyread.ui.widgets.window_state import toggle_maximized
 
@@ -297,7 +298,9 @@ class ReaderHeader(QWidget):
         self._title_visible = True
 
     def _toggle_zoom(self) -> None:
-        toggle_maximized(self.window())
+        window = self.window()
+        if not leave_reader_fullscreen(window):
+            toggle_maximized(window)
 
 
 class ReaderStepButton(QToolButton):

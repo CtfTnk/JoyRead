@@ -600,12 +600,21 @@ def run(argv: list[str] | None = None) -> int:
         shutdown_logging()
         raise
 
-    _configure_window_management(
+    manager, _coordinator = _configure_window_management(
         runtime,
         gate=environment.gate,
         broker=broker,
         enable_macos_reopen=True,
     )
+    if sys.platform == "win32":
+        # The resident UI belongs to the primary alone. Secondary launches
+        # retain their small arbitration-only import graph.
+        from joyread.app.windows.windows_background import install_windows_background
+
+        install_windows_background(
+            runtime.app, manager, environment.settings_store,
+            lambda: runtime.context,
+        )
     log_event(
         logger,
         logging.INFO,

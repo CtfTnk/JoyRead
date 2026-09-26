@@ -9,7 +9,6 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QShortcut
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
-from joyread.app.p0_content_probe import P0ShelfContentProbe
 from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
@@ -122,7 +121,6 @@ class ShelfView(QWidget):
             self.importing_state,
         ):
             self.stack.addWidget(widget)
-        self._p0_content_probe = P0ShelfContentProbe(self)
         layout.addWidget(self.stack, stretch=1)
 
         # Sits above the toolbar/grid/list and below detail_panel, so Qt's

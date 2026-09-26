@@ -201,7 +201,7 @@ def test_delete_dialog_messages_measure_wrapped_height_without_clipping(qtbot) -
     apply_theme()
     titles = (
         "Miss Kobayashi's Dragon Maid v01 (2016) (Goldenagato)",
-        "Delicious in Dungeon v14 (Ryōko Kui) (z-library.sk, 1lib.sk, z-lib.sk)",
+        "A Very Long Example Volume 14 (Sample Author) (extended local filename)",
     )
 
     for title in titles:

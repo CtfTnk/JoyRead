@@ -28,7 +28,12 @@ from joyread.core.services.hidden_space_service import (
     HiddenSpacePasswordError,
     HiddenSpaceService,
 )
-from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
+from joyread.infrastructure.config.settings_store import (
+    AppSettings,
+    SettingsStore,
+    WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+    WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
+)
 from joyread.app.open_policy import LibraryState, OpenDisposition, OpenOrigin, decide_open
 from joyread.infrastructure.i18n import locale_service
 from joyread.ui.viewmodels.signals import Signal
@@ -135,6 +140,8 @@ class SettingsViewModel:
         self._window_sizes = {"library": settings.library_window_size, "reader": settings.reader_window_size}
         # Emitted after the locale has been reloaded so the UI can refresh labels.
         self.language_changed: Signal[None] = Signal()
+        self.windows_background_changed: Signal[bool] = Signal()
+        self.windows_background_cleanup_changed: Signal[tuple[bool, int]] = Signal()
         # The cache fields are user-tunable and surface "Clear archive cache"
         # as a one-shot button. AppContext wires the side effects (resize the
         # actual caches, blow away on-disk pool entries) and refreshes the
@@ -177,6 +184,13 @@ class SettingsViewModel:
             getattr(settings, "verify_imported_file_integrity", True)
         )
         self.individual_read_window = settings.individual_read_window
+        self.windows_background_enabled = settings.windows_background_enabled
+        self.windows_background_auto_cleanup_enabled = settings.windows_background_auto_cleanup_enabled
+        self.windows_background_auto_cleanup_seconds = _clamp_int(
+            settings.windows_background_auto_cleanup_seconds,
+            WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
+            WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+        )
         self.default_reader_settings = settings.default_reader_settings
         self.storage_location = settings.storage_location
         self.reader_page_cache_mb = _clamp_int(
@@ -348,6 +362,46 @@ class SettingsViewModel:
             return
         self.individual_read_window = enabled
         self._persist(individual_read_window=enabled)
+        self.state_changed.emit()
+
+    def set_windows_background_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.windows_background_enabled:
+            return
+        updates = {"windows_background_enabled": enabled}
+        if enabled:
+            # A fresh opt-in is a new notification cycle, even when the user
+            # had suppressed the explanation during an earlier enabled period.
+            updates["windows_background_notice_suppressed"] = False
+        self._persist(**updates)
+        self.windows_background_enabled = enabled
+        self.windows_background_changed.emit(enabled)
+        self.state_changed.emit()
+
+    def set_windows_background_auto_cleanup_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled)
+        if enabled == self.windows_background_auto_cleanup_enabled:
+            return
+        self._persist(windows_background_auto_cleanup_enabled=enabled)
+        self.windows_background_auto_cleanup_enabled = enabled
+        self.windows_background_cleanup_changed.emit(
+            (enabled, self.windows_background_auto_cleanup_seconds)
+        )
+        self.state_changed.emit()
+
+    def set_windows_background_auto_cleanup_seconds(self, seconds: int) -> None:
+        clamped = _clamp_int(
+            seconds,
+            WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
+            WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+        )
+        if clamped == self.windows_background_auto_cleanup_seconds:
+            return
+        self._persist(windows_background_auto_cleanup_seconds=clamped)
+        self.windows_background_auto_cleanup_seconds = clamped
+        self.windows_background_cleanup_changed.emit(
+            (self.windows_background_auto_cleanup_enabled, clamped)
+        )
         self.state_changed.emit()
 
     def set_storage_location(self, path: str) -> None:

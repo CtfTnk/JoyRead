@@ -34,7 +34,6 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QWidget
 
-from joyread.app.p0_content_probe import record_reader_canvas_paint
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
 from joyread.core.reader import ReaderLayoutResult
@@ -381,7 +380,6 @@ class ReaderCanvas(QWidget):
                 self._effective_pan_x(),
             )
         painter.end()
-        record_reader_canvas_paint(self)
         self._record_paint(perf_started)
 
     def resizeEvent(self, event: QResizeEvent) -> None:

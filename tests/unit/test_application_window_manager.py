@@ -246,6 +246,47 @@ def test_close_all_readers_is_a_no_op_without_readers(qtbot) -> None:
         _close_windows(manager, qtbot)
 
 
+def test_last_close_guard_runs_before_library_owned_readers_are_closed(qtbot, tmp_path: Path) -> None:
+    manager, _mains, _readers, _shelf = _manager()
+    decisions: list[QMainWindow] = []
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        owned = main.launcher(StandaloneReaderRequest(tmp_path / "owned.cbz"))
+        assert manager.would_close_all_windows(main)
+        assert not manager.would_close_all_windows(owned)
+
+        manager.set_last_close_guard(lambda window: decisions.append(window) or False)
+        assert not main.close()
+        assert manager.main_window is main
+        assert owned in manager.reader_windows
+        assert decisions == [main]
+
+        manager.set_last_close_guard(lambda window: decisions.append(window) or True)
+        assert main.close()
+        assert manager.main_window is None
+        assert manager.reader_windows == ()
+        assert decisions == [main, main]
+    finally:
+        manager.set_last_close_guard(None)
+        _close_windows(manager, qtbot)
+
+
+def test_explicit_quit_closes_every_managed_window(qtbot, tmp_path: Path) -> None:
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        main.launcher(StandaloneReaderRequest(tmp_path / "owned.cbz"))
+        manager.open_files((tmp_path / "external.pdf",))
+
+        manager.close_all_windows()
+
+        assert not manager.has_windows
+        assert manager.main_window is None
+        assert manager.reader_windows == ()
+    finally:
+        _close_windows(manager, qtbot)
+
+
 def test_storage_rebuild_closes_only_library_owned_readers(qtbot, tmp_path: Path) -> None:
     manager, _mains, _readers, _shelf = _manager()
     try:

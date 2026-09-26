@@ -16,6 +16,7 @@ from joyread.app.reader_runtime import ReaderRuntime
 from joyread.core.models.book import Book
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.views.reader_shell import ReaderShellWidget
+from joyread.ui.widgets.reader_fullscreen import handle_reader_fullscreen_key
 from joyread.ui.widgets.window_gestures import install_system_resize_border
 
 
@@ -96,6 +97,8 @@ class ReaderWindow(QMainWindow):
         return self.shell.depends_on_library
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
+        if handle_reader_fullscreen_key(event, self):
+            return
         if self.shell.handle_key_press(event):
             return
         super().keyPressEvent(event)

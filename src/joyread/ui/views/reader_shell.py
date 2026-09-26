@@ -7,6 +7,7 @@ from joyread.ui.widgets.localized_text import set_localized
 import logging
 from collections.abc import Callable
 from pathlib import Path
+from weakref import ref
 
 from PySide6.QtCore import QPoint, QSize, QTimer, Qt, Signal as QtSignal
 from PySide6.QtGui import QCloseEvent, QCursor, QIcon, QKeyEvent
@@ -238,29 +239,47 @@ class ReaderShellWidget(ReaderShellBase):
         self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
         self.viewmodel.contents_changed.connect(self._handle_contents_changed)
         self.viewmodel.bookmark_error_changed.connect(
-            lambda message: self.dialog_overlay.show_info(t("reader.bookmarks"), message)
+            self._show_bookmark_error
         )
         self.viewmodel.topic_thumbnail_ready.connect(self.topic_panel.set_thumbnail)
 
     def _install_auto_hide(self) -> None:
         control_widgets = (self.header, self.footer, self.left_arrow, self.right_arrow)
-        # Late-bind both callbacks via lambdas: tests monkeypatch
-        # ``_control_interaction_active`` on the shell to force hide
-        # behaviour, and the panel-raise helper depends on panel state
-        # that changes after the controller is constructed.
+        # The controller is parented to this shell. Strong callbacks that also
+        # capture the shell keep invalid Qt wrappers and their ViewModel alive
+        # across every close in a resident process. Resolve the current methods
+        # through a weak reference so tests and live panel state still bind late.
+        shell_ref = ref(self)
+
+        def interaction_active() -> bool:
+            shell = shell_ref()
+            return shell._control_interaction_active() if shell is not None else False
+
+        def raise_panels() -> None:
+            shell = shell_ref()
+            if shell is not None:
+                shell._raise_settings_panel_if_visible()
+
+        def retained_controls() -> tuple[QWidget, ...]:
+            shell = shell_ref()
+            return tuple(shell._retained_controls()) if shell is not None else ()
+
         self.auto_hide = AutoHideController(
             self,
             control_widgets,
             delay_ms=Theme.reader_auto_hide_delay_ms,
-            interaction_predicate=lambda: self._control_interaction_active(),
-            on_after_show=lambda: self._raise_settings_panel_if_visible(),
-            retained_controls=lambda: self._retained_controls(),
+            interaction_predicate=interaction_active,
+            on_after_show=raise_panels,
+            retained_controls=retained_controls,
         )
         # Header still needs the shell as an event filter for window-drag,
         # so install the shell on it directly. Other control widgets only
         # need the auto-hide controller's filter for reveal-on-hover.
         self.header.installEventFilter(self)
         self.auto_hide.start()
+
+    def _show_bookmark_error(self, message: str) -> None:
+        self.dialog_overlay.show_info(t("reader.bookmarks"), message)
 
     def _sync_state(self) -> None:
         self.preview.sync_state()

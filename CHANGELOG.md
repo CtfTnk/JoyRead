@@ -5,8 +5,23 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- On Windows, keep the primary process in the notification area after the last
+  window closes to accelerate later Library and Reader opens. General settings
+  can disable it, and the tray can reopen the Library, open a file read-only,
+  clear idle memory caches, or exit. Re-enabling resets the close reminder.
+  Automatic idle cleanup is configurable and the tray shows current memory use.
+- In the manga and PDF Reader on all platforms, F enters full screen and Esc
+  leaves it. The maximize control exits full screen, and returning from an
+  embedded Reader restores the host window state.
+
 ### Fixes
 
+- Dim and disable dependent controls throughout General, Reading Defaults,
+  and Archive & Cache when their controlling setting is off.
+- Match dialog button corners to the 6 px radius and keep Windows tray menu
+  text padded within its highlighted rows.
 - Bundle Noto Sans SC/JP Medium alongside Regular and Bold so UI text requesting
   weight 500 uses the intended face instead of falling back to Regular.
 - Request native Windows foreground activation when opening or reusing the

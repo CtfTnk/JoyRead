@@ -1,7 +1,10 @@
 # JoyRead Packaging Guide
 
-This guide builds JoyRead **1.2.0** with PyInstaller.
-See [release notes](releases/v1.2.0.md) for installation and validation status.
+This guide builds the **1.3.0 internal staging** candidate with PyInstaller.
+The candidate is for desktop testing and has not been published. Manual
+acceptance of this exact candidate on macOS, Windows, and Ubuntu remains
+pending; the published 1.2.0 installation and validation status remains in its
+[release notes](releases/v1.2.0.md).
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in
@@ -318,6 +321,28 @@ The setup executable is unsigned. Sign it before public distribution. Always
 smoke install, file activation, repair/upgrade, and uninstall on a clean Windows
 VM; compiling the setup proves its payload but does not exercise registry
 redirection, shell notification, or Windows default-app behavior.
+
+Windows desktop acceptance also covers the notification-area lifetime: a new
+profile defaults to enabled, the final close shows a notice whose Esc cancels
+the close, its Quit button exits the app, and checking the box while confirming
+suppresses later notices. Turning the feature
+off and on again must reset that suppression and show the notice on the next
+final close. The switch appears under General → Faster Subsequent Windows.
+Verify the automatic memory-cleanup switch defaults on, its seconds control
+defaults to 60 and changes the one-shot idle delay immediately. Disabling it
+must keep manual tray cleanup available; disabling background mode must gray
+out both dependent controls.
+Close all windows and
+confirm a plain relaunch and Explorer Open With use the resident primary. Use
+the tray to restore, open the Library, pick a comic/PDF, request memory cleanup
+while a window is open (it must wait), and explicitly Quit; then confirm a new
+launch can acquire the profile lock. Turning the General setting off, or running
+without a notification area, must restore last-window exit. Compare cold and
+resident Reader first-page times and check repeated close/reopen memory trend
+on the same machine. Offscreen tests do not certify these desktop behaviors.
+Check Reader F/Esc full screen from normal and maximized states, the maximize
+button while full screen, and Back from an embedded Reader. Check the light
+close notice and tray menu on a Windows dark-mode desktop.
 
 ## 4. Platform requirements
 

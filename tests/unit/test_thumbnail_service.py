@@ -150,11 +150,9 @@ def _png_bytes(size: tuple[int, int], color: str = "#ffffff") -> bytes:
 def _synthetic_book(tmp_path: Path, *, pages: int = 20) -> Book:
     """A real but tiny CBZ standing in for a corpus volume.
 
-    The mock repository's books point into ``test_set/``, a private corpus that
-    is not part of the repository, so any test that needs pages actually
-    decoded builds its own archive. Keeping these on a generated file is what
-    lets CI cover the thumbnail pipeline at all; only tests asserting something
-    about the real corpus may depend on it.
+    Repository rows use synthetic paths, so any test that needs pages actually
+    decoded builds its own archive. That keeps the thumbnail pipeline covered
+    on CI without depending on a local book corpus.
     """
     path = tmp_path / "synthetic.cbz"
     with ZipFile(path, "w", compression=ZIP_DEFLATED) as archive:

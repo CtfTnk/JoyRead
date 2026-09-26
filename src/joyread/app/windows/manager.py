@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 from uuid import uuid4
 
-from PySide6.QtCore import QEvent, QObject, Qt
+from PySide6.QtCore import QEvent, QObject, Qt, Signal as QtSignal
 from PySide6.QtWidgets import QApplication, QMainWindow
 
 from joyread.app import startup_trace
@@ -45,6 +45,8 @@ class ApplicationWindowManager(QObject):
     :mod:`joyread.app.windows.ownership` for why the distinction matters.
     """
 
+    windows_changed = QtSignal()
+
     def __init__(
         self,
         context: AppContext | ReaderRuntime,
@@ -69,6 +71,19 @@ class ApplicationWindowManager(QObject):
         self._ownership = WindowOwnership()
         self._activation = WindowActivationRegistry()
         self._storage_transition: StorageTransitionController | None = None
+        self._last_close_guard: Callable[[QMainWindow], bool] | None = None
+
+    def set_last_close_guard(self, guard: Callable[[QMainWindow], bool] | None) -> None:
+        """Ask application policy before closing the last window ownership group."""
+
+        self._last_close_guard = guard
+
+    def would_close_all_windows(self, window: QMainWindow) -> bool:
+        window_id = id(window)
+        if window_id not in self._live_windows:
+            return False
+        closing = {window_id, *self._ownership.descendants_of(window_id)}
+        return not any(live_id not in closing for live_id in self._live_windows)
 
     @property
     def storage_transition_controller(self) -> StorageTransitionController:
@@ -121,6 +136,15 @@ class ApplicationWindowManager(QObject):
             window.close()
         logger.info("Closed %d reader window(s) for a storage transition", len(readers))
         return len(readers)
+
+    def close_all_windows(self) -> None:
+        """Close every managed window for an explicit application quit."""
+
+        if self._main_window is not None:
+            self._main_window.close()
+        # Main closes its owned Readers. The remaining Readers are independent.
+        for window in self.reader_windows:
+            window.close()
 
     def show_library(self) -> QMainWindow:
         window = self._main_window
@@ -255,6 +279,15 @@ class ApplicationWindowManager(QObject):
         return window
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if (
+            event.type() == QEvent.Type.Close
+            and isinstance(watched, QMainWindow)
+            and self._last_close_guard is not None
+            and self.would_close_all_windows(watched)
+            and not self._last_close_guard(watched)
+        ):
+            event.ignore()
+            return True
         # Activation order drives the reopen decision, so it has to follow the
         # user's real focus changes and not just the windows we created.
         if event.type() == QEvent.Type.WindowActivate and id(watched) in self._live_windows:
@@ -285,6 +318,7 @@ class ApplicationWindowManager(QObject):
         window.destroyed.connect(
             lambda _object=None, window_id=window_id: self._release_window(window_id)
         )
+        self.windows_changed.emit()
 
     def _reconcile_ownership(
         self, window: QMainWindow, *, owner: QMainWindow | None
@@ -309,6 +343,8 @@ class ApplicationWindowManager(QObject):
 
     def _release_window(self, window_id: int) -> None:
         window = self._live_windows.pop(window_id, None)
+        if window is None:
+            return
         log_id = self._window_log_ids.pop(window_id, None)
         self._ownership.remove(window_id)
         self._activation.forget(window_id)
@@ -342,8 +378,8 @@ class ApplicationWindowManager(QObject):
                     "window_kind": "library",
                 },
             )
-        if window is not None:
-            window.removeEventFilter(self)
+        window.removeEventFilter(self)
+        self.windows_changed.emit()
 
     def _most_recent_window(self) -> QMainWindow | None:
         for window_id in self._activation.ordered():

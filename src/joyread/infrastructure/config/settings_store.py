@@ -31,6 +31,10 @@ except ImportError:  # pragma: no cover - platformdirs is a project dependency.
 
 logger = logging.getLogger(__name__)
 
+WINDOWS_BACKGROUND_CLEANUP_SECONDS_DEFAULT = 60
+WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN = 1
+WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX = 3600
+
 if TYPE_CHECKING:
     from joyread.core.reader.models import ReaderSettings
 
@@ -60,6 +64,12 @@ class AppSettings:
     # retaining a content hash calculated during the required copy pass.
     verify_imported_file_integrity: bool = True
     individual_read_window: bool = False
+    # Windows alone uses these flags. Other platforms keep their normal
+    # last-window lifetime even when a settings file is shared between hosts.
+    windows_background_enabled: bool = True
+    windows_background_notice_suppressed: bool = False
+    windows_background_auto_cleanup_enabled: bool = True
+    windows_background_auto_cleanup_seconds: int = WINDOWS_BACKGROUND_CLEANUP_SECONDS_DEFAULT
     default_reader_settings: ReaderSettings = field(default_factory=_default_reader_settings)
     library_window_size: tuple[int, int] | None = None
     reader_window_size: tuple[int, int] | None = None
@@ -222,6 +232,19 @@ class SettingsStore:
             import_on_read_drop=bool(raw.get("import_on_read_drop", False)),
             verify_imported_file_integrity=bool(raw.get("verify_imported_file_integrity", True)),
             individual_read_window=bool(raw.get("individual_read_window", False)),
+            windows_background_enabled=bool(raw.get("windows_background_enabled", True)),
+            windows_background_notice_suppressed=bool(
+                raw.get("windows_background_notice_suppressed", False)
+            ),
+            windows_background_auto_cleanup_enabled=bool(
+                raw.get("windows_background_auto_cleanup_enabled", True)
+            ),
+            windows_background_auto_cleanup_seconds=_coerce_int_in_range(
+                raw.get("windows_background_auto_cleanup_seconds"),
+                default=WINDOWS_BACKGROUND_CLEANUP_SECONDS_DEFAULT,
+                minimum=WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN,
+                maximum=WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX,
+            ),
             default_reader_settings=_reader_settings(raw.get("default_reader_settings")),
             shelf_sort_field=str(raw.get("shelf_sort_field") or "Add Time"),
             shelf_sort_ascending=bool(raw.get("shelf_sort_ascending", False)),

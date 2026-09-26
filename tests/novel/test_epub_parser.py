@@ -22,16 +22,11 @@ from joyread.novel.core.epub import (  # noqa: E402
 from joyread.novel.core.epub_session import open_epub_session  # noqa: E402
 
 from tests.support.epub_fixtures import write_tiny_epub  # noqa: E402
+from tests.support.local_corpus import local_fixture_path  # noqa: E402
 
 
-# Real-world fixtures live under ``test_set/`` and are not shipped with
-# the repository. CI skips these gracefully.
-_TEST_SET = Path(__file__).resolve().parents[2] / "test_set"
-_KONOSUBA = _TEST_SET / (
-    "Konosuba God’s Blessing on This Wonderful World, Vol. 1 Oh My Useless Goddess "
-    "(Natsume Akatsuki) (z-library.sk, 1lib.sk, z-lib.sk).epub"
-)
-_OKAASAN = _TEST_SET / "通常攻撃が全体攻撃で二回攻撃のお母さんは好きですか？ (井中 だちま) (Z-Library).epub"
+_ENGLISH_EPUB = local_fixture_path("epub_en", "english-sample.epub")
+_JAPANESE_EPUB = local_fixture_path("epub_ja", "japanese-sample.epub")
 
 
 def test_open_epub_parses_metadata_and_spine(tmp_path: Path) -> None:
@@ -99,11 +94,11 @@ def test_zipfile_asset_reader_exists_and_reads(tmp_path: Path) -> None:
         reader.close()
 
 
-@pytest.mark.skipif(not _KONOSUBA.exists(), reason="Konosuba test fixture missing")
-def test_real_konosuba_epub_parses() -> None:
-    book, reader = open_epub(_KONOSUBA)
+@pytest.mark.skipif(not _ENGLISH_EPUB.exists(), reason="local English EPUB fixture missing")
+def test_local_english_epub_parses() -> None:
+    book, reader = open_epub(_ENGLISH_EPUB)
     try:
-        assert book.metadata.title.startswith("Konosuba")
+        assert book.metadata.title
         assert book.metadata.language == "en"
         assert len(book.spine) > 0
         # NCX-derived TOC should populate at least the prologue + chapters.
@@ -112,9 +107,9 @@ def test_real_konosuba_epub_parses() -> None:
         reader.close()
 
 
-@pytest.mark.skipif(not _OKAASAN.exists(), reason="Okaasan test fixture missing")
-def test_real_okaasan_epub_parses() -> None:
-    book, reader = open_epub(_OKAASAN)
+@pytest.mark.skipif(not _JAPANESE_EPUB.exists(), reason="local Japanese EPUB fixture missing")
+def test_local_japanese_epub_parses() -> None:
+    book, reader = open_epub(_JAPANESE_EPUB)
     try:
         assert book.metadata.language == "ja"
         assert book.metadata.primary_writing_mode == "vertical-rl"

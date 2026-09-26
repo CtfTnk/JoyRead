@@ -223,7 +223,7 @@ class SettingRow(QFrame):
 
     def set_row_enabled(self, enabled: bool) -> None:
         self.setEnabled(enabled)
-        self._opacity_effect.setOpacity(1.0 if enabled else 0.5)
+        self._opacity_effect.setOpacity(1.0 if enabled else Theme.disabled_settings_row_opacity)
 
 
 class SmallSwitch(QFrame):

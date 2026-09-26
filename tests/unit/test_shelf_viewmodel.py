@@ -93,7 +93,7 @@ def test_search_uses_only_title_and_author_fields() -> None:
     vm = make_viewmodel()
     vm.load_books()
 
-    for query in ("cbz", "comic", "english", "1lib"):
+    for query in ("cbz", "comic", "english", "filename"):
         vm.set_search_query(query)
         assert vm.visible_books == []
 
@@ -108,8 +108,8 @@ def test_search_preserves_current_sort_order() -> None:
     titles = [book.title for book in vm.visible_books]
     assert titles == sorted(titles, key=str.lower)
     assert set(titles) == {
-        "Akane-banashi Story 148",
-        "Delicious in Dungeon v14",
+        "Stage Story 148",
+        "Dungeon Cooking v14",
         "Dungeon Meshi Archive",
         "Mushishi Volume Notes",
     }

@@ -319,6 +319,10 @@ class TaskService:
                 self._active_handles.pop(handle.task_id, None)
                 self._handle_scopes.pop(handle.task_id, None)
                 handle._signals = None
+                # Signal callbacks close over task/VM objects. Leaving this
+                # parentless QObject alive retains those closures after every
+                # finished job, which grows a resident process per Reader open.
+                signals.deleteLater()
 
         signals.completed.connect(complete)
         signals.failed.connect(fail)

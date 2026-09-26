@@ -319,6 +319,7 @@ class Theme:
     menu_item_text_height = 15
     menu_item_height = menu_item_text_height + (menu_item_padding * 2)
     menu_font_size = 12
+    tray_menu_item_right_padding = 16
     language_menu_width = menu_width
     language_menu_visual_padding_horizontal = 6
     language_menu_visual_padding_vertical = 4
@@ -360,6 +361,7 @@ class Theme:
     settings_about_line_height = 20
     settings_item_padding = 2
     settings_item_height = 28
+    disabled_settings_row_opacity = 0.5
     settings_stacked_gap = 4
     window_size_save_delay_ms = 400
     settings_item_name_height = 24
@@ -518,7 +520,7 @@ class Theme:
     dialog_button_border_width = 1
     dialog_button_visual_padding = 4
     dialog_button_layout_margin = dialog_button_visual_padding - dialog_button_border_width
-    dialog_button_radius = 10
+    dialog_button_radius = 6
     dialog_button_shadow_blur = 4
     dialog_button_shadow_offset = 1
     dialog_font_size = 12
