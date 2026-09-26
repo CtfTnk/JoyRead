@@ -453,7 +453,9 @@
     "preview_unavailable": "预览暂不可用"
   },
   "about": {
-    "intro": "这是一个兴趣使然的个人项目。\n\n最初是想认真实践三件事：基于 Figma MCP 的设计开发、与 vibe coding agents 的协作，以及同一个应用的跨平台交付。做着做着，它也逐渐长成了最初设想的样子——一个更顺手的本地漫画管理与阅读工具。\n\n如果您喜欢它，欢迎为项目点一个 star，不胜感激。",
+    "intro": "JoyRead 是一款整理和阅读本地漫画、PDF 的桌面应用。书籍与阅读记录都保存在您的设备上。\n\n它起初是一个兴趣使然的个人项目：我想借它尝试界面设计、与 AI 编程工具协作，以及把同一款应用带到不同平台。随着不断打磨，它也逐渐成为一款我自己愿意日常使用的阅读工具。\n\n如果 JoyRead 对您有帮助，欢迎在 GitHub 上为项目点个 Star。",
+    "project_link": "<a href=\"{url}\">查看项目 GitHub ↗</a>",
+    "credit": "开发：CtfTnk",
     "version": "版本 {version}",
     "title": "关于{app_name}"
   },

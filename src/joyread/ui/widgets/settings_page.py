@@ -73,6 +73,9 @@ from joyread.ui.widgets.menus import FigmaMenu
 from joyread.ui.widgets.section_banner import SectionBanner
 
 
+PROJECT_GITHUB_URL = "https://github.com/CtfTnk/JoyRead"
+
+
 class SettingsPageWidget(QFrame):
     # Storage management (Privacy > Storage). Move picks a parent folder for a
     # fresh ``<parent>/JoyRead-Library``; Select adopts an existing JoyRead
@@ -308,14 +311,14 @@ class SettingsPageWidget(QFrame):
         ]
 
     def _about_items(self) -> list[QWidget]:
-        """What JoyRead is, and the version, for a pane that rendered empty.
-
-        ABOUT reached the sidebar but had no branch here, so selecting it
-        cleared the content panel and showed nothing at all.
-        """
+        """Show the project introduction, attribution, and installed version."""
 
         banner = SectionBanner(t("about.title"), self._resources)
-        intro = SettingsAboutText(t("about.intro"))
+        intro = SettingsAboutText(
+            t("about.intro"),
+            project_link=t("about.project_link", url=PROJECT_GITHUB_URL),
+            credit=t("about.credit"),
+        )
         version = SettingsVersionLabel(t("about.version", version=__version__))
         return [banner, intro, version]
 
@@ -737,12 +740,18 @@ class SettingsAboutText(QFrame):
     """A card of running prose, not a labelled control.
 
     Every other row here is a name paired with something to operate. This is
-    the one place with something to read, so it wraps, keeps the blank lines
-    the translations use as paragraph breaks, and is selectable -- the text
-    names a repository someone may well want to copy.
+    the one place with something to read, so it wraps and keeps the blank lines
+    the translations use as paragraph breaks.
     """
 
-    def __init__(self, body: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        body: str,
+        parent: QWidget | None = None,
+        *,
+        project_link: str | None = None,
+        credit: str | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setProperty("class", "SettingsItem")
         self.setObjectName("SettingsAboutCard")
@@ -754,7 +763,7 @@ class SettingsAboutText(QFrame):
             Theme.settings_about_padding,
             Theme.settings_about_padding,
         )
-        layout.setSpacing(0)
+        layout.setSpacing(Theme.settings_about_padding)
         self._label = LocalizedLabel(body)
         self._label.setObjectName("SettingsAboutText")
         self._label.setWordWrap(True)
@@ -762,6 +771,18 @@ class SettingsAboutText(QFrame):
         self._label.setOpenExternalLinks(True)
         self._label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         layout.addWidget(self._label)
+        if project_link is not None:
+            link = LocalizedLabel(project_link)
+            link.setObjectName("SettingsAboutProjectLink")
+            link.setTextFormat(Qt.TextFormat.RichText)
+            link.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            link.setOpenExternalLinks(True)
+            layout.addWidget(link)
+        if credit is not None:
+            attribution = LocalizedLabel(credit)
+            attribution.setObjectName("SettingsAboutCredit")
+            attribution.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            layout.addWidget(attribution)
 
     def text(self) -> str:
         return self._label.text()

@@ -453,7 +453,9 @@
     "preview_unavailable": "Preview unavailable"
   },
   "about": {
-    "intro": "A personal project, made for the pleasure of making it.\n\nIt started as a way to properly practise three things: designing with Figma MCP, building alongside vibe-coding agents, and shipping the same app across platforms. Along the way it became the thing it set out to be — a comfortable place to keep and read a local manga library.\n\nIf you enjoy it, a star on the project would mean a lot. Thank you.",
+    "intro": "JoyRead is a desktop app for organizing and reading local manga and PDFs. Your books and reading progress stay on your device.\n\nIt began as a personal project to explore interface design, working with AI coding tools, and bringing one app to several platforms. Over time, it has grown into a reader I enjoy using myself.\n\nIf JoyRead is useful to you, a Star on GitHub would mean a lot.",
+    "project_link": "<a href=\"{url}\">View the project on GitHub ↗</a>",
+    "credit": "Created by CtfTnk",
     "version": "Version {version}",
     "title": "About {app_name}"
   },

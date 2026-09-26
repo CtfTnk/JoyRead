@@ -450,7 +450,9 @@ erases the extracted pages of encrypted archives when the book closes. See
 
 ### About
 
-Version and license information.
+The About page introduces JoyRead, shows the installed version and credits
+CtfTnk. Select the project GitHub link there to open its repository in your
+browser.
 
 ## Where your files live
 
