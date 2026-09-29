@@ -11,10 +11,13 @@ from PIL import Image
 from joyread.app import app_context as context_module
 from joyread.app.app_context import create_app_context
 from joyread.app.open_policy import LibraryState
+from joyread.app.tasking import TaskStatus
 from joyread.app.windows.manager import ApplicationWindowManager
 from joyread.app.windows.requests import StandaloneReaderRequest
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease, ArchiveCacheScope
+from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
 from joyread.infrastructure.config.settings_store import SettingsStore
+from joyread.infrastructure.database import DatabaseInterpreter
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.views.reader_window import ReaderWindow
 
@@ -84,7 +87,10 @@ def test_external_reader_work_survives_storage_transition(tmp_path, qtbot, monke
         context.close()
 
 
-def test_promoted_managed_reader_is_flushed_and_closed_before_library_selection(tmp_path, qtbot):
+@pytest.mark.parametrize("save_state", ("completed", "pending"))
+def test_promoted_managed_reader_is_flushed_and_closed_before_library_selection(
+    tmp_path, qtbot, monkeypatch, save_state,
+):
     target_store = _store(tmp_path / "target")
     seed = create_app_context(settings_store=target_store)
     seed.close()
@@ -97,31 +103,53 @@ def test_promoted_managed_reader_is_flushed_and_closed_before_library_selection(
     reader = manager.open_reader_from_library(StandaloneReaderRequest(Path(book.file_path), book=book))
     closed = []
     reader.closed.connect(lambda: closed.append(True))
+    old_database_path = context.database_interpreter.database_path
+    entered = Event()
+    release = Event()
     try:
         qtbot.waitUntil(lambda: bool(reader.canvas._pixmaps))
         assert manager.open_files((book.file_path,)) == (reader,)
         assert manager._ownership.owner_of(id(reader)) is None
         assert reader in manager.library_reader_windows
-        # Seed a progress change without waiting for its asynchronous save;
-        # the real transition controller must flush it before closing Reader.
-        reader.viewmodel.seek(2)
-        saved = []
         real_set_progress = context.library_service.set_progress
 
-        def record_progress(*args, **kwargs):
-            result = real_set_progress(*args, **kwargs)
-            saved.append(args)
-            return result
+        def gated_progress(book_uuid, page_index, percent):
+            if page_index == 2:
+                entered.set()
+                assert release.wait(5)
+            return real_set_progress(book_uuid, page_index, percent)
 
-        context.library_service.set_progress = record_progress
+        # Install before seek: its worker may save immediately. Exercise both
+        # completion orders explicitly instead of relying on machine speed.
+        monkeypatch.setattr(context.library_service, "set_progress", gated_progress)
+        reader.viewmodel.seek(2)
+        qtbot.waitUntil(entered.is_set)
+        if save_state == "completed":
+            release.set()
+            qtbot.waitUntil(lambda: reader.viewmodel._save_handle.status == TaskStatus.COMPLETED)
         controller = manager.storage_transition_controller
         assert controller.start(lambda: context.begin_storage_select(target_store.default_storage_root))
+        if save_state == "pending":
+            assert controller.busy
+            assert closed == []
+            assert context.database_interpreter.database_path == old_database_path
+            release.set()
         qtbot.waitUntil(lambda: not controller.busy)
         assert closed == [True]
         assert not manager.reader_windows
         assert context.paths.storage_root == target_store.default_storage_root
-        assert saved and saved[-1][0] == book.uuid
+        # Read a fresh connection to the OLD library: seeing a callback alone
+        # cannot prove that the latest position survived the storage switch.
+        database = DatabaseInterpreter(old_database_path)
+        try:
+            progress = SqliteBookRepository(database).get_progress(book.uuid)
+            assert progress is not None
+            assert progress.page_index == 2
+            assert progress.progress_percent == 100.0
+        finally:
+            database.close()
     finally:
+        release.set()
         main.close()
         manager.close_all_readers()
         context.close()
