@@ -1,10 +1,9 @@
 # JoyRead Packaging Guide
 
-This guide builds the **1.3.0 internal staging** candidate with PyInstaller.
-The candidate is for desktop testing and has not been published. Manual
-acceptance of this exact candidate on macOS, Windows, and Ubuntu remains
-pending; the published 1.2.0 installation and validation status remains in its
-[release notes](releases/v1.2.0.md).
+This guide builds the **1.3.0 release candidate** with PyInstaller.
+The GitHub Release is prepared as a draft; publication is a separate step.
+See the [1.3.0 release notes](releases/v1.3.0.md). The current public release
+remains 1.2.0 until that draft is explicitly published.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in

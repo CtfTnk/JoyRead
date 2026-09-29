@@ -5,6 +5,10 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.3.0] — Draft
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.3.0.md)
+
 ### Added
 
 - On Windows, keep the primary process in the notification area after the last
@@ -15,9 +19,36 @@ All notable changes to JoyRead are documented here. This project follows
 - In the manga and PDF Reader on all platforms, F enters full screen and Esc
   leaves it. The maximize control exits full screen, and returning from an
   embedded Reader restores the host window state.
+- Set default reading preferences for temporary files and Library books without
+  saved individual settings. Existing per-book preferences take precedence.
+- Separate Open, Open & Import, and Import. Open & Import keeps reading usable
+  while the managed copy imports in a cancellable background task; a separate
+  setting controls import when dropping a file onto the Library Read zone.
+- Scroll tall Fit to Width pages with the wheel, trackpad, or Up/Down keys,
+  including held keys. Stop at page edges; Left/Right still turns pages and
+  starts each new page at the top. Preserve position across resize/fullscreen.
+
+### Performance
+
+- Open external files directly in the Reader without constructing or querying
+  the Library. Load Library services only when requested.
+- Show the Library shell before loading its books in the background; keep
+  settings and direct file reading available during loading or recovery.
+- Defer book-detail widgets and reuse existing shelf controls. Avoid rebuilding
+  the Library for unrelated settings or window geometry changes.
 
 ### Fixes
 
+- Use square page and reader-bar corners in fullscreen, restoring rounded
+  corners when leaving it.
+- Keep external Reader opens, page jobs, and active cache leases alive across
+  Library transitions. Save and close Readers that still depend on the old
+  database, even when an OS open has promoted their window ownership.
+- Retry the selected Library after a loading failure, preserve the saved path
+  until selection succeeds, and synchronize the initial view/sort controls.
+- Honor cancellation while copying an imported file, retain archive conversion
+  preferences when rebuilding Library services, and restore service references
+  if a storage rebind fails.
 - Dim and disable dependent controls throughout General, Reading Defaults,
   and Archive & Cache when their controlling setting is off.
 - Match dialog button corners to the 6 px radius and keep Windows tray menu
