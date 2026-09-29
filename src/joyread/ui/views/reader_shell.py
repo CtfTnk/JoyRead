@@ -311,7 +311,7 @@ class ReaderShellWidget(ReaderShellBase):
             set_localized(self.canvas, "set_status_text", t("reader.no_readable_pages"))
 
     def _sync_layout(self, _result) -> None:  # noqa: ANN001 - signal carries the layout dataclass.
-        self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x)
+        self.canvas.set_layout_result(self.viewmodel.layout_result, self.viewmodel.pan_x, self.viewmodel.pan_y)
 
     def _sync_page(self, image: PreparedReaderPage) -> None:
         self.canvas.set_page_frame(image)
@@ -589,6 +589,14 @@ class ReaderShellWidget(ReaderShellBase):
         )
 
     def handle_key_press(self, event: QKeyEvent) -> bool:
+        if (
+            event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down)
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+            and not self._control_interaction_active()
+        ):
+            self.viewmodel.handle_vertical_key("up" if event.key() == Qt.Key.Key_Up else "down")
+            event.accept()
+            return True
         if event.key() == Qt.Key.Key_Left:
             self._navigate_horizontal_key("left", rapid=event.isAutoRepeat())
             event.accept()

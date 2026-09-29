@@ -242,7 +242,9 @@ class SmartLayoutEngine:
         height = page.height * scale
         rect = RectF(
             x=(viewport.width - width) / 2.0,
-            y=(viewport.height - height) / 2.0,
+            # Oversized fit-width pages start at their top. Short pages retain
+            # the centered layout and have no vertical pan range.
+            y=max(0.0, (viewport.height - height) / 2.0),
             width=width,
             height=height,
         )
@@ -251,6 +253,7 @@ class SmartLayoutEngine:
             scale=scale,
             page_draws=(PageDraw(page1_index, rect),),
             used_area=width * height,
+            pan_min_y=min(0.0, viewport.height - height),
         )
 
     def _double_result(
@@ -270,7 +273,7 @@ class SmartLayoutEngine:
         page2_width = page2_width_at_page1_height * scale
         height = page1.height * scale
         left = (viewport.width - (page1_width + page2_width)) / 2.0
-        top = (viewport.height - height) / 2.0
+        top = max(0.0, (viewport.height - height) / 2.0)
 
         widths = {page1_index: page1_width, page2_index: page2_width}
         ordered_indexes = sorted(
@@ -289,6 +292,7 @@ class SmartLayoutEngine:
             scale=scale,
             page_draws=draws,
             used_area=(page1_width * height) + (page2_width * height),
+            pan_min_y=min(0.0, viewport.height - height),
         )
 
     def _pairing_allowed(self, page1: SizeF, page2: SizeF) -> bool:

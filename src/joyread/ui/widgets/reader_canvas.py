@@ -71,6 +71,7 @@ class _CanvasSlideFrame:
     layout_result: ReaderLayoutResult
     pixmaps: dict[int, QPixmap]
     pan_x: float
+    pan_y: float
 
 
 class ReaderCanvas(QWidget):
@@ -89,6 +90,7 @@ class ReaderCanvas(QWidget):
         self._frame_signatures: dict[int, tuple[int, int, tuple[int, int], float]] = {}
         self._failed_pages: set[int] = set()
         self._pan_x = 0.0
+        self._pan_y = 0.0
         self._slide_source: _CanvasSlideFrame | None = None
         self._slide_target: _CanvasSlideFrame | None = None
         self._slide_offset_x = 0.0
@@ -137,7 +139,9 @@ class ReaderCanvas(QWidget):
             self._perf_heartbeat_timer.timeout.connect(self._record_heartbeat)
             self._perf_heartbeat_timer.start()
 
-    def set_layout_result(self, result: ReaderLayoutResult | None, pan_x: float = 0.0) -> None:
+    def set_layout_result(
+        self, result: ReaderLayoutResult | None, pan_x: float = 0.0, pan_y: float = 0.0
+    ) -> None:
         # A later reflow changes the geometry that a frozen target frame was
         # built against. Snap to the live layout rather than moving stale
         # geometry across the canvas. (A pan glide for THIS layout change is
@@ -146,6 +150,7 @@ class ReaderCanvas(QWidget):
         self.cancel_pan_slide()
         self._layout_result = result
         self._pan_x = pan_x
+        self._pan_y = pan_y
         self._prune_pixmaps_to_layout()
         self._refresh_spinner_state()
         self.update()
@@ -227,6 +232,7 @@ class ReaderCanvas(QWidget):
         self._frame_signatures.clear()
         self._failed_pages.clear()
         self._pan_x = 0.0
+        self._pan_y = 0.0
         if self._spinner_timer.isActive():
             self._spinner_timer.stop()
         self.update()
@@ -258,6 +264,7 @@ class ReaderCanvas(QWidget):
                 for draw in self._layout_result.page_draws
             },
             pan_x=self._pan_x,
+            pan_y=self._pan_y,
         )
 
     def start_page_slide(
@@ -362,9 +369,12 @@ class ReaderCanvas(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
-        shell_clip = QPainterPath()
-        shell_clip.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
-        painter.setClipPath(shell_clip)
+        # Match the shell's square full-screen surface; otherwise pages that
+        # reach the screen edge still lose their corners to this inner clip.
+        if not self.window().isFullScreen():
+            shell_clip = QPainterPath()
+            shell_clip.addRoundedRect(QRectF(self.rect()), Theme.reader_radius, Theme.reader_radius)
+            painter.setClipPath(shell_clip)
         painter.fillRect(self.rect(), QColor(Theme.color_reader_background))
 
         if self.is_page_slide_active:
@@ -378,6 +388,7 @@ class ReaderCanvas(QWidget):
                 self._pixmaps,
                 self._failed_pages,
                 self._effective_pan_x(),
+                pan_y=self._pan_y,
             )
         painter.end()
         self._record_paint(perf_started)
@@ -399,6 +410,7 @@ class ReaderCanvas(QWidget):
             source.pixmaps,
             set(),
             source.pan_x,
+            pan_y=source.pan_y,
             offset_x=-self._slide_offset_x * self._slide_progress,
         )
         self._paint_layout(
@@ -407,6 +419,7 @@ class ReaderCanvas(QWidget):
             target.pixmaps,
             set(),
             target.pan_x,
+            pan_y=target.pan_y,
             offset_x=self._slide_offset_x * (1.0 - self._slide_progress),
         )
 
@@ -418,6 +431,7 @@ class ReaderCanvas(QWidget):
         failed_pages: set[int],
         pan_x: float,
         *,
+        pan_y: float = 0.0,
         offset_x: float = 0.0,
     ) -> None:
         painter.save()
@@ -425,7 +439,7 @@ class ReaderCanvas(QWidget):
         for draw in layout_result.page_draws:
             rect = QRectF(
                 draw.rect.x + pan_x,
-                draw.rect.y,
+                draw.rect.y + pan_y,
                 draw.rect.width,
                 draw.rect.height,
             )

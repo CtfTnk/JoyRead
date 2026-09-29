@@ -207,6 +207,11 @@ class ReaderViewModel:
         self._primary_index = max(0, progress.page_index if progress is not None else 0)
         self._companion_index: int | None = None
         self._pan_x = 0.0
+        self._pan_y = 0.0
+        self._page_pan_anchor: tuple[int, ReaderDirection, bool, ReaderFitMode] | None = None
+        # A page-relative coordinate survives viewport resizes and a temporary
+        # layout gap while a sharper frame is prepared.
+        self._page_pan_position = 0.0
         self._wide_pan_anchor: tuple[int, ReaderDirection] | None = None
         self._wide_pan_user_panned = False
         self._vertical_scroll_y = 0.0
@@ -285,6 +290,10 @@ class ReaderViewModel:
     @property
     def pan_x(self) -> float:
         return self._pan_x
+
+    @property
+    def pan_y(self) -> float:
+        return self._pan_y
 
     @property
     def is_right_to_left(self) -> bool:
@@ -415,6 +424,7 @@ class ReaderViewModel:
             self._pending_password_archive = None
         self._wide_pan_anchor = None
         self._wide_pan_user_panned = False
+        self._reset_page_pan()
         self.bookmarks_changed.emit(self._bookmarks)
 
     def cancel_password_request(self) -> None:
@@ -636,6 +646,7 @@ class ReaderViewModel:
         self._finish_layout_loading()
         self._layout_result = result
         self._sync_wide_pan_for_layout(result)
+        self._sync_page_pan_for_layout(result)
         self._prune_resident_pages()
         self.layout_changed.emit(result)
         self._emit_ready_pages_for_layout(result)
@@ -706,6 +717,7 @@ class ReaderViewModel:
         self._finish_layout_loading()
         self._layout_result = result
         self._pan_x = 0.0
+        self._reset_page_pan()
         self._wide_pan_anchor = None
         self._wide_pan_user_panned = False
         self._prune_resident_pages()
@@ -886,9 +898,17 @@ class ReaderViewModel:
         self.recalculate_layout()
         self._emit_state()
 
-    def handle_vertical_scroll(self, delta_y: int) -> bool:
-        if not self._is_vertical_mode or self._page_count <= 0:
+    def handle_vertical_key(self, side: str) -> bool:
+        """Move up/down by a viewport step, using the same bounds as scrolling."""
+
+        step = max(Theme.reader_pan_min_step, self._viewport_size.height * Theme.reader_pan_step_ratio)
+        return self.handle_vertical_scroll(step if side == "up" else -step)
+
+    def handle_vertical_scroll(self, delta_y: float) -> bool:
+        if self._page_count <= 0 or not delta_y:
             return False
+        if not self._is_vertical_mode:
+            return self._pan_page_vertically(delta_y)
         self._vertical_scroll_y += float(delta_y)
         changed_page = False
         while self._primary_index < self._page_count - 1:
@@ -932,6 +952,7 @@ class ReaderViewModel:
         self._primary_index = max(0, min(primary_index, max(0, self._page_count - 1)))
         self._companion_index = self._valid_companion(companion_index)
         self._pan_x = 0.0
+        self._reset_page_pan()
         self._wide_pan_anchor = None
         self._wide_pan_user_panned = False
         self._vertical_scroll_y = 0.0
@@ -1639,6 +1660,44 @@ class ReaderViewModel:
             self._wide_pan_anchor = anchor
             return
         self._pan_x = max(result.pan_min_x, min(result.pan_max_x, self._pan_x))
+
+    def _reset_page_pan(self) -> None:
+        self._pan_y = 0.0
+        self._page_pan_anchor = None
+        self._page_pan_position = 0.0
+
+    def _sync_page_pan_for_layout(self, result: ReaderLayoutResult) -> None:
+        anchor = (
+            self._primary_index,
+            self.settings.direction,
+            self.settings.custom_enabled,
+            self.settings.fit_mode,
+        )
+        if anchor != self._page_pan_anchor:
+            self._reset_page_pan()
+            self._page_pan_anchor = anchor
+        self._pan_y = 0.0
+        if result.supports_vertical_pan:
+            primary = next(draw for draw in result.page_draws if draw.page_index == self._primary_index)
+            self._pan_y = max(
+                result.pan_min_y,
+                min(result.pan_max_y, -self._page_pan_position * primary.rect.height),
+            )
+
+    def _pan_page_vertically(self, delta_y: float) -> bool:
+        result = self._layout_result
+        if result is None or not result.supports_vertical_pan:
+            return False
+        next_pan = max(result.pan_min_y, min(result.pan_max_y, self._pan_y + delta_y))
+        if next_pan == self._pan_y:
+            return False
+        self._pan_y = next_pan
+        primary = next(draw for draw in result.page_draws if draw.page_index == self._primary_index)
+        self._page_pan_position = -next_pan / primary.rect.height
+        # Panning reuses the existing page frames. Do not recalculate layout,
+        # submit page work or persist a new page index on every wheel event.
+        self.layout_changed.emit(result)
+        return True
 
     def _wide_pan_start(self, result: ReaderLayoutResult) -> float:
         if self.settings.direction == ReaderDirection.RIGHT_TO_LEFT:

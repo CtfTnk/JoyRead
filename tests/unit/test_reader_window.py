@@ -21,7 +21,7 @@ from PySide6.QtCore import (
     Qt,
     qInstallMessageHandler,
 )
-from PySide6.QtGui import QContextMenuEvent, QFontDatabase, QIcon
+from PySide6.QtGui import QContextMenuEvent, QFontDatabase, QIcon, QKeyEvent
 from PySide6.QtWidgets import QApplication, QFrame, QLabel, QScrollArea
 
 from joyread.app.app_context import create_app_context
@@ -31,6 +31,7 @@ from joyread.core.reader import (
     PageDraw,
     ReaderDirection,
     ReaderDisplayMode,
+    ReaderFitMode,
     ReaderLayoutResult,
     ReaderSettings,
     ReaderTransitionMode,
@@ -1340,6 +1341,52 @@ def test_reader_fullscreen_keys_only_apply_while_embedded_reader_is_open(
         assert not window.isFullScreen()
         qtbot.keyClick(window, Qt.Key.Key_F)
         assert not window.isFullScreen()
+    finally:
+        window.close()
+        context.close()
+
+
+@pytest.mark.parametrize("embedded", [False, True])
+def test_reader_up_down_keys_pan_content_but_leave_panel_input_alone(
+    qtbot, tmp_path: Path, monkeypatch, embedded: bool,
+) -> None:
+    context = _context_with_imported_book(tmp_path, monkeypatch)
+    if embedded:
+        window = MainWindow(context)
+        window.open_reader_for_book(context.shelf_viewmodel.books[0].uuid)
+        shell = window._embedded_reader
+    else:
+        window = ReaderWindow(context, tmp_path / "library-book.cbz")
+        shell = window.shell
+    window.resize(1000, 800)
+    window.show()
+    try:
+        assert shell is not None
+        vm = shell.viewmodel
+        vm.set_custom_enabled(True)
+        vm.set_fit_mode(ReaderFitMode.FIT_WIDTH)
+        qtbot.waitUntil(lambda: vm.layout_result is not None and vm.layout_result.supports_vertical_pan)
+
+        qtbot.keyClick(shell.canvas, Qt.Key.Key_Down)
+        assert vm.pan_y < 0
+        assert shell.canvas._pan_y == vm.pan_y
+        offset = vm.pan_y
+        repeat = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_Down, Qt.KeyboardModifier.NoModifier, "", True,
+        )
+        QApplication.sendEvent(shell.canvas, repeat)
+        assert vm.pan_y == pytest.approx(offset * 2)
+        qtbot.keyClick(shell.canvas, Qt.Key.Key_Up)
+        assert vm.pan_y == pytest.approx(offset)
+        qtbot.keyClick(shell.canvas, Qt.Key.Key_Down, modifier=Qt.KeyboardModifier.ShiftModifier)
+        assert vm.pan_y == pytest.approx(offset)
+
+        shell._toggle_settings_panel()
+        qtbot.keyClick(shell.settings_panel.zoom_control._field, Qt.Key.Key_Down)
+        assert vm.pan_y == pytest.approx(offset)
+        shell._hide_settings_panel()
+        qtbot.keyClick(shell.canvas, Qt.Key.Key_Up)
+        assert vm.pan_y == pytest.approx(0)
     finally:
         window.close()
         context.close()

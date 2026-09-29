@@ -263,7 +263,10 @@ class ReaderHeader(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         gradient = _reader_chrome_gradient(self.height(), top=True)
-        painter.fillPath(_top_rounded_path(self.rect()), gradient)
+        if self.window().isFullScreen():
+            painter.fillRect(self.rect(), gradient)
+        else:
+            painter.fillPath(_top_rounded_path(self.rect()), gradient)
         painter.end()
 
     def _position_title(self) -> None:
@@ -505,7 +508,10 @@ class ReaderFooter(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         gradient = _reader_chrome_gradient(self.height(), top=False)
-        painter.fillPath(_bottom_rounded_path(self.rect()), gradient)
+        if self.window().isFullScreen():
+            painter.fillRect(self.rect(), gradient)
+        else:
+            painter.fillPath(_bottom_rounded_path(self.rect()), gradient)
         painter.end()
 
 

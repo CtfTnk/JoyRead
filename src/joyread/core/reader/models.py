@@ -73,9 +73,9 @@ class ReaderLayoutResult:
     """Output of the layout engine for one viewport.
 
     Tells the canvas which pages to draw (``page_draws``), at what scale,
-    and — in horizontal pan mode for ultra-wide pages — what pan range is
-    valid. The layout engine recomputes this on every viewport resize and
-    every settings change.
+    and which horizontal/vertical pan ranges are valid. Vertical pan belongs
+    to the current page or spread, independently of continuous vertical
+    reading. The layout engine recomputes these on resize and settings changes.
     """
 
     mode: ReaderDisplayMode
@@ -84,10 +84,16 @@ class ReaderLayoutResult:
     used_area: float
     pan_min_x: float = 0.0
     pan_max_x: float = 0.0
+    pan_min_y: float = 0.0
+    pan_max_y: float = 0.0
 
     @property
     def supports_horizontal_pan(self) -> bool:
         return self.mode == ReaderDisplayMode.WIDE_PAN and self.pan_min_x < self.pan_max_x
+
+    @property
+    def supports_vertical_pan(self) -> bool:
+        return self.pan_min_y < self.pan_max_y
 
 
 @dataclass(frozen=True)

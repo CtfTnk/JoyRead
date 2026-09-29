@@ -6,6 +6,7 @@ import hashlib
 from uuid import uuid4
 
 import py7zr
+import pytest
 from PIL import Image
 
 from joyread.core.archive import (
@@ -20,6 +21,7 @@ from joyread.core.models.bookmark import Bookmark
 from joyread.core.reader import (
     ReaderDirection,
     ReaderDisplayMode,
+    ReaderFitMode,
     ReaderPageImage,
     ReaderSessionService,
     ReaderSettings,
@@ -641,6 +643,11 @@ def test_reader_viewmodel_vertical_mode_scrolls_continuously_and_snaps_by_page(t
     assert [draw.page_index for draw in viewmodel.layout_result.page_draws] == [0, 1, 2]
     assert viewmodel.layout_result.page_draws[0].rect.height == 800
 
+    assert viewmodel.handle_vertical_key("down") is True
+    assert viewmodel._vertical_scroll_y == pytest.approx(-144)
+    assert viewmodel.handle_vertical_key("up") is True
+    assert viewmodel._vertical_scroll_y == 0
+
     assert viewmodel.handle_vertical_scroll(-801) is True
     assert viewmodel.current_index == 1
     assert viewmodel.layout_result is not None
@@ -648,6 +655,130 @@ def test_reader_viewmodel_vertical_mode_scrolls_continuously_and_snaps_by_page(t
 
     viewmodel.go_next()
     assert viewmodel.current_index == 2
+
+
+@pytest.mark.parametrize("direction", [ReaderDirection.LEFT_TO_RIGHT, ReaderDirection.RIGHT_TO_LEFT])
+def test_fit_width_scroll_and_arrow_keys_stop_at_page_edges_without_loading(
+    tmp_path: Path, direction: ReaderDirection,
+) -> None:
+    sessions = _CountingSessionService()
+    tasks = _ManualPageTaskService()
+    library = _FakeLibraryService()
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(sessions),
+        tasks,
+        _cache_service(tmp_path).issue_reader_namespace(),
+        library,
+        book_uuid="book-1",
+        settings=ReaderSettings(
+            direction=direction, custom_enabled=True, fit_mode=ReaderFitMode.FIT_WIDTH,
+        ),
+    )
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    vm.set_viewport_size(1000, 800)
+    vm.open_path(source)
+    while tasks.page_tasks:
+        tasks.run_next_page_task()
+    sessions.page_requests.clear()
+    saved_progress = list(library.progress_calls)
+    frames = []
+    vm.page_ready.connect(frames.append)
+
+    assert vm.pan_y == 0
+    assert vm.handle_vertical_key("up") is False
+    assert vm.handle_vertical_scroll(-120) is True
+    assert vm.pan_y == -120
+    assert vm.handle_vertical_key("down") is True
+    assert vm.pan_y == pytest.approx(-264)
+    assert vm.handle_vertical_key("up") is True
+    assert vm.pan_y == pytest.approx(-120)
+    assert vm.handle_vertical_scroll(-10_000) is True
+    assert vm.pan_y == -700
+    assert vm.handle_vertical_key("down") is False
+    assert vm.handle_vertical_scroll(10_000) is True
+    assert vm.pan_y == 0
+    assert vm.current_index == 0
+    assert sessions.page_requests == []
+    assert tasks.page_tasks == []
+    assert frames == []
+    assert library.progress_calls == saved_progress
+    vm.cancel()
+
+
+def test_fit_width_pan_survives_resize_but_resets_on_page_or_mode_change(tmp_path: Path) -> None:
+    vm = _viewmodel(tmp_path)
+    vm.set_custom_enabled(True)
+    vm.set_fit_mode(ReaderFitMode.FIT_WIDTH)
+    vm.open_path(tmp_path / "book.cbz")
+    vm.set_viewport_size(1000, 800)
+    vm.handle_vertical_scroll(-300)
+
+    vm.set_viewport_size(1200, 900)
+    assert vm.pan_y == pytest.approx(-360)
+    # A temporary window shape may show the whole page. Restoring its size
+    # should still return to the same source-page coordinate.
+    vm.set_viewport_size(400, 900)
+    assert vm.pan_y == 0
+    vm.set_viewport_size(1000, 800)
+    assert vm.pan_y == pytest.approx(-300)
+
+    vm.handle_horizontal_key("left")
+    assert vm.current_index == 1
+    assert vm.pan_y == 0
+    vm.handle_vertical_key("down")
+    vm.handle_horizontal_key("right")
+    assert vm.current_index == 0
+    assert vm.pan_y == 0
+
+    vm.handle_vertical_key("down")
+    vm.set_fit_mode(ReaderFitMode.FIT_PAGE)
+    assert vm.pan_y == 0
+    assert vm.handle_vertical_key("down") is False
+    vm.set_fit_mode(ReaderFitMode.FIT_WIDTH)
+    assert vm.pan_y == 0
+    vm.cancel()
+
+
+def test_fit_width_pan_survives_waiting_for_a_larger_frame_after_resize(tmp_path: Path) -> None:
+    class ViewportDecoder:
+        def decode(self, payload, request):
+            width, height = payload.source_dimensions
+            scale = min(request.target_width / width, request.target_height / height, 1.0)
+            return PreparedReaderPage(
+                payload.page_index, payload.image_bytes, payload.source_dimensions,
+                (round(width * scale), round(height * scale)), request.generation,
+            )
+
+    tasks = _ManualPageTaskService()
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(_FakeSessionService((1200, 2400))),
+        tasks,
+        _cache_service(tmp_path).issue_reader_namespace(),
+        page_decoder=ViewportDecoder(),
+        settings=ReaderSettings(custom_enabled=True, fit_mode=ReaderFitMode.FIT_WIDTH),
+        prefetch_before=0,
+        prefetch_after=0,
+    )
+    source = tmp_path / "book.cbz"
+    source.write_bytes(b"fake")
+    vm.set_viewport_size(400, 600)
+    vm.open_path(source)
+    while tasks.page_tasks:
+        tasks.run_next_page_task()
+    assert vm.handle_vertical_scroll(-100)
+
+    vm.set_viewport_size(800, 1200)
+    assert vm.layout_result is None
+    assert vm.handle_vertical_key("down") is False
+    while tasks.page_tasks:
+        tasks.run_next_page_task()
+    assert vm.layout_result is not None
+    assert vm.pan_y == pytest.approx(-200)
+    vm.set_viewport_size(400, 600)
+    assert vm.pan_y == pytest.approx(-100)
+    assert tasks.page_tasks == []
+    vm.cancel()
 
 
 def test_reader_viewmodel_vertical_custom_settings_do_not_change_direction(tmp_path: Path) -> None:

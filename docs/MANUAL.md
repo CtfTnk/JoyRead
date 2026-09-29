@@ -289,7 +289,8 @@ window instead, which is what you want when comparing two books side by side.
 | Input | Action |
 | --- | --- |
 | ← / → | Previous / next page, following your reading direction |
-| Scroll wheel or trackpad | Scroll, in vertical mode |
+| ↑ / ↓ | Move up / down within an oversized page; scroll continuously in vertical mode |
+| Scroll wheel or trackpad | Scroll within an oversized page, or continuously in vertical mode |
 | Right-click | Show the controls |
 | F | Enter full screen while reading |
 | Esc | Leave full screen, close the open panel, or leave the reader |
@@ -299,6 +300,8 @@ stop moving the pointer, so nothing sits on top of the page while you read. Move
 the pointer or right-click to bring it back.
 Returning from a Reader inside the main window also leaves full screen.
 The Reader's maximize button exits full screen when pressed in that state.
+Full screen uses square outer corners for the page and reader bars; leaving
+full screen restores the window's rounded corners.
 
 ### Layout
 
@@ -315,6 +318,14 @@ book. The separate **Preloading** section applies globally to all readers.
 - **Gap** — the space between the two pages of a spread.
 - **Zoom** — magnify beyond the fit mode.
 - **Page transition** — none, or slide.
+
+In horizontal reading, **Fit to Width** starts a tall page at its top. Use the
+wheel, trackpad, or ↑ / ↓ to see the rest; holding an arrow key repeats the
+movement. Scrolling stops at the page edges. Use ← / → to turn pages as usual;
+each new page starts at the top. Resizing the window or entering/leaving full
+screen preserves the current position where the page bounds allow it. Pages
+that fit vertically remain centered. Up/down reading shortcuts are inactive
+while a reader panel or dialog is open.
 
 **Preloading** defaults to **4 previous pages and 8 following pages**, with
 ranges **0–10** and **0–20**. Previous/following means smaller/larger page

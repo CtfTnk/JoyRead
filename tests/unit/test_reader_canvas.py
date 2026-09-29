@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import QRectF
-from PySide6.QtGui import QColor, QImage
+from PySide6.QtGui import QColor, QImage, QPainter
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.core.reader import (
@@ -209,6 +209,32 @@ def test_canvas_slide_paints_incoming_spread_from_requested_side(canvas: ReaderC
 
     assert midpoint.pixelColor(50, 150) == QColor("#ff0000")
     assert midpoint.pixelColor(150, 150) == QColor("#0000ff")
+
+
+def test_canvas_vertical_pan_and_page_slide_keep_each_pages_reading_position(canvas: ReaderCanvas) -> None:
+    canvas.show()
+    canvas.resize(200, 150)
+    page = _prepared(0, size=(200, 300))
+    painter = QPainter(page.frame)
+    painter.fillRect(0, 150, 200, 150, QColor("#0000ff"))
+    painter.end()
+    canvas.set_layout_result(_layout_with(0))
+    canvas.set_page_frame(page)
+    assert canvas.grab().toImage().pixelColor(100, 75) == QColor("#ff0000")
+
+    canvas.set_layout_result(_layout_with(0), pan_y=-150)
+    assert canvas.grab().toImage().pixelColor(100, 75) == QColor("#0000ff")
+    source = canvas.capture_page_slide_frame()
+    assert source is not None
+
+    canvas.set_layout_result(_layout_with(1))
+    canvas.set_page_frame(_prepared(1))
+    assert canvas.start_page_slide(source, incoming_from_right=True)
+    canvas._slide_animation.stop()
+    canvas._set_slide_progress(0.5)
+    midpoint = canvas.grab().toImage()
+    assert midpoint.pixelColor(50, 75) == QColor("#0000ff")
+    assert midpoint.pixelColor(150, 75) == QColor("#ff0000")
 
 
 def test_canvas_slide_cancels_for_rapid_input_and_resize(canvas: ReaderCanvas) -> None:

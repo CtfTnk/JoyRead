@@ -144,6 +144,31 @@ def test_custom_fit_height_changes_single_scale() -> None:
     assert result.scale == pytest.approx(2.0)
 
 
+@pytest.mark.parametrize(
+    ("viewport", "fit_mode", "height", "top", "min_pan"),
+    [
+        (SizeF(1000, 800), ReaderFitMode.FIT_WIDTH, 2000, 0, -1200),
+        (SizeF(400, 1000), ReaderFitMode.FIT_WIDTH, 800, 100, 0),
+        (SizeF(1000, 800), ReaderFitMode.FIT_PAGE, 800, 0, 0),
+        (SizeF(1000, 800), ReaderFitMode.FIT_HEIGHT, 800, 0, 0),
+    ],
+)
+def test_horizontal_layout_exposes_only_the_overflowing_page_height(
+    viewport: SizeF, fit_mode: ReaderFitMode, height: float, top: float, min_pan: float,
+) -> None:
+    result = SmartLayoutEngine().calculate(
+        viewport,
+        SizeF(600, 1200),
+        settings=ReaderLayoutSettings(custom_enabled=True, fit_mode=fit_mode),
+    )
+
+    assert result.page_draws[0].rect.height == pytest.approx(height)
+    assert result.page_draws[0].rect.y == pytest.approx(top)
+    assert result.pan_min_y == pytest.approx(min_pan)
+    assert result.pan_max_y == 0
+    assert result.supports_vertical_pan == (min_pan < 0)
+
+
 def test_top_to_down_single_page_uses_fit_height_not_fit_width() -> None:
     result = SmartLayoutEngine().calculate(
         SizeF(1000, 800),
