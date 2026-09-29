@@ -206,8 +206,12 @@ JoyRead 分别记忆书库窗口和独立阅读窗口的普通大小。
 
 ## 标签
 
-在书籍**详情**中管理标签：上方显示该书已拥有的标签，下方显示书库中的全部标签。
-在搜索框输入尚不存在的标签并按 Enter，即可创建。
+在书籍**详情**的标签面板中，上方显示该书已拥有的标签，下方列出书库中已有的标签。
+搜索框按 Enter 只会筛选已有标签，不会创建新标签。
+
+创建标签请进入**设置 → 标签**，先清空搜索，再点击标签列表末尾的**＋**。
+在随后出现的标签名称输入框中填写名称，点击**确认**或在该输入框中按 Enter。
+创建后回到书籍的标签面板，将新标签分配给书籍。
 为不同书籍使用一致的标签，便可通过工具栏按标签检索。
 
 **设置 → 标签**管理整个书库的标签，可统一重命名或删除。
@@ -354,7 +358,7 @@ Windows 后台模式及自动清理说明见[开始使用](#开始使用)。
 
 ### 标签
 
-统一重命名和删除书库标签，见[标签](#标签)。
+创建、统一重命名和删除书库标签，见[标签](#标签)。
 
 ### 隐私
 
@@ -375,13 +379,53 @@ Windows 后台模式及自动清理说明见[开始使用](#开始使用)。
 
 ## 文件保存位置
 
-macOS 默认位置如下：
+以下是安装版的默认位置。若已移动或选择其他书库，请以
+**设置 → 隐私 → 存储 → 书库位置**显示的实际路径为准。
+
+### macOS
 
 | 内容 | 位置 |
 | --- | --- |
-| 书库：书籍、封面、数据库 | `~/Library/Application Support/JoyRead-Library` |
-| 设置和日志 | `~/Library/Application Support/JoyRead` |
+| 书库：书籍、封面、数据库、备份 | `~/Library/Application Support/JoyRead-Library` |
+| 配置文件 | `~/Library/Application Support/JoyRead/Config/settings.json` |
+| 日志 | `~/Library/Application Support/JoyRead/Logs` |
 | 可重新生成的压缩包页面缓存 | `~/Library/Caches/JoyRead` |
+
+### Windows
+
+| 内容 | 位置 |
+| --- | --- |
+| 书库：书籍、封面、数据库、备份 | `%APPDATA%\JoyRead\JoyRead-Library` |
+| 配置文件 | `%APPDATA%\JoyRead\JoyRead\Config\settings.json` |
+| 日志 | `%APPDATA%\JoyRead\JoyRead\Logs` |
+| 可重新生成的压缩包页面缓存 | `%LOCALAPPDATA%\JoyRead\JoyRead\Cache` |
+
+可将这些路径直接粘贴到文件资源管理器的地址栏。
+`%APPDATA%` 通常指向 `C:\Users\<username>\AppData\Roaming`，
+`%LOCALAPPDATA%` 通常指向 `C:\Users\<username>\AppData\Local`。
+配置和缓存路径中重复的 `JoyRead\JoyRead` 是实际目录结构，并非笔误。
+
+### Ubuntu / Linux
+
+| 内容 | 位置 |
+| --- | --- |
+| 书库：书籍、封面、数据库、备份 | `~/.local/share/JoyRead-Library` |
+| 配置文件 | `~/.config/JoyRead/Config/settings.json` |
+| 日志 | `~/.config/JoyRead/Logs` |
+| 可重新生成的压缩包页面缓存 | `~/.cache/JoyRead` |
+
+`~` 表示当前用户的主目录。若设置了环境变量，`XDG_DATA_HOME` 会替代 `~/.local/share`，
+`XDG_CONFIG_HOME` 会替代 `~/.config`，`XDG_CACHE_HOME` 会替代 `~/.cache`。
+日志位于上表所列的配置目录体系内。
+
+### 书库内容与移动
+
+书库内的 `Books/` 保存托管书籍，`Database/joyread.sqlite3` 保存数据库记录，
+`Thumbnails/` 保存封面和缩略图，`Backups/` 保存备份。
+日志目录内包括 `joyread.log` 及轮转日志；自定义翻译位于与 `settings.json` 同属配置目录的 `Config/locales/`。
+
+从源码仓库运行，或使用 `JOYREAD_RUNTIME_DIR` 指定运行目录时，
+会改用该仓库或运行目录下的 `JoyRead-Library/`、`.joyread_support/`（配置和日志）及 `.joyread_cache/`。
 
 直接打开但未导入的书籍不在这些目录中，仍位于原处。
 

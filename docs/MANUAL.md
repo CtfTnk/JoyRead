@@ -273,8 +273,13 @@ Collections can be hidden along with their books; see
 
 Tags are the flexible half of organising. Open a book's **Detail** view to
 attach them: the tray at the top shows what is already on the book, and the list
-below shows every tag you have. Type in the search box and press Enter to create
-a tag that does not exist yet.
+below shows existing Library tags. The search box only filters existing tags
+when you press Enter; it does not create tags.
+
+To create a tag, open **Settings → Tags**, clear any search, and click **+** at
+the end of the tag list. Enter the name in the separate tag-name field, then
+click **Confirm** or press Enter in that field. Return to the book's tag panel
+to assign the new tag.
 
 Tag the same way across books and the toolbar's tag filter becomes a real index.
 Settings → Tags manages the whole vocabulary — rename a tag everywhere at once,
@@ -465,7 +470,7 @@ converted books are rebuilt on demand.
 
 ### Tags
 
-Rename and delete tags across the whole library. See [Tags](#tags).
+Create, rename, and delete tags across the whole library. See [Tags](#tags).
 
 ### Privacy
 
@@ -491,13 +496,56 @@ browser.
 
 ## Where your files live
 
-On macOS:
+These are the installed application's default locations. If you have moved or
+selected a Library, its actual location is shown in **Settings → Privacy →
+Storage → Library Location**.
+
+### macOS
 
 | What | Where |
 | --- | --- |
-| Library (books, covers, database) | `~/Library/Application Support/JoyRead-Library` |
-| Settings and logs | `~/Library/Application Support/JoyRead` |
+| Library (books, covers, database, backups) | `~/Library/Application Support/JoyRead-Library` |
+| Settings file | `~/Library/Application Support/JoyRead/Config/settings.json` |
+| Logs | `~/Library/Application Support/JoyRead/Logs` |
 | Rebuildable archive page cache | `~/Library/Caches/JoyRead` |
+
+### Windows
+
+| What | Where |
+| --- | --- |
+| Library (books, covers, database, backups) | `%APPDATA%\JoyRead\JoyRead-Library` |
+| Settings file | `%APPDATA%\JoyRead\JoyRead\Config\settings.json` |
+| Logs | `%APPDATA%\JoyRead\JoyRead\Logs` |
+| Rebuildable archive page cache | `%LOCALAPPDATA%\JoyRead\JoyRead\Cache` |
+
+Paste these paths into File Explorer's address bar. `%APPDATA%` normally points
+to `C:\Users\<username>\AppData\Roaming`, and `%LOCALAPPDATA%` to
+`C:\Users\<username>\AppData\Local`. The repeated `JoyRead\JoyRead` in the
+support/cache paths is intentional.
+
+### Ubuntu / Linux
+
+| What | Where |
+| --- | --- |
+| Library (books, covers, database, backups) | `~/.local/share/JoyRead-Library` |
+| Settings file | `~/.config/JoyRead/Config/settings.json` |
+| Logs | `~/.config/JoyRead/Logs` |
+| Rebuildable archive page cache | `~/.cache/JoyRead` |
+
+`~` means your home directory. If set, `XDG_DATA_HOME` replaces
+`~/.local/share`, `XDG_CONFIG_HOME` replaces `~/.config`, and `XDG_CACHE_HOME`
+replaces `~/.cache`. Logs are under the configuration root shown above.
+
+### Library contents and relocation
+
+The Library contains `Books/` for managed books, `Database/joyread.sqlite3`
+for records, `Thumbnails/` for covers and thumbnails, and `Backups/` for backups.
+The logs directory contains `joyread.log` and rotated log files. Custom
+translations live in `Config/locales/` beside `settings.json`.
+
+Source-checkout runs and profiles using `JOYREAD_RUNTIME_DIR` use
+`JoyRead-Library/`, `.joyread_support/` (configuration/logs), and
+`.joyread_cache/` beneath the checkout or selected runtime directory instead.
 
 Books you opened without importing are not here — they stay wherever you keep
 them.

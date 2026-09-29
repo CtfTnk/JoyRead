@@ -225,8 +225,12 @@ Esc、左ボタンを押したまま右クリック、非アクティブ化、�
 
 ## タグ
 
-本の**詳細**でタグを付けます。上部にはその本のタグ、下部にはライブラリのタグ一覧を表示します。
-まだ存在しないタグを検索欄へ入力して Enter を押すと作成できます。
+本の**詳細**のタグパネルでは、上部にその本のタグ、下部にライブラリの既存タグを表示します。
+検索欄で Enter を押す操作は既存タグを絞り込むだけで、新しいタグは作成しません。
+
+作成するには**設定 → タグ**を開き、検索を解除してからタグ一覧の末尾にある**＋**をクリックします。
+別に表示されるタグ名の入力欄に名前を入力し、確認ボタンをクリックするか、その入力欄で Enter を押してください。
+作成後、本のタグパネルへ戻って割り当てます。
 本ごとに同じ名前のタグを使うと、ツールバーのタグフィルターから探しやすくなります。
 
 **設定 → タグ**では、ライブラリ全体のタグをまとめて改名・削除できます。
@@ -377,7 +381,7 @@ Windows のバックグラウンドと自動消去は[はじめに](#はじめ�
 
 ### タグ
 
-ライブラリ全体のタグを改名・削除します。[タグ](#タグ)を参照してください。
+ライブラリ全体のタグを作成・改名・削除します。[タグ](#タグ)を参照してください。
 
 ### プライバシー
 
@@ -399,13 +403,54 @@ JoyRead の紹介、インストール済みバージョン、作者 CtfTnk を�
 
 ## ファイルの保存場所
 
-macOS の既定の場所は次のとおりです。
+以下はインストール版の既定の場所です。ライブラリを移動したり別のものを選択したりした場合は、
+**設定 → プライバシー → ストレージ → ライブラリの場所**に表示される実際のパスを確認してください。
+
+### macOS
 
 | 内容 | 場所 |
 | --- | --- |
-| ライブラリ：本・表紙・データベース | `~/Library/Application Support/JoyRead-Library` |
-| 設定・ログ | `~/Library/Application Support/JoyRead` |
+| ライブラリ：本・表紙・データベース・バックアップ | `~/Library/Application Support/JoyRead-Library` |
+| 設定ファイル | `~/Library/Application Support/JoyRead/Config/settings.json` |
+| ログ | `~/Library/Application Support/JoyRead/Logs` |
 | 再生成可能なアーカイブページキャッシュ | `~/Library/Caches/JoyRead` |
+
+### Windows
+
+| 内容 | 場所 |
+| --- | --- |
+| ライブラリ：本・表紙・データベース・バックアップ | `%APPDATA%\JoyRead\JoyRead-Library` |
+| 設定ファイル | `%APPDATA%\JoyRead\JoyRead\Config\settings.json` |
+| ログ | `%APPDATA%\JoyRead\JoyRead\Logs` |
+| 再生成可能なアーカイブページキャッシュ | `%LOCALAPPDATA%\JoyRead\JoyRead\Cache` |
+
+これらのパスはエクスプローラーのアドレスバーへ貼り付けられます。
+`%APPDATA%` は通常 `C:\Users\<username>\AppData\Roaming`、
+`%LOCALAPPDATA%` は `C:\Users\<username>\AppData\Local` を指します。
+設定やキャッシュのパスで `JoyRead\JoyRead` が繰り返されるのは、実際のディレクトリ構造です。
+
+### Ubuntu / Linux
+
+| 内容 | 場所 |
+| --- | --- |
+| ライブラリ：本・表紙・データベース・バックアップ | `~/.local/share/JoyRead-Library` |
+| 設定ファイル | `~/.config/JoyRead/Config/settings.json` |
+| ログ | `~/.config/JoyRead/Logs` |
+| 再生成可能なアーカイブページキャッシュ | `~/.cache/JoyRead` |
+
+`~` は現在のユーザーのホームディレクトリです。環境変数が設定されている場合、
+`XDG_DATA_HOME` が `~/.local/share`、`XDG_CONFIG_HOME` が `~/.config`、
+`XDG_CACHE_HOME` が `~/.cache` に代わります。ログは上表の設定ディレクトリ配下にあります。
+
+### ライブラリの内容と移動
+
+ライブラリ内の `Books/` に管理中の本、`Database/joyread.sqlite3` にデータベースの記録、
+`Thumbnails/` に表紙とサムネイル、`Backups/` にバックアップを保存します。
+ログディレクトリには `joyread.log` とローテーション済みログがあります。
+カスタム翻訳は `settings.json` と同じ設定ディレクトリの `Config/locales/` に置きます。
+
+ソースチェックアウトから起動する場合や `JOYREAD_RUNTIME_DIR` で実行用ディレクトリを指定した場合は、
+その下の `JoyRead-Library/`、`.joyread_support/`（設定とログ）、`.joyread_cache/` を使用します。
 
 インポートせずに開いた本はここにはなく、元の場所に残ります。
 
