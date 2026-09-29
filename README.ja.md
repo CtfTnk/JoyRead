@@ -10,7 +10,7 @@
   <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>ローカルの蔵書管理をもっと手軽に。読みたいときに、すぐ読める。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.md">使い方（英語）</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0">1.2.0 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.ja.md">使い方</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0">1.2.0 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
 
 JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF リーダー兼ライブラリ管理アプリです。お気に入りの本をインポートして整理することも、ファイルをそのまま開いて読み始めることもできます。アカウントやクラウドサービスは必要ありません。
 
@@ -80,10 +80,10 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 - **暗号化された漫画は読めますが、インポートできません。** 対応するパスワード付き ZIP/CBZ、7z/CB7、RAR/CBR を開く際にパスワードを求めます。パスワードはそのセッションだけで使います。
 - **非表示は GUI 上の機能であり、ファイルの暗号化ではありません。** 本やコレクションを隠しても、ディスク上のファイルは暗号化されません。
-- 復号したページキャッシュは平文で保存されます。**設定 → プライバシー → 閉じるときにページキャッシュを削除**は初期設定で有効です。一部の形式では 7-Zip 補助プログラムのコマンドラインにパスワードが一時的に現れ、同じユーザーのプロセスから見える場合があります。AES ZIP はアプリ内で復号します。[詳しい説明](docs/MANUAL.md#encrypted-archives)をご覧ください。
+- 復号したページキャッシュは平文で保存されます。**設定 → プライバシー → 閉じるときにページキャッシュを削除**は初期設定で有効です。一部の形式では 7-Zip 補助プログラムのコマンドラインにパスワードが一時的に現れ、同じユーザーのプロセスから見える場合があります。AES ZIP はアプリ内で復号します。[詳しい説明](docs/MANUAL.ja.md#暗号化アーカイブ)をご覧ください。
 
 ## オープンソースと開発
 
 JoyRead は **[GNU GPL v3.0 only](LICENSE)** で公開しています。第三者コンポーネントのライセンスは [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt) を参照してください。スクリーンショット内の表紙・本文の権利は各権利者に帰属し、書籍はアプリに含まれず、JoyRead のソフトウェアライセンスの対象にもなりません。
 
-ソースからの起動は英語版の [Development](README.md#development)、操作の詳細は[マニュアル](docs/MANUAL.md)、ビルド手順は[パッケージガイド](docs/PACKAGING.md)を参照してください。
+ソースからの起動は英語版の [Development](README.md#development)、操作の詳細は[マニュアル](docs/MANUAL.ja.md)、ビルド手順は[パッケージガイド](docs/PACKAGING.md)を参照してください。

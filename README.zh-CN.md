@@ -10,7 +10,7 @@
   <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>让本地书籍管理更加便捷，也是随时打开、即时阅读的选择。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.md">使用手册（英文）</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0">1.2.0 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.zh-CN.md">使用手册</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.2.0">1.2.0 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
 
 欣阅是一款面向 **macOS、Windows 和 Ubuntu/Linux** 的本地漫画与 PDF 阅读器，也是一座属于你的桌面书库。把喜爱的书籍导入后慢慢整理，或者直接打开文件开始阅读，无需账户或云端服务。
 
@@ -80,10 +80,10 @@
 
 - **加密漫画可以阅读，但不能导入。** 支持的密码保护 ZIP/CBZ、7z/CB7、RAR/CBR 会在打开时请求密码，密码仅用于当前会话。
 - **隐藏只作用于 GUI，不是文件加密。** 隐藏书籍、书单和应用内访问密码不会加密磁盘上的文件。
-- 加密漫画解出的页面缓存以明文保存；**设置 → 隐私 → 关闭时删除页面缓存**默认开启。部分格式使用 7-Zip 辅助程序解压时，密码可能短暂出现在同用户进程可读取的命令行中；AES ZIP 使用进程内解密。详见[加密漫画说明](docs/MANUAL.md#encrypted-archives)。
+- 加密漫画解出的页面缓存以明文保存；**设置 → 隐私 → 关闭时删除页面缓存**默认开启。部分格式使用 7-Zip 辅助程序解压时，密码可能短暂出现在同用户进程可读取的命令行中；AES ZIP 使用进程内解密。详见[加密漫画说明](docs/MANUAL.zh-CN.md#加密压缩包)。
 
 ## 开源与开发
 
 JoyRead 采用 **[GNU GPL v3.0 only](LICENSE)**；第三方组件许可见 [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt)。示例截图中的书籍封面和页面版权归各自权利人所有，不随软件附赠，也不受 JoyRead 软件许可授权。
 
-源码运行步骤见英文版的 [Development](README.md#development)，完整控件说明见[使用手册](docs/MANUAL.md)，构建步骤见[打包指南](docs/PACKAGING.md)。
+源码运行步骤见英文版的 [Development](README.md#development)，完整控件说明见[使用手册](docs/MANUAL.zh-CN.md)，构建步骤见[打包指南](docs/PACKAGING.md)。

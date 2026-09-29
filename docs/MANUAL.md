@@ -1,5 +1,7 @@
 # JoyRead User Manual
 
+[English](MANUAL.md) · [简体中文](MANUAL.zh-CN.md) · [日本語](MANUAL.ja.md)
+
 JoyRead is a local-first reader and library manager for manga, comics, and PDFs.
 Everything it knows about your books lives on your own machine — there is no
 account to create and nothing is sent anywhere.
@@ -17,6 +19,8 @@ account to create and nothing is sent anywhere.
 - [Where your files live](#where-your-files-live)
 - [Encrypted archives](#encrypted-archives)
 - [When something goes wrong](#when-something-goes-wrong)
+- [Reporting a problem](#reporting-a-problem)
+- [Application language](#application-language)
 
 ## Getting started
 
@@ -28,7 +32,7 @@ installer. On Ubuntu, install from the terminal only: open a terminal in the
 download folder and run `sudo apt install ./package.deb`, replacing `package.deb`
 with the downloaded filename. The graphical installer gets stuck at
 **“Preparing”**; this issue has not been fixed.
-See the release notes for signing and platform validation status. On first
+See the release notes for signing and first-launch instructions. On first
 launch JoyRead creates an empty library and shows the shelf.
 The Library window appears first, then loads its books in the background.
 Settings and **Actions → Open Book** remain available while it loads.
@@ -115,21 +119,23 @@ between cover browsing and a compact shelf.
 
 ### Conversion on import
 
-Some archives are slow to read a page at a time — solid 7z, RAR, and encrypted
-ZIP all have to do substantial work to reach an arbitrary page. JoyRead converts
-those into a page cache once, in the background, which turns multi-second page
-turns into sub-100 ms ones.
+Some archives, such as solid 7z and nested archives, are expensive to read one
+page at a time. During import, JoyRead can convert eligible unencrypted archives
+into a CBZ copy in the managed library. The original source remains unchanged.
+This import conversion is separate from the rebuildable page cache used while
+reading. Encrypted archives can be read directly but cannot be imported.
 
 **Convert archives on import** in Settings → General controls when this happens:
 
 | Setting | Behaviour |
 | --- | --- |
-| Never | Never convert. Expensive archives stay slow. |
+| Never | Keep the imported archive in its original format. |
 | Expensive and nested formats *(default)* | Convert only the formats that need it. |
 | Always | Convert everything on import, including plain ZIP/CBZ. |
 
-Conversion is not required — a book that has not been converted still opens and
-reads correctly, just more slowly on the formats above.
+Conversion is not required to read a supported archive. Opening an unconverted
+book can still use the normal reading cache; performance depends on the source
+format and available cached pages.
 
 ## The shelf
 
@@ -310,13 +316,16 @@ laid out. **Horizontal Mode** and **Vertical Mode** choices are remembered per
 book. The separate **Preloading** section applies globally to all readers.
 
 - **Reading direction** — Right-to-left (manga), Left-to-right, or Top-to-down.
-- **Single Page** — off gives two-page spreads. JoyRead detects double-width
+- **Enable Custom** — horizontal and vertical modes have separate switches;
+  their dependent controls apply only while the corresponding switch is on.
+- **Single Page** — off allows automatic two-page spreads where they fit. JoyRead detects double-width
   pages and shows them alone, so covers and centrefolds are not split. If a
   spread pairs up wrong — one leading single page throws off every pair after
   it — **Shift spread pairing** re-pairs the whole book by one.
 - **Fit Mode** — Auto, Fit to Height, Fit to Width, or Fit to Page.
-- **Gap** — the space between the two pages of a spread.
-- **Zoom** — magnify beyond the fit mode.
+- **Gap** — the space between stacked pages in vertical mode, from 0 to 200 px.
+- **Zoom** — vertical-mode scale, from 25% to 200%; unavailable while vertical
+  Fit to Width is enabled.
 - **Page transition** — none, or slide.
 
 In horizontal reading, **Fit to Width** starts a tall page at its top. Use the
@@ -348,14 +357,17 @@ Three panels open from the reader chrome:
   remembered page.
 - **Bookmarks** — your own marks; see below.
 
-JoyRead remembers where you stopped in each book and reopens there.
+For Library books, JoyRead remembers where you stopped and reopens there.
+Files opened without importing do not get Library progress, bookmarks, or
+saved per-book settings.
 
 ## Bookmarks
 
-Add a bookmark from the reader chrome and it is saved against the current page,
+For a Library book, add a bookmark from the reader chrome and it is saved against the current page,
 named "new bookmark" until you rename it. Bookmarks live in the **Bookmarks**
 panel, where you can rename or delete them. They are stored in your library, not
-in the book file, so they survive re-importing and never modify your archives.
+in the book file, and never modify your archives. Include the Library database
+in your backups to preserve them.
 
 ## Covers
 
@@ -399,7 +411,7 @@ password. It cannot be undone, and it asks you to type `delete` first.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| Language | English | English, 日本語, or 简体中文. |
+| Language | Follow system | Follow the system language, or choose English, 日本語, or 简体中文. |
 | Import when dropped on Library Read | Off | Also import a single file dropped on the Library Read zone. Open Book and system Open With stay read-only. |
 | Verify imported file integrity | On | Hash imported files so JoyRead can detect later corruption. |
 | Individual Read Window | Off | Open each book in its own window. |
@@ -408,6 +420,18 @@ password. It cannot be undone, and it asks you to type `delete` first.
 
 This section also holds **Verify Library & Clean Cache**, described under
 [When something goes wrong](#when-something-goes-wrong).
+Windows background mode and automatic cleanup are described under
+[Getting started](#getting-started).
+
+### Reading Defaults
+
+Choose the starting reading direction, horizontal/vertical customization,
+single-page preference, fit mode, vertical spacing and zoom, and page
+transition. These defaults apply to temporary files and Library books without
+saved individual settings. Existing per-book settings take precedence.
+Changing defaults affects future opens; it does not overwrite settings in
+Readers that are already open. Edit the current book through Reader settings.
+Global preloading remains separate; see [Layout](#layout).
 
 ### Archive & Cache
 
@@ -508,11 +532,9 @@ executable accepts a password only as a command-line argument, so during
 extraction it can be read via `ps` by another process running as you. This
 covers 7z, RAR, and ZIP files using the legacy ZipCrypto cipher.
 
-ZIP files using AES encryption are unaffected — JoyRead decrypts those itself,
-without launching anything, and for AES that is also the faster route. It is
-only ZipCrypto that has to go outside: decrypting it inside JoyRead runs about
-forty times slower, which is the difference between a page appearing at once
-and taking a second.
+ZIP files using AES encryption are unaffected by command-line password
+exposure: JoyRead decrypts those in-process without launching a helper.
+ZipCrypto uses the external helper to avoid slow in-process decryption.
 
 Neither matters much on a machine only you use. Both matter on a shared one.
 
@@ -538,9 +560,11 @@ delete the record or keep it.
 import. JoyRead will not open it, because a file that changed unexpectedly may
 be corrupt. Remove it from its More menu and re-import.
 
-**Page turns are slow.** The book is probably an unconverted solid 7z, RAR, or
-encrypted ZIP. Set **Convert archives on import** to *Always* and re-import it,
-and check that the extraction pool has room.
+**Page turns are slow.** The book may be a solid 7z, RAR, or another archive
+without prepared conversion/cache data. For importable, unencrypted files,
+set **Convert archives on import** to *Always* and re-import; also check that
+the extraction pool has room. Encrypted files can only be read directly and
+cannot use import conversion.
 
 **Something is inconsistent.** Settings → General → **Verify Library & Clean
 Cache** checks the selected library — changed files, duplicates, missing files,
@@ -556,11 +580,11 @@ finished. See the Known limitations section of the
 
 Open an issue at
 [github.com/CtfTnk/JoyRead/issues](https://github.com/CtfTnk/JoyRead/issues).
-Your macOS version, the JoyRead version from Settings → About, and the format of
+Your operating system and version, the JoyRead version from Settings → About, and the format of
 the book involved make a report much easier to act on.
 
 
-## Application language (1.0.2)
+## Application language
 
 In Settings → General → Language, choose Follow system, English, 中文, or 日本語.
 New installations follow the system UI language preferences on Windows, macOS,
