@@ -206,3 +206,17 @@ def test_glibc_requirements_distinguish_versions_and_ignore_glibcxx() -> None:
     requirements = module.required_glibc_versions('Name: GLIBC_2.9\nName: GLIBC_2.35\nName: GLIBC_2.38\nName: GLIBCXX_3.4.30')
     assert max(requirements) == (2, 38)
     assert {v for v in requirements if v > module.MAX_GLIBC} == {(2, 38)}
+
+
+@pytest.mark.parametrize('console,expected', [
+    ('JoyRead primary runtime is ready', False),
+    ('reader_perf {"event":"gui.paint","pages":1}', False),
+    ('reader_perf {"event":"gui.pixmap","action":"duplicate_skipped"}', False),
+    ('reader_perf incomplete\nreader_perf {"event":"archive.decode"}', False),
+    ('INFO reader_perf {"event":"gui.pixmap","page":0,"action":"converted"}', True),
+])
+def test_frozen_reader_probe_requires_a_real_frame_callback(console, expected) -> None:
+    spec = importlib.util.spec_from_file_location('verify_linux_package', REPO_ROOT / 'scripts/verify_linux_package.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.reader_frame_reached(console) is expected

@@ -9,6 +9,7 @@ from PySide6.QtGui import QImage, QImageReader
 
 from joyread.app.reader_page_pipeline import PreparedReaderPage, ReaderPagePayload, ReaderPageRequest
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
+from joyread.infrastructure.pillow_image_decoder import decode_pillow_image
 
 
 class QtPageFrameDecoder:
@@ -28,17 +29,25 @@ class QtPageFrameDecoder:
         try:
             reader = QImageReader(buffer)
             reader.setAutoTransform(True)
-            source_size = reader.size()
             source_dimensions = payload.source_dimensions
-            if source_size.isValid():
-                source_dimensions = (source_size.width(), source_size.height())
-            scaled = _fit_size(
-                source_dimensions,
-                (request.target_width, request.target_height),
-            )
-            if scaled != source_dimensions:
-                reader.setScaledSize(QSize(*scaled))
-            image = reader.read()
+            if reader.canRead():
+                source_size = reader.size()
+                if source_size.isValid():
+                    source_dimensions = (source_size.width(), source_size.height())
+                scaled = _fit_size(
+                    source_dimensions,
+                    (request.target_width, request.target_height),
+                )
+                if scaled != source_dimensions:
+                    reader.setScaledSize(QSize(*scaled))
+                image = reader.read()
+            else:
+                try:
+                    image, source_dimensions = decode_pillow_image(
+                        payload.image_bytes, (request.target_width, request.target_height),
+                    )
+                except OSError as exc:
+                    raise RuntimeError(f"Could not decode page {payload.page_index + 1}.") from exc
         finally:
             buffer.close()
         if image.isNull():

@@ -90,9 +90,15 @@ jobs:
             libfontconfig1 libfreetype6 libwayland-client0 libwayland-cursor0 \
             libxcb-cursor0 desktop-file-utils shared-mime-info fakeroot
 
-      - name: Select the Conda C++ runtime for Linux builds
+      - name: Install and select the Conda C++ runtime for Linux builds
         if: runner.os == 'Linux'
-        run: echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib" >> "$GITHUB_ENV"
+        run: |
+          # Python/SQLite no longer always pull in a C++ runtime transitively.
+          # The frozen bundle needs the same runtime before either Qt or ICU loads.
+          conda install --yes --prefix "$CONDA_PREFIX" python=3.12.9 libstdcxx-ng libgcc-ng
+          test -f "$CONDA_PREFIX/lib/libstdc++.so.6"
+          test -f "$CONDA_PREFIX/lib/libgcc_s.so.1"
+          echo "LD_LIBRARY_PATH=$CONDA_PREFIX/lib" >> "$GITHUB_ENV"
 
       - name: Install dependencies
         run: |

@@ -32,6 +32,8 @@ All notable changes to JoyRead are documented here. This project follows
 
 - Preserve a full font line box in elided labels when Windows reports shorter
   baseline spacing, preventing one-pixel clipping without enlarging controls.
+- Retain WebP and other archive image support when an older Qt wheel cannot
+  load its native codec, using a bounded Pillow fallback in image workers.
 
 ## [1.3.0] — 2026-09-29
 

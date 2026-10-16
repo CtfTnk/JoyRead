@@ -630,6 +630,20 @@ The cover editor forwards signals through Qt signal-to-signal connections so
 Qt 6.8 disconnects them with the receiver during teardown. UI tests send a
 real `QEnterEvent` rather than a generic event with the Enter type.
 
+The ARM64 Qt 6.8 wheel's WebP image plugin depends on `libwebp.so.6`, which is
+absent on the Ubuntu 22.04/24.04 targets; TIFF can likewise require an older
+native codec. Reader frames, thumbnails and Cover Editor previews fall back to
+the existing Pillow codecs when `QImageReader.canRead()` is false. This keeps
+the compatibility baseline without installing obsolete codec libraries or
+changing the normal Qt path. Fallback work stays in image workers, preserves
+orientation/alpha/ICC metadata, and produces target-bounded owned `QImage`s.
+
+Linux packaging explicitly installs its native C++ runtime in the active build
+prefix with
+`conda install --yes --prefix "$CONDA_PREFIX" python=3.12.9 libstdcxx-ng libgcc-ng`.
+Do not rely on Python or SQLite pulling these libraries in transitively: a clean
+Miniforge environment may omit them. This is a Linux packaging prerequisite;
+Python application dependencies remain in `pyproject.toml`.
 Linux source tests and packaging set `LD_LIBRARY_PATH=$CONDA_PREFIX/lib` so
 Qt and Conda SQLite/ICU use the same C++ runtime. Otherwise Qt can load the
 host's older `libstdc++` first, causing ICU to fail with `CXXABI_1.3.15 not found`.
@@ -651,6 +665,9 @@ build-environment library overrides, so the check cannot accidentally use
 Conda's Python or Shiboken. This validates the frozen package's loader/startup,
 not interactive reading or desktop integration. Build metadata includes the
 Ubuntu release, glibc, PySide6, and Debian package versions.
+The verifier also opens a generated WebP CBZ in a second isolated process and
+requires the Reader's first frame to reach GUI pixmap conversion, checking that
+the frozen image codec and worker path are included in the installed bundle.
 
 Candidate run [34746301590](https://github.com/CtfTnk/JoyRead/actions/runs/34746301590)
 validated source `ab9e82cf5cd4f39530758d642f9e59c709dfa5d9`: both architectures

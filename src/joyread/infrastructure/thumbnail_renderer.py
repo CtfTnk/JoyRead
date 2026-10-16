@@ -12,6 +12,7 @@ from PySide6.QtGui import QImage, QImageIOHandler, QImageReader
 from joyread.app.cover_editor import PreparedCoverSource
 from joyread.core.services.thumbnail_service import CoverCropState, SizeTuple, ThumbnailRenderError
 from joyread.core.thumbnail_cancellation import check_thumbnail_cancelled
+from joyread.infrastructure.pillow_image_decoder import decode_pillow_image
 
 
 class PillowThumbnailRenderer:
@@ -50,12 +51,18 @@ class QtThumbnailRenderer:
         try:
             reader = QImageReader(buffer)
             reader.setAutoTransform(True)
-            source_size = reader.size()
-            if source_size.isValid():
-                scaled = _reader_scaled_size(reader, source_size, _working_box(target))
-                if scaled != (source_size.width(), source_size.height()):
-                    reader.setScaledSize(QSize(*scaled))
-            image = reader.read()
+            if reader.canRead():
+                source_size = reader.size()
+                if source_size.isValid():
+                    scaled = _reader_scaled_size(reader, source_size, _working_box(target))
+                    if scaled != (source_size.width(), source_size.height()):
+                        reader.setScaledSize(QSize(*scaled))
+                image = reader.read()
+            else:
+                try:
+                    image, _ = decode_pillow_image(image_bytes, _working_box(target))
+                except OSError as exc:
+                    raise ThumbnailRenderError("Could not decode thumbnail source") from exc
         finally:
             buffer.close()
         check_thumbnail_cancelled(cancelled)
@@ -96,13 +103,19 @@ class QtThumbnailRenderer:
         try:
             reader = QImageReader(buffer)
             reader.setAutoTransform(True)
-            source_size = reader.size()
-            source_dimensions = _oriented_dimensions(reader, source_size)
-            if source_size.isValid():
-                scaled = _reader_scaled_size(reader, source_size, target)
-                if scaled != (source_size.width(), source_size.height()):
-                    reader.setScaledSize(QSize(*scaled))
-            image = reader.read()
+            if reader.canRead():
+                source_size = reader.size()
+                source_dimensions = _oriented_dimensions(reader, source_size)
+                if source_size.isValid():
+                    scaled = _reader_scaled_size(reader, source_size, target)
+                    if scaled != (source_size.width(), source_size.height()):
+                        reader.setScaledSize(QSize(*scaled))
+                image = reader.read()
+            else:
+                try:
+                    image, source_dimensions = decode_pillow_image(image_bytes, target)
+                except OSError as exc:
+                    raise ThumbnailRenderError("Could not decode cover source") from exc
         finally:
             buffer.close()
         if image.isNull():

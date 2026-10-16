@@ -1,8 +1,8 @@
 """The approved progress material must keep its alpha and endpoint geometry."""
 
 import pytest
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QEvent, QPointF, Qt
+from PySide6.QtGui import QColor, QEnterEvent
 from PySide6.QtWidgets import QApplication, QWidget
 
 from joyread.core.reader import ReaderDirection
@@ -78,7 +78,9 @@ def test_progress_hover_drag_and_silent_release_keep_knob_size(progress):
     geometry = slider._handle_rect(), slider._track_rect(), slider.size()
     center = slider._handle_center_x()
     normal_edge = pixel(host, center, 1)
-    QApplication.sendEvent(slider, QEvent(QEvent.Type.Enter))
+    # QWidget's Enter handler requires QEnterEvent on the shipping Qt 6.8 leg.
+    position = QPointF(center, slider.height() / 2)
+    QApplication.sendEvent(slider, QEnterEvent(position, position, position))
     hover_edge = pixel(host, center, 1)
     assert hover_edge.lightness() < normal_edge.lightness()
     assert pixel(host, center, 6) == QColor("#ffffff")
