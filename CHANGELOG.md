@@ -5,6 +5,34 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+## [1.3.1] — Draft
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.3.1.md)
+
+### Improvements
+
+- Refine Detail and Topic panels with fixed title/close rows, more room for
+  content, and clearer translucent surfaces, buttons and thumbnail selection.
+- Align bookshelf toolbar spacing and distinguish the white Topic selector
+  from gray switches, with complete borders around selected switch buttons.
+- Unify Reader and book progress indicators with clearer read/unread contrast,
+  a longer Reader slider handle, and translucent Reader bars with subtle edges.
+- Present multi-book reorder previews as compact cover/title cards in a fan,
+  with a selection count and a stable pointer offset.
+- Prepare confirmed non-solid archive pages and thumbnails through bounded,
+  prioritized background work. Favor visible pages, replace obsolete queued
+  demand, and suppress stale results after navigation or cancellation.
+
+### Documentation
+
+- Expand the Chinese and Japanese user manuals and clarify tag creation and
+  platform-specific storage paths.
+
+### Fixes
+
+- Preserve a full font line box in elided labels when Windows reports shorter
+  baseline spacing, preventing one-pixel clipping without enlarging controls.
+
 ## [1.3.0] — 2026-09-29
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.3.0.md)

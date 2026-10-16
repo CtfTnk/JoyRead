@@ -19,6 +19,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets import elided_label
 
 
 DESCENDERS = "gjpqy"
@@ -105,3 +106,24 @@ def test_dialog_title_fits_its_text(qtbot) -> None:
     qtbot.addWidget(label)
 
     _assert_fits(label, label.sizeHint().height(), "Dialog title")
+
+
+def test_elided_label_fits_a_font_whose_line_spacing_is_shorter_than_its_height(qtbot, monkeypatch):
+    class NegativeLeadingMetrics(QFontMetrics):
+        def lineSpacing(self):  # noqa: N802 - Qt API override.
+            return self.height() - 1
+
+    # Windows' Noto Sans SC metrics can expose negative leading. Simulate that
+    # backend contract on every platform instead of requiring Windows locally.
+    monkeypatch.setattr(elided_label, "QFontMetrics", NegativeLeadingMetrics)
+    label = elided_label.ElidedLabel(f"Paging {DESCENDERS}")
+    qtbot.addWidget(label)
+    label.resize(300, label.height())
+    label.show()
+    QApplication.processEvents()
+    _assert_fits(label, label.height(), "ElidedLabel with negative leading")
+    allocation = label.height()
+    for text in ("Long title " * 20, "Short", f"Paging {DESCENDERS}"):
+        label.set_full_text(text)
+        QApplication.processEvents()
+        assert label.height() == allocation

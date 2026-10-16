@@ -1,9 +1,11 @@
 # JoyRead Packaging Guide
 
-This guide builds **JoyRead 1.3.0** with PyInstaller.
-Version 1.3.0 is published as the current stable
+This guide prepares the **JoyRead 1.3.1 release candidate** with PyInstaller.
+Version 1.3.0 remains the current stable
 [GitHub Release](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.0).
-See the [three-language release notes](releases/v1.3.0.md).
+See the [1.3.1 draft release notes](releases/v1.3.1.md) for candidate build and
+manual-validation status. Preparing the draft does not publish the release or
+change the public download links.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in

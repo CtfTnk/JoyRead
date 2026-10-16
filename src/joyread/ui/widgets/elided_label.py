@@ -85,7 +85,13 @@ class ElidedLabel(QLabel):
     def _sync_fixed_height(self, metrics: QFontMetrics, used_lines: int) -> None:
         guard = Theme.elided_label_clip_guard if self._max_lines > 1 else 0
         effective_lines = self._max_lines if self._reserve_full_height else max(1, used_lines)
-        self.setFixedHeight((metrics.lineSpacing() * effective_lines) + guard)
+        spacing = metrics.lineSpacing()
+        # Windows can report baseline spacing below the complete line box.
+        # Retain the existing allocation when its multiline guard already
+        # covers that difference; otherwise reserve the actual text extent.
+        preferred_height = spacing * effective_lines + guard
+        text_height = metrics.height() + spacing * (effective_lines - 1)
+        self.setFixedHeight(max(preferred_height, text_height))
 
     def _multi_line_elided_text(self, metrics: QFontMetrics, available_width: int) -> tuple[str, bool, int]:
         if available_width <= 0:
