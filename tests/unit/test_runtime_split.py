@@ -158,6 +158,46 @@ def test_external_pdf_reader_survives_library_runtime_rebuild(tmp_path: Path, qt
         context.close()
 
 
+def test_random_page_pool_drains_only_library_attempts_during_storage_transition(tmp_path, qtbot):
+    from threading import Event
+    from joyread.app.reader_page_scheduler import PageDemand
+    from joyread.app.tasking import TaskPriority
+
+    context = create_app_context(settings_store=_store(tmp_path))
+    runtime = context.reader_runtime
+    library_entered, external_entered, library_release, external_release = (Event() for _ in range(4))
+    results = []
+    def blocked(entered, release, value):
+        def work(_cancelled):
+            entered.set()
+            assert release.wait(3)
+            return value
+        return work
+    def demand(key, entered, release):
+        return PageDemand(key, TaskPriority.CRITICAL, blocked(entered, release, key), results.append, results.append)
+    try:
+        runtime.random_page_scheduler.replace(object(), runtime.library_random_page_tasks,
+                                             [demand('library', library_entered, library_release)])
+        runtime.random_page_scheduler.replace(object(), runtime.random_page_tasks,
+                                             [demand('external', external_entered, external_release)])
+        assert library_entered.wait(1) and external_entered.wait(1)
+        context.quiesce_for_storage_transition()
+        assert context.storage_transition_pending_tasks() >= 1
+        library_release.set()
+        qtbot.waitUntil(lambda: context.storage_transition_pending_tasks() == 0)
+        assert runtime.random_page_scheduler.active_count == 1
+        external_release.set()
+        qtbot.waitUntil(lambda: results == ['external'])
+        context.abandon_storage_transition()
+        runtime.random_page_scheduler.replace(object(), runtime.library_random_page_tasks,
+                                             [demand('resumed', library_entered, library_release)])
+        qtbot.waitUntil(lambda: results == ['external', 'resumed'])
+    finally:
+        library_release.set()
+        external_release.set()
+        context.close()
+
+
 @pytest.mark.parametrize("file_type", ("cbz", "cb7"))
 def test_reader_uses_uncached_reads_when_application_cache_is_unavailable(
     tmp_path, qtbot, file_type
@@ -216,6 +256,8 @@ def test_deferred_library_window_paints_before_database_construction(
             window.dialog_overlay, window.drop_zone_overlay,
         )
         pending_toolbar = window._pending_toolbar
+        assert pending_toolbar.height() == 61
+        assert pending_toolbar.mapTo(window, pending_toolbar.rect().topLeft()).y() == 52
         context.start_library_load()
         qtbot.waitUntil(started.is_set)
         assert context.library_state is LibraryState.LOADING
@@ -232,6 +274,8 @@ def test_deferred_library_window_paints_before_database_construction(
             window.dialog_overlay, window.drop_zone_overlay,
         )
         assert window.shelf_view.toolbar is pending_toolbar
+        qtbot.waitUntil(lambda: window.shelf_view.stack.y() == 65)
+        assert pending_toolbar.mapTo(window, pending_toolbar.rect().topLeft()).y() == 52
         assert window.shelf_view._detail_panel is None
         assert window.settings_view.page._library_ready
         assert context.shelf_viewmodel.books == []

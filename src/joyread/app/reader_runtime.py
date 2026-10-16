@@ -11,6 +11,7 @@ from pathlib import Path
 
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.app.event_hook import EventHook
+from joyread.app.reader_page_scheduler import ReaderPageScheduler
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.limits import GIB, MEGAPIXEL
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
@@ -143,6 +144,9 @@ class ReaderRuntime:
     hash_service: HashService
     archive_warmup_coordinator: ArchiveWarmupCoordinator
     thumbnail_renderer: QtThumbnailRenderer
+    random_page_scheduler: ReaderPageScheduler
+    random_page_tasks: TaskService
+    library_random_page_tasks: TaskScope
 
     def reload_settings(self) -> AppSettings:
         return self.preferences.refresh()
@@ -159,12 +163,25 @@ class ReaderRuntime:
         """Release a standalone Reader runtime in producer-to-engine order."""
 
         try:
+            self.close_random_pages()
             self.archive_warmup_coordinator.close()
         finally:
             try:
                 self.task_service.shutdown()
             finally:
                 shutdown_pdf_thread()
+
+    def close_random_pages(self) -> None:
+        self.random_page_scheduler.close()
+        self.random_page_tasks.shutdown()
+
+    def quiesce_library_pages(self) -> None:
+        self.random_page_scheduler.quiesce(self.library_random_page_tasks)
+        self.library_random_page_tasks.quiesce()
+
+    def resume_library_pages(self) -> None:
+        self.library_random_page_tasks.resume()
+        self.random_page_scheduler.resume(self.library_random_page_tasks)
 
 
 def create_reader_runtime(
@@ -200,6 +217,7 @@ def create_reader_runtime(
         archive_service, pdf_service, path_issue_service=path_issue_service
     )
     task_service = TaskService(config.max_background_workers)
+    random_page_tasks = TaskService(config.max_background_workers)
     try:
         cache_service = ReaderCacheService(
             archive_extraction_pool=archive_pool,
@@ -224,9 +242,13 @@ def create_reader_runtime(
             hash_service=HashService(),
             archive_warmup_coordinator=ArchiveWarmupCoordinator(session_service, task_service),
             thumbnail_renderer=QtThumbnailRenderer(),
+            random_page_scheduler=ReaderPageScheduler(capacity=config.max_background_workers),
+            random_page_tasks=random_page_tasks,
+            library_random_page_tasks=random_page_tasks.create_scope(),
         )
     except BaseException:
         try:
+            random_page_tasks.shutdown()
             task_service.shutdown()
         finally:
             shutdown_pdf_thread()

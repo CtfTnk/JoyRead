@@ -6,61 +6,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from threading import RLock
 from time import perf_counter
-from typing import Generic, Protocol, TypeVar
+from typing import Generic
 
+from joyread.app.reader_page_models import (
+    FrameT,
+    PageFrameDecoder,
+    PreparedReaderPage,
+    ReaderDocumentSource,
+    ReaderFrameCache,
+    ReaderPagePayload,
+    ReaderPageRequest,
+)
+from joyread.app.reader_page_scheduler import ReaderPageScheduler
+from joyread.app.reader_random_pages import RandomPagePipeline
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.diagnostics import reader_perf_enabled, reader_perf_event
-
-
-FrameT = TypeVar("FrameT")
-
-
-@dataclass(frozen=True)
-class ReaderPageRequest:
-    page_index: int
-    target_width: int
-    target_height: int
-    device_pixel_ratio: float
-    generation: int
-    priority: TaskPriority = TaskPriority.HIGH
-
-
-@dataclass(frozen=True)
-class ReaderPagePayload:
-    page_index: int
-    image_bytes: bytes
-    source_dimensions: tuple[int, int]
-
-
-@dataclass(frozen=True)
-class PreparedReaderPage(Generic[FrameT]):
-    page_index: int
-    frame: FrameT
-    source_dimensions: tuple[int, int]
-    rendered_dimensions: tuple[int, int]
-    generation: int
-
-    @property
-    def dimensions(self) -> tuple[int, int]:
-        """Compatibility name consumed by the pure layout engine."""
-
-        return self.source_dimensions
-
-
-class ReaderDocumentSource(Protocol):
-    page_count: int
-
-    def read_page(self, page_index: int) -> ReaderPagePayload | None: ...
-
-    def close(self) -> None: ...
-
-
-class PageFrameDecoder(Protocol[FrameT]):
-    def decode(
-        self,
-        payload: ReaderPagePayload,
-        request: ReaderPageRequest,
-    ) -> PreparedReaderPage[FrameT]: ...
 
 
 class EncodedPageFrameDecoder:
@@ -128,6 +88,10 @@ class SessionReaderDocumentSource:
             return bool(provider(page_index))
         # PDF has a bounded direct renderer. Unknown sessions are cache-only.
         return callable(getattr(self._session, "prepare_thumbnail_pages", None))
+
+    def allows_parallel_page_preparation(self, page_index: int) -> bool:
+        provider = getattr(self._session, "allows_parallel_page_preparation", None)
+        return bool(provider(page_index)) if callable(provider) else False
 
     def read_cached_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
         provider = getattr(self._session, "read_cached_pages", None)
@@ -201,25 +165,6 @@ class SessionReaderDocumentSource:
             close()
 
 
-class ReaderFrameCache(Protocol[FrameT]):
-    def get_suitable(
-        self,
-        page_index: int,
-        target_width: int,
-        target_height: int,
-    ) -> PreparedReaderPage[FrameT] | None: ...
-
-    def put(
-        self,
-        page_index: int,
-        value: PreparedReaderPage[FrameT],
-        target_width: int,
-        target_height: int,
-    ) -> None: ...
-
-    def clear(self) -> int: ...
-
-
 @dataclass(frozen=True)
 class _PipelineItem(Generic[FrameT]):
     page_index: int
@@ -230,7 +175,7 @@ class _PipelineItem(Generic[FrameT]):
 
 
 class ReaderPagePipeline(Generic[FrameT]):
-    """Maintain one replaceable page-preparation task for a reader viewport."""
+    """Route proven random pages to the shared scheduler; keep other reads serial."""
 
     def __init__(
         self,
@@ -240,6 +185,9 @@ class ReaderPagePipeline(Generic[FrameT]):
         *,
         on_ready: Callable[[PreparedReaderPage[FrameT]], None],
         on_failed: Callable[[int, Exception, int], None],
+        random_page_scheduler: ReaderPageScheduler | None = None,
+        random_page_executor: TaskExecutor | None = None,
+        work_group: object | None = None,
     ) -> None:
         self._executor = executor
         self._decoder = decoder
@@ -253,6 +201,14 @@ class ReaderPagePipeline(Generic[FrameT]):
         self._open_handle: TaskHandle[ReaderDocumentSource] | None = None
         self._pending_indices: set[int] = set()
         self._lock = RLock()
+        self._demand_revision = 0
+        self._random_pages = (
+            RandomPagePipeline(
+                random_page_scheduler, random_page_executor or executor, decoder, frame_cache,
+                on_ready=self._publish_ready, on_failed=on_failed,
+                work_group=work_group,
+            ) if random_page_scheduler is not None else None
+        )
 
     @property
     def generation(self) -> int:
@@ -346,6 +302,65 @@ class ReaderPagePipeline(Generic[FrameT]):
         target_height: int,
         device_pixel_ratio: float,
         generation: int,
+        focus_indices: tuple[int, ...] = (),
+    ) -> None:
+        self._demand_revision += 1
+        revision = self._demand_revision
+        source = self._source
+        if source is None or generation != self._generation:
+            return
+        options = dict(
+            target_width=target_width, target_height=target_height,
+            device_pixel_ratio=device_pixel_ratio, generation=generation,
+        )
+        capability = getattr(source, "allows_parallel_page_preparation", None)
+        random_indices = {
+            index for index in (*visible_indices, *prefetch_indices)
+            if self._random_pages is not None and callable(capability)
+            and 0 <= index < source.page_count and capability(index)
+        }
+        if not random_indices:
+            if self._random_pages is not None:
+                self._random_pages.cancel()
+            self._request_serial(visible_indices, prefetch_indices, **options)
+            return
+
+        # A flattened book can contain both a plain ZIP and a solid child.
+        # Routing is per page source; solid/cache-ready pages never enter the pool.
+        serial_visible = tuple(index for index in visible_indices if index not in random_indices)
+        serial_prefetch = tuple(index for index in prefetch_indices if index not in random_indices)
+        if serial_visible or serial_prefetch:
+            self._request_serial(serial_visible, serial_prefetch, **options)
+        else:
+            with self._lock:
+                self._cancel_serial_locked()
+        if self._demand_revision != revision or self._source is not source:
+            return
+        visible = set(visible_indices)
+        anchors = focus_indices or visible_indices
+        center = sum(anchors) / len(anchors) if anchors else 0.0
+        ordered = sorted(random_indices, key=lambda index: (index not in visible, abs(index - center), index))
+        nearby = [index for index in ordered if index not in visible][:2]
+        ratio = max(1.0, device_pixel_ratio)
+        requests = tuple(ReaderPageRequest(
+            index, max(1, round(target_width * ratio)), max(1, round(target_height * ratio)),
+            ratio, generation,
+            TaskPriority.CRITICAL if index in visible else (
+                TaskPriority.HIGH if index in nearby else TaskPriority.LOW
+            ),
+        ) for index in ordered)
+        assert self._random_pages is not None
+        self._random_pages.request(source, requests)
+
+    def _request_serial(
+        self,
+        visible_indices: tuple[int, ...],
+        prefetch_indices: tuple[int, ...],
+        *,
+        target_width: int,
+        target_height: int,
+        device_pixel_ratio: float,
+        generation: int,
     ) -> None:
         width = max(1, int(round(target_width * max(1.0, device_pixel_ratio))))
         height = max(1, int(round(target_height * max(1.0, device_pixel_ratio))))
@@ -356,7 +371,7 @@ class ReaderPagePipeline(Generic[FrameT]):
             ordered = _ordered_interest(visible_indices, prefetch_indices, source.page_count)
             if ordered and set(ordered).issubset(self._pending_indices):
                 return
-            self._cancel_page_locked()
+            self._cancel_serial_locked()
             request_token = self._request_token
 
         missing: list[ReaderPageRequest] = []
@@ -528,6 +543,12 @@ class ReaderPagePipeline(Generic[FrameT]):
             )
 
     def _cancel_page_locked(self) -> None:
+        self._demand_revision += 1
+        if self._random_pages is not None:
+            self._random_pages.cancel()
+        self._cancel_serial_locked()
+
+    def _cancel_serial_locked(self) -> None:
         if self._handle is not None:
             self._handle.cancel()
         self._handle = None

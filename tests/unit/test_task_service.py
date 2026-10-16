@@ -28,6 +28,35 @@ class _ImmediateThreadPool:
         return True
 
 
+def test_finished_callback_survives_running_queued_and_rejected_cancellation(qtbot):
+    service = TaskService(1)
+    scope = service.create_scope()
+    entered, release = Event(), Event()
+    finished, results = [], []
+    def work():
+        entered.set()
+        release.wait(3)
+        return 1
+    gui = get_ident()
+    try:
+        scope.submit('running', work, on_success=results.append,
+                     on_finished=lambda: finished.append(('running', get_ident())))
+        assert entered.wait(1)
+        scope.submit('queued', lambda: 2, on_success=results.append,
+                     on_finished=lambda: finished.append(('queued', get_ident())))
+        scope.quiesce()
+        scope.submit('refused', lambda: 3,
+                     on_finished=lambda: finished.append(('refused', get_ident())))
+        assert finished == [('refused', gui)]
+        release.set()
+        qtbot.waitUntil(lambda: len(finished) == 3)
+        assert sorted(finished) == [('queued', gui), ('refused', gui), ('running', gui)]
+        assert results == [] and scope.pending_task_count() == 0
+    finally:
+        release.set()
+        service.shutdown()
+
+
 def test_task_service_submit_runs_callback_on_background_pool(qtbot) -> None:
     service = TaskService(max_workers=1)
     results: list[str] = []

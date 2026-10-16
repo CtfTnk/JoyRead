@@ -2,6 +2,31 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class GlassPalette:
+    panel: tuple[int, int, int, int]
+    edge: tuple[int, int, int, int]
+    idle: tuple[int, int, int, int]
+    idle_edge: tuple[int, int, int, int]
+    hover: tuple[int, int, int, int]
+    hover_edge: tuple[int, int, int, int]
+    pressed: tuple[int, int, int, int]
+    pressed_edge: tuple[int, int, int, int]
+    selected: tuple[int, int, int, int]
+    selected_edge: tuple[int, int, int, int]
+    close_hover: tuple[int, int, int, int]
+    close_pressed: tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class ReaderProgressPalette:
+    read: tuple[int, int, int, int]
+    unread: tuple[int, int, int, int]
+    knob_edge: tuple[int, int, int, int]
+
 
 class Theme:
     # Reader progress preview (logical pixels)
@@ -21,8 +46,10 @@ class Theme:
     shelf_drag_scale = 0.40
     shelf_drag_opacity = 0.65
     shelf_drag_offset = 5
-    shelf_drag_angles = (0, -6, 6)
-    shelf_drag_stack_offset = 9
+    shelf_drag_angles = (0, 6, 12)
+    shelf_drag_pivot = (0.5, 0.75)
+    shelf_drag_title_font_size = 12
+    color_shelf_drag_cover_background = "#eeeeee"
     shelf_drag_badge_diameter = 28
     shelf_drag_badge_font_size = 14
     shelf_drag_blur_radius = 4.0
@@ -57,12 +84,18 @@ class Theme:
     sidebar_width = 260
     main_view_gap = 6
     toolbar_height = 52
+    toolbar_control_height = 36
     content_frame_width = 934
     content_frame_height = 808
     content_min_width = 719
     content_horizontal_padding = 36
     content_padding = content_horizontal_padding
     content_top_padding = 15
+    # Pen shelf toolbar p9f5a; the 52px window title bar is independent.
+    shelf_toolbar_top_padding = content_top_padding
+    shelf_toolbar_bottom_padding = 10
+    shelf_toolbar_height = shelf_toolbar_top_padding + toolbar_control_height + shelf_toolbar_bottom_padding
+    shelf_toolbar_content_gap = 4
     content_radius = 10
     banner_horizontal_padding = 2
     book_card_width = 190
@@ -89,14 +122,16 @@ class Theme:
     book_progress_percent_gap = 10
     elided_label_clip_guard = 2
 
-    # Floating book detail panel from Figma node 162:1473 / component 162:861.
-    detail_panel_top_margin = 81
-    detail_panel_horizontal_margin = 29
+    # Floating book detail panel: Pen x0zBy / component R0LUQ.
+    detail_panel_toolbar_gap = 4
+    detail_panel_top_margin = shelf_toolbar_top_padding + toolbar_control_height + detail_panel_toolbar_gap
+    detail_panel_horizontal_margin = 16
     detail_panel_border_width = 2
     detail_panel_radius = 10
     detail_panel_visual_padding = 8
     detail_panel_layout_margin = detail_panel_visual_padding - detail_panel_border_width
     detail_panel_gap = 10
+    detail_content_max_width = 850
     detail_description_padding_horizontal = 50
     detail_description_padding_vertical = 40
     detail_description_gap = 10
@@ -143,6 +178,7 @@ class Theme:
     detail_thumbnail_width = 100
     detail_thumbnail_height = 142
     detail_thumbnail_radius = 6
+    detail_thumbnail_selection_radius = 10
     thumbnail_index_font_size = 12
     thumbnail_index_gap = 4
     thumbnail_index_min_height = 18
@@ -191,7 +227,6 @@ class Theme:
     grid_gap = grid_min_gap
     grid_top_padding = 4
     grid_bottom_padding = 24
-    toolbar_control_height = 36
     search_width = 200
     search_panel_width = 242
     search_panel_min_width = 122
@@ -230,10 +265,10 @@ class Theme:
     action_button_indicator_size = 10
     icon_size = 24
 
-    # Figma two-option switches
+    # Pen two-option switches: retain 4px visual insets with a quiet 1px edge.
     switch_width = 70
     switch_height = 36
-    switch_border_width = 2
+    switch_border_width = 1
     switch_visual_padding = 4
     switch_layout_margin = switch_visual_padding - switch_border_width
     switch_gap = 6
@@ -243,9 +278,18 @@ class Theme:
     switch_option_icon_inset = (switch_option_size - icon_size) // 2
 
     # Reusable fixed control sizes
-    toolbar_button_size = 36
+    toolbar_button_size = toolbar_control_height
     card_button_size = 28
     card_button_radius = 6
+
+    # Shared fixed headers for Detail and Reader Topic panels (Pen SfZfa).
+    floating_panel_header_height = 28
+    floating_panel_header_top = 12
+    floating_panel_header_horizontal_inset = 16
+    floating_panel_header_body_gap = 12
+    floating_panel_header_font_size = 16
+    floating_panel_close_size = 28
+    floating_panel_close_radius = 6
 
     # Sidebar frame from Figma node 165:2982
     # The root uses px=4/py=10, then each section/item stretches to the
@@ -308,13 +352,14 @@ class Theme:
     # Figma menu popups and native combo popup metrics
     menu_boundary_margin = 6
     menu_width = 130
-    menu_border_width = 2
+    menu_border_width = 1
     menu_radius = 10
     menu_visual_padding = 6
     menu_layout_margin = menu_visual_padding - menu_border_width
     menu_option_gap = 2
     menu_item_radius = 4
     menu_item_padding = 2
+    menu_item_padding_horizontal = 6
     menu_item_text_gap = 10
     menu_item_text_height = 15
     menu_item_height = menu_item_text_height + (menu_item_padding * 2)
@@ -535,9 +580,7 @@ class Theme:
     reader_radius = 18
     reader_banner_height = 52
     reader_footer_height = 104
-    # White chrome overlay: opaque at the window edge, translucent inward.
-    reader_chrome_outer_opacity = 1.0
-    reader_chrome_inner_opacity = 0.15
+    reader_chrome_border_width = 1
     reader_footer_padding_horizontal = 6
     reader_footer_padding_vertical = 8
     reader_footer_row_height = 40
@@ -555,6 +598,8 @@ class Theme:
     reader_side_button_padding_horizontal = 9
     reader_side_button_padding_vertical = 14
     reader_switch_visual_padding = 4
+    reader_switch_border_width = 1
+    reader_switch_layout_margin = reader_switch_visual_padding - reader_switch_border_width
     reader_switch_gap = 6
     reader_switch_option_size = 28
     reader_switch_option_radius = 6
@@ -562,7 +607,7 @@ class Theme:
     reader_topic_button_group_width = 112
     reader_topic_button_group_height = 36
     reader_topic_button_group_visual_padding = 4
-    reader_topic_button_group_border_width = 2
+    reader_topic_button_group_border_width = 1
     reader_topic_button_group_layout_margin = (
         reader_topic_button_group_visual_padding - reader_topic_button_group_border_width
     )
@@ -572,8 +617,9 @@ class Theme:
     reader_topic_button_separator_height = 20
     reader_slider_height = 12
     reader_slider_track_height = 6
-    reader_slider_knob_width = 14
+    reader_slider_knob_width = 22
     reader_slider_knob_height = 10
+    reader_slider_knob_border_width = 1
     reader_progress_indicator_gap = 2
     reader_progress_indicator_radius = 6
     reader_progress_indicator_padding_horizontal = 4
@@ -607,7 +653,7 @@ class Theme:
     reader_topic_panel_min_width = 400
     reader_topic_panel_min_height = 400
     reader_topic_panel_radius = 10
-    reader_topic_panel_border_width = 2
+    reader_topic_panel_border_width = 1
     reader_topic_panel_visual_padding = 8
     reader_topic_panel_layout_margin = reader_topic_panel_visual_padding - reader_topic_panel_border_width
     reader_topic_panel_gap = 10
@@ -616,7 +662,7 @@ class Theme:
     reader_topic_item_gap = 10
     reader_topic_item_padding_left = 15
     reader_topic_item_padding_right = 10
-    reader_topic_item_padding_vertical = 2
+    reader_topic_item_padding_vertical = 0
     reader_topic_item_label_gap = 5
     reader_topic_item_radius = 4
     reader_topic_add_icon_size = 18
@@ -649,12 +695,17 @@ class Theme:
     color_button_edge = "#929292"
     color_button_inner_edge = "#e0e0e0"
     color_menu_background_rgba = (255, 255, 255, 204)
-    color_menu_item_hover_rgba = (220, 220, 220, 102)
+    # Detail and Reader Topic share 86% white; menu materials stay contextual.
+    color_floating_panel_background_rgba = (255, 255, 255, 219)
     color_menu_destructive = "#bf0c0c"
     color_dialog_panel_background_rgba = (249, 249, 249, 230)
-    color_switch_background = "#bfbfbf"
-    color_progress_background = "#c9c9c9"
-    color_progress_fill = "#8a8a8a"
+    color_switch_background = "#efefef"
+    color_control_soft_edge = "#d6d6d6"
+    color_control_selected_edge = "#dadada"
+    color_topic_combo_active = color_content
+    color_topic_combo_active_edge = "#cccccc"
+    color_detail_button_background_rgba = (255, 255, 255, 204)
+    color_detail_button_hover_rgba = (229, 229, 229, 204)
     color_card_selected = "#727272"
     color_card_selected_transparent_rgba = (114, 114, 114, 0)
     color_scrollbar_handle_hidden_rgba = (138, 138, 138, 0)
@@ -674,15 +725,57 @@ class Theme:
     color_reader_control_normal_rgba = (255, 255, 255, 153)
     color_reader_control_selected_rgba = (255, 255, 255, 255)
     color_reader_panel_rgba = (146, 146, 146, 102)
-    color_reader_switch_panel_rgba = (191, 191, 191, 178)
+    color_reader_switch_panel_rgba = (239, 239, 239, 230)
     color_reader_slider_empty_rgba = (215, 215, 215, 153)
     color_reader_slider_filled_rgba = (158, 158, 158, 230)
-    color_reader_footer_background_rgba = (255, 255, 255, 188)
+    # Uniform white coverage; the reading-facing edge separates each bar.
+    color_reader_chrome_background_rgba = (255, 255, 255, 161)
+    color_reader_chrome_border = color_button_inner_edge
     color_reader_settings_background_rgba = (255, 255, 255, 204)
     color_reader_settings_control_rgba = (255, 255, 255, 230)
     color_reader_settings_switch_background_rgba = (185, 185, 185, 230)
-    color_reader_topic_item_hover_rgba = (238, 238, 238, 204)
     missing_book_opacity = 0.6
+
+    # Pen board 09, ACyyC: disjoint translucent rails and an opaque 22x10 knob.
+    # Static book progress also reuses the quiet read/unread colors.
+    # Settings mini-sliders keep their existing palette and dimensions.
+    reader_progress_palettes = {
+        "quiet": ReaderProgressPalette(
+            read=(124, 124, 124, 217), unread=(203, 203, 203, 115),
+            knob_edge=(189, 189, 189, 217),
+        ),
+        "contrast": ReaderProgressPalette(
+            read=(112, 112, 112, 242), unread=(208, 208, 208, 140),
+            knob_edge=(175, 175, 175, 230),
+        ),
+    }
+    color_reader_slider_knob = "#ffffff"
+    color_reader_slider_knob_hover_edge_rgba = (157, 157, 157, 230)
+    color_reader_slider_knob_pressed = "#f5f5f5"
+    color_reader_slider_knob_pressed_edge = "#8e8e8e"
+
+    # Pen board 08 / joyread/glass: white coverage follows the surface's
+    # context. Reader imagery uses contrast; ordinary Library chrome is quiet.
+    # Keep foreground icons/text opaque and paint item strokes inside bounds.
+    glass_item_border_width = 1
+    glass_palettes = {
+        "quiet": GlassPalette(
+            panel=(255, 255, 255, 214), edge=(216, 216, 216, 230),
+            idle=(255, 255, 255, 163), idle_edge=(218, 218, 218, 128),
+            hover=(255, 255, 255, 194), hover_edge=(210, 210, 210, 204),
+            pressed=(249, 249, 249, 235), pressed_edge=(190, 190, 190, 230),
+            selected=(255, 255, 255, 245), selected_edge=(184, 184, 184, 255),
+            close_hover=(230, 230, 230, 230), close_pressed=(214, 214, 214, 245),
+        ),
+        "contrast": GlassPalette(
+            panel=(255, 255, 255, 245), edge=(204, 204, 204, 242),
+            idle=(255, 255, 255, 230), idle_edge=(218, 218, 218, 184),
+            hover=(255, 255, 255, 245), hover_edge=(207, 207, 207, 230),
+            pressed=(252, 252, 252, 255), pressed_edge=(190, 190, 190, 255),
+            selected=(255, 255, 255, 250), selected_edge=(184, 184, 184, 255),
+            close_hover=(226, 226, 226, 245), close_pressed=(208, 208, 208, 255),
+        ),
+    }
 
     # Drag-and-drop overlay (design: "Main Window Drag Drop", screen 1a).
     # Painted rather than styled: dashed rounded borders, translucent fills over
@@ -761,6 +854,13 @@ class Theme:
             "__WINDOW_RADIUS__": f"{cls.window_corner_radius}px",
             "__CONTENT_COLOR__": cls.color_content,
             "__SELECTED_COLOR__": cls.color_selected,
+            "__SOFT_CONTROL_EDGE__": cls.color_control_soft_edge,
+            "__SELECTED_CONTROL_EDGE__": cls.color_control_selected_edge,
+            "__SWITCH_BACKGROUND__": cls.color_switch_background,
+            "__SWITCH_BORDER_WIDTH__": f"{cls.switch_border_width}px",
+            "__SWITCH_RADIUS__": f"{cls.control_radius}px",
+            "__SWITCH_OPTION_BORDER_WIDTH__": f"{cls.switch_option_border_width}px",
+            "__PANEL_CLOSE_RADIUS__": f"{cls.floating_panel_close_radius}px",
             "__CONTENT_RADIUS__": f"{cls.content_radius}px",
             "__SIDEBAR_SECTION_COLOR__": cls.color_sidebar_section,
             "__SIDEBAR_ITEM_RADIUS__": f"{cls.sidebar_item_radius}px",
@@ -777,7 +877,6 @@ class Theme:
             "__MENU_ITEM_RADIUS__": f"{cls.menu_item_radius}px",
             "__MENU_ITEM_PADDING__": f"{cls.menu_item_padding}px",
             "__MENU_ITEM_HEIGHT__": f"{cls.menu_item_height}px",
-            "__MENU_ITEM_HOVER__": cls._rgba_qss(cls.color_menu_item_hover_rgba),
             "__MENU_DESTRUCTIVE__": cls.color_menu_destructive,
             "__MENU_FONT_SIZE__": f"{cls.menu_font_size}px",
             "__SETTINGS_PANEL_BORDER_WIDTH__": f"{cls.settings_panel_border_width}px",
@@ -824,13 +923,13 @@ class Theme:
             "__READER_PANEL__": cls._rgba_qss(cls.color_reader_panel_rgba),
             "__READER_SIDE_BUTTON_RADIUS__": f"{cls.reader_side_button_radius}px",
             "__READER_SWITCH_PANEL__": cls._rgba_qss(cls.color_reader_switch_panel_rgba),
+            "__READER_SWITCH_BORDER_WIDTH__": f"{cls.reader_switch_border_width}px",
             "__READER_SWITCH_OPTION_RADIUS__": f"{cls.reader_switch_option_radius}px",
             "__READER_TOPIC_BUTTON_GROUP_BORDER_WIDTH__": f"{cls.reader_topic_button_group_border_width}px",
             "__READER_TOPIC_BUTTON_GROUP_RADIUS__": f"{cls.reader_control_radius}px",
             "__READER_TOPIC_BUTTON_RADIUS__": f"{cls.reader_topic_button_radius}px",
             "__READER_SLIDER_EMPTY__": cls._rgba_qss(cls.color_reader_slider_empty_rgba),
             "__READER_SLIDER_FILLED__": cls._rgba_qss(cls.color_reader_slider_filled_rgba),
-            "__READER_FOOTER_BACKGROUND__": cls._rgba_qss(cls.color_reader_footer_background_rgba),
             "__READER_PROGRESS_INDICATOR_RADIUS__": f"{cls.reader_progress_indicator_radius}px",
             "__READER_PROGRESS_INDICATOR_PADDING_HORIZONTAL__": f"{cls.reader_progress_indicator_padding_horizontal}px",
             "__READER_PROGRESS_INDICATOR_FONT_SIZE__": f"{cls.reader_progress_indicator_font_size}px",
@@ -843,7 +942,15 @@ class Theme:
             "__READER_TOPIC_PANEL_RADIUS__": f"{cls.reader_topic_panel_radius}px",
             "__READER_TOPIC_ITEM_RADIUS__": f"{cls.reader_topic_item_radius}px",
             "__READER_TOPIC_INDEX_FONT_SIZE__": f"{cls.reader_topic_index_font_size}px",
-            "__READER_TOPIC_ITEM_HOVER__": cls._rgba_qss(cls.color_reader_topic_item_hover_rgba),
+            "__TOPIC_ACTIVE__": cls.color_topic_combo_active,
+            "__TOPIC_ACTIVE_EDGE__": cls.color_topic_combo_active_edge,
+            "__READER_BUTTON_PADDING__": f"{cls.reader_control_layout_margin}px",
+            "__GLASS_ITEM_BORDER_WIDTH__": f"{cls.glass_item_border_width}px",
+            **{
+                f"__GLASS_{profile.upper()}_{role.upper()}__": cls._rgba_qss(color)
+                for profile, palette in cls.glass_palettes.items()
+                for role, color in vars(palette).items()
+            },
             "__TEXT_COLOR__": cls.color_text,
             "__TEXT_MUTED_COLOR__": cls.color_text_muted,
             "__BOOK_CARD_RADIUS__": f"{cls.book_card_radius}px",
@@ -852,10 +959,9 @@ class Theme:
             "__CARD_SELECTED__": cls.color_card_selected,
             "__CARD_SELECTED_TRANSPARENT__": cls._rgba_qss(cls.color_card_selected_transparent_rgba),
             "__BOOK_SELECTION_BORDER_WIDTH__": f"{cls.book_selection_border_width}px",
-            "__PROGRESS_BACKGROUND__": cls.color_progress_background,
-            "__PROGRESS_FILL__": cls.color_progress_fill,
+            "__PROGRESS_FILL__": cls._rgba_qss(cls.reader_progress_palettes["quiet"].read),
             "__PROGRESS_RADIUS__": f"{cls.book_progress_radius}px",
-            "__DETAIL_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_menu_background_rgba),
+            "__DETAIL_PANEL_BACKGROUND__": cls._rgba_qss(cls.color_floating_panel_background_rgba),
             "__DETAIL_PANEL_BORDER_WIDTH__": f"{cls.detail_panel_border_width}px",
             "__DETAIL_PANEL_RADIUS__": f"{cls.detail_panel_radius}px",
             "__DETAIL_TAG_BOX_BACKGROUND__": cls._hex_rgba_qss(
@@ -865,6 +971,8 @@ class Theme:
             "__DETAIL_TAG_BOX_RADIUS__": f"{cls.detail_tag_box_radius}px",
             "__DETAIL_ATTRIBUTE_RADIUS__": f"{cls.detail_attribute_radius}px",
             "__DETAIL_BUTTON_BORDER_WIDTH__": f"{cls.detail_button_border_width}px",
+            "__DETAIL_BUTTON_BACKGROUND__": cls._rgba_qss(cls.color_detail_button_background_rgba),
+            "__DETAIL_BUTTON_HOVER__": cls._rgba_qss(cls.color_detail_button_hover_rgba),
             "__DETAIL_BUTTON_LAYOUT_MARGIN__": f"{cls.detail_button_layout_margin}px",
             "__DETAIL_BUTTON_RADIUS__": f"{cls.detail_button_radius}px",
             "__DETAIL_TITLE_FONT_SIZE__": f"{cls.detail_title_font_size}px",

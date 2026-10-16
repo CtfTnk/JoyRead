@@ -35,7 +35,9 @@ from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.floating_panel_header import FloatingPanelHeader
 from joyread.ui.widgets.thumbnail_placeholder import thumbnail_placeholder
+from joyread.ui.widgets.translucent_material import glass_palette, paint_material_surface
 from joyread.ui.widgets.progress_bar import BookProgressBar
 from joyread.ui.widgets.tag_selection_panel import TagChipFlowWidget
 
@@ -172,6 +174,7 @@ class BookDetailTagBox(QFrame):
 
 
 class BookDetailPanel(QFrame):
+    close_requested = QtSignal()
     read_requested = QtSignal(str)
     read_at_index_requested = QtSignal(str, int)
     favourite_requested = QtSignal(str)
@@ -202,19 +205,26 @@ class BookDetailPanel(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
         root_layout = QVBoxLayout(self)
-        # Figma uses an 8px visual padding with a 2px stroke. Qt borders occupy
-        # layout space, so 6px margins preserve the same child inset.
+        # QSS consumes the 2px top/side borders; the bottom is borderless.
+        # Header controls start at y=12, and the scroll body starts at y=52.
         root_layout.setContentsMargins(
             Theme.detail_panel_layout_margin,
-            Theme.detail_panel_layout_margin,
+            Theme.floating_panel_header_top - Theme.detail_panel_border_width,
             Theme.detail_panel_layout_margin,
             Theme.detail_panel_layout_margin,
         )
-        root_layout.setSpacing(0)
+        root_layout.setSpacing(Theme.floating_panel_header_body_gap)
+
+        self._header = FloatingPanelHeader(
+            resources, t("detail.panel_title"), body_inset=Theme.detail_panel_visual_padding
+        )
+        self._header.close_requested.connect(self.close_requested.emit)
+        root_layout.addWidget(self._header)
 
         self._scroll = QScrollArea()
         self._scroll.setObjectName("BookDetailScrollArea")
         self._scroll.setWidgetResizable(True)
+        self._scroll.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop)
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.viewport().setObjectName("BookDetailViewport")
         self._scroll.viewport().setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -228,6 +238,7 @@ class BookDetailPanel(QFrame):
         content = QWidget()
         content.setObjectName("BookDetailContent")
         content.setMinimumWidth(Theme.detail_thumbnail_min_width)
+        content.setMaximumWidth(Theme.detail_content_max_width)
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(Theme.detail_panel_gap)
@@ -236,7 +247,7 @@ class BookDetailPanel(QFrame):
         self._description = self._build_description()
         content_layout.addWidget(self._description)
 
-        self._thumbnail_grid = DetailThumbnailGrid()
+        self._thumbnail_grid = DetailThumbnailGrid(interaction_feedback=True)
         self._thumbnail_grid.thumbnail_clicked.connect(self._emit_read_at_index_requested)
         content_layout.addWidget(self._thumbnail_grid)
         content_layout.addStretch(1)
@@ -728,7 +739,13 @@ class DetailCoverWidget(BookCoverWidget):
 class DetailThumbnailGrid(QWidget):
     thumbnail_clicked = QtSignal(int)
 
-    def __init__(self, parent: QWidget | None = None, *, minimum_width: int | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        *,
+        minimum_width: int | None = None,
+        interaction_feedback: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("BookDetailThumbnails")
         self.setMinimumWidth(minimum_width or Theme.detail_thumbnail_min_width)
@@ -746,9 +763,15 @@ class DetailThumbnailGrid(QWidget):
         self._retained: OrderedDict[int, DetailThumbnailWidget] = OrderedDict()
         self._retained_bytes = 0
         self._interest: frozenset[int] = frozenset()
+        self._label_font: QFont | None = None
+        self._label_height = 0
         self._columns = 0
         self._is_complete = False
         self._pressed_index: int | None = None
+        self._interaction_feedback = interaction_feedback
+        self._feedback_index: int | None = None
+        self._feedback_press_index: int | None = None
+        self._feedback_pressed = False
         self.setMouseTracking(True)
         # Each DetailThumbnailWidget sets its own hand cursor; a cursor here
         # too would extend it into the grid's own padding and inter-item
@@ -768,6 +791,8 @@ class DetailThumbnailGrid(QWidget):
         return self._page_count
 
     def reset_unknown(self) -> None:
+        self._clear_feedback()
+        self._pressed_index = None
         self._clear_loaded_widgets()
         self._clear_retained()
         self._page_count = 0
@@ -815,7 +840,9 @@ class DetailThumbnailGrid(QWidget):
                     widget.setGeometry(self._item_rect(index))
                     widget.show()
             self._trim_retained()
-        self.update()
+        # hide()/show() already invalidate the affected widget rectangles.
+        # Repainting the entire virtual grid here also repaints every visible
+        # child during scrolling, even when only an offscreen prefetch row moved.
 
     def visible_and_prefetch_indices(
         self,
@@ -856,13 +883,13 @@ class DetailThumbnailGrid(QWidget):
         if thumbnail is None:
             thumbnail = DetailThumbnailWidget(self)
             thumbnail.set_page_index(index)
+            if self._interaction_feedback:
+                thumbnail.installEventFilter(self)
             thumbnail.clicked.connect(self.thumbnail_clicked.emit)
             self._thumbnails[index] = thumbnail
+            thumbnail.setGeometry(self._item_rect(index))
+            thumbnail.show()
         thumbnail.set_thumbnail_bytes(image_bytes)
-        thumbnail.setGeometry(self._item_rect(index))
-        thumbnail.show()
-        thumbnail.raise_()
-        self.update(self._item_rect(index))
 
     def mark_complete(self) -> None:
         self._is_complete = True
@@ -878,6 +905,17 @@ class DetailThumbnailGrid(QWidget):
         if clip.isEmpty() or self._page_count <= 0:
             painter.end()
             return
+        if self._feedback_index is not None:
+            # The full image-and-number card is painted behind its content.
+            # Loaded image children remain opaque above it, with no image wash
+            # and no extra widget allocated for each virtual page.
+            palette = glass_palette(self)
+            fill = palette.pressed if self._feedback_pressed else palette.hover
+            edge = palette.pressed_edge if self._feedback_pressed else palette.hover_edge
+            paint_material_surface(
+                painter, QRectF(self._selection_rect(self._feedback_index)),
+                fill, edge, Theme.detail_thumbnail_selection_radius,
+            )
         row_step = self._slot_height() + self._vertical_spacing
         first_row = max(0, (clip.top() - self._margins[1]) // row_step)
         last_row = min(
@@ -898,6 +936,8 @@ class DetailThumbnailGrid(QWidget):
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             self._pressed_index = self._index_at(event.position().toPoint())
+            self._feedback_press_index = self._pressed_index
+            self._set_feedback(self._pressed_index)
             event.accept()
             return
         super().mousePressEvent(event)
@@ -905,30 +945,87 @@ class DetailThumbnailGrid(QWidget):
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
             index = self._index_at(event.position().toPoint())
-            if index is not None and index == self._pressed_index:
-                self.thumbnail_clicked.emit(index)
+            clicked = index is not None and index == self._pressed_index
             self._pressed_index = None
+            self._feedback_press_index = None
+            self._set_feedback(index)
             event.accept()
+            # A selection can hide the panel synchronously. Clear press paint
+            # first so its hide/reset is not undone on the way out.
+            if clicked:
+                self.thumbnail_clicked.emit(index)
             return
         super().mouseReleaseEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        self.setCursor(Qt.CursorShape.PointingHandCursor if self._index_at(event.position().toPoint()) is not None
+        index = self._index_at(event.position().toPoint())
+        self._set_feedback(index)
+        self.setCursor(Qt.CursorShape.PointingHandCursor if index is not None
                        else Qt.CursorShape.ArrowCursor)
         super().mouseMoveEvent(event)
+
+    def eventFilter(self, watched, event: QEvent) -> bool:
+        if isinstance(watched, DetailThumbnailWidget):
+            kind = event.type()
+            if kind == QEvent.Type.Enter:
+                self._set_feedback(watched._page_index)
+            elif kind in (QEvent.Type.Leave, QEvent.Type.Hide):
+                if watched._page_index == self._feedback_index:
+                    self._set_feedback(None)
+                if kind == QEvent.Type.Hide and watched._page_index == self._feedback_press_index:
+                    self._feedback_press_index = None
+            elif kind == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._feedback_press_index = watched._page_index
+                self._set_feedback(watched._page_index)
+            elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                self._feedback_press_index = None
+                self._set_feedback(watched._page_index if watched.rect().contains(event.position().toPoint()) else None)
+        return super().eventFilter(watched, event)
+
+    def leaveEvent(self, event: QEvent) -> None:
+        self._set_feedback(None)
+        super().leaveEvent(event)
+
+    def hideEvent(self, event: QEvent) -> None:
+        self._pressed_index = None
+        self._clear_feedback()
+        super().hideEvent(event)
+
+    def _clear_feedback(self) -> None:
+        self._feedback_press_index = None
+        self._set_feedback(None)
+
+    def _set_feedback(self, index: int | None) -> None:
+        if not self._interaction_feedback:
+            return
+        index = index if index is not None and 0 <= index < self._page_count else None
+        pressed = index is not None and index == self._feedback_press_index
+        if index == self._feedback_index and pressed == self._feedback_pressed:
+            return
+        previous = self._feedback_index
+        self._feedback_index, self._feedback_pressed = index, pressed
+        # Repaint only the old/new cards, preserving demand-driven scrolling.
+        for changed in (previous, index):
+            if changed is not None:
+                self.update(self._selection_rect(changed))
 
     def changeEvent(self, event: QEvent) -> None:
         super().changeEvent(event)
         if event.type() in (QEvent.Type.FontChange, QEvent.Type.ApplicationFontChange) and hasattr(self, "_columns"):
+            self._label_font = None
             self._refresh_geometry(force=True)
 
     def _index_font(self) -> QFont:
-        font = QFont(self.font())
-        font.setPixelSize(Theme.thumbnail_index_font_size)
-        return font
+        if self._label_font is None:
+            self._label_font = QFont(self.font())
+            self._label_font.setPixelSize(Theme.thumbnail_index_font_size)
+            self._label_height = max(Theme.thumbnail_index_min_height, QFontMetrics(self._label_font).height())
+        return self._label_font
 
     def _index_height(self) -> int:
-        return max(Theme.thumbnail_index_min_height, QFontMetrics(self._index_font()).height())
+        if self._label_font is None:
+            self._index_font()
+        return self._label_height
 
     def _slot_height(self) -> int:
         return Theme.detail_thumbnail_height + Theme.thumbnail_index_gap + self._index_height()
@@ -937,6 +1034,15 @@ class DetailThumbnailGrid(QWidget):
         image = self._item_rect(index)
         return QRect(image.x(), image.y() + image.height() + Theme.thumbnail_index_gap,
                      image.width(), self._index_height())
+
+    def _selection_rect(self, index: int) -> QRect:
+        horizontal = Theme.detail_thumbnail_row_padding_horizontal
+        vertical = Theme.detail_thumbnail_row_padding_vertical
+        # Match the highlight's top inset to its sides without moving images,
+        # page labels, or rows; retain the original inset below the page label.
+        return self._item_rect(index).united(self._index_rect(index)).adjusted(
+            -horizontal, -horizontal, horizontal, vertical,
+        )
 
     def _refresh_geometry(self, force: bool = False) -> None:
         columns = self._calculate_columns()
@@ -948,6 +1054,8 @@ class DetailThumbnailGrid(QWidget):
         self._columns = columns
         self._horizontal_spacing = self._calculate_horizontal_spacing(columns)
         self._position_loaded_widgets()
+        if self._feedback_index is not None and self._feedback_index >= self._page_count:
+            self._clear_feedback()
         self._refresh_height()
         self.update()
 
@@ -1052,6 +1160,8 @@ class DetailThumbnailWidget(QFrame):
         self._image_bytes: bytes | None = None
         self._page_index: int | None = None
         self._pressed_inside = False
+        self._clip_rect = QRect()
+        self._clip_path = QPainterPath()
 
     def set_page_index(self, page_index: int) -> None:
         self._page_index = page_index
@@ -1097,9 +1207,11 @@ class DetailThumbnailWidget(QFrame):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        path = QPainterPath()
-        path.addRoundedRect(QRectF(self.rect()), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
-        painter.setClipPath(path)
+        if self._clip_rect != self.rect():
+            self._clip_rect = self.rect()
+            self._clip_path = QPainterPath()
+            self._clip_path.addRoundedRect(QRectF(self._clip_rect), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
+        painter.setClipPath(self._clip_path)
 
         if self._pixmap is not None and not self._pixmap.isNull():
             painter.drawPixmap(self.rect(), self._pixmap)

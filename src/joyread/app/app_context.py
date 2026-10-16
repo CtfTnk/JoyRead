@@ -185,6 +185,7 @@ class AppContext(RuntimeAccess):
             close_component("archive_warmup", self.archive_warmup_coordinator.close)
         if self.path_issue_bridge is not None:
             close_component("path_issue_bridge", self.path_issue_bridge.detach)
+        close_component("random_pages", self.reader_runtime.close_random_pages)
         close_component("task_service", self.reader_runtime.task_service.shutdown)
         if self.library_runtime is not None and self.library_runtime.thumbnail_service is not None:
             close_component("thumbnail_service", self.library_runtime.thumbnail_service.close)
@@ -404,11 +405,14 @@ class AppContext(RuntimeAccess):
         if self.archive_warmup_coordinator is not None:
             self.archive_warmup_coordinator.quiesce_library(self.paths.storage_root)
         self.task_service.quiesce()
+        self.reader_runtime.quiesce_library_pages()
         return self.storage_transition_pending_tasks()
 
     def storage_transition_pending_tasks(self) -> int:
-        return self.task_service.pending_task_count() + self.archive_warmup_coordinator.pending_library_tasks(
-            self.paths.storage_root
+        return (
+            self.task_service.pending_task_count()
+            + self.reader_runtime.library_random_page_tasks.pending_task_count()
+            + self.archive_warmup_coordinator.pending_library_tasks(self.paths.storage_root)
         )
 
     def commit_storage_transition(self) -> None:
@@ -439,12 +443,14 @@ class AppContext(RuntimeAccess):
         if self.archive_warmup_coordinator is not None:
             self.archive_warmup_coordinator.resume_library()
         self.task_service.resume()
+        self.reader_runtime.resume_library_pages()
         logger.warning("Storage transition abandoned before migrating")
 
     def resume_after_storage_transition(self) -> None:
         """Accept background work again, against the rebuilt storage stack."""
 
         self.task_service.resume()
+        self.reader_runtime.resume_library_pages()
         self.archive_warmup_coordinator.resume_library()
         logger.info("Resumed after storage transition")
 

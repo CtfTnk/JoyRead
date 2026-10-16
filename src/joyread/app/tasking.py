@@ -27,6 +27,8 @@ class TaskPriority(IntEnum):
 
     BACKGROUND = -100
     LOW = -10
+    THUMBNAIL = -20
+    THUMBNAIL_PREFETCH = -30
     NORMAL = 0
     HIGH = 10
     CRITICAL = 100
@@ -50,7 +52,12 @@ class TaskHandle(Generic[T]):
 
 
 class TaskExecutor(Protocol):
-    """Application port for prioritized background execution."""
+    """Application port for prioritized background execution.
+
+    submit's on_finished is a terminal GUI-thread handshake, including cancelled
+    jobs. Rejected submissions call it inline. Result callbacks may be suppressed
+    on cancellation, so admission/lifetime owners must use this handshake.
+    """
 
     def submit(
         self,
@@ -60,6 +67,7 @@ class TaskExecutor(Protocol):
         on_success: Callable[[T], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
         on_discard: Callable[[T], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
     ) -> TaskHandle[T]: ...
 

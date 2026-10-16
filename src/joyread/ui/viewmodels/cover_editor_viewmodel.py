@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from threading import Event
 
 from joyread.app.cover_editor import CoverPreviewRenderer, PreparedCoverSource
 from joyread.core.models.book import Book
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
+from joyread.app.reader_page_scheduler import ReaderPageScheduler
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.services.thumbnail_service import CoverCropState, ThumbnailService, ThumbnailSourceHandle
 from joyread.ui.viewmodels.signals import Signal
@@ -30,6 +32,9 @@ class CoverEditorThumbnailViewModel:
         task_service: TaskExecutor,
         preview_renderer: CoverPreviewRenderer[object],
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
+        *,
+        random_page_scheduler: ReaderPageScheduler | None = None,
+        random_page_executor: TaskExecutor | None = None,
     ) -> None:
         self.source_ready: Signal[tuple[str, int]] = Signal("cover-editor.source_ready")
         self.thumbnail_ready: Signal[tuple[int, bytes]] = Signal("cover-editor.thumbnail_ready")
@@ -44,11 +49,15 @@ class CoverEditorThumbnailViewModel:
         self._task_service = task_service
         self._preview_renderer = preview_renderer
         self._archive_warmup_coordinator = archive_warmup_coordinator
+        self._random_page_scheduler = random_page_scheduler
+        self._random_page_executor = random_page_executor
         self._warmup_client_id = f"cover-editor-thumbnail:{id(self)}"
         self._stream = ThumbnailStreamController(
             task_service,
             thumbnail_service.issue_thumbnail_cache_client("cover-editor"),
             task_name="cover-editor-thumbnail",
+            random_page_scheduler=self._random_page_scheduler,
+            random_page_executor=self._random_page_executor,
         )
         self._stream.thumbnail_ready.connect(self.thumbnail_ready.emit)
         self._book: Book | None = None
@@ -74,6 +83,8 @@ class CoverEditorThumbnailViewModel:
             self._task_service,
             thumbnail_service.issue_thumbnail_cache_client("cover-editor"),
             task_name="cover-editor-thumbnail",
+            random_page_scheduler=self._random_page_scheduler,
+            random_page_executor=self._random_page_executor,
         )
         self._stream.thumbnail_ready.connect(self.thumbnail_ready.emit)
 
@@ -369,12 +380,13 @@ class CoverEditorThumbnailViewModel:
             thumbnail_service = self._thumbnail_service
             size = self._size
 
-            def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
+            def load(indices: tuple[int, ...], emit_item, cancelled: Event | None = None) -> None:  # noqa: ANN001
                 thumbnail_service.stream_thumbnails(
                     source,
                     indices,
                     size,
                     lambda item: emit_item(ThumbnailStreamItem(item.page_index, item.image_bytes)),
+                    **({} if cancelled is None else {"cancelled": cancelled}),
                 )
 
             planner = getattr(source, "plan_read_batch", None)
@@ -385,6 +397,7 @@ class CoverEditorThumbnailViewModel:
                 load,
                 batch_planner=planner if callable(planner) else None,
                 batch_size_for=source.preferred_batch_size,
+                allows_parallel=getattr(source, "allows_parallel_page_preparation", None),
             )
             self.source_ready.emit(self._book.uuid, source.page_count)
             visible, prefetch = self._pending_interest

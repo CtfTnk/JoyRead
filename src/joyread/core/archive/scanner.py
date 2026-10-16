@@ -154,6 +154,7 @@ class ArchiveScanner:
         source = replace(
             source,
             requires_sequential_warmup=listing.requires_sequential_warmup,
+            random_access_confirmed=listing.random_access_confirmed,
         )
         entries = listing.entries
         entry_prefix = transparent_single_root_prefix(entries)

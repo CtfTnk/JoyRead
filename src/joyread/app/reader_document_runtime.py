@@ -131,6 +131,9 @@ class ReaderDocumentHandle(ReaderDocumentSource):
     def allows_random_preview(self, page_index: int) -> bool:
         return self._source.allows_random_preview(page_index)
 
+    def allows_parallel_page_preparation(self, page_index: int) -> bool:
+        return self._source.allows_parallel_page_preparation(page_index)
+
     def read_cached_pages(self, page_indices: tuple[int, ...]) -> dict[int, ReaderPagePayload]:
         return self._source.read_cached_pages(page_indices)
 

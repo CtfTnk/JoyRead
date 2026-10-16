@@ -129,6 +129,8 @@ class MainWindow(QMainWindow):
             context.task_service,
             context.thumbnail_renderer,
             context.archive_warmup_coordinator,
+            random_page_scheduler=context.reader_runtime.random_page_scheduler,
+            random_page_executor=context.reader_runtime.library_random_page_tasks,
         )
         context.settings_viewmodel.archive_open_limits_changed.connect(
             self._invalidate_archive_thumbnail_sources
@@ -406,8 +408,8 @@ class MainWindow(QMainWindow):
         self._pending_shelf.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._pending_shelf.installEventFilter(self)
         shelf_layout = QVBoxLayout(self._pending_shelf)
-        shelf_layout.setContentsMargins(0, Theme.content_top_padding, 0, 0)
-        shelf_layout.setSpacing(10)
+        shelf_layout.setContentsMargins(0, 0, 0, 0)
+        shelf_layout.setSpacing(Theme.shelf_toolbar_content_gap)
         self._pending_toolbar = TopToolbarWidget(context.resources)
         self._pending_toolbar.setEnabled(False)
         shelf_layout.addWidget(self._pending_toolbar)

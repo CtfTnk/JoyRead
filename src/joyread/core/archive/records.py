@@ -25,6 +25,9 @@ class ArchiveSource:
     # archive's identity: a password prompt reading
     # "/var/folders/.../nested-0000.zip" tells the reader nothing.
     spilled: bool = False
+    # Positive evidence from listing, independent of cache/warmup readiness.
+    # Unknown/custom backends must opt in rather than inherit ZIP assumptions.
+    random_access_confirmed: bool = False
 
     @property
     def display_name(self) -> str:
@@ -63,6 +66,7 @@ class ArchiveListing:
 
     entries: tuple[ArchiveEntry, ...]
     requires_sequential_warmup: bool = False
+    random_access_confirmed: bool = False
 
 
 @dataclass(frozen=True)

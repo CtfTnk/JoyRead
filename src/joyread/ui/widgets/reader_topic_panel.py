@@ -26,7 +26,9 @@ from joyread.ui.viewmodels.reader_items import ReaderBookmarkItem, ReaderContent
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.book_detail import DetailThumbnailGrid
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.floating_panel_header import FloatingPanelHeader
 from joyread.ui.widgets.menus import FigmaMenu
+from joyread.ui.widgets.translucent_material import MaterialItemFrame, glass_palette
 
 
 class ReaderTopicMode(StrEnum):
@@ -36,6 +38,7 @@ class ReaderTopicMode(StrEnum):
 
 
 class ReaderTopicPanel(QFrame):
+    close_requested = QtSignal()
     thumbnail_interest_changed = QtSignal(tuple, tuple, tuple)
     thumbnail_interest_released = QtSignal()
     thumbnail_selected = QtSignal(int)
@@ -59,21 +62,28 @@ class ReaderTopicPanel(QFrame):
         self._thumbnail_check_timer.timeout.connect(self._emit_thumbnail_interest)
 
         self.setObjectName("ReaderTopicPanel")
+        self.setProperty("glassBackdrop", "contrast")
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setMinimumSize(Theme.reader_topic_panel_min_width, Theme.reader_topic_panel_min_height)
         self.resize(Theme.reader_topic_panel_width, Theme.reader_topic_panel_height)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
 
         root_layout = QVBoxLayout(self)
-        # Figma uses an 8px visual padding with a 2px stroke. Qt borders
-        # consume layout space, so 6px layout margins preserve the design inset.
+        # The QSS border consumes 1px even though paintEvent draws the surface.
+        # Count it once: fixed header at y=12, independent scroll body at y=52.
         root_layout.setContentsMargins(
             Theme.reader_topic_panel_layout_margin,
-            Theme.reader_topic_panel_layout_margin,
+            Theme.floating_panel_header_top - Theme.reader_topic_panel_border_width,
             Theme.reader_topic_panel_layout_margin,
             Theme.reader_topic_panel_layout_margin,
         )
-        root_layout.setSpacing(Theme.reader_topic_panel_gap)
+        root_layout.setSpacing(Theme.floating_panel_header_body_gap)
+
+        self._header = FloatingPanelHeader(
+            resources, t("reader.thumbnails"), body_inset=Theme.reader_topic_panel_visual_padding
+        )
+        self._header.close_requested.connect(self.close_requested.emit)
+        root_layout.addWidget(self._header)
 
         self._stack = QStackedWidget()
         self._stack.setObjectName("ReaderTopicStack")
@@ -102,6 +112,7 @@ class ReaderTopicPanel(QFrame):
         if self._mode == ReaderTopicMode.THUMBNAILS and mode != ReaderTopicMode.THUMBNAILS:
             self._release_thumbnail_interest()
         self._mode = mode
+        self._header.set_title(t(f"reader.{mode.value}"))
         if mode == ReaderTopicMode.CONTENTS:
             self._stack.setCurrentWidget(self._contents_scroll)
         elif mode == ReaderTopicMode.BOOKMARKS:
@@ -187,9 +198,11 @@ class ReaderTopicPanel(QFrame):
         path = QPainterPath()
         inset = Theme.reader_topic_panel_border_width / 2
         bounds = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
-        path.addRoundedRect(bounds, Theme.reader_topic_panel_radius, Theme.reader_topic_panel_radius)
-        painter.fillPath(path, QColor(*Theme.color_menu_background_rgba))
-        painter.setPen(QPen(QColor(Theme.color_button_inner_edge), Theme.reader_topic_panel_border_width))
+        radius = Theme.reader_topic_panel_radius - inset
+        path.addRoundedRect(bounds, radius, radius)
+        palette = glass_palette(self)
+        painter.fillPath(path, QColor(*Theme.color_floating_panel_background_rgba))
+        painter.setPen(QPen(QColor(*palette.edge), Theme.reader_topic_panel_border_width))
         painter.drawPath(path)
         painter.end()
 
@@ -231,7 +244,7 @@ class ReaderTopicPanel(QFrame):
         layout = QVBoxLayout(self._thumbnails_page)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        self._thumbnail_grid = DetailThumbnailGrid()
+        self._thumbnail_grid = DetailThumbnailGrid(interaction_feedback=True)
         self._thumbnail_grid.thumbnail_clicked.connect(self.thumbnail_selected.emit)
         layout.addWidget(self._thumbnail_grid)
         layout.addStretch(1)
@@ -317,11 +330,11 @@ class ReaderTopicPanel(QFrame):
         self._last_thumbnail_interest = ((), ())
 
 
-class _TopicContentsRow(QFrame):
+class _TopicContentsRow(MaterialItemFrame):
     clicked = QtSignal(int)
 
     def __init__(self, item: ReaderContentsItem, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(parent, radius=Theme.reader_topic_item_radius)
         self._item = item
         self._pressed_inside = False
         self.setProperty("class", "ReaderTopicItem")
@@ -371,12 +384,12 @@ class _TopicContentsRow(QFrame):
         super().mouseReleaseEvent(event)
 
 
-class _TopicBookmarkRow(QFrame):
+class _TopicBookmarkRow(MaterialItemFrame):
     clicked = QtSignal(int)
     context_menu_requested = QtSignal(str, QPoint)
 
     def __init__(self, bookmark: ReaderBookmarkItem, parent: QWidget | None = None) -> None:
-        super().__init__(parent)
+        super().__init__(parent, radius=Theme.reader_topic_item_radius)
         self._bookmark = bookmark
         self._pressed_inside = False
         self.setProperty("class", "ReaderTopicItem")
@@ -429,11 +442,11 @@ class _TopicBookmarkRow(QFrame):
         self.context_menu_requested.emit(self._bookmark.uuid, event.globalPos())
 
 
-class _NewBookmarkRow(QFrame):
+class _NewBookmarkRow(MaterialItemFrame):
     clicked = QtSignal()
 
     def __init__(self, resources, parent: QWidget | None = None) -> None:  # noqa: ANN001 - ResourceLoader import cycle.
-        super().__init__(parent)
+        super().__init__(parent, radius=Theme.reader_topic_item_radius)
         self._pressed_inside = False
         self.setProperty("class", "ReaderTopicNewBookmark")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)

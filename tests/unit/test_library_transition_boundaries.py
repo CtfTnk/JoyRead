@@ -62,7 +62,7 @@ def test_external_reader_work_survives_storage_transition(tmp_path, qtbot, monke
         if phase == "page":
             qtbot.waitUntil(lambda: 0 in window.canvas._pixmaps)
             document = window.viewmodel._document
-            monkeypatch.setattr(document, "prepare_page", delay(document.prepare_page))
+            monkeypatch.setattr(document, "read_page", delay(document.read_page))
             window.viewmodel.seek(2)
         if phase != "during-transition":
             qtbot.waitUntil(entered.is_set)

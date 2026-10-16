@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+from threading import Event
 
 from PIL import Image, ImageFilter, ImageOps, UnidentifiedImageError
 from PySide6.QtCore import QByteArray, QBuffer, QIODevice, QSize, Qt
@@ -10,18 +11,20 @@ from PySide6.QtGui import QImage, QImageIOHandler, QImageReader
 
 from joyread.app.cover_editor import PreparedCoverSource
 from joyread.core.services.thumbnail_service import CoverCropState, SizeTuple, ThumbnailRenderError
+from joyread.core.thumbnail_cancellation import check_thumbnail_cancelled
 
 
 class PillowThumbnailRenderer:
     """Qt-free Pillow renderer used by non-GUI tools and focused tests."""
 
-    def render_encoded(self, image_bytes: bytes, size: SizeTuple) -> bytes:
-        return render_contain_blur_thumbnail(image_bytes, size)
+    def render_encoded(self, image_bytes: bytes, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        return render_contain_blur_thumbnail(image_bytes, size, cancelled=cancelled)
 
-    def render_prepared(self, frame: object, size: SizeTuple) -> bytes:
+    def render_prepared(self, frame: object, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        check_thumbnail_cancelled(cancelled)
         if not isinstance(frame, Image.Image):
             raise TypeError("PillowThumbnailRenderer requires a PIL image frame")
-        return render_contain_blur_thumbnail_image(frame, size)
+        return render_contain_blur_thumbnail_image(frame, size, cancelled=cancelled)
 
     def render_cover_crop(
         self,
@@ -37,7 +40,8 @@ class QtThumbnailRenderer:
 
     _WORKING_SCALE = 2
 
-    def render_encoded(self, image_bytes: bytes, size: SizeTuple) -> bytes:
+    def render_encoded(self, image_bytes: bytes, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        check_thumbnail_cancelled(cancelled)
         target = _validated_size(size)
         byte_array = QByteArray(image_bytes)
         buffer = QBuffer(byte_array)
@@ -54,14 +58,16 @@ class QtThumbnailRenderer:
             image = reader.read()
         finally:
             buffer.close()
+        check_thumbnail_cancelled(cancelled)
         if image.isNull():
             raise ThumbnailRenderError("Could not decode thumbnail source")
-        return self._render_bounded(image, target)
+        return self._render_bounded(image, target, cancelled=cancelled)
 
-    def render_prepared(self, frame: object, size: SizeTuple) -> bytes:
+    def render_prepared(self, frame: object, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        check_thumbnail_cancelled(cancelled)
         if not isinstance(frame, QImage) or frame.isNull():
             raise TypeError("QtThumbnailRenderer requires a non-null QImage frame")
-        return self._render_bounded(frame, _validated_size(size))
+        return self._render_bounded(frame, _validated_size(size), cancelled=cancelled)
 
     def render_cover_crop(
         self,
@@ -117,7 +123,8 @@ class QtThumbnailRenderer:
             source_dimensions=source_dimensions,
         )
 
-    def _render_bounded(self, image: QImage, size: SizeTuple) -> bytes:
+    def _render_bounded(self, image: QImage, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        check_thumbnail_cancelled(cancelled)
         working_box = _working_box(size)
         fitted = _fit_within((image.width(), image.height()), working_box)
         if fitted != (image.width(), image.height()):
@@ -126,40 +133,50 @@ class QtThumbnailRenderer:
                 Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation,
             )
+        check_thumbnail_cancelled(cancelled)
         rgba = image.convertToFormat(QImage.Format.Format_RGBA8888)
         payload = bytes(rgba.constBits()[: rgba.sizeInBytes()])
         source = Image.frombytes("RGBA", (rgba.width(), rgba.height()), payload)
-        return render_contain_blur_thumbnail_image(source, size)
+        return render_contain_blur_thumbnail_image(source, size, cancelled=cancelled)
 
 
-def render_contain_blur_thumbnail(image_bytes: bytes, size: SizeTuple) -> bytes:
+def render_contain_blur_thumbnail(image_bytes: bytes, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
     """Render a fixed-size cover with full-page foreground and blurred fill."""
 
+    check_thumbnail_cancelled(cancelled)
     try:
         with Image.open(BytesIO(image_bytes)) as source_image:
             image = ImageOps.exif_transpose(source_image)
-            return render_contain_blur_thumbnail_image(image, size)
+            return render_contain_blur_thumbnail_image(image, size, cancelled=cancelled)
     except (OSError, UnidentifiedImageError) as exc:
         raise ThumbnailRenderError("Could not decode thumbnail source") from exc
 
 
-def render_contain_blur_thumbnail_image(source_image: Image.Image, size: SizeTuple) -> bytes:
+def render_contain_blur_thumbnail_image(
+    source_image: Image.Image, size: SizeTuple, *, cancelled: Event | None = None,
+) -> bytes:
     """Render the established thumbnail treatment from a bounded source image."""
 
+    check_thumbnail_cancelled(cancelled)
     width, height = _validated_size(size)
     foreground_source = source_image.convert("RGBA")
     background_source = source_image.convert("RGB")
 
     background = _resize_to_fill(background_source, size)
+    check_thumbnail_cancelled(cancelled)
     background = background.filter(ImageFilter.GaussianBlur(radius=max(8, min(width, height) // 12)))
+    check_thumbnail_cancelled(cancelled)
     foreground = _resize_to_contain(foreground_source, size)
+    check_thumbnail_cancelled(cancelled)
     x = (width - foreground.width) // 2
     y = (height - foreground.height) // 2
     background = background.convert("RGBA")
     background.alpha_composite(foreground, dest=(x, y))
 
+    check_thumbnail_cancelled(cancelled)
     output = BytesIO()
     background.save(output, format="PNG")
+    check_thumbnail_cancelled(cancelled)
     return output.getvalue()
 
 

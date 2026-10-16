@@ -325,12 +325,14 @@ def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  
 
     solid: bool | None = None
     try:
-        solid = bool(archive.archiveinfo().solid)
+        value = archive.archiveinfo().solid
+        solid = value if isinstance(value, bool) else None
     except (AssertionError, OSError, TypeError, ValueError):
         predicate = getattr(archive, "_is_solid", None)
         if callable(predicate):
             try:
-                solid = bool(predicate())
+                value = predicate()
+                solid = value if isinstance(value, bool) else None
             except (AttributeError, TypeError, ValueError):
                 solid = None
     return ArchiveListing(
@@ -340,6 +342,7 @@ def _listing_from_archive(archive, *, password: str | None) -> ArchiveListing:  
             if getattr(info, "is_file", False)
         ),
         requires_sequential_warmup=solid is not False,
+        random_access_confirmed=solid is False,
     )
 
 

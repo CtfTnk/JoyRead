@@ -79,13 +79,8 @@ class ShelfView(QWidget):
         self._popup_interaction_depth = 0
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(
-            0,
-            Theme.content_top_padding,
-            0,
-            0,
-        )
-        layout.setSpacing(10)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Theme.shelf_toolbar_content_gap)
 
         self.toolbar = toolbar if toolbar is not None else TopToolbarWidget(resources)
         self.toolbar.setEnabled(True)
@@ -136,7 +131,7 @@ class ShelfView(QWidget):
         self._escape_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         self._escape_shortcut.activated.connect(self._viewmodel.hide_detail)
 
-        self.gestures = ShelfGestureController(self, viewmodel, (self.grid, self.list_view), resources)
+        self.gestures = ShelfGestureController(self, viewmodel, (self.grid, self.list_view))
         self._viewmodel.sort_failed.connect(self._show_sort_error)
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.cover_ready.connect(self._handle_cover_ready)
@@ -150,6 +145,7 @@ class ShelfView(QWidget):
         if self._detail_panel is None:
             panel = BookDetailPanel(self._resources, self)
             panel.hide()
+            panel.close_requested.connect(self._viewmodel.hide_detail)
             panel.read_requested.connect(self._viewmodel.open_book)
             panel.read_at_index_requested.connect(self._viewmodel.open_book_at)
             panel.favourite_requested.connect(self._viewmodel.toggle_favourite)

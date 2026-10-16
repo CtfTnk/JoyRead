@@ -220,6 +220,7 @@ class NovelReaderShellWidget(ReaderShellBase):
         self.custom_panel.disable_css_changed.connect(self._handle_disable_css_changed)
         # Topic panel selections all funnel through the viewmodel's
         # spine-indexed seek.
+        self.topic_panel.close_requested.connect(self._hide_topic_panel)
         self.topic_panel.contents_selected.connect(self._seek_from_topic_panel)
         self.topic_panel.bookmark_selected.connect(self._seek_from_topic_panel)
         self.topic_panel.new_bookmark_requested.connect(self.viewmodel.add_bookmark)

@@ -230,7 +230,7 @@ def test_cover_zoom_spin_steps_by_editor_theme_amount(qtbot) -> None:
     assert spin.value == 120
 
 
-def test_toolbar_uses_figma_content_frame_padding(qtbot) -> None:
+def test_toolbar_uses_pen_content_frame_padding(qtbot) -> None:
     apply_theme()
     toolbar = TopToolbarWidget(ResourceLoader())
     qtbot.addWidget(toolbar)
@@ -238,8 +238,14 @@ def test_toolbar_uses_figma_content_frame_padding(qtbot) -> None:
     margins = toolbar.layout().contentsMargins()
     expected = Theme.content_horizontal_padding + Theme.banner_horizontal_padding
 
-    assert toolbar.height() == Theme.toolbar_height
+    toolbar.resize(934, 61)
+    toolbar.show()
+    QApplication.processEvents()
+
+    assert toolbar.height() == 61
     assert (margins.left(), margins.right()) == (expected, expected)
+    assert (margins.top(), margins.bottom()) == (15, 10)
+    assert toolbar._filter_dropdown.geometry().getRect()[1::2] == (15, 36)
 
 
 def test_shelf_scroll_areas_keep_scrollbar_at_outer_edge(qtbot) -> None:
@@ -1043,13 +1049,13 @@ def test_shelf_view_refreshes_dynamic_interest_after_popup_closes(qtbot) -> None
     assert panel_refreshed == [True]
 
 
-def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
+def test_shelf_detail_panel_uses_parent_relative_pen_geometry(qtbot) -> None:
     apply_theme()
     viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
     viewmodel.load_books()
     view = ShelfView(viewmodel, ResourceLoader())
     qtbot.addWidget(view)
-    view.resize(934, 841)
+    view.resize(934, 808)
     view.show()
     QApplication.processEvents()
 
@@ -1062,9 +1068,12 @@ def test_shelf_detail_panel_uses_parent_relative_figma_geometry(qtbot) -> None:
     assert view.detail_panel.geometry().getRect() == (
         Theme.detail_panel_horizontal_margin,
         Theme.detail_panel_top_margin,
-        876,
-        760,
+        902,
+        753,
     )
+    assert view.toolbar.y() == 0
+    assert view.stack.y() == 65
+    assert view.detail_panel.y() - (view.toolbar._filter_dropdown.y() + view.toolbar._filter_dropdown.height()) == 4
 
     view.resize(1000, 700)
     QApplication.processEvents()
@@ -1109,6 +1118,28 @@ def test_shelf_detail_panel_closes_with_escape(qtbot) -> None:
 
     assert viewmodel.detail_book_uuid is None
     assert view.detail_panel.isHidden()
+
+
+def test_shelf_detail_close_button_dismisses_state_and_releases_interest(qtbot) -> None:
+    apply_theme()
+    viewmodel = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    viewmodel.load_books()
+    view = ShelfView(viewmodel, ResourceLoader())
+    qtbot.addWidget(view)
+    view.resize(934, 808)
+    view.show()
+    book = viewmodel.visible_books[0]
+    viewmodel.show_detail(book.uuid)
+    QApplication.processEvents()
+    released: list[str] = []
+    view.detail_panel.thumbnail_interest_released.connect(released.append)
+
+    qtbot.mouseClick(view.detail_panel._header.close_button, Qt.MouseButton.LeftButton)
+
+    assert viewmodel.detail_book_uuid is None
+    assert view.detail_panel.isHidden()
+    assert view._detail_panel_scrim.isHidden()
+    assert released == [book.uuid]
 
 
 def test_shelf_detail_panel_closes_on_blank_shelf_click(qtbot) -> None:

@@ -1,10 +1,11 @@
 from dataclasses import replace
+from math import atan2, degrees
 from time import monotonic
 
 import pytest
-from PySide6.QtCore import QObject, QPoint, QEvent, Qt
+from PySide6.QtCore import QObject, QPoint, QPointF, QRectF, QEvent, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication
 
 from joyread.core.services.library_service import LibraryService
@@ -12,6 +13,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.views.shelf_view import ShelfView
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.widgets.shelf_drag_visuals import DragCardPreview, card_snapshots
 from tests.support.in_memory_book_repository import InMemoryBookRepository
 from tests.unit.test_custom_sorting import sample_books
 
@@ -179,7 +181,10 @@ def test_scroll_edge_zones_and_visible_preview_anchor(shelf, monkeypatch):
     controller.move(pointer)
     preview = controller._preview
     assert preview.mapToGlobal(preview.card_origin) == pointer + QPoint(5, 5)
-    assert preview._card_width == Theme.book_card_width * 0.40
+    # Scale the snapshot's actual logical allocation, including DPR rounding.
+    assert preview._card_width == pytest.approx(
+        preview._snapshots[0].deviceIndependentSize().width() * 0.40,
+    )
 
     monkeypatch.setattr("joyread.ui.views.shelf_gestures.monotonic", lambda: 100.0)
     bar = surface.verticalScrollBar()
@@ -232,6 +237,49 @@ def test_all_selected_preview_is_cached_and_cancel_does_not_save(shelf, monkeypa
     QApplication.sendEvent(widget.window(), QEvent(QEvent.Type.WindowDeactivate))
     assert not controller.active
     assert vm._shelf_orders == saved and vm.selected_book_ids == {"1", "2", "3", "4", "5"}
+
+
+def test_drag_preview_uses_cover_and_title_without_copying_card_controls(shelf, monkeypatch):
+    _, _, surface = shelf
+    control = surface.book_controls["1"]
+    cover = QPixmap(100, 200)
+    cover.fill(QColor("#13579b"))
+    control._cover.set_pixmap(cover)
+    monkeypatch.setattr(control, "grab", lambda: pytest.fail("Preview must not grab live card controls"))
+    snapshot, = card_snapshots(surface, ("1",))
+    assert snapshot.devicePixelRatio() == control.devicePixelRatioF()
+    ratio = snapshot.devicePixelRatio()
+    # Physical pixels are integral: 190 logical pixels at 125% allocate 238.
+    assert snapshot.width() == round(Theme.book_card_width * ratio)
+    assert snapshot.height() == round(Theme.book_card_height * ratio)
+    image = snapshot.toImage()
+    assert image.pixelColor(round(95 * ratio), round(100 * ratio)) == QColor("#13579b")
+    # The old progress/buttons area is now the plain card surface.
+    assert image.pixelColor(round(50 * ratio), round(315 * ratio)) == QColor(Theme.color_window)
+    assert image.pixelColor(round(150 * ratio), round(315 * ratio)) == QColor(Theme.color_window)
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, 12345])
+def test_drag_preview_fans_about_lower_centre_and_contains_badge(qtbot, count):
+    snapshot = QPixmap(Theme.book_card_width, Theme.book_card_height)
+    snapshot.fill(QColor(Theme.color_window))
+    preview = DragCardPreview([snapshot] * min(count, 3), count, None)
+    qtbot.addWidget(preview)
+    card = QRectF(0, 0, 76, 136)
+    pivot = QPointF(38, 102)
+    bounds = QRectF(preview.rect())
+    for index in range(min(count, 3)):
+        transform = preview._card_transform(index)
+        assert degrees(atan2(transform.m12(), transform.m11())) == pytest.approx(index * 6)
+        assert transform.map(pivot) == QPointF(preview.card_origin) + pivot
+        assert bounds.contains(transform.mapRect(card))
+    assert preview._card_transform(0).map(QPointF()) == QPointF(preview.card_origin)
+    if count > 1:
+        badge = preview._badge_rect.translated(-preview.card_origin)
+        assert badge.height() == 28
+        assert badge.right() == 76 + 14
+        assert badge.bottom() == 136 + 14
+        assert bounds.contains(preview._badge_rect)
 
 
 def test_membership_change_cancels_preview_and_shows_new_data(shelf):

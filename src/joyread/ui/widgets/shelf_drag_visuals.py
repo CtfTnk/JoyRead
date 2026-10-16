@@ -1,6 +1,6 @@
 """Cached, mouse-transparent visuals for bookshelf selection and reordering."""
-from PySide6.QtCore import QEasingCurve, QPoint, QRectF, Qt, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QVariantAnimation
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import QWidget
 
 from joyread.infrastructure.resources.pixmaps import blurred_pixmap
@@ -64,17 +64,47 @@ class DropPlaceholder(FadingVisual):
 class DragCardPreview(FadingVisual):
     def __init__(self, snapshots: list[QPixmap], count: int, parent):
         super().__init__(parent)
-        self._snapshots = snapshots
+        self._snapshots = snapshots[:len(Theme.shelf_drag_angles)]
         self._count = count
-        self._card_width = Theme.book_card_width * Theme.shelf_drag_scale
-        self._card_height = Theme.book_card_height * Theme.shelf_drag_scale
-        self._padding = Theme.shelf_drag_stack_offset * 3
-        self.setFixedSize(round(self._card_width + self._padding * 2), round(self._card_height + self._padding * 2))
+        size = self._snapshots[0].deviceIndependentSize()
+        self._card_width = size.width() * Theme.shelf_drag_scale
+        self._card_height = size.height() * Theme.shelf_drag_scale
+        self._badge_font = QFont(self.font())
+        self._badge_font.setPixelSize(Theme.shelf_drag_badge_font_size)
+        self._badge_font.setBold(True)
+        self._badge_rect = QRectF()
+        if count > 1:
+            height = Theme.shelf_drag_badge_diameter
+            width = max(height, QFontMetrics(self._badge_font).horizontalAdvance(str(count)) + Theme.spacing_sm)
+            self._badge_rect = QRectF(self._card_width + height / 2 - width,
+                                     self._card_height - height / 2, width, height)
+        self._card_origin = QPoint()
+        card_rect = QRectF(0, 0, self._card_width, self._card_height)
+        bounds = QRectF(card_rect)
+        for index in range(len(self._snapshots)):
+            bounds = bounds.united(self._card_transform(index).mapRect(card_rect))
+        if count > 1:
+            bounds = bounds.united(self._badge_rect)
+        # Include the actual rotated corners and the unscaled badge, with room
+        # for antialiasing. Transparent padding must never shift the cursor gap.
+        bounds = bounds.adjusted(-1, -1, 1, 1).toAlignedRect()
+        self._card_origin = -bounds.topLeft()
+        self._badge_rect.translate(self._card_origin)
+        self.setFixedSize(bounds.size())
 
     @property
     def card_origin(self) -> QPoint:
         """Anchor the visible front card, excluding transparent rotation padding."""
-        return QPoint(self._padding, self._padding)
+        return QPoint(self._card_origin)
+
+    def _card_transform(self, index: int) -> QTransform:
+        pivot_x = self._card_width * Theme.shelf_drag_pivot[0]
+        pivot_y = self._card_height * Theme.shelf_drag_pivot[1]
+        transform = QTransform()
+        transform.translate(self._card_origin.x() + pivot_x, self._card_origin.y() + pivot_y)
+        transform.rotate(Theme.shelf_drag_angles[index])
+        transform.translate(-pivot_x, -pivot_y)
+        return transform
 
     def paintEvent(self, event):
         painter = QPainter(self)
@@ -82,44 +112,65 @@ class DragCardPreview(FadingVisual):
         painter.setOpacity(self._fade * Theme.shelf_drag_opacity)
         for index in reversed(range(len(self._snapshots))):
             painter.save()
-            offset = index * Theme.shelf_drag_stack_offset
-            painter.translate(self._padding + self._card_width / 2 + offset,
-                              self._padding + self._card_height / 2 + offset)
-            painter.rotate(Theme.shelf_drag_angles[index])
-            rect = QRectF(-self._card_width / 2, -self._card_height / 2, self._card_width, self._card_height)
+            painter.setTransform(self._card_transform(index))
+            rect = QRectF(0, 0, self._card_width, self._card_height)
             painter.drawPixmap(rect, self._snapshots[index], QRectF(self._snapshots[index].rect()))
             painter.restore()
         if self._count > 1:
             painter.setOpacity(self._fade)
-            font = QFont(self.font())
-            font.setPixelSize(Theme.shelf_drag_badge_font_size)
-            font.setBold(True)
-            painter.setFont(font)
-            diameter = max(Theme.shelf_drag_badge_diameter, painter.fontMetrics().horizontalAdvance(str(self._count)) + Theme.spacing_md)
-            rect = QRectF(self._padding + self._card_width - diameter / 2,
-                          self._padding + self._card_height - diameter / 2, diameter, diameter)
+            painter.setFont(self._badge_font)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(Theme.color_text))
-            painter.drawEllipse(rect)
+            painter.drawEllipse(self._badge_rect)
             painter.setPen(QColor(Theme.color_window))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(self._count))
+            painter.drawText(self._badge_rect, Qt.AlignmentFlag.AlignCenter, str(self._count))
         painter.end()
 
 
-def card_snapshots(surface, moving: tuple[str, ...], resources) -> list[QPixmap]:
-    """Snapshot once. List rows use the same card presentation without disk I/O."""
+def card_snapshots(surface, moving: tuple[str, ...]) -> list[QPixmap]:
+    """Cache cover/title-only cards once, using the covers already held by the UI."""
     snapshots = []
     for key in moving[:len(Theme.shelf_drag_angles)]:
         control = surface.book_controls[key]
-        if isinstance(control, BookCardWidget):
-            snapshots.append(control.grab())
-        else:
-            card = BookCardWidget(control.book, resources, surface._content)
-            card._cover.set_pixmap(control._cover._pixmap)
-            card.ensurePolished()
-            card.layout().activate()
-            snapshots.append(card.grab())
-            card.deleteLater()
+        size = (control.size() if isinstance(control, BookCardWidget)
+                else QSize(Theme.book_card_width, Theme.book_card_height))
+        ratio = control.devicePixelRatioF()
+        snapshot = QPixmap(round(size.width() * ratio), round(size.height() * ratio))
+        snapshot.setDevicePixelRatio(ratio)
+        snapshot.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(snapshot)
+        painter.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
+        rect = QRectF(0, 0, size.width(), size.height())
+        shape = QPainterPath()
+        shape.addRoundedRect(rect, Theme.book_card_radius, Theme.book_card_radius)
+        painter.setClipPath(shape)
+        painter.fillPath(shape, QColor(Theme.color_window))
+        inset = Theme.book_card_padding
+        cover_rect = QRectF(inset, inset, size.width() - inset * 2,
+                           (size.width() - inset * 2) * Theme.cover_height / Theme.cover_width)
+        painter.fillRect(cover_rect, QColor(Theme.color_shelf_drag_cover_background))
+        cover = control._cover._pixmap
+        if not cover.isNull():
+            cover_size = cover.deviceIndependentSize()
+            cover_size.scale(cover_rect.size(), Qt.AspectRatioMode.KeepAspectRatio)
+            target = QRectF(0, 0, cover_size.width(), cover_size.height())
+            target.moveCenter(cover_rect.center())
+            painter.drawPixmap(target, cover, QRectF(cover.rect()))
+        font = QFont(control.font())
+        font.setPixelSize(Theme.shelf_drag_title_font_size)
+        painter.setFont(font)
+        painter.setPen(QColor(Theme.color_text))
+        title_top = cover_rect.bottom() + Theme.book_card_gap
+        painter.drawText(QRectF(inset, title_top, cover_rect.width(), size.height() - inset - title_top),
+                         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap,
+                         control.book.title)
+        border = Theme.book_selection_border_width
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.setPen(QPen(QColor(Theme.color_card_selected), border))
+        painter.drawRoundedRect(rect.adjusted(border / 2, border / 2, -border / 2, -border / 2),
+                                Theme.book_card_radius - border / 2, Theme.book_card_radius - border / 2)
+        painter.end()
+        snapshots.append(snapshot)
     return snapshots
 
 

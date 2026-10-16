@@ -126,7 +126,8 @@ class ZipArchiveBackend:
                         ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
                         for info in infos
                         if not info.is_dir()
-                    )
+                    ),
+                    random_access_confirmed=True,
                 )
         except bad_file_errors as exc:
             raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc

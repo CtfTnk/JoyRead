@@ -74,7 +74,7 @@ class FigmaSwitchOptionButton(QToolButton):
                 self.width() - Theme.switch_option_border_width,
                 self.height() - Theme.switch_option_border_width,
             )
-            painter.setPen(QPen(QColor(Theme.color_button_inner_edge), Theme.switch_option_border_width))
+            painter.setPen(QPen(QColor(Theme.color_control_selected_edge), Theme.switch_option_border_width))
         else:
             option_rect = QRectF(0, 0, self.width(), self.height())
             painter.setPen(Qt.PenStyle.NoPen)
@@ -118,8 +118,7 @@ class FigmaSwitchWidget(QFrame):
         self.setFixedSize(Theme.switch_width, Theme.switch_height)
 
         layout = QHBoxLayout(self)
-        # Figma's switch padding is 4px from the visual outer stroke. Qt's
-        # 2px border consumes layout space, so the actual layout margin is 2px.
+        # Pen's 1px border plus a 3px layout margin preserves the 4px inset.
         layout.setContentsMargins(
             Theme.switch_layout_margin,
             Theme.switch_layout_margin,

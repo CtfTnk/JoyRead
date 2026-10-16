@@ -324,6 +324,7 @@
     "btn_hide": "非表示"
   },
   "detail": {
+    "panel_title": "詳細",
     "author_prefix": "著者：",
     "attribute_format": "{label}：{value}",
     "language": "言語",

@@ -9,7 +9,7 @@ import sys
 from collections.abc import Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal as QtSignal
-from PySide6.QtGui import QColor, QFontMetrics, QIcon, QLinearGradient, QPainter, QPainterPath, QPaintEvent, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QIcon, QPainter, QPainterPath, QPaintEvent, QPen
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsOpacityEffect,
@@ -28,6 +28,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.reader_topic_panel import ReaderTopicMode
 from joyread.ui.widgets.reader_fullscreen import leave_reader_fullscreen
+from joyread.ui.widgets.translucent_material import glass_profile
 from joyread.ui.widgets.window_chrome import StoplightControlsWidget, TitleControlGroup
 from joyread.ui.widgets.window_state import toggle_maximized
 
@@ -55,8 +56,7 @@ class ReaderTopicButtonGroup(QFrame):
         }
 
         layout = QHBoxLayout(self)
-        # Figma uses 4px visual padding and a 2px stroke. Qt borders consume
-        # layout space, so 2px margins preserve the outside-to-icon inset.
+        # Pen's 1px edge consumes layout space; 3px margins keep buttons at 4px.
         layout.setContentsMargins(
             Theme.reader_topic_button_group_layout_margin,
             Theme.reader_topic_button_group_layout_margin,
@@ -163,6 +163,7 @@ class ReaderHeader(QWidget):
         super().__init__(parent)
         self._platform_name = platform_name or sys.platform
         self.setObjectName("ReaderHeader")
+        self.setProperty("glassBackdrop", "contrast")
         self.setMouseTracking(True)
         self.setFixedHeight(Theme.reader_banner_height)
         self._full_title = ""
@@ -262,11 +263,17 @@ class ReaderHeader(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        gradient = _reader_chrome_gradient(self.height(), top=True)
+        background = QColor(*Theme.color_reader_chrome_background_rgba)
         if self.window().isFullScreen():
-            painter.fillRect(self.rect(), gradient)
+            painter.fillRect(self.rect(), background)
         else:
-            painter.fillPath(_top_rounded_path(self.rect()), gradient)
+            painter.fillPath(_top_rounded_path(self.rect()), background)
+        # Paint the separator inside the existing bar, reserving no layout inset.
+        edge_height = Theme.reader_chrome_border_width
+        painter.fillRect(
+            QRectF(0, self.height() - edge_height, self.width(), edge_height),
+            QColor(Theme.color_reader_chrome_border),
+        )
         painter.end()
 
     def _position_title(self) -> None:
@@ -352,6 +359,7 @@ class ReaderFooter(QWidget):
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ReaderFooter")
+        self.setProperty("glassBackdrop", "contrast")
         self.setMouseTracking(True)
         self.setFixedHeight(Theme.reader_footer_height)
         self._resources = resources
@@ -507,20 +515,25 @@ class ReaderFooter(QWidget):
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        gradient = _reader_chrome_gradient(self.height(), top=False)
+        background = QColor(*Theme.color_reader_chrome_background_rgba)
         if self.window().isFullScreen():
-            painter.fillRect(self.rect(), gradient)
+            painter.fillRect(self.rect(), background)
         else:
-            painter.fillPath(_bottom_rounded_path(self.rect()), gradient)
+            painter.fillPath(_bottom_rounded_path(self.rect()), background)
+        painter.fillRect(
+            QRectF(0, 0, self.width(), Theme.reader_chrome_border_width),
+            QColor(Theme.color_reader_chrome_border),
+        )
         painter.end()
 
 
 class ReaderProgressSlider(QSlider):
-    """Paint the reader progress track so archive order can mirror by direction."""
+    """Pen's translucent progress rails, mirrored with archive reading order."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setObjectName("ReaderProgressSlider")
+        self._progress_hovered = False
         self._reading_direction = ReaderDirection.RIGHT_TO_LEFT
         self.set_reading_direction(self._reading_direction)
 
@@ -535,27 +548,55 @@ class ReaderProgressSlider(QSlider):
         self.setInvertedControls(inverted)
         self.update()
 
+    def setSliderDown(self, down: bool) -> None:
+        super().setSliderDown(down)
+        # The preview controller consumes pointer events and blocks release
+        # signals on cancellation/commit. Repaint even on that silent release.
+        self.update()
+
+    def enterEvent(self, event) -> None:  # type: ignore[override]
+        self._progress_hovered = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[override]
+        self._progress_hovered = False
+        self.update()
+        super().leaveEvent(event)
+
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        track = self._track_rect()
+        palette = Theme.reader_progress_palettes[glass_profile(self)]
         track_radius = Theme.reader_slider_track_height / 2
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(*Theme.color_reader_slider_empty_rgba))
-        painter.drawRoundedRect(track, track_radius, track_radius)
-
-        filled = self._filled_track_rect()
-        if filled.width() > 0.5:
-            painter.setBrush(QColor(*Theme.color_reader_slider_filled_rgba))
-            painter.drawRoundedRect(filled, track_radius, track_radius)
+        # Do not lay a translucent read segment over a full unread rail: that
+        # mixes both alphas and muddies the approved gray on image backdrops.
+        for segment, color in (
+            (self._unfilled_track_rect(), palette.unread),
+            (self._filled_track_rect(), palette.read),
+        ):
+            if segment.width() > 0:
+                painter.setBrush(QColor(*color))
+                painter.drawRoundedRect(segment, track_radius, track_radius)
 
         handle = self._handle_rect()
-        handle_radius = min(Theme.reader_slider_knob_height, Theme.reader_slider_track_height) / 2
-        painter.setBrush(QColor(Theme.color_window))
-        painter.setPen(QPen(QColor(Theme.color_button_inner_edge), 1))
-        painter.drawRoundedRect(handle, handle_radius, handle_radius)
+        fill = QColor(Theme.color_reader_slider_knob)
+        edge = QColor(*palette.knob_edge)
+        if self.isEnabled() and self.isSliderDown():
+            fill = QColor(Theme.color_reader_slider_knob_pressed)
+            edge = QColor(Theme.color_reader_slider_knob_pressed_edge)
+        elif self.isEnabled() and self._progress_hovered:
+            edge = QColor(*Theme.color_reader_slider_knob_hover_edge_rgba)
+        # A 1px inside stroke keeps both endcaps within the same 22x10 box at
+        # 0/100%; hover and drag change colors, never the allocation or radius.
+        inset = Theme.reader_slider_knob_border_width / 2
+        handle_radius = Theme.reader_slider_knob_height / 2 - inset
+        painter.setBrush(fill)
+        painter.setPen(QPen(edge, Theme.reader_slider_knob_border_width))
+        painter.drawRoundedRect(handle.adjusted(inset, inset, -inset, -inset), handle_radius, handle_radius)
         painter.end()
 
     def _track_rect(self) -> QRectF:
@@ -573,6 +614,13 @@ class ReaderProgressSlider(QSlider):
         if self._reading_direction == ReaderDirection.RIGHT_TO_LEFT:
             return QRectF(center_x, track.y(), max(0, track.right() - center_x), track.height())
         return QRectF(track.left(), track.y(), max(0, center_x - track.left()), track.height())
+
+    def _unfilled_track_rect(self) -> QRectF:
+        track = self._track_rect()
+        center_x = self._handle_center_x()
+        if self._reading_direction == ReaderDirection.RIGHT_TO_LEFT:
+            return QRectF(track.left(), track.y(), max(0, center_x - track.left()), track.height())
+        return QRectF(center_x, track.y(), max(0, track.right() - center_x), track.height())
 
     def _handle_rect(self) -> QRectF:
         return QRectF(
@@ -609,10 +657,10 @@ class ReaderSwitch(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(
-            Theme.reader_switch_visual_padding,
-            Theme.reader_switch_visual_padding,
-            Theme.reader_switch_visual_padding,
-            Theme.reader_switch_visual_padding,
+            Theme.reader_switch_layout_margin,
+            Theme.reader_switch_layout_margin,
+            Theme.reader_switch_layout_margin,
+            Theme.reader_switch_layout_margin,
         )
         layout.setSpacing(Theme.reader_switch_gap)
         for tooltip, icon_name, value in options:
@@ -726,21 +774,6 @@ def _spacer(height: int) -> QFrame:
     frame.setFixedSize(Theme.toolbar_spacer_width, height)
     frame.setFrameShape(QFrame.Shape.NoFrame)
     return frame
-
-
-def _reader_chrome_gradient(height: int, *, top: bool) -> QLinearGradient:
-    gradient = QLinearGradient(0, height if top else 0, 0, 0 if top else height)
-    inner = Theme.reader_chrome_inner_opacity
-    outer = Theme.reader_chrome_outer_opacity
-    # Qt interpolates stops linearly. Sample smoothstep over the full height
-    # to soften both ends without the old mid-panel plateau and slope break.
-    segments = 32
-    for step in range(segments + 1):
-        position = step / segments
-        eased = position * position * (3.0 - 2.0 * position)
-        alpha = round(255 * (inner + (outer - inner) * eased))
-        gradient.setColorAt(position, QColor(255, 255, 255, alpha))
-    return gradient
 
 
 def _top_rounded_path(rect) -> QPainterPath:  # noqa: ANN001

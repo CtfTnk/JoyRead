@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QLayout
 
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.popup_geometry import popup_position
+from joyread.ui.widgets.translucent_material import MaterialItemFrame, glass_profile
 
 from joyread.core.models.book import Book
 from joyread.core.models.language import Language
@@ -22,8 +23,8 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 
 
-class MenuItem(QFrame):
-    """A clickable menu row with Figma's 2px padding and hover fill."""
+class MenuItem(MaterialItemFrame):
+    """Compact menu action with the Pen white-lift and fine-border states."""
 
     clicked = QtSignal()
 
@@ -36,7 +37,7 @@ class MenuItem(QFrame):
         selected: bool = False,
         parent: QWidget | None = None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(parent, radius=Theme.menu_item_radius)
         self._enabled = enabled
         self._pressed_inside = False
 
@@ -51,10 +52,10 @@ class MenuItem(QFrame):
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(
-            Theme.menu_item_padding,
-            Theme.menu_item_padding,
-            Theme.menu_item_padding,
-            Theme.menu_item_padding,
+            Theme.menu_item_padding_horizontal,
+            0,
+            Theme.menu_item_padding_horizontal,
+            0,
         )
         layout.setSpacing(Theme.menu_item_text_gap)
 
@@ -108,6 +109,7 @@ class _PopupMenu(QWidget):
         self._loop: QEventLoop | None = None
         self._opened = False
         self._owner_window = parent.window()
+        self.setProperty("glassBackdrop", glass_profile(parent))
         self._owner_handle = None
         flags = Qt.WindowType.Popup | Qt.WindowType.FramelessWindowHint
         if sys.platform == "win32":
@@ -263,8 +265,7 @@ class FigmaMenu(_PopupMenu):
         root_layout.addWidget(self._panel)
 
         panel_layout = QVBoxLayout(self._panel)
-        # Qt borders consume layout space. A 4px layout margin plus the 2px
-        # border gives the requested 6px visual inset to the option list.
+        # The 1px QSS border plus a 5px layout margin preserves Pen's 6px inset.
         panel_layout.setContentsMargins(
             Theme.menu_layout_margin,
             Theme.menu_layout_margin,
@@ -344,7 +345,7 @@ class LanguageDropdownMenu(_PopupMenu):
 
         panel_layout = QVBoxLayout(self._panel)
         # Figma uses 6px horizontal and 4px vertical visual padding around a
-        # 2px stroke. Qt borders consume layout space, so subtract the stroke.
+        # 1px stroke. Qt borders consume layout space, so subtract the stroke.
         panel_layout.setContentsMargins(
             Theme.language_menu_layout_margin_horizontal,
             Theme.language_menu_layout_margin_vertical,

@@ -547,6 +547,17 @@ def test_reader_topic_button_group_disables_unavailable_modes_for_direct_files(q
 
     assert window.header.topic_button_group.active_mode is None
 
+    window.shell._show_topic_panel(ReaderTopicMode.THUMBNAILS)
+    released: list[bool] = []
+    window.topic_panel.thumbnail_interest_released.connect(lambda: released.append(True))
+    qtbot.waitUntil(lambda: bool(window.topic_panel._last_thumbnail_interest[0]))
+    qtbot.mouseClick(window.topic_panel._header.close_button, Qt.MouseButton.LeftButton)
+
+    assert window.topic_panel.isHidden()
+    assert window.shell.panel_scrim.isHidden()
+    assert window.header.topic_button_group.active_mode is None
+    assert released == [True]
+
     window.close()
     context.close()
 

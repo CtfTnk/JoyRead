@@ -113,6 +113,7 @@ def _close_test_context(calls: list[str], task_service=None) -> AppContext:  # n
         SimpleNamespace(
             archive_warmup_coordinator=None,
             task_service=task_service or _RecordingTaskService(calls),
+            close_random_pages=lambda: calls.append("random-pages"),
         ),
         SimpleNamespace(
             thumbnail_service=None,
@@ -141,7 +142,7 @@ def test_app_context_closes_tasks_before_database() -> None:
 
     context.close()
 
-    assert calls == ["task", "database"]
+    assert calls == ["random-pages", "task", "database"]
 
 
 def test_app_context_logs_component_failure_and_finishes_remaining_shutdown(
@@ -153,7 +154,7 @@ def test_app_context_logs_component_failure_and_finishes_remaining_shutdown(
     with caplog.at_level(logging.INFO, logger="joyread.app.app_context"):
         context.close()
 
-    assert calls == ["task", "database"]
+    assert calls == ["random-pages", "task", "database"]
     assert any(
         getattr(record, "event", None) == "app_context.component_close.failed"
         and getattr(record, "component", None) == "task_service"
@@ -619,6 +620,9 @@ def _quiesce_context(calls: list[str], pending: int = 0) -> AppContext:
         SimpleNamespace(
         library_task_service=_QuiesceRecordingTaskService(calls, pending),
         archive_warmup_coordinator=_RecordingWarmupCoordinator(calls),
+        quiesce_library_pages=lambda: calls.append("pages-quiesce"),
+        resume_library_pages=lambda: calls.append("pages-resume"),
+        library_random_page_tasks=_QuiesceRecordingTaskService(calls),
         ),
         SimpleNamespace(
         thumbnail_service=_RecordingThumbnailService(calls),
@@ -636,7 +640,7 @@ def test_quiesce_stops_warmup_before_cancelling_tasks() -> None:
 
     _quiesce_context(calls).quiesce_for_storage_transition()
 
-    assert calls == ["library-warmup", "task-quiesce"]
+    assert calls == ["library-warmup", "task-quiesce", "pages-quiesce"]
 
 
 def test_quiesce_leaves_the_thumbnail_service_usable_until_commit() -> None:
@@ -664,7 +668,7 @@ def test_committing_preserves_the_shared_warmup_coordinator() -> None:
     context = _quiesce_context(calls)
 
     context.quiesce_for_storage_transition()
-    assert calls == ["library-warmup", "task-quiesce"]
+    assert calls == ["library-warmup", "task-quiesce", "pages-quiesce"]
 
     context.commit_storage_transition()
     assert "warmup-reset" not in calls
@@ -677,7 +681,7 @@ def test_abandoning_a_transition_resumes_without_closing_anything() -> None:
     context.quiesce_for_storage_transition()
     context.abandon_storage_transition()
 
-    assert calls == ["library-warmup", "task-quiesce", "library-warmup-resume", "task-resume"]
+    assert calls == ["library-warmup", "task-quiesce", "pages-quiesce", "library-warmup-resume", "task-resume", "pages-resume"]
     assert "thumbnails" not in calls, "an abandoned transition must be fully reversible"
 
 

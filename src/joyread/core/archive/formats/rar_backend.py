@@ -75,6 +75,9 @@ def rar_requires_sequential_warmup(module: object, archive: object) -> bool:
             saw_flags = True
             if int(rar3_flags) & rar3_solid:
                 return True
+        else:
+            # One readable flag cannot establish capability for unknown members.
+            return True
     return not saw_flags
 
 
@@ -154,15 +157,15 @@ class RarArchiveBackend:
                                 limits=context.limits,
                                 budget=context.budget,
                             )
+                    sequential = rar_requires_sequential_warmup(module, archive)
                     return ArchiveListing(
                         tuple(
                             ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
                             for info in archive.infolist()
                             if not info.isdir()
                         ),
-                        requires_sequential_warmup=rar_requires_sequential_warmup(
-                            module, archive
-                        ),
+                        requires_sequential_warmup=sequential,
+                        random_access_confirmed=not sequential,
                     )
         except module.RarCannotExec as exc:
             raise ArchiveDependencyMissing(

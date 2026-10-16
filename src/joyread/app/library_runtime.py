@@ -180,6 +180,8 @@ def create_library_runtime(
             settings_store=settings_store,
             tag_service=tag_service,
             archive_warmup_coordinator=reader.archive_warmup_coordinator,
+            random_page_scheduler=reader.random_page_scheduler,
+            random_page_executor=reader.library_random_page_tasks,
         )
         settings_viewmodel = settings_viewmodel or SettingsViewModel(settings, settings_store, hidden_space)
         return LibraryRuntime(

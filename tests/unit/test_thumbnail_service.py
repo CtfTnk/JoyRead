@@ -161,6 +161,52 @@ def _synthetic_book(tmp_path: Path, *, pages: int = 20) -> Book:
     return Book(**{**_sample_book().__dict__, "file_path": str(path), "page_count": pages})
 
 
+def test_non_solid_thumbnails_share_pool_with_gui_delivery_and_identical_pixels(tmp_path, qtbot):
+    from threading import Barrier, get_ident
+    from joyread.app.reader_page_scheduler import ReaderPageScheduler
+    from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
+    from joyread.infrastructure.qt_task_service import TaskService
+
+    service = _thumbnail_service(tmp_path)
+    source = service.open_thumbnail_source(_synthetic_book(tmp_path, pages=2))
+    assert source is not None and source.allows_parallel_page_preparation(0)
+    expected = []
+    service.stream_thumbnails(source, (0, 1), (30, 40), expected.append)
+    tasks, scheduler = TaskService(4), ReaderPageScheduler()
+    gate, workers, deliveries, received = Barrier(2), [], [], []
+    def load(indices, emit, cancelled=None):
+        workers.append(get_ident())
+        gate.wait(timeout=3)
+        service.stream_thumbnails(source, indices, (30, 40),
+                                  lambda item: emit(ThumbnailStreamItem(item.page_index, item.image_bytes)),
+                                  cancelled=cancelled)
+    controller = ThumbnailStreamController(tasks, service.issue_thumbnail_cache_client('parallel-test'),
+                                          task_name='parallel-test', random_page_scheduler=scheduler,
+                                          random_page_executor=tasks)
+    controller.thumbnail_ready.connect(lambda index, data: (deliveries.append(get_ident()), received.append((index, data))))
+    try:
+        controller.set_source(source.source_id, source.page_count, (30, 40), load,
+                              allows_parallel=source.allows_parallel_page_preparation)
+        controller.set_interest((0, 1))
+        qtbot.waitUntil(lambda: len(received) == 2, timeout=4000)
+        qtbot.waitUntil(lambda: scheduler.active_count == 0)
+        assert len(set(workers)) == 2 and get_ident() not in workers
+        assert deliveries == [get_ident(), get_ident()]
+        def pixels(data):
+            with Image.open(BytesIO(data)) as image:
+                return image.size, image.convert('RGBA').tobytes()
+        assert {index: pixels(data) for index, data in received} == {
+            item.page_index: pixels(item.image_bytes) for item in expected
+        }
+    finally:
+        controller.cancel()
+        scheduler.close()
+        tasks.shutdown()
+        source.close()
+        service.close()
+    assert not source.allows_parallel_page_preparation(0)
+
+
 def _oriented_jpeg_bytes(size: tuple[int, int], orientation: int) -> bytes:
     image = Image.new("RGB", size, "#336699")
     exif = image.getexif()

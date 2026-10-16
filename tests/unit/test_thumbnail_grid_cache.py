@@ -3,6 +3,7 @@
 from io import BytesIO
 
 from PIL import Image
+import pytest
 from PySide6.QtCore import QPoint, Qt
 
 from joyread.ui.resources.styles.theme import Theme
@@ -94,3 +95,74 @@ def test_placeholder_is_cached_at_native_density(qapp):
         assert pixmap.cacheKey() == thumbnail_placeholder(ratio).cacheKey()
         assert pixmap.toImage().pixelColor(0, 0).alpha() == 0
     assert thumbnail_placeholder(2).width() == 2 * Theme.detail_thumbnail_width
+
+
+def test_duplicate_delivery_and_unloaded_prefetch_do_not_repaint_viewport(qtbot, monkeypatch):
+    from PySide6.QtWidgets import QApplication
+    view = grid(qtbot)
+    view.resize(400, 600)
+    view.set_interest((0, 1))
+    payload = image_bytes()
+    view.set_thumbnail(0, payload)
+    view.show()
+    qtbot.wait(10)
+    paints = []
+    original = DetailThumbnailGrid.paintEvent
+    def paint(self, event):
+        paints.append(event.rect())
+        original(self, event)
+    monkeypatch.setattr(DetailThumbnailGrid, "paintEvent", paint)
+    view.set_thumbnail(0, payload)
+    view.set_interest((0, 1, 100))
+    QApplication.processEvents()
+    assert paints == []
+
+
+def test_label_metrics_are_reused_and_invalidated_when_font_changes(qtbot, monkeypatch):
+    from PySide6.QtGui import QFont, QFontMetrics
+    import joyread.ui.widgets.book_detail as module
+    calls = []
+    original = module.QFontMetrics
+    monkeypatch.setattr(module, "QFontMetrics", lambda font: calls.append(font) or original(font))
+    view = grid(qtbot)
+    before = len(calls)
+    for index in range(100):
+        view._item_rect(index)
+        view._index_rect(index)
+    assert len(calls) == before
+    font = QFont(view.font())
+    font.setBold(not font.bold())
+    view.setFont(font)
+    assert len(calls) == before + 1
+    assert view._index_font().bold() == font.bold()
+    assert view._index_height() == max(Theme.thumbnail_index_min_height, QFontMetrics(view._index_font()).height())
+
+
+@pytest.mark.parametrize("ratio", [1.0, 1.25, 2.0])
+def test_cached_clip_preserves_thumbnail_pixels_at_each_density(qtbot, monkeypatch, ratio):
+    from math import ceil
+    from PySide6.QtCore import QRectF
+    from PySide6.QtGui import QImage, QPainter, QPainterPath
+    from joyread.ui.widgets.book_detail import DetailThumbnailWidget
+    widget = DetailThumbnailWidget()
+    qtbot.addWidget(widget)
+    widget.set_thumbnail_bytes(image_bytes((200, 284), "#23a987"))
+    def render():
+        image = QImage(ceil(widget.width() * ratio), ceil(widget.height() * ratio), QImage.Format.Format_ARGB32_Premultiplied)
+        image.setDevicePixelRatio(ratio)
+        image.fill(Qt.GlobalColor.transparent)
+        widget.render(image)
+        return image
+    actual = render()
+    # Original paint operations, without the reused geometry cache.
+    def original_paint(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), Theme.detail_thumbnail_radius, Theme.detail_thumbnail_radius)
+        painter.setClipPath(path)
+        painter.drawPixmap(self.rect(), self._pixmap)
+        painter.end()
+    monkeypatch.setattr(DetailThumbnailWidget, "paintEvent", original_paint)
+    assert actual == render()

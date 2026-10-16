@@ -25,6 +25,7 @@ from joyread.core.services.cache_service import (
     ThumbnailSourceIdentity,
 )
 from joyread.infrastructure.filesystem.path_service import PathService
+from joyread.core.thumbnail_cancellation import check_thumbnail_cancelled
 
 
 # Image-paged formats only: EPUB lives in ``SUPPORTED_READER_EXTENSIONS``
@@ -42,9 +43,9 @@ logger = logging.getLogger(__name__)
 class ThumbnailRenderer(Protocol):
     """Decode and render fixed-size thumbnail PNGs outside the GUI thread."""
 
-    def render_encoded(self, image_bytes: bytes, size: SizeTuple) -> bytes: ...
+    def render_encoded(self, image_bytes: bytes, size: SizeTuple, *, cancelled: Event | None = None) -> bytes: ...
 
-    def render_prepared(self, frame: object, size: SizeTuple) -> bytes: ...
+    def render_prepared(self, frame: object, size: SizeTuple, *, cancelled: Event | None = None) -> bytes: ...
 
     def render_cover_crop(
         self,
@@ -137,6 +138,12 @@ class ThumbnailSourceHandle:
         if not candidates:
             return ()
         return candidates[: self.preferred_batch_size(candidates[0])]
+
+    def allows_parallel_page_preparation(self, page_index: int) -> bool:
+        if self.is_closed:
+            return False
+        provider = getattr(self._entry.session, "allows_parallel_page_preparation", None)
+        return bool(provider(page_index)) if callable(provider) else False
 
     def read_pages(self, page_indices: Iterable[int]) -> list[object | None]:
         return self._owner._read_thumbnail_pages(self, tuple(page_indices), None)
@@ -316,9 +323,11 @@ class ThumbnailService:
         page_indices: Iterable[int],
         size: SizeTuple,
         emit_item: Callable[[DetailThumbnailItem], None],
+        *, cancelled: Event | None = None,
     ) -> None:
         """Read a bounded group and emit each rendered item independently."""
 
+        check_thumbnail_cancelled(cancelled)
         requested = tuple(
             dict.fromkeys(
                 int(index)
@@ -329,15 +338,18 @@ class ThumbnailService:
         if not requested:
             return
         pages = source.read_thumbnail_pages(requested, size)
+        check_thumbnail_cancelled(cancelled)
         for page in pages:
+            check_thumbnail_cancelled(cancelled)
             if page is None:
                 continue
             page_index = int(getattr(page, "index", getattr(page, "page_index", -1)))
             try:
-                rendered = self._render_thumbnail_page(page, size)
+                rendered = self._render_thumbnail_page(page, size, cancelled=cancelled)
             except (OSError, ThumbnailRenderError) as exc:
                 logger.warning("Thumbnail stream render failed page=%d: %s", page_index, exc)
                 continue
+            check_thumbnail_cancelled(cancelled)
             emit_item(DetailThumbnailItem(page_index, rendered))
 
     def can_generate_from(self, book: Book) -> bool:
@@ -852,14 +864,16 @@ class ThumbnailService:
             self._archive_limits.cache_signature(),
         ).cache_id
 
-    def _render_thumbnail_page(self, page: object, size: SizeTuple) -> bytes:
+    def _render_thumbnail_page(self, page: object, size: SizeTuple, *, cancelled: Event | None = None) -> bytes:
+        check_thumbnail_cancelled(cancelled)
+        options = {} if cancelled is None else {"cancelled": cancelled}
         frame = getattr(page, "frame", None)
         if frame is not None:
-            return self._thumbnail_renderer.render_prepared(frame, size)
+            return self._thumbnail_renderer.render_prepared(frame, size, **options)
         image_bytes = getattr(page, "image_bytes", None)
         if not isinstance(image_bytes, bytes):
             raise ThumbnailRenderError("Thumbnail page has no renderable payload")
-        return self._thumbnail_renderer.render_encoded(image_bytes, size)
+        return self._thumbnail_renderer.render_encoded(image_bytes, size, **options)
 
     def _cover_path(self, book: Book, size: SizeTuple) -> Path:
         return self._covers_dir() / f"{self._safe_book_uuid(book.uuid)}-generated-{size[0]}x{size[1]}.png"

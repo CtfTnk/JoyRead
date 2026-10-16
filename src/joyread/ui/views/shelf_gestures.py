@@ -17,12 +17,11 @@ from joyread.ui.widgets.shelf_drag_visuals import DragCardPreview, DropPlacehold
 
 
 class ShelfGestureController(QObject):
-    def __init__(self, owner, viewmodel, surfaces, resources):
+    def __init__(self, owner, viewmodel, surfaces):
         super().__init__(owner)
         self._owner = owner
         self._vm = viewmodel
         self._surfaces = surfaces
-        self._resources = resources
         self._watched = WeakSet()
         self._surface = None
         self._mode = None
@@ -195,7 +194,7 @@ class ShelfGestureController(QObject):
         self._capture_mouse()
         self._vm.set_selection(set(self._moving))
         control = self._surface.book_controls[self._moving[0]]
-        snapshots = card_snapshots(self._surface, self._moving, self._resources)
+        snapshots = card_snapshots(self._surface, self._moving)
         self._preview = DragCardPreview(snapshots, len(self._moving), self._owner.window())
         self._placeholder = DropPlaceholder(control.grab(), control.size(), self._surface._content)
         self._remaining = tuple(key for key in self._original_ids if key not in set(self._moving))

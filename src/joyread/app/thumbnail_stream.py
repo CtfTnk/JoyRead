@@ -4,15 +4,25 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from threading import Event
+from typing import Protocol
 
 from joyread.app.event_hook import EventHook
+from joyread.app.reader_page_scheduler import PageDemand, ReaderPageScheduler
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.archive.batching import MAX_SEQUENTIAL_BATCH_ITEMS
+from joyread.core.thumbnail_cancellation import ThumbnailCancelled
 from joyread.core.services.cache_service import ThumbnailCacheClient, ThumbnailCacheKey
 
 
 ThumbnailEmitter = Callable[["ThumbnailStreamItem"], None]
-ThumbnailLoader = Callable[[tuple[int, ...], ThumbnailEmitter], None]
+class ThumbnailLoader(Protocol):
+    def __call__(
+        self, indices: tuple[int, ...], emit_item: ThumbnailEmitter,
+        cancelled: Event | None = None,
+    ) -> None: ...
+
+
 BatchSizeProvider = Callable[[int], int]
 BatchPlanner = Callable[[tuple[int, ...]], tuple[int, ...]]
 
@@ -24,7 +34,7 @@ class ThumbnailStreamItem:
 
 
 class ThumbnailStreamController:
-    """Serial interest scheduler with shared-cache pinning."""
+    """Cached thumbnail interest, with capability-gated shared page scheduling."""
 
     def __init__(
         self,
@@ -32,6 +42,9 @@ class ThumbnailStreamController:
         cache_client: ThumbnailCacheClient,
         *,
         task_name: str,
+        random_page_scheduler: ReaderPageScheduler | None = None,
+        random_page_executor: TaskExecutor | None = None,
+        work_group: object | None = None,
     ) -> None:
         self.thumbnail_ready: EventHook[tuple[int, bytes]] = EventHook()
         self.thumbnail_failed: EventHook[int] = EventHook()
@@ -59,6 +72,13 @@ class ThumbnailStreamController:
         self._preview_loader: ThumbnailLoader | None = None
         self._preview_enabled = False
         self._active_preview = False
+        self._random_scheduler = random_page_scheduler
+        self._random_executor = random_page_executor or task_service
+        self._work_group = work_group
+        self._random_owner = object()
+        self._random_keys: set[tuple[int, int, bool]] = set()
+        self._allows_parallel: Callable[[int], bool] = lambda _index: False
+        self._interest_revision = 0
 
     def set_preview(self, index: int | None, loader: ThumbnailLoader | None = None, *, enabled: bool = True) -> None:
         """Replace only preview demand; an executing batch drains into the cache."""
@@ -79,7 +99,11 @@ class ThumbnailStreamController:
 
     @property
     def active_indices(self) -> tuple[int, ...]:
-        return self._active_indices
+        random = () if self._random_scheduler is None else tuple(sorted(
+            key[1] for key in self._random_scheduler.active_keys(self._random_owner)
+            if key in self._random_keys
+        ))
+        return (*self._active_indices, *random)
 
     def set_source(
         self,
@@ -90,7 +114,9 @@ class ThumbnailStreamController:
         *,
         batch_size_for: BatchSizeProvider | None = None,
         batch_planner: BatchPlanner | None = None,
+        allows_parallel: Callable[[int], bool] | None = None,
     ) -> None:
+        """Bind a source; parallel admission requires positive non-solid evidence."""
         normalized_size = (max(1, int(size[0])), max(1, int(size[1])))
         if (
             source_id == self._source_id
@@ -106,6 +132,7 @@ class ThumbnailStreamController:
         self._loader = loader
         self._batch_size_for = batch_size_for or (lambda _index: 1)
         self._batch_planner = batch_planner
+        self._allows_parallel = allows_parallel or (lambda _index: False)
 
     def promote_source(self, source_id: str) -> None:
         """Re-key cached variants after an external document gains a hash identity."""
@@ -115,6 +142,7 @@ class ThumbnailStreamController:
         if not target or previous is None or target == previous:
             return
         self._generation += 1
+        self._cancel_random()
         if self._handle is not None:
             self._handle.cancel()
         self._handle = None
@@ -146,11 +174,12 @@ class ThumbnailStreamController:
         )
         if not force and visible == self._visible and prefetch == self._prefetch:
             return
+        self._interest_revision += 1
+        revision = self._interest_revision
 
-        # Scrolling changes demand, not source identity. A bounded running batch
-        # finishes once; its useful results survive and the next batch uses the
-        # latest queue. Cancelling here cannot interrupt decoding/archive I/O
-        # and would create overlapping workers whose results are thrown away.
+        # The legacy PDF/solid batch drains once against its latest interest.
+        # Random pages replace queued demand and retain matching attempts in the
+        # shared scheduler; retired attempts remain charged until they finish.
         if visible and self._visible:
             movement = (min(visible) + max(visible)) - (min(self._visible) + max(self._visible))
             if movement:
@@ -184,12 +213,22 @@ class ThumbnailStreamController:
                 continue
             self._delivered.add(page_index)
             self.thumbnail_ready.emit(page_index, cached)
+            if revision != self._interest_revision:
+                return
 
-        self._queue = missing
-        self._pump()
+        random_indices = tuple(
+            index for index in missing
+            if self._random_scheduler is not None and self._allows_parallel(index)
+        )
+        self._queue = [index for index in missing if index not in random_indices]
+        self._schedule_random(random_indices)
+        if revision == self._interest_revision:
+            self._pump()
 
     def release_interest(self) -> None:
+        self._interest_revision += 1
         self._generation += 1
+        self._cancel_random()
         if self._handle is not None:
             self._handle.cancel()
         self._handle = None
@@ -209,6 +248,7 @@ class ThumbnailStreamController:
         self._loader = None
         self._batch_size_for = lambda _index: 1
         self._batch_planner = None
+        self._allows_parallel = lambda _index: False
         self._preview_index = None
         self._preview_loader = None
         self._preview_enabled = False
@@ -220,6 +260,69 @@ class ThumbnailStreamController:
         self._visible = ()
         self._prefetch = ()
         self.set_interest(visible, prefetch)
+
+    def _cancel_random(self) -> None:
+        self._random_keys.clear()
+        if self._random_scheduler is not None:
+            self._random_scheduler.cancel(self._random_owner)
+
+    def _schedule_random(self, indices: tuple[int, ...]) -> None:
+        scheduler = self._random_scheduler
+        if scheduler is None:
+            return
+        generation = self._generation
+        demands: list[PageDemand] = []
+        for index in indices:
+            preview_only = (
+                index == self._preview_index and self._preview_enabled
+                and self._preview_loader is not None
+                and index not in (*self._visible, *self._prefetch)
+            )
+            loader = self._preview_loader if preview_only else self._loader
+            assert loader is not None
+            # A preview changing into Topic demand must not reuse a cache-only
+            # attempt. Source/size changes already advance generation.
+            key = (generation, index, preview_only)
+            priority = (
+                TaskPriority.THUMBNAIL if index in self._visible or preview_only
+                else TaskPriority.THUMBNAIL_PREFETCH
+            )
+            demands.append(PageDemand(
+                key, priority,
+                lambda cancelled, index=index, loader=loader: self._load_random(index, loader, cancelled),
+                lambda items, key=key: self._random_ready(key, items),
+                lambda _error, key=key: self._random_failed(key),
+                is_thumbnail=True, group=self._work_group,
+            ))
+        self._random_keys = {demand.key for demand in demands}
+        scheduler.replace(self._random_owner, self._random_executor, demands)
+
+    @staticmethod
+    def _load_random(index: int, loader: ThumbnailLoader, cancelled: Event) -> tuple[ThumbnailStreamItem, ...]:
+        items: list[ThumbnailStreamItem] = []
+        def collect(item: ThumbnailStreamItem) -> None:
+            if not cancelled.is_set() and item.page_index == index:
+                items.append(item)
+        if not cancelled.is_set():
+            try:
+                loader((index,), collect, cancelled)
+            except ThumbnailCancelled:
+                return ()
+        return () if cancelled.is_set() else tuple(items)
+
+    def _random_ready(self, key: tuple[int, int, bool], items: tuple[ThumbnailStreamItem, ...]) -> None:
+        if key not in self._random_keys:
+            return
+        self._random_keys.remove(key)
+        for item in items:
+            self._handle_item(key[0], item)
+
+    def _random_failed(self, key: tuple[int, int, bool]) -> None:
+        if key not in self._random_keys:
+            return
+        self._random_keys.remove(key)
+        if key[0] == self._generation and key[1] in self._interest:
+            self.thumbnail_failed.emit(key[1])
 
     def _pump(self) -> None:
         if self._handle is not None and self._handle.status in {TaskStatus.PENDING, TaskStatus.RUNNING}:

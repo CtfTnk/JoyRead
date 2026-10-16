@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from threading import Event
 
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
@@ -33,6 +34,7 @@ from joyread.infrastructure.config.settings_store import AppSettings, SettingsSt
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.ui.viewmodels.signals import Signal
 from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
+from joyread.app.reader_page_scheduler import ReaderPageScheduler
 
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,8 @@ class ShelfViewModel(ShelfSorting):
         settings_store: SettingsStore | None = None,
         tag_service: TagService | None = None,
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
+        random_page_scheduler: ReaderPageScheduler | None = None,
+        random_page_executor: TaskExecutor | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
@@ -128,6 +132,8 @@ class ShelfViewModel(ShelfSorting):
         self._task_service = task_service
         self._tag_service = tag_service
         self._archive_warmup_coordinator = archive_warmup_coordinator
+        self._random_page_scheduler = random_page_scheduler
+        self._random_page_executor = random_page_executor
         self._detail_warmup_client_id = f"detail-thumbnail:{id(self)}"
         self._cover_logical_size = cover_size
         self._cover_size = cover_size
@@ -1507,12 +1513,13 @@ class ShelfViewModel(ShelfSorting):
         thumbnail_service = self._thumbnail_service
         size = self._detail_thumbnail_size
 
-        def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
+        def load(indices: tuple[int, ...], emit_item, cancelled: Event | None = None) -> None:  # noqa: ANN001
             thumbnail_service.stream_thumbnails(
                 source,
                 indices,
                 size,
                 lambda item: emit_item(ThumbnailStreamItem(item.page_index, item.image_bytes)),
+                **({} if cancelled is None else {"cancelled": cancelled}),
             )
 
         planner = getattr(source, "plan_read_batch", None)
@@ -1523,6 +1530,7 @@ class ShelfViewModel(ShelfSorting):
             load,
             batch_planner=planner if callable(planner) else None,
             batch_size_for=source.preferred_batch_size,
+            allows_parallel=getattr(source, "allows_parallel_page_preparation", None),
         )
         if publish_count:
             self.detail_thumbnail_source_ready.emit(book_uuid, source.page_count)
@@ -1579,6 +1587,8 @@ class ShelfViewModel(ShelfSorting):
             self._task_service,
             issue_client("detail-page"),
             task_name="detail-thumbnail",
+            random_page_scheduler=self._random_page_scheduler,
+            random_page_executor=self._random_page_executor,
         )
         self._detail_stream.thumbnail_ready.connect(self._handle_detail_stream_item)
 

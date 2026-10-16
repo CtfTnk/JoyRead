@@ -209,6 +209,7 @@ class TaskService:
         on_success: Callable[[T], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
         on_discard: Callable[[T], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
     ) -> TaskHandle[T]:
         return self._submit(
@@ -217,6 +218,7 @@ class TaskService:
             on_success=on_success,
             on_failure=on_failure,
             on_discard=on_discard,
+            on_finished=on_finished,
             priority=priority,
         )
 
@@ -256,6 +258,7 @@ class TaskService:
         on_failure: Callable[[Exception], None] | None = None,
         on_discard: Callable[[T], None] | None = None,
         on_item: Callable[[object], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
         signals: _TaskSignals | None = None,
         scope: TaskScope | None = None,
@@ -269,6 +272,8 @@ class TaskService:
         )
         if self._shutting_down or self._quiesced or (scope is not None and scope._quiesced):
             handle.status = TaskStatus.CANCELLED
+            if on_finished is not None:
+                _invoke_ui_callback(handle, "finished", lambda _value: on_finished(), None)
             return handle
         with bind_operation(operation):
             log_event(
@@ -323,6 +328,10 @@ class TaskService:
                 # parentless QObject alive retains those closures after every
                 # finished job, which grows a resident process per Reader open.
                 signals.deleteLater()
+                # Admission owners need a terminal callback even when success
+                # and failure were suppressed by cancellation or a scope drain.
+                if on_finished is not None:
+                    _invoke_ui_callback(handle, "finished", lambda _value: on_finished(), None)
 
         signals.completed.connect(complete)
         signals.failed.connect(fail)
@@ -400,12 +409,11 @@ class TaskService:
         logger.info("TaskService resumed")
 
     def shutdown(self, timeout_ms: int = 1500) -> None:
-        # Terminal, and separately tracked so `resume` cannot undo it. Clearing
-        # the pool is safe here precisely because nothing afterwards needs the
-        # drain to reach zero -- the handles are force-cleared below.
+        # Let cancelled queued runnables perform their terminal handshake, just
+        # as during quiesce. clear() would strand admission owners waiting for
+        # on_finished and keep their page/source closures alive indefinitely.
         self._shutting_down = True
         self.quiesce()
-        self._pool.clear()
         drained = self._pool.waitForDone(max(0, int(timeout_ms)))
         pending = len(self._active_handles)
         stragglers = _describe_handles(self._active_handles.values())
@@ -471,11 +479,12 @@ class TaskScope:
         on_success: Callable[[T], None] | None = None,
         on_failure: Callable[[Exception], None] | None = None,
         on_discard: Callable[[T], None] | None = None,
+        on_finished: Callable[[], None] | None = None,
         priority: TaskPriority | int = TaskPriority.NORMAL,
     ) -> TaskHandle[T]:
         return self._service._submit(
             name, callback, on_success=on_success, on_failure=on_failure,
-            on_discard=on_discard, priority=priority, scope=self,
+            on_discard=on_discard, on_finished=on_finished, priority=priority, scope=self,
         )
 
     def submit_stream(

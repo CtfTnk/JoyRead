@@ -1,9 +1,9 @@
-"""Figma-style progress pill used by book cards and list rows."""
+"""Reader-aligned progress pill used by book cards, rows and details."""
 
 from __future__ import annotations
 
-from PySide6.QtCore import QSize
-from PySide6.QtGui import QResizeEvent
+from PySide6.QtCore import QRectF, QSize
+from PySide6.QtGui import QColor, QPainter, QPainterPath, QPaintEvent, QResizeEvent
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QSizePolicy, QWidget
 
 from joyread.ui.resources.styles.theme import Theme
@@ -45,6 +45,7 @@ class BookProgressBar(QFrame):
     def set_progress(self, progress_percent: int) -> None:
         self._progress_percent = max(0, min(100, int(progress_percent)))
         self._refresh_indicator_width()
+        self.update()
 
     def sizeHint(self) -> QSize:
         return QSize(self._progress_width, Theme.book_progress_height)
@@ -52,6 +53,24 @@ class BookProgressBar(QFrame):
     def resizeEvent(self, event: QResizeEvent) -> None:
         super().resizeEvent(event)
         self._refresh_indicator_width()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        del event
+        track = QPainterPath()
+        track.addRoundedRect(QRectF(self.rect()), Theme.book_progress_radius, Theme.book_progress_radius)
+        if self._progress_percent > 0:
+            read = QPainterPath()
+            read.addRoundedRect(
+                QRectF(self._indicator.geometry()), Theme.book_progress_radius, Theme.book_progress_radius,
+            )
+            # The child paints the read pill with the Reader's quiet material.
+            # Exclude that shape so its alpha blends with the actual backdrop,
+            # rather than with an unread layer already painted underneath it.
+            track = track.subtracted(read)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.fillPath(track, QColor(*Theme.reader_progress_palettes["quiet"].unread))
+        painter.end()
 
     def _refresh_indicator_width(self) -> None:
         if self._progress_percent <= 0:

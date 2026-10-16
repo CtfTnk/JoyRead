@@ -71,6 +71,7 @@ class ReaderShellWidget(ReaderShellBase):
         self._topic_page_count = -1
 
         self.setObjectName("ReaderRootPanel")
+        self.setProperty("glassBackdrop", "contrast")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -146,6 +147,10 @@ class ReaderShellWidget(ReaderShellBase):
             archive_warmup_coordinator=reader.archive_warmup_coordinator,
             page_decoder=QtPageFrameDecoder(),
             thumbnail_renderer=reader.thumbnail_renderer,
+            random_page_scheduler=reader.random_page_scheduler,
+            random_page_executor=(
+                reader.library_random_page_tasks if self.depends_on_library else reader.random_page_tasks
+            ),
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
@@ -209,6 +214,7 @@ class ReaderShellWidget(ReaderShellBase):
         self.right_arrow.clicked.connect(self._activate_right_side)
         self.left_arrow.rapid_navigation_started.connect(self._begin_rapid_navigation)
         self.right_arrow.rapid_navigation_started.connect(self._begin_rapid_navigation)
+        self.topic_panel.close_requested.connect(self._hide_topic_panel)
         self.topic_panel.thumbnail_interest_changed.connect(self.viewmodel.set_topic_thumbnail_interest)
         self.topic_panel.thumbnail_interest_released.connect(self.viewmodel.release_topic_thumbnail_interest)
         self.topic_panel.thumbnail_selected.connect(self._seek_from_topic_panel)

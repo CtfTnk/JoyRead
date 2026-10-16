@@ -128,52 +128,86 @@ QWidget#ReaderFooter {
 }
 
 QToolButton[class="ReaderButton"] {
-    background: __READER_CONTROL_NORMAL__;
-    border: none;
+    background: __GLASS_QUIET_IDLE__;
+    border: __GLASS_ITEM_BORDER_WIDTH__ solid __GLASS_QUIET_IDLE_EDGE__;
     border-radius: __READER_CONTROL_RADIUS__;
-    padding: 4px;
+    padding: __READER_BUTTON_PADDING__;
 }
 
-QToolButton[class="ReaderButton"]:hover,
+QToolButton[class="ReaderButton"]:hover {
+    background: __GLASS_QUIET_HOVER__;
+    border-color: __GLASS_QUIET_HOVER_EDGE__;
+}
+
 QToolButton[class="ReaderButton"]:checked {
-    background: __READER_CONTROL_SELECTED__;
+    background: __GLASS_QUIET_SELECTED__;
+    border-color: __GLASS_QUIET_SELECTED_EDGE__;
 }
 
-QToolButton[class="ReaderButton"]:disabled {
+QToolButton[class="ReaderButton"]:pressed {
+    background: __GLASS_QUIET_PRESSED__;
+    border-color: __GLASS_QUIET_PRESSED_EDGE__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="ReaderButton"] {
+    background: __GLASS_CONTRAST_IDLE__;
+    border-color: __GLASS_CONTRAST_IDLE_EDGE__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="ReaderButton"]:hover {
+    background: __GLASS_CONTRAST_HOVER__;
+    border-color: __GLASS_CONTRAST_HOVER_EDGE__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="ReaderButton"]:checked {
+    background: __GLASS_CONTRAST_SELECTED__;
+    border-color: __GLASS_CONTRAST_SELECTED_EDGE__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="ReaderButton"]:pressed {
+    background: __GLASS_CONTRAST_PRESSED__;
+    border-color: __GLASS_CONTRAST_PRESSED_EDGE__;
+}
+
+QToolButton[class="ReaderButton"]:disabled,
+QWidget[glassBackdrop="contrast"] QToolButton[class="ReaderButton"]:disabled {
     background: rgba(146, 146, 146, 0.35);
+    border-color: transparent;
 }
 
 QFrame[class="ReaderTopicButtonGroup"] {
     background: __WINDOW_COLOR__;
-    border: __READER_TOPIC_BUTTON_GROUP_BORDER_WIDTH__ solid __BUTTON_EDGE__;
+    border: __READER_TOPIC_BUTTON_GROUP_BORDER_WIDTH__ solid __SOFT_CONTROL_EDGE__;
     border-radius: __READER_TOPIC_BUTTON_GROUP_RADIUS__;
 }
 
 QToolButton[class="ReaderTopicButton"] {
     background: transparent;
-    border: none;
+    border: __SWITCH_OPTION_BORDER_WIDTH__ solid transparent;
     border-radius: __READER_TOPIC_BUTTON_RADIUS__;
     padding: 0;
 }
 
 QToolButton[class="ReaderTopicButton"]:hover,
 QToolButton[class="ReaderTopicButton"][topicActive="true"] {
-    background: __SELECTED_COLOR__;
+    background: __TOPIC_ACTIVE__;
+    border-color: __TOPIC_ACTIVE_EDGE__;
 }
 
 QToolButton[class="ReaderTopicButton"]:disabled {
     background: transparent;
+    border-color: transparent;
 }
 
 QFrame[class="ReaderSwitch"] {
     background: __READER_SWITCH_PANEL__;
-    border: none;
+    border: __READER_SWITCH_BORDER_WIDTH__ solid __SOFT_CONTROL_EDGE__;
     border-radius: __READER_CONTROL_RADIUS__;
 }
 
 QToolButton[class="ReaderSwitchOption"] {
     background: transparent;
-    border: none;
+    border: __SWITCH_OPTION_BORDER_WIDTH__ solid transparent;
     border-radius: __READER_SWITCH_OPTION_RADIUS__;
     padding: 0;
 }
@@ -181,21 +215,29 @@ QToolButton[class="ReaderSwitchOption"] {
 QToolButton[class="ReaderSwitchOption"]:hover,
 QToolButton[class="ReaderSwitchOption"]:checked {
     background: __READER_CONTROL_SELECTED__;
+    border-color: __SELECTED_CONTROL_EDGE__;
 }
 
 QToolButton[class="ReaderSwitchOption"]:disabled {
     background: transparent;
+    border-color: transparent;
 }
 
 QToolButton[class="ReaderSideButton"] {
-    background: __READER_PANEL__;
-    border: none;
+    background: __GLASS_CONTRAST_IDLE__;
+    border: __GLASS_ITEM_BORDER_WIDTH__ solid __GLASS_CONTRAST_IDLE_EDGE__;
     border-radius: __READER_SIDE_BUTTON_RADIUS__;
     padding: 0;
 }
 
 QToolButton[class="ReaderSideButton"]:hover {
-    background: rgba(146, 146, 146, 0.55);
+    background: __GLASS_CONTRAST_HOVER__;
+    border-color: __GLASS_CONTRAST_HOVER_EDGE__;
+}
+
+QToolButton[class="ReaderSideButton"]:pressed {
+    background: __GLASS_CONTRAST_PRESSED__;
+    border-color: __GLASS_CONTRAST_PRESSED_EDGE__;
 }
 
 QLabel#ReaderProgressIndicator {
@@ -293,7 +335,7 @@ QFrame[class="ReaderSettingsSmallSwitchKnob"] {
 
 QFrame#ReaderTopicPanel {
     background: transparent;
-    border: __READER_TOPIC_PANEL_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+    border: __READER_TOPIC_PANEL_BORDER_WIDTH__ solid __GLASS_CONTRAST_EDGE__;
     border-radius: __READER_TOPIC_PANEL_RADIUS__;
 }
 
@@ -346,11 +388,6 @@ QFrame[class="ReaderTopicNewBookmark"] {
     border-radius: __READER_TOPIC_ITEM_RADIUS__;
 }
 
-QFrame[class="ReaderTopicItem"]:hover,
-QFrame[class="ReaderTopicNewBookmark"]:hover {
-    background: __READER_TOPIC_ITEM_HOVER__;
-}
-
 QLabel[class="ReaderTopicItemLabel"] {
     color: __TEXT_COLOR__;
     font-size: __BODY_FONT_SIZE__;
@@ -376,9 +413,9 @@ QFrame[class="ActionMenuButton"]:hover {
 
 /* Figma switch shell; option cells are custom-painted in Python. */
 QFrame[class="FigmaSwitch"] {
-    background: #bfbfbf;
-    border: 2px solid #929292;
-    border-radius: 10px;
+    background: __SWITCH_BACKGROUND__;
+    border: __SWITCH_BORDER_WIDTH__ solid __SOFT_CONTROL_EDGE__;
+    border-radius: __SWITCH_RADIUS__;
 }
 
 QToolButton[class="FigmaSwitchOption"] {
@@ -1157,7 +1194,7 @@ QFrame#BookCover {
 }
 
 QFrame#BookProgress {
-    background: __PROGRESS_BACKGROUND__;
+    background: transparent;
     border: none;
     border-radius: __PROGRESS_RADIUS__;
 }
@@ -1217,16 +1254,17 @@ QWidget#LanguageDropdownMenuPopup {
     background: transparent;
 }
 
-QFrame#FigmaMenuPanel {
-    background: __MENU_BACKGROUND__;
-    border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
+QFrame#FigmaMenuPanel,
+QFrame#LanguageDropdownMenuPanel {
+    background: __GLASS_QUIET_PANEL__;
+    border: __MENU_BORDER_WIDTH__ solid __GLASS_QUIET_EDGE__;
     border-radius: __MENU_RADIUS__;
 }
 
-QFrame#LanguageDropdownMenuPanel {
-    background: __MENU_BACKGROUND__;
-    border: __MENU_BORDER_WIDTH__ solid __BUTTON_INNER_EDGE__;
-    border-radius: __MENU_RADIUS__;
+QWidget[glassBackdrop="contrast"] QFrame#FigmaMenuPanel,
+QWidget[glassBackdrop="contrast"] QFrame#LanguageDropdownMenuPanel {
+    background: __GLASS_CONTRAST_PANEL__;
+    border-color: __GLASS_CONTRAST_EDGE__;
 }
 
 QWidget#FigmaMenuOptionList {
@@ -1274,14 +1312,6 @@ QFrame#FigmaMenuItem {
     border-radius: __MENU_ITEM_RADIUS__;
 }
 
-QFrame#FigmaMenuItem[selected="true"] {
-    background: __MENU_ITEM_HOVER__;
-}
-
-QFrame#FigmaMenuItem[menuEnabled="true"]:hover {
-    background: __MENU_ITEM_HOVER__;
-}
-
 QLabel[class="FigmaMenuItemText"] {
     color: __TEXT_COLOR__;
     font-size: __MENU_FONT_SIZE__;
@@ -1301,6 +1331,37 @@ QFrame[class="BookListRow"] {
 QFrame[class="BookListRow"][selected="true"] {
     background: __WINDOW_COLOR__;
     border: __BOOK_SELECTION_BORDER_WIDTH__ solid __CARD_SELECTED__;
+}
+
+/* Floating-panel close actions use a darker neutral fill, with no outline in any
+   state. The 24px icon stays centered in its fixed 28px allocation. */
+QWidget#FloatingPanelHeader,
+QLabel#FloatingPanelTitle {
+    background: transparent;
+    border: none;
+}
+
+QToolButton[class="FloatingPanelCloseButton"] {
+    background: transparent;
+    border: none;
+    border-radius: __PANEL_CLOSE_RADIUS__;
+    padding: 0;
+}
+
+QToolButton[class="FloatingPanelCloseButton"]:hover {
+    background: __GLASS_QUIET_CLOSE_HOVER__;
+}
+
+QToolButton[class="FloatingPanelCloseButton"]:pressed {
+    background: __GLASS_QUIET_CLOSE_PRESSED__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="FloatingPanelCloseButton"]:hover {
+    background: __GLASS_CONTRAST_CLOSE_HOVER__;
+}
+
+QWidget[glassBackdrop="contrast"] QToolButton[class="FloatingPanelCloseButton"]:pressed {
+    background: __GLASS_CONTRAST_CLOSE_PRESSED__;
 }
 
 /* Floating book detail panel. Bottom edge is deliberately flush -- no
@@ -1419,7 +1480,7 @@ QLabel[class="BookDetailProgressPercent"] {
 
 QFrame[class="DetailReadButton"],
 QToolButton[class="DetailIconButton"] {
-    background: __WINDOW_COLOR__;
+    background: __DETAIL_BUTTON_BACKGROUND__;
     border: __DETAIL_BUTTON_BORDER_WIDTH__ solid __BUTTON_EDGE__;
     border-radius: __DETAIL_BUTTON_RADIUS__;
 }
@@ -1436,7 +1497,7 @@ QLabel[class="DetailReadButtonText"] {
 
 QFrame[class="DetailReadButton"]:hover,
 QToolButton[class="DetailIconButton"]:hover {
-    background: __SELECTED_COLOR__;
+    background: __DETAIL_BUTTON_HOVER__;
 }
 
 /* Empty/loading/error placeholders */

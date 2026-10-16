@@ -7,8 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 from time import perf_counter
+from threading import Event
+
+from joyread.core.thumbnail_cancellation import ThumbnailCancelled, check_thumbnail_cancelled
 
 from joyread.app.reader_document_runtime import ReaderDocumentHandle, ReaderDocumentRuntime
+from joyread.app.reader_page_scheduler import ReaderPageScheduler
 from joyread.app.reader_page_pipeline import (
     EncodedPageFrameDecoder,
     PageFrameDecoder,
@@ -115,6 +119,8 @@ class ReaderViewModel:
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
         page_decoder: PageFrameDecoder | None = None,
         thumbnail_renderer: ThumbnailRenderer | None = None,
+        random_page_scheduler: ReaderPageScheduler | None = None,
+        random_page_executor: TaskExecutor | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
@@ -176,10 +182,14 @@ class ReaderViewModel:
             "reader-topic-test"
         )
         self._topic_thumbnail_size: tuple[int, int] | None = None
+        self._page_work_group = object()
         self._topic_thumbnail_stream = ThumbnailStreamController(
             task_service,
             thumbnail_client,
             task_name="reader-topic-thumbnail",
+            random_page_scheduler=random_page_scheduler,
+            random_page_executor=random_page_executor,
+            work_group=self._page_work_group,
         )
         self._topic_thumbnail_stream.thumbnail_ready.connect(self.topic_thumbnail_ready.emit)
         self._topic_thumbnail_stream.thumbnail_ready.connect(self._preview_ready)
@@ -233,6 +243,9 @@ class ReaderViewModel:
             page_cache,
             on_ready=self._handle_page_prepared,
             on_failed=self._handle_page_prepare_failed,
+            random_page_scheduler=random_page_scheduler,
+            random_page_executor=random_page_executor,
+            work_group=self._page_work_group,
         )
 
     @property
@@ -534,7 +547,9 @@ class ReaderViewModel:
         if self._preview_status == "unavailable" and not changed:
             return
 
-        def preview_load(indices, emit_item):
+        def preview_load(indices, emit_item, cancelled: Event | None = None):
+            check_thumbnail_cancelled(cancelled)
+            options = {} if cancelled is None else {"cancelled": cancelled}
             # A queued worker may start after its target was replaced or closed.
             if index != self._preview_index or size != self._topic_thumbnail_size or document is not self._document:
                 return
@@ -544,23 +559,29 @@ class ReaderViewModel:
             for target in indices:
                 prepared = self._page_cache.get(target)
                 if prepared is not None and not _prepared_frame_is_too_small(prepared, size):
-                    emit_item(ThumbnailStreamItem(target, renderer.render_prepared(prepared.frame, size)))
+                    check_thumbnail_cancelled(cancelled)
+                    emit_item(ThumbnailStreamItem(target, renderer.render_prepared(prepared.frame, size, **options)))
                     continue
                 # Read only existing extraction entries before considering the source.
                 cached = document.read_cached_pages((target,)).get(target)
+                check_thumbnail_cancelled(cancelled)
                 if cached is not None:
-                    emit_item(ThumbnailStreamItem(target, renderer.render_encoded(cached.image_bytes, size)))
+                    check_thumbnail_cancelled(cancelled)
+                    emit_item(ThumbnailStreamItem(target, renderer.render_encoded(cached.image_bytes, size, **options)))
                     continue
                 if self.loading_page_index is not None or not document.allows_random_preview(target):
                     continue
                 direct = document.prepare_thumbnail_pages((target,), size)
+                check_thumbnail_cancelled(cancelled)
                 if direct and direct[0] is not None:
-                    data = renderer.render_prepared(direct[0].frame, size)
+                    data = renderer.render_prepared(direct[0].frame, size, **options)
                 else:
                     page = document.read_page(target)
+                    check_thumbnail_cancelled(cancelled)
                     if page is None:
                         raise RuntimeError("Preview page unavailable")
-                    data = renderer.render_encoded(page.image_bytes, size)
+                    data = renderer.render_encoded(page.image_bytes, size, **options)
+                check_thumbnail_cancelled(cancelled)
                 emit_item(ThumbnailStreamItem(target, data))
 
         self._topic_thumbnail_stream.set_preview(index, preview_load, enabled=load)
@@ -1232,7 +1253,9 @@ class ReaderViewModel:
         if source_path is None or renderer is None:
             return
         source_id = self._topic_thumbnail_source_id()
-        def load(indices: tuple[int, ...], emit_item) -> None:  # noqa: ANN001
+        def load(indices: tuple[int, ...], emit_item, cancelled: Event | None = None) -> None:  # noqa: ANN001
+            check_thumbnail_cancelled(cancelled)
+            options = {} if cancelled is None else {"cancelled": cancelled}
             missing: list[int] = []
             for page_index in indices:
                 prepared = self._page_cache.get(page_index)
@@ -1240,11 +1263,14 @@ class ReaderViewModel:
                     missing.append(page_index)
                     continue
                 try:
-                    rendered = renderer.render_prepared(prepared.frame, size)
+                    rendered = renderer.render_prepared(prepared.frame, size, **options)
+                except ThumbnailCancelled:
+                    raise
                 except Exception as exc:
                     logger.debug("Prepared topic frame was not reusable page=%d: %s", page_index, exc)
                     missing.append(page_index)
                     continue
+                check_thumbnail_cancelled(cancelled)
                 emit_item(ThumbnailStreamItem(page_index, rendered))
 
             if not missing:
@@ -1257,7 +1283,9 @@ class ReaderViewModel:
             # round-trips a page this loader is about to shrink right back
             # down -- three Qt-level operations to do the one render below
             # already does directly.
+            check_thumbnail_cancelled(cancelled)
             direct = document.prepare_thumbnail_pages(tuple(missing), size)
+            check_thumbnail_cancelled(cancelled)
             still_missing = list(missing)
             if direct is not None:
                 still_missing = []
@@ -1266,11 +1294,14 @@ class ReaderViewModel:
                         still_missing.append(page_index)
                         continue
                     try:
-                        rendered = renderer.render_prepared(prepared.frame, size)
+                        rendered = renderer.render_prepared(prepared.frame, size, **options)
+                    except ThumbnailCancelled:
+                        raise
                     except Exception as exc:
                         logger.warning("Topic thumbnail render failed page=%d: %s", page_index, exc)
                         still_missing.append(page_index)
                         continue
+                    check_thumbnail_cancelled(cancelled)
                     emit_item(ThumbnailStreamItem(page_index, rendered))
                 # zip() stops at the shorter sequence; a `direct` shorter than
                 # `missing` would otherwise drop its unpaired tail silently
@@ -1280,16 +1311,21 @@ class ReaderViewModel:
                 if not still_missing:
                     return
 
+            check_thumbnail_cancelled(cancelled)
             pages = document.read_pages(tuple(still_missing))
+            check_thumbnail_cancelled(cancelled)
             for page_index in still_missing:
                 image = pages.get(page_index)
                 if image is None:
                     continue
                 try:
-                    rendered = renderer.render_encoded(image.image_bytes, size)
+                    rendered = renderer.render_encoded(image.image_bytes, size, **options)
+                except ThumbnailCancelled:
+                    raise
                 except Exception as exc:
                     logger.warning("Topic thumbnail render failed page=%d: %s", page_index, exc)
                     continue
+                check_thumbnail_cancelled(cancelled)
                 emit_item(ThumbnailStreamItem(page_index, rendered))
 
         self._topic_thumbnail_size = size
@@ -1299,6 +1335,7 @@ class ReaderViewModel:
             size,
             load,
             batch_planner=document.plan_read_batch,
+            allows_parallel=document.allows_parallel_page_preparation,
         )
 
     def _topic_thumbnail_source_id(self) -> str:
@@ -1345,6 +1382,7 @@ class ReaderViewModel:
             target_height=max(1, round(self._viewport_size.height)),
             device_pixel_ratio=self._device_pixel_ratio,
             generation=self._task_generation,
+            focus_indices=self.current_display_indices,
         )
 
     def _handle_page_prepared(self, page: PreparedReaderPage) -> None:

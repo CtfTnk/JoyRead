@@ -791,6 +791,17 @@ class ArchiveImageSession:
         """Source capability, independent of warmup budgets and cache state."""
         return self.is_valid_index(page_index) and not self._pages[page_index].source.requires_sequential_warmup
 
+    def allows_parallel_page_preparation(self, page_index: int) -> bool:
+        """Admit only proven non-solid sources, including materialized children.
+
+        Cache completion or a policy that forbids warmup must never grant this
+        capability. Backend read semaphores still apply after admission.
+        """
+        if not self.is_valid_index(page_index):
+            return False
+        source = self._pages[page_index].source
+        return source.random_access_confirmed and not source.requires_sequential_warmup
+
     def read_cached_pages(self, indices: Iterable[int]) -> list[ArchivePage | None]:
         """Read only existing pool entries; a miss must never extract a member."""
         return self._read_pages(indices, cache_only=True)

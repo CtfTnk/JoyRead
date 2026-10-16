@@ -32,14 +32,14 @@ class TopToolbarWidget(QWidget):
 
     def __init__(self, resources: ResourceLoader, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(Theme.toolbar_height)
+        self.setFixedHeight(Theme.shelf_toolbar_height)
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(
             Theme.content_horizontal_padding + Theme.banner_horizontal_padding,
-            0,
+            Theme.shelf_toolbar_top_padding,
             Theme.content_horizontal_padding + Theme.banner_horizontal_padding,
-            0,
+            Theme.shelf_toolbar_bottom_padding,
         )
         layout.setSpacing(10)
 
