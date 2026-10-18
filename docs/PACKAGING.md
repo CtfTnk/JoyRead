@@ -618,6 +618,24 @@ commit, target, Python) to Actions Artifacts for 14 days. There are no release,
 tag, or repository-write steps. macOS uses the existing ad-hoc signing workflow;
 these artifacts are candidates for desktop validation, not notarized releases.
 
+### 1.3.1 draft candidate
+
+The four installers were built from
+`4847ff1ddecf0bb8281670b6741c7ab8f28145c1` in
+[Build packages 38928032902](https://github.com/CtfTnk/JoyRead/actions/runs/38928032902).
+Shipping tests passed: macOS arm64 2024 (12 skipped), Windows x64 2015
+(21 skipped), and Linux amd64/arm64 2026 each (10 skipped each). Both DEBs
+passed APT installation, isolated startup and the frozen WebP Reader frame
+probe. Their 289 amd64 / 288 arm64 ELF files satisfy glibc <= 2.35. The
+[separate five-job Tests run](https://github.com/CtfTnk/JoyRead/actions/runs/38928015652)
+also passed at that commit. Final local 125% offscreen UI/image checks passed
+145 tests.
+
+The maintainer confirmed macOS manual testing; Windows and Ubuntu desktop
+acceptance remain pending. The release stays a draft, and public README
+downloads remain on stable 1.3.0. Release-note-only follow-up commits do not
+change the installers' recorded source commit.
+
 ### Ubuntu 22.04 compatibility rebuild
 
 The original 1.0.2 Linux packages were built on Ubuntu 24.04. In particular,
