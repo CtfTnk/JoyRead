@@ -1,11 +1,11 @@
 # JoyRead Packaging Guide
 
-This guide prepares the **JoyRead 1.3.1 release candidate** with PyInstaller.
-Version 1.3.0 remains the current stable
-[GitHub Release](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.0).
-See the [1.3.1 draft release notes](releases/v1.3.1.md) for candidate build and
-manual-validation status. Preparing the draft does not publish the release or
-change the public download links.
+This guide packages **JoyRead 1.3.1** with PyInstaller.
+Version 1.3.1 is the current stable
+[GitHub Release](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1).
+See the [1.3.1 release notes](releases/v1.3.1.md) for build and manual-validation
+status. The maintainer confirmed successful macOS, Windows and Ubuntu desktop
+testing and authorized publication on 2026-10-20.
 Build each target on its own operating system; PyInstaller does not
 cross-compile desktop apps. The native Debian builder and Inno Setup wrap the
 verified Linux and Windows onedirs as the production installers described in
@@ -618,7 +618,7 @@ commit, target, Python) to Actions Artifacts for 14 days. There are no release,
 tag, or repository-write steps. macOS uses the existing ad-hoc signing workflow;
 these artifacts are candidates for desktop validation, not notarized releases.
 
-### 1.3.1 draft candidate
+### 1.3.1 publication
 
 The four installers were built from
 `4847ff1ddecf0bb8281670b6741c7ab8f28145c1` in
@@ -631,10 +631,11 @@ probe. Their 289 amd64 / 288 arm64 ELF files satisfy glibc <= 2.35. The
 also passed at that commit. Final local 125% offscreen UI/image checks passed
 145 tests.
 
-The maintainer confirmed macOS manual testing; Windows and Ubuntu desktop
-acceptance remain pending. The release stays a draft, and public README
-downloads remain on stable 1.3.0. Release-note-only follow-up commits do not
-change the installers' recorded source commit.
+The maintainer confirmed successful macOS, Windows and Ubuntu desktop testing
+on 2026-10-20 and authorized stable publication. The verified draft's existing
+installers are reused; tag v1.3.1 identifies their frozen source commit.
+Public README downloads point to 1.3.1. Documentation-only follow-up commits
+do not change the installers' recorded source commit.
 
 ### Ubuntu 22.04 compatibility rebuild
 

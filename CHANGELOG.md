@@ -5,7 +5,7 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
-## [1.3.1] — Draft
+## [1.3.1] — 2026-10-20
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.3.1.md)
 
