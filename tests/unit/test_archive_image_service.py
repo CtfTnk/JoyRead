@@ -1561,15 +1561,27 @@ def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
 
 
 @pytest.mark.parametrize(
-    ("suffix", "password", "expected_concurrency"),
-    ((".zip", None, 2), (".zip", "secret", 1), (".rar", None, 1)),
+    ("suffix", "password", "concurrent_evidence", "expected_concurrency"),
+    (
+        (".zip", None, True, 2),
+        # AES, or ZipCrypto through the 7-Zip helper: reads leave the GIL.
+        (".zip", "secret", True, 2),
+        # In-process ZipCrypto: a second read only contends for the GIL.
+        (".zip", "secret", False, 1),
+        (".rar", None, False, 1),
+        # A source nobody vouched for does not inherit ZIP assumptions.
+        (".zip", None, False, 1),
+    ),
 )
 def test_archive_session_enforces_backend_read_concurrency(
     suffix: str,
     password: str | None,
+    concurrent_evidence: bool,
     expected_concurrency: int,
 ) -> None:
-    source = ArchiveSource("sample", suffix, data=b"container")
+    source = ArchiveSource(
+        "sample", suffix, data=b"container", supports_concurrent_reads=concurrent_evidence
+    )
     pages = (
         PageRecord("sample/001.png", source, "001.png", password),
         PageRecord("sample/002.png", source, "002.png", password),

@@ -61,7 +61,10 @@ def access_is_expensive(record: PageRecord) -> bool:
     other: CPython decrypts legacy ZipCrypto in a pure-Python byte loop at
     roughly 2.5 MB/s, which measured 1876 ms for the first page of a 463 MB
     encrypted zip and 1684 ms per page after it -- an order of magnitude worse
-    than the solid 7z this cache was built for.
+    than the solid 7z this cache was built for. The 7-Zip helper now takes
+    ZipCrypto reads (~40 ms for a 2.5 MB page) whenever it resolves, so that
+    figure is the fallback's; the in-process loop still serves a source with
+    no path or no helper.
 
     Deciding on the format alone is what made "zip supports cheap random
     access" a rule the encrypted case quietly disproved: the pool refused the
@@ -192,12 +195,13 @@ class ArchiveImageSession:
             for record in self._pages
             if access_is_expensive(record)
         )
-        # Every read opens an independent backend handle. Plain ZIP can sustain
-        # two concurrent random reads; encrypted ZIP and expensive formats are
-        # serialized per document to avoid extractor contention.
+        # Every read opens an independent backend handle. A source whose reads
+        # leave the GIL (plain or AES ZIP, ZipCrypto through the 7-Zip helper)
+        # sustains two concurrent random reads, which the reader's parallel
+        # page preparation relies on. Solid formats and in-process ZipCrypto
+        # are serialized per document: a second read there only contends.
         supports_two_reads = all(
-            record.source.suffix in {".zip", ".cbz"} and record.password is None
-            for record in self._pages
+            record.source.supports_concurrent_reads for record in self._pages
         )
         self._read_slots = BoundedSemaphore(2 if supports_two_reads else 1)
         # Decided once, from the scan result and the configured limits, so the

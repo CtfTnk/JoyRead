@@ -578,11 +578,12 @@ anything that can read your cache directory.
 **Passwords are briefly visible to other local processes.** The bundled 7-Zip
 executable accepts a password only as a command-line argument, so during
 extraction it can be read via `ps` by another process running as you. This
-covers 7z, RAR, and ZIP files using the legacy ZipCrypto cipher.
+covers 7z, RAR, and ZIP files using the legacy ZipCrypto cipher, which uses
+the helper to avoid slow in-process decryption.
 
-ZIP files using AES encryption are unaffected by command-line password
-exposure: JoyRead decrypts those in-process without launching a helper.
-ZipCrypto uses the external helper to avoid slow in-process decryption.
+ZIP files using AES encryption are decrypted in-process when you turn a page,
+without launching a helper. Their background conversion into the page cache
+does use the helper, so the password is briefly visible while it runs.
 
 Neither matters much on a machine only you use. Both matter on a shared one.
 

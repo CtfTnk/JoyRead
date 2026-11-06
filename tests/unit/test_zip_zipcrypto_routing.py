@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pyzipper
 import pytest
@@ -22,7 +23,11 @@ import pytest
 from joyread.core.archive.backends import ExtractionBackend, ExtractionBackendResolver
 from joyread.core.archive.errors import ArchivePasswordRejected
 from joyread.core.archive.formats import zip_backend as zip_module
-from joyread.core.archive.formats.zip_backend import ZipArchiveBackend, uses_zipcrypto
+from joyread.core.archive.formats.zip_backend import (
+    ZipArchiveBackend,
+    _password_probe_entry,
+    uses_zipcrypto,
+)
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveSource
 
@@ -210,3 +215,67 @@ def test_no_helper_available_still_reads(tmp_path: Path) -> None:
     archive = _encrypted_zip(tmp_path, "ZipCrypto")
     payload = _read(_backend(None), ArchiveSource(label=archive.name, suffix=".zip", path=archive))
     assert payload == b"page-bytes"
+
+
+def _listing(backend: ZipArchiveBackend, archive: Path):  # noqa: ANN202
+    context = SimpleNamespace(limits=ArchiveOpenLimits(), budget=ArchiveOperationBudget(1 << 30))
+    return backend.list_entries(ArchiveSource(label=archive.name, suffix=".zip", path=archive), context)
+
+
+def test_the_password_is_proved_on_the_smallest_non_empty_entry() -> None:
+    """Every open decrypts this entry in full, so a large first entry was paid
+    on each one; an empty entry would leave only the 1-in-256 header check."""
+
+    def info(name: str, size: int) -> SimpleNamespace:
+        return SimpleNamespace(filename=name, file_size=size)
+
+    spread, empty, page, note = info("000.jpg", 25_000_000), info("empty", 0), info("001.jpg", 2_000_000), info("n.txt", 40)
+    assert _password_probe_entry([spread, empty, page, note]) is note
+    assert _password_probe_entry([spread, page]) is page
+    assert _password_probe_entry([empty]) is empty
+
+
+@requires_helper
+def test_listing_verifies_the_password_on_the_smallest_entry(tmp_path: Path, monkeypatch) -> None:
+    big, small = tmp_path / "000.bin", tmp_path / "001.bin"
+    big.write_bytes(b"x" * 200_000)
+    small.write_bytes(b"page")
+    archive = tmp_path / "book.zip"
+    subprocess.run(
+        [str(_HELPER), "a", "-tzip", "-mem=ZipCrypto", f"-p{PASSWORD}", str(archive), str(big), str(small)],
+        check=True, capture_output=True,
+    )
+    backend = _backend(str(_HELPER))
+    probed: list[str] = []
+    real = backend.read_entries
+    monkeypatch.setattr(
+        backend, "read_entries",
+        lambda source, entries, **kwargs: (probed.extend(name for name, _ in entries), real(source, entries, **kwargs))[1],
+    )
+
+    _listing(backend, archive)
+
+    assert probed == ["001.bin"]
+
+
+@requires_helper
+@pytest.mark.parametrize(
+    "cipher,helper,expected",
+    [("ZipCrypto", True, True), ("ZipCrypto", False, False), ("AES256", False, True)],
+)
+def test_concurrent_reads_are_claimed_only_outside_the_python_decryptor(
+    tmp_path: Path, cipher: str, helper: bool, expected: bool
+) -> None:
+    resolver = _Resolver(str(_HELPER) if helper else None)
+    listing = _listing(_backend(None, resolver=resolver), _encrypted_zip(tmp_path, cipher))
+
+    assert listing.supports_concurrent_reads is expected
+    if cipher == "AES256":
+        assert resolver.calls == 0, "AES must not even resolve an external helper"
+
+
+def test_a_plain_zip_supports_concurrent_reads(tmp_path: Path) -> None:
+    archive_path = tmp_path / "plain.zip"
+    with pyzipper.AESZipFile(archive_path, "w") as archive:
+        archive.writestr("001.txt", b"page-bytes")
+    assert _listing(_backend(None), archive_path).supports_concurrent_reads is True

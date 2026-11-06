@@ -155,6 +155,7 @@ class ArchiveScanner:
             source,
             requires_sequential_warmup=listing.requires_sequential_warmup,
             random_access_confirmed=listing.random_access_confirmed,
+            supports_concurrent_reads=listing.supports_concurrent_reads,
         )
         entries = listing.entries
         entry_prefix = transparent_single_root_prefix(entries)

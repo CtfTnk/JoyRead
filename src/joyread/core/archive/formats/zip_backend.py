@@ -116,7 +116,7 @@ class ZipArchiveBackend:
                     )
                     self._verify_password(
                         source,
-                        encrypted[0].filename,
+                        _password_probe_entry(encrypted).filename,
                         password,
                         limits=context.limits,
                         budget=context.budget,
@@ -128,6 +128,7 @@ class ZipArchiveBackend:
                         if not info.is_dir()
                     ),
                     random_access_confirmed=True,
+                    supports_concurrent_reads=self._reads_leave_the_gil(source, encrypted),
                 )
         except bad_file_errors as exc:
             raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc
@@ -184,6 +185,23 @@ class ZipArchiveBackend:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
         except (*bad_file_errors, KeyError) as exc:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
+
+    def _reads_leave_the_gil(self, source: ArchiveSource, encrypted: Sequence[object]) -> bool:
+        """Whether two concurrent page reads of this source actually overlap.
+
+        Plain entries inflate in zlib and AES entries decrypt in a C backend,
+        both outside the GIL. ZipCrypto does too once the 7-Zip helper takes
+        it, since each read is its own process. Only the in-process ZipCrypto
+        fallback is a per-byte Python loop: a second reader there just halves
+        the speed of the first and starves the UI thread.
+
+        The helper is resolved only when a ZipCrypto entry exists, so an AES
+        archive never looks one up.
+        """
+
+        if not any(uses_zipcrypto(info) for info in encrypted):
+            return True
+        return self._zipcrypto_helper(source) is not None
 
     def _zipcrypto_helper(self, source: ArchiveSource) -> str | None:
         """The 7-Zip executable to decrypt ZipCrypto entries with, if usable.
@@ -315,3 +333,24 @@ class ZipArchiveBackend:
         payload = self.read_entries(source, ((name, password),), limits=limits, budget=budget).get(name)
         if payload is None:
             raise ArchiveReadError(f"ZIP entry was not extracted: {name}")
+
+
+def _password_probe_entry(encrypted: Sequence[object]) -> object:
+    """The encrypted entry that proves a password most cheaply.
+
+    Proof needs the whole entry: the cipher header alone accepts a wrong
+    ZipCrypto password about once in 256 tries, and only the CRC (or the AES
+    authentication code) over the decrypted data settles it. So the cost of
+    every open is the size of the entry chosen here, and the first one in the
+    central directory can be a double-page spread many times a normal page.
+
+    Empty entries are passed over. With no data to decrypt, the CRC of nothing
+    always matches and the check falls back to that 1-in-256 header test.
+    Declared sizes are untrusted, but a lie here only makes the probe slower;
+    the read is still bounded by the scan's limits.
+    """
+
+    sized = [info for info in encrypted if (getattr(info, "file_size", 0) or 0) > 0]
+    if not sized:
+        return encrypted[0]
+    return min(sized, key=lambda info: info.file_size)

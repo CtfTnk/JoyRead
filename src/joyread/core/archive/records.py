@@ -28,6 +28,9 @@ class ArchiveSource:
     # Positive evidence from listing, independent of cache/warmup readiness.
     # Unknown/custom backends must opt in rather than inherit ZIP assumptions.
     random_access_confirmed: bool = False
+    # Positive evidence that two page reads of this source run in parallel
+    # instead of queueing on the GIL. Opt-in for the same reason as above.
+    supports_concurrent_reads: bool = False
 
     @property
     def display_name(self) -> str:
@@ -67,6 +70,7 @@ class ArchiveListing:
     entries: tuple[ArchiveEntry, ...]
     requires_sequential_warmup: bool = False
     random_access_confirmed: bool = False
+    supports_concurrent_reads: bool = False
 
 
 @dataclass(frozen=True)
