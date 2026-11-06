@@ -36,9 +36,12 @@ class HiddenSpaceLockOverlay(QWidget):
     """Full-window #ECECEC overlay with Verify / Hide buttons.
 
     Visual styling lives entirely in ``main.qss`` (rules keyed off the
-    ``#HiddenSpaceLockOverlay`` / panel / hint object names and the
+    ``#HiddenSpaceLockOverlay`` / panel / state object names and the
     ``HiddenSpaceLockButtonText`` class). The Python side owns only
     structure, layout, and signal wiring.
+
+    There is deliberately no password hint: this screen is shown to whoever
+    is at the keyboard, which is exactly who the password keeps out.
     """
 
     verified = QtSignal()
@@ -48,7 +51,6 @@ class HiddenSpaceLockOverlay(QWidget):
         self,
         parent: QWidget,
         *,
-        hint: str | None,
         verify: Callable[[str], bool],
     ) -> None:
         # ``verify`` takes a plaintext password string and returns True
@@ -91,16 +93,6 @@ class HiddenSpaceLockOverlay(QWidget):
         title_label.setProperty("class", "JoyReadDialogTitle")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         panel_layout.addWidget(title_label)
-
-        self._hint_label = LocalizedLabel("")
-        self._hint_label.setObjectName("HiddenSpaceLockHint")
-        self._hint_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._hint_label.setWordWrap(True)
-        if hint:
-            set_localized(self._hint_label, "setText", t("dialog.hint_prefix", hint=hint))
-        else:
-            self._hint_label.setVisible(False)
-        panel_layout.addWidget(self._hint_label)
 
         # Use the standard ``DialogInputField`` class so the password
         # field picks up the same rounded-corner styling as every other

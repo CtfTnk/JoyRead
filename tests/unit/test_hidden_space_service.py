@@ -40,7 +40,6 @@ def test_service_starts_uninitiated(tmp_path: Path) -> None:
     service, _repo, _store = _service(tmp_path)
 
     assert service.is_initialized is False
-    assert service.hint is None
     assert service.verify("anything") is False
 
 
@@ -48,22 +47,21 @@ def test_initialize_rejects_weak_passwords(tmp_path: Path) -> None:
     service, _repo, _store = _service(tmp_path)
 
     with pytest.raises(HiddenSpacePasswordError):
-        service.initialize("abc", "abc", "hint")
+        service.initialize("abc", "abc")
     with pytest.raises(HiddenSpacePasswordError):
-        service.initialize("hé!!", "hé!!", "hint")  # non-ASCII / punctuation
+        service.initialize("hé!!", "hé!!")  # non-ASCII / punctuation
     with pytest.raises(HiddenSpacePasswordError):
-        service.initialize("Pass1234", "Mismatch", "hint")
+        service.initialize("Pass1234", "Mismatch")
 
     assert service.is_initialized is False
 
 
-def test_initialize_sets_password_hint_and_toggle(tmp_path: Path) -> None:
+def test_initialize_sets_password_and_toggle(tmp_path: Path) -> None:
     service, _repo, store = _service(tmp_path)
 
-    service.initialize("Pass1234", "Pass1234", "remember the dog")
+    service.initialize("Pass1234", "Pass1234")
 
     assert service.is_initialized is True
-    assert service.hint == "remember the dog"
     settings = store.load()
     # The toggle goes on automatically — setup is itself the "turn on"
     # action; we don't ask the user to flip it a second time.
@@ -76,21 +74,20 @@ def test_initialize_sets_password_hint_and_toggle(tmp_path: Path) -> None:
 
 def test_change_password_requires_old_password(tmp_path: Path) -> None:
     service, _repo, _store = _service(tmp_path)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
 
     with pytest.raises(HiddenSpacePasswordError):
         service.change_password("wrong", "NewPass1", "NewPass1")
 
-    service.change_password("Pass1234", "NewPass1", "NewPass1", hint="new hint")
+    service.change_password("Pass1234", "NewPass1", "NewPass1")
     assert service.verify("Pass1234") is False
     assert service.verify("NewPass1") is True
-    assert service.hint == "new hint"
 
 
 def test_hide_book_clears_favourite_recent_and_normal_collection_membership(tmp_path: Path) -> None:
     repo = InMemoryBookRepository()
     service, repo, _store = _service(tmp_path, repo)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
     # mock-book-03 is favourited + has a last_read_at + sits in "collection-a"
     # (a normal collection). After hiding, all three should be cleared.
     before = next(book for book in repo.list_books() if book.uuid == "mock-book-03")
@@ -110,7 +107,7 @@ def test_hide_book_clears_favourite_recent_and_normal_collection_membership(tmp_
 def test_hide_book_keeps_membership_in_hidable_collection(tmp_path: Path) -> None:
     repo = InMemoryBookRepository()
     service, repo, _store = _service(tmp_path, repo)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
     # Mark "collection-a" hidable so hidden books are allowed to stay.
     service.set_collection_hidable("collection-a", True)
 
@@ -124,7 +121,7 @@ def test_hide_book_keeps_membership_in_hidable_collection(tmp_path: Path) -> Non
 def test_demoting_hidable_collection_drops_hidden_books(tmp_path: Path) -> None:
     repo = InMemoryBookRepository()
     service, repo, _store = _service(tmp_path, repo)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
     service.set_collection_hidable("collection-a", True)
     service.hide_book("mock-book-03")
     assert "collection-a" in next(b for b in repo.list_books() if b.uuid == "mock-book-03").collection_ids
@@ -140,7 +137,7 @@ def test_demoting_hidable_collection_drops_hidden_books(tmp_path: Path) -> None:
 def test_revert_all_clears_hidden_and_hidable_flags(tmp_path: Path) -> None:
     repo = InMemoryBookRepository()
     service, repo, _store = _service(tmp_path, repo)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
     service.set_collection_hidable("collection-a", True)
     service.hide_book("mock-book-03")
     service.hide_book("mock-book-06")
@@ -156,7 +153,7 @@ def test_revert_all_clears_hidden_and_hidable_flags(tmp_path: Path) -> None:
 def test_reset_and_erase_deletes_hidden_books_and_hidable_collections(tmp_path: Path) -> None:
     repo = InMemoryBookRepository()
     service, repo, store = _service(tmp_path, repo)
-    service.initialize("Pass1234", "Pass1234", None)
+    service.initialize("Pass1234", "Pass1234")
     service.set_collection_hidable("collection-a", True)
     service.hide_book("mock-book-03")
     service.hide_book("mock-book-06")
@@ -170,6 +167,5 @@ def test_reset_and_erase_deletes_hidden_books_and_hidable_collections(tmp_path: 
     settings = store.load()
     assert settings.hidden_space_password_hash is None
     assert settings.hidden_space_password_salt is None
-    assert settings.hidden_space_password_hint is None
     assert settings.show_hidden_collection is False
     assert service.is_initialized is False

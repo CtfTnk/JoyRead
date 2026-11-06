@@ -136,12 +136,11 @@ def test_live_widgets_keep_user_content_and_input(qtbot):
 
 def test_password_overlay_retranslates_without_dismissing(qtbot):
     root = QWidget(); qtbot.addWidget(root); root.resize(900, 700); root.show()
-    lock = HiddenSpaceLockOverlay(root, hint="User hint", verify=lambda value: value == "Good123")
+    lock = HiddenSpaceLockOverlay(root, verify=lambda value: value == "Good123")
     lock._password.setText("Wrong123"); lock._on_verify_clicked()
     locale.load_language("Chinese")
     assert lock._state_label.text() == "密码错误。"
     assert lock._password.text() == "Wrong123"
-    assert lock._hint_label.text() == "提示：User hint"
     verified, dismissed = [], []
     lock.verified.connect(lambda: verified.append(True))
     lock.dismissed.connect(lambda: dismissed.append(True))

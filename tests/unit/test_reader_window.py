@@ -1742,7 +1742,7 @@ def _initialised_hidden_space_context(tmp_path: Path, monkeypatch) -> object:
     # persisted state (which MainWindow now reads from the VM, not the
     # raw settings dataclass).
     context = _context_with_imported_book(tmp_path, monkeypatch)
-    context.settings_viewmodel.initialize_hidden_space("Pass1234", "Pass1234", "remember the dog")
+    context.settings_viewmodel.initialize_hidden_space("Pass1234", "Pass1234")
     context.settings = context.settings_store.load()
     return context
 

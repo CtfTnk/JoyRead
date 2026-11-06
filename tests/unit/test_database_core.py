@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import BytesIO
+import json
 import logging
 from pathlib import Path
 import sqlite3
@@ -1450,14 +1451,32 @@ def test_app_settings_round_trips_hidden_space_fields(tmp_path: Path) -> None:
     store.update(
         hidden_space_password_hash="deadbeef",
         hidden_space_password_salt="c2FsdA==",
-        hidden_space_password_hint="dog name",
         show_hidden_collection=True,
     )
     loaded = store.load()
 
     assert loaded.hidden_space_password_hash == "deadbeef"
     assert loaded.hidden_space_password_salt == "c2FsdA=="
-    assert loaded.hidden_space_password_hint == "dog name"
+    assert loaded.show_hidden_collection is True
+
+
+def test_loading_settings_erases_a_retired_hidden_space_hint(tmp_path: Path) -> None:
+    # An earlier version stored the hint in plaintext. Ignoring it would leave
+    # it on disk until some unrelated setting happened to change.
+    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
+    store.update(hidden_space_password_hash="deadbeef", show_hidden_collection=True)
+    raw = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    raw["hidden_space_password_hint"] = "dog name"
+    store.settings_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    loaded = store.load()
+
+    on_disk = json.loads(store.settings_path.read_text(encoding="utf-8"))
+    assert "hidden_space_password_hint" not in on_disk
+    assert "dog name" not in store.settings_path.read_text(encoding="utf-8")
+    # Everything the current version reads survives the rewrite.
+    assert on_disk["hidden_space_password_hash"] == "deadbeef"
+    assert loaded.hidden_space_password_hash == "deadbeef"
     assert loaded.show_hidden_collection is True
 
 

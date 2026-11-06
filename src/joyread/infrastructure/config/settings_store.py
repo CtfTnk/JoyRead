@@ -31,6 +31,17 @@ except ImportError:  # pragma: no cover - platformdirs is a project dependency.
 
 logger = logging.getLogger(__name__)
 
+#: Keys an earlier version wrote that held something the user typed. Ignoring
+#: them is not enough: ``save`` drops unknown keys only on the next settings
+#: change, which can be a long time coming, so ``load`` rewrites the file as
+#: soon as it sees one.
+_RETIRED_USER_DATA_KEYS = frozenset({
+    # The Hidden Space password hint: plaintext, and shown on the lock screen
+    # to whoever sat at the keyboard -- a clue for exactly the people the
+    # password is meant to keep out.
+    "hidden_space_password_hint",
+})
+
 WINDOWS_BACKGROUND_CLEANUP_SECONDS_DEFAULT = 60
 WINDOWS_BACKGROUND_CLEANUP_SECONDS_MIN = 1
 WINDOWS_BACKGROUND_CLEANUP_SECONDS_MAX = 3600
@@ -109,7 +120,6 @@ class AppSettings:
     # completes the password-setup dialog.
     hidden_space_password_hash: str | None = None
     hidden_space_password_salt: str | None = None
-    hidden_space_password_hint: str | None = None
     show_hidden_collection: bool = False
     #: Delete an encrypted archive's extracted pages from the pool once the
     #: last reader of it closes. Those pages are plaintext on disk, so this
@@ -308,7 +318,6 @@ class SettingsStore:
             ),
             hidden_space_password_hash=_coerce_optional_str(raw.get("hidden_space_password_hash")),
             hidden_space_password_salt=_coerce_optional_str(raw.get("hidden_space_password_salt")),
-            hidden_space_password_hint=_coerce_optional_str(raw.get("hidden_space_password_hint")),
             show_hidden_collection=bool(raw.get("show_hidden_collection", False)),
             purge_encrypted_cache_on_close=bool(
                 raw.get("purge_encrypted_cache_on_close", True)
@@ -320,7 +329,26 @@ class SettingsStore:
             settings.reader_page_cache_mb,
             settings.archive_extraction_pool_gb,
         )
+        if _RETIRED_USER_DATA_KEYS.intersection(raw):
+            self._purge_retired_keys(settings)
         return settings
+
+    def _purge_retired_keys(self, settings: AppSettings) -> None:
+        """Rewrite the file without keys this version no longer reads.
+
+        ``save`` writes only the fields ``AppSettings`` still has, so a plain
+        rewrite is the whole purge.
+        """
+
+        try:
+            self.save(settings)
+        except OSError as exc:
+            # A read-only config directory must not stop the app from
+            # starting. The value stays unused, and any later successful
+            # save drops it.
+            logger.warning("Could not remove retired settings from %s: %s", self.settings_path, exc)
+            return
+        logger.info("Removed retired settings from %s", self.settings_path)
 
     def save(self, settings: AppSettings) -> None:
         with operation_scope(

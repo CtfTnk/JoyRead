@@ -1297,17 +1297,14 @@ class MainWindow(QMainWindow):
         )
 
     def _show_hidden_space_setup_dialog(self) -> None:
-        # First-time enable of "Show Collections": prompt for new password +
-        # confirmation + a plaintext hint. The dialog stays open on
-        # validation failure (mismatched / weak password) via the
-        # state-prompt; final confirm only fires when the VM accepts.
-        from PySide6.QtWidgets import QLineEdit
-
-        echo_modes = (QLineEdit.EchoMode.Password, QLineEdit.EchoMode.Password, QLineEdit.EchoMode.Normal)
-
+        # First-time enable of "Show Collections": prompt for a new password
+        # and its confirmation. There is no hint field; HiddenSpaceService
+        # explains why. The dialog stays open on validation failure
+        # (mismatched / weak password) via the state-prompt; final confirm
+        # only fires when the VM accepts.
         def on_confirm(values: tuple[str, ...]) -> None:
-            password, confirm, hint = (values + ("", "", ""))[:3]
-            ok = self._context.settings_viewmodel.initialize_hidden_space(password, confirm, hint or None)
+            password, confirm = (values + ("", ""))[:2]
+            ok = self._context.settings_viewmodel.initialize_hidden_space(password, confirm)
             if not ok:
                 # Validation error already surfaced via hidden_space_error;
                 # the page re-renders so the switch snaps back off.
@@ -1320,7 +1317,7 @@ class MainWindow(QMainWindow):
             # Cheap pre-flight before the VM call so the most common
             # mistakes don't write a state-prompt by emitting an error
             # signal that may bypass the dialog.
-            password, confirm = (values + ("", "", ""))[:2]
+            password, confirm = (values + ("", ""))[:2]
             if len(password) < 4 or not password.isalnum() or not password.isascii():
                 return t("dialog.password_rules_error")
             if password != confirm:
@@ -1329,9 +1326,8 @@ class MainWindow(QMainWindow):
 
         self.dialog_overlay.show_multi_password_input(
             t("dialog.set_password_title"),
-            (t("dialog.password_header"), t("dialog.confirm_password_header"), t("dialog.hint_header")),
+            (t("dialog.password_header"), t("dialog.confirm_password_header")),
             on_confirm=on_confirm,
-            echo_modes=echo_modes,
             confirm_text=t("dialog.btn_confirm"),
             cancel_text=t("dialog.btn_cancel"),
             validator=validator,
@@ -1340,11 +1336,7 @@ class MainWindow(QMainWindow):
 
     def _show_hidden_space_unlock_dialog(self) -> None:
         # Toggling Show Collections on once the feature is initialised:
-        # single password input. The hint is shown as detail text so the
-        # user can recover from a memory lapse without escaping the dialog.
-        hint = self._context.settings_viewmodel.hidden_space_hint
-        detail = t("dialog.hint_prefix", hint=hint) if hint else None
-
+        # single password input.
         def on_confirm(password: str) -> None:
             if self._context.settings_viewmodel.verify_hidden_space_password(password):
                 self._context.settings_viewmodel.set_show_hidden_collection(True)
@@ -1362,7 +1354,6 @@ class MainWindow(QMainWindow):
             confirm_text=t("dialog.btn_verify"),
             cancel_text=t("dialog.btn_cancel"),
             on_cancel=on_cancel,
-            detail_text=detail,
         )
 
     def _show_hidden_space_change_password_dialog(self) -> None:
@@ -2155,7 +2146,6 @@ class MainWindow(QMainWindow):
         # overlay swallows all input so the user can't reach it.
         self._lock_overlay = HiddenSpaceLockOverlay(
             root,
-            hint=self._context.settings_viewmodel.hidden_space_hint,
             verify=self._context.settings_viewmodel.verify_hidden_space_password,
         )
         self._lock_overlay.verified.connect(self._unlock_hidden_space)

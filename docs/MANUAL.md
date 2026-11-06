@@ -409,6 +409,8 @@ secrecy, use an encrypted disk image or full-disk encryption.
 **Reset and Erase**, also under Settings → Privacy, permanently deletes every
 hidden book from disk, deletes every hidable collection, and clears the
 password. It cannot be undone, and it asks you to type `delete` first.
+There is no password hint, so if you forget the password, Reset and Erase is
+the only way to start over.
 
 ## Settings
 
@@ -650,5 +652,5 @@ keep their existing names. System-native file dialog buttons may use OS language
 Custom JSON translations in the stable `Config/locales` directory override
 individual keys. Omitted/empty entries keep the bundled language; missing bundled
 translations fall back to English. Broken override files are ignored and logged.
-User-entered titles, tags, hints, paths and technical diagnostic details remain
+User-entered titles, tags, paths and technical diagnostic details remain
 unchanged.

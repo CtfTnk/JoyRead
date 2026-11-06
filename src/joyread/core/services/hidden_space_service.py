@@ -58,14 +58,14 @@ class HiddenSpaceService:
     def is_initialized(self) -> bool:
         return self._settings.hidden_space_password_hash is not None
 
-    @property
-    def hint(self) -> str | None:
-        return self._settings.hidden_space_password_hint
-
     # ------------------------------------------------------------------
     # Password lifecycle
+    #
+    # There is deliberately no password hint. A hint is stored in plaintext
+    # beside the hash and shown on the lock screen to whoever is at the
+    # keyboard, so it only helps the people the password is meant to stop.
 
-    def initialize(self, password: str, confirm: str, hint: str | None) -> None:
+    def initialize(self, password: str, confirm: str) -> None:
         if self.is_initialized:
             raise HiddenSpacePasswordError("Hidden Space is already set up.", code="already_setup")
         self._validate_pair(password, confirm)
@@ -74,7 +74,6 @@ class HiddenSpaceService:
         self._settings_store.update(
             hidden_space_password_hash=digest,
             hidden_space_password_salt=base64.b64encode(salt).decode("ascii"),
-            hidden_space_password_hint=_normalize_hint(hint),
             show_hidden_collection=True,
         )
         logger.info("Hidden Space initialized")
@@ -95,13 +94,7 @@ class HiddenSpaceService:
         # against timing oracles on the hex string itself.
         return secrets.compare_digest(candidate, stored_hash)
 
-    def change_password(
-        self,
-        old_password: str,
-        new_password: str,
-        confirm: str,
-        hint: str | None = None,
-    ) -> None:
+    def change_password(self, old_password: str, new_password: str, confirm: str) -> None:
         if not self.is_initialized:
             raise HiddenSpacePasswordError("Hidden Space has not been set up yet.", code="not_setup")
         if not self.verify(old_password):
@@ -109,13 +102,10 @@ class HiddenSpaceService:
         self._validate_pair(new_password, confirm)
         salt = secrets.token_bytes(_SALT_BYTES)
         digest = _hash_password(new_password, salt)
-        changes: dict[str, object] = {
-            "hidden_space_password_hash": digest,
-            "hidden_space_password_salt": base64.b64encode(salt).decode("ascii"),
-        }
-        if hint is not None:
-            changes["hidden_space_password_hint"] = _normalize_hint(hint)
-        self._settings_store.update(**changes)
+        self._settings_store.update(
+            hidden_space_password_hash=digest,
+            hidden_space_password_salt=base64.b64encode(salt).decode("ascii"),
+        )
         logger.info("Hidden Space password rotated")
 
     def set_show_hidden_collection(self, enabled: bool) -> None:
@@ -146,8 +136,8 @@ class HiddenSpaceService:
         #      cleanup of book_files, covers, recent, progress, bookmarks).
         #   2. Delete every is_hidable=1 collection (collection_books rows
         #      cascade away via ON DELETE CASCADE).
-        #   3. Clear the password + hint + display toggle from settings so
-        #      the feature returns to its uninitiated state.
+        #   3. Clear the password + display toggle from settings so the
+        #      feature returns to its uninitiated state.
         hidden_book_ids = self._library_service.list_hidden_book_ids()
         hidable_collection_ids = self._library_service.list_hidable_collection_ids()
         logger.info(
@@ -162,7 +152,6 @@ class HiddenSpaceService:
         self._settings_store.update(
             hidden_space_password_hash=None,
             hidden_space_password_salt=None,
-            hidden_space_password_hint=None,
             show_hidden_collection=False,
         )
         logger.info("Hidden Space reset complete; feature back to uninitiated state")
@@ -188,10 +177,3 @@ def _hash_password(password: str, salt: bytes) -> str:
         _PBKDF2_ITERATIONS,
     )
     return digest.hex()
-
-
-def _normalize_hint(hint: str | None) -> str | None:
-    if hint is None:
-        return None
-    cleaned = hint.strip()
-    return cleaned or None

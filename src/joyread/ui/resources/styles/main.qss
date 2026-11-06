@@ -1521,11 +1521,6 @@ QWidget#HiddenSpaceLockOverlay {
     border-radius: __WINDOW_RADIUS__;
 }
 
-QLabel#HiddenSpaceLockHint {
-    color: __TEXT_MUTED_COLOR__;
-    font-size: __SIDEBAR_ITEM_FONT_SIZE__;
-}
-
 QLabel#HiddenSpaceLockState {
     color: __MENU_DESTRUCTIVE__;
     font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;

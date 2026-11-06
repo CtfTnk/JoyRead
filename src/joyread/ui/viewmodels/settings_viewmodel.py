@@ -269,7 +269,6 @@ class SettingsViewModel:
         # mirroring these on the VM keeps the settings page renders synchronous.
         self.hidden_space_initialized = settings.hidden_space_password_hash is not None
         self.show_hidden_collection = bool(settings.show_hidden_collection)
-        self.hidden_space_hint = settings.hidden_space_password_hint
         self.purge_encrypted_cache_on_close = bool(
             getattr(settings, "purge_encrypted_cache_on_close", True)
         )
@@ -636,12 +635,12 @@ class SettingsViewModel:
         # storage swap without re-binding the widget tree.
         self._hidden_space_service = service
 
-    def initialize_hidden_space(self, password: str, confirm: str, hint: str | None) -> bool:
+    def initialize_hidden_space(self, password: str, confirm: str) -> bool:
         service = self._require_hidden_space_service()
         if service is None:
             return False
         try:
-            service.initialize(password, confirm, hint)
+            service.initialize(password, confirm)
         except HiddenSpacePasswordError as exc:
             self.hidden_space_error.emit(_hidden_password_error_text(exc))
             return False
@@ -655,18 +654,12 @@ class SettingsViewModel:
             return False
         return service.verify(password)
 
-    def change_hidden_space_password(
-        self,
-        old_password: str,
-        new_password: str,
-        confirm: str,
-        hint: str | None = None,
-    ) -> bool:
+    def change_hidden_space_password(self, old_password: str, new_password: str, confirm: str) -> bool:
         service = self._require_hidden_space_service()
         if service is None:
             return False
         try:
-            service.change_password(old_password, new_password, confirm, hint)
+            service.change_password(old_password, new_password, confirm)
         except HiddenSpacePasswordError as exc:
             self.hidden_space_error.emit(_hidden_password_error_text(exc))
             return False
@@ -709,7 +702,6 @@ class SettingsViewModel:
         current = self._settings_store.load()
         self.hidden_space_initialized = current.hidden_space_password_hash is not None
         self.show_hidden_collection = bool(current.show_hidden_collection)
-        self.hidden_space_hint = current.hidden_space_password_hint
         self.state_changed.emit()
 
     def _require_hidden_space_service(self) -> HiddenSpaceService | None:

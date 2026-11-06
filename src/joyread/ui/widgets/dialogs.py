@@ -1180,7 +1180,7 @@ class JoyReadDialogOverlay(QWidget):
         on_cancel: Callable[[], None] | None = None,
     ) -> None:
         # Multi-field password panel used by Hidden Space setup (Password /
-        # Confirm / Hint) and Change Password (Old / New / Confirm). The
+        # Confirm) and Change Password (Old / New / Confirm). The
         # validator returns ``None`` on success or a user-visible error
         # string that gets piped into ``set_state_prompt`` so the panel
         # stays open on validation failure.
