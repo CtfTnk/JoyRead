@@ -48,12 +48,15 @@ from joyread.core.reader.pdf import (
     PdfPasswordUnsupportedError,
     PdfReadError,
     PdfValidationResult,
+    PdfVaultLocked,
 )
+from joyread.core.vault import ContentType, SealedFile, VaultLockedError
 from joyread.infrastructure.pdf_document_thread import (
     PDF_CALL_TIMEOUT_SECONDS,
     PdfThreadError,
     pdf_thread,
 )
+from joyread.infrastructure.sealed_pdf_device import SealedPdfDevice
 
 
 logger = logging.getLogger(__name__)
@@ -226,6 +229,8 @@ class PdfImageSession:
         renderer: _AsyncPageRenderer,
         normalize_margins: bool = False,
         document_id: str | None = None,
+        sealed: SealedFile | None = None,
+        device: SealedPdfDevice | None = None,
     ) -> None:
         self._path = path
         self._dimensions = dimensions
@@ -235,6 +240,13 @@ class PdfImageSession:
         self._document: QPdfDocument | None = document
         self._renderer: _AsyncPageRenderer | None = renderer
         self._document_id = document_id or uuid4().hex
+        # A sealed PDF: the decrypting file and the device PDFium reads it
+        # through. The device is a Qt child of the document, so Qt deletes it
+        # with the document; the reference here only keeps its Python half
+        # alive until then. The file is closed after the document is gone,
+        # never before: PDFium may still be reading through it.
+        self._sealed = sealed
+        self._device = device
         self.current_index = 0
 
     @property
@@ -258,6 +270,14 @@ class PdfImageSession:
     def prepare_page(self, request: ReaderPageRequest, _decoder=None) -> PreparedReaderPage[QImage]:  # noqa: ANN001
         if not self.is_valid_index(request.page_index):
             raise PdfReadError(f"Invalid PDF page {request.page_index + 1}.")
+        sealed = self._sealed
+        if sealed is not None and sealed.is_revoked:
+            # QtPdf reads the whole document into PDFium while loading, so a
+            # revoked file cannot stop a render the way it stops an archive
+            # read: PDFium already holds the plaintext. The session has to
+            # refuse instead, and closing it releases that copy.
+            self.close()
+            raise PdfVaultLocked()
         perf_enabled = reader_perf_enabled()
         total_started = perf_counter() if perf_enabled else 0.0
         target = _fit_render_size(
@@ -298,6 +318,11 @@ class PdfImageSession:
             raise
         render_ms = (perf_counter() - started) * 1000.0 if perf_enabled else 0.0
         if image.isNull():
+            device = self._device
+            if device is not None and isinstance(device.last_error, VaultLockedError):
+                # The keyring revoked this book mid-render. Saying so lets the
+                # reader report a locked Hidden Space rather than a bad page.
+                raise PdfVaultLocked()
             raise PdfReadError(f"Could not render PDF page {request.page_index + 1}.")
         image.setDevicePixelRatio(max(1.0, request.device_pixel_ratio))
         copy_started = perf_counter() if perf_enabled else 0.0
@@ -425,20 +450,19 @@ class PdfImageSession:
             with self._state_lock:
                 document, self._document = self._document, None
                 renderer, self._renderer = self._renderer, None
-            if renderer is not None:
-                renderer.dispose()
-            if document is None:
-                logger.info(
-                    "PDF session close finished",
-                    extra={
-                        "event": "pdf.session.close.finished",
-                        "category": "pdf",
-                        "status": "finished",
-                        "document_id": self._document_id,
-                    },
-                )
-                return
-            _dispose_document(document)
+                sealed, self._sealed = self._sealed, None
+            try:
+                if renderer is not None:
+                    renderer.dispose()
+                if document is not None:
+                    _dispose_document(document)
+            finally:
+                # After the document, in a finally: the shutdown hook may have
+                # disposed the document already, and the descriptor still has
+                # to go.
+                self._device = None
+                if sealed is not None:
+                    sealed.close()
             logger.info(
                 "PDF session close finished",
                 extra={
@@ -548,6 +572,125 @@ class PdfImageService:
         except BaseException:
             # Nothing owns the document or renderer until the session exists,
             # so a failure constructing it would otherwise strand both.
+            def dispose_both() -> None:
+                renderer.dispose()
+                _dispose_document(document)
+
+            pdf_thread().post(dispose_both)
+            raise
+
+    def open_sealed(self, sealed: SealedFile, *, source_path: Path) -> PdfImageSession:
+        """Open a PDF sealed in a Hidden Space ``.jrl`` file.
+
+        The session takes ownership of *sealed* and closes it with the
+        document; if opening fails, it is closed here. QtPdf reads the content
+        through :class:`SealedPdfDevice`, decrypting in memory, so no part of
+        the PDF is ever written anywhere.
+        """
+
+        operation = create_operation("pdf.document.open", category="pdf")
+        started = perf_counter()
+        with bind_operation(operation):
+            logger.info(
+                "Sealed PDF open started",
+                extra={
+                    "event": "pdf.document.open.started",
+                    "category": "pdf",
+                    "status": "started",
+                    "action": "sealed",
+                },
+            )
+            try:
+                if sealed.content_type is not ContentType.PDF:
+                    raise PdfOpenError("This sealed book does not hold a PDF.")
+                session = self._open_sealed_bound(sealed, Path(source_path))
+            except Exception as exc:
+                sealed.close()
+                controlled = isinstance(exc, PdfError)
+                logger.log(
+                    logging.WARNING if controlled else logging.ERROR,
+                    "Sealed PDF open failed",
+                    exc_info=None if controlled else True,
+                    extra={
+                        "event": "pdf.document.open.failed",
+                        "category": "pdf",
+                        "status": "failed",
+                        "action": "sealed",
+                        "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                raise
+            logger.info(
+                "Sealed PDF open finished",
+                extra={
+                    "event": "pdf.document.open.finished",
+                    "category": "pdf",
+                    "status": "finished",
+                    "action": "sealed",
+                    "duration_ms": round((perf_counter() - started) * 1000.0, 3),
+                    "document_id": session.document_id,
+                    "page_count": session.page_count,
+                },
+            )
+            return session
+
+    def _open_sealed_bound(self, sealed: SealedFile, source: Path) -> PdfImageSession:
+        def load() -> tuple[
+            QPdfDocument, _AsyncPageRenderer, tuple[tuple[int, int], ...], SealedPdfDevice
+        ]:
+            # Everything is created here, on the PDF thread, so the device has
+            # the same thread affinity as the document that reads it.
+            document = _retain_document(QPdfDocument())
+            try:
+                device = SealedPdfDevice(sealed)
+                # Parented to the document: Qt deletes it after the document
+                # is destroyed, on this thread, whichever path disposes it.
+                device.setParent(document)
+                if not device.open(
+                    QIODevice.OpenModeFlag.ReadOnly | QIODevice.OpenModeFlag.Unbuffered
+                ):
+                    raise PdfOpenError("Could not open a sealed PDF.")
+                # QtPdf reads the whole document through the device here, to
+                # confirm every page is available -- measured, all 24 MB of a
+                # 24 MB PDF in 153 reads, the same as loading a plain file by
+                # path. A render afterwards reads nothing more.
+                document.load(device)
+                error = document.error()
+                if error != QPdfDocument.Error.None_:
+                    if isinstance(device.last_error, VaultLockedError):
+                        raise PdfVaultLocked()
+                    if device.failed_reads:
+                        # PDFium reports a block it could not read as almost
+                        # anything, "password required" included. The device
+                        # knows what actually happened.
+                        raise PdfOpenError("This sealed book is damaged.")
+                    _raise_for_load_error(error, source)
+                page_count = document.pageCount()
+                if page_count <= 0:
+                    raise PdfEmptyError("No pages found in a sealed PDF.")
+                measured = tuple(
+                    _source_dimensions(document, index) for index in range(page_count)
+                )
+                renderer = _AsyncPageRenderer(document)
+            except BaseException:
+                _dispose_document(document)
+                raise
+            return document, renderer, measured, device
+
+        document, renderer, dimensions, device = pdf_thread().call(load)
+        try:
+            return PdfImageSession(
+                source,
+                dimensions,
+                document=document,
+                renderer=renderer,
+                normalize_margins=self._normalize_margins,
+                document_id=uuid4().hex,
+                sealed=sealed,
+                device=device,
+            )
+        except BaseException:
             def dispose_both() -> None:
                 renderer.dispose()
                 _dispose_document(document)

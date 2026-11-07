@@ -156,6 +156,7 @@ class ArchiveScanner:
             requires_sequential_warmup=listing.requires_sequential_warmup,
             random_access_confirmed=listing.random_access_confirmed,
             supports_concurrent_reads=listing.supports_concurrent_reads,
+            handle=listing.handle if listing.handle is not None else source.handle,
         )
         entries = listing.entries
         entry_prefix = transparent_single_root_prefix(entries)
@@ -188,6 +189,23 @@ class ArchiveScanner:
                 or not _depth_is_allowed(next_nested_depth, context.limits.nested_archive_max_depth)
                 or not _depth_is_allowed(nested_global_depth, context.limits.global_file_max_depth)
             ):
+                continue
+            if source.confidential:
+                # A sealed book holds a canonical CBZ, which is flat by
+                # construction, so a nested archive here is not something
+                # JoyRead wrote. Reading one could reach a backend helper that
+                # stages members in a temporary file, which is plaintext on
+                # disk, so it is skipped rather than opened.
+                logger.warning(
+                    "Skipping a nested archive inside a confidential source",
+                    extra={
+                        "event": "archive.nested.skipped",
+                        "category": "archive",
+                        "status": "skipped",
+                        "action": suffix.lstrip("."),
+                        "reason": "confidential",
+                    },
+                )
                 continue
             try:
                 ensure_item_size(entry.size, context.limits.max_extracted_item_bytes, logical_name)

@@ -568,3 +568,18 @@ def test_qt_thumbnail_renderer_prepares_bounded_orientation_aware_preview() -> N
     assert prepared.frame.width() <= 180
     assert prepared.frame.height() <= 310
     assert prepared.frame.height() > prepared.frame.width()
+
+
+def test_a_sealed_book_never_gets_a_plaintext_cover(tmp_path: Path) -> None:
+    """Covers of sealed books are sealed too; nothing here may render one to PNG."""
+
+    service = _thumbnail_service(tmp_path)
+    sealed_path = tmp_path / "Books" / "ab" / "ab12.jrl"
+    sealed_path.parent.mkdir(parents=True)
+    sealed_path.write_bytes(b"JRL1" + bytes(200))
+    book = Book(**{**_sample_book().__dict__, "uuid": "sealed", "file_path": str(sealed_path), "is_hidden": True})
+
+    assert not service.can_generate_from(book)
+    assert service.generate_cover(book, (200, 284)) is None
+    assert service.open_thumbnail_source(book) is None
+    assert not list((service._paths.paths.thumbnails / "covers").glob("sealed-*.png"))

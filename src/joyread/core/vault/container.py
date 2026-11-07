@@ -56,6 +56,7 @@ import secrets
 import struct
 import threading
 from typing import BinaryIO, Callable, Iterator
+import weakref
 
 from Cryptodome.Cipher import ChaCha20_Poly1305
 from Cryptodome.Hash import SHA256
@@ -66,6 +67,7 @@ from joyread.core.vault.errors import (
     VaultFormatError,
     VaultIntegrityError,
     VaultKeyMismatchError,
+    VaultLockedError,
     VaultOperationCancelled,
 )
 from joyread.core.vault.keys import KEY_ID_BYTES, VaultPrivateKey, VaultPublicKey
@@ -345,12 +347,16 @@ class SealedFile:
     Holds the derived payload key, never the vault private key, so a long-lived
     reader does not keep the vault key reachable. Content offsets are relative
     to the content; padding and the trailer are never returned.
+
+    Because it holds its own key, locking the vault does not stop an open
+    reader by itself. :meth:`revoke` does: the vault keyring calls it for every
+    file it opened when the vault locks.
     """
 
     def __init__(self, source: _Source, header: SealedHeader, payload_key: bytes) -> None:
         self.header = header
         self._source = source
-        self._key = payload_key
+        self._key: bytes | None = payload_key
         self._chunk_size = header.chunk_size
         self._stride = self._chunk_size + TAG_BYTES
         body = source.size() - HEADER_BYTES
@@ -436,6 +442,21 @@ class SealedFile:
     def open_content(self) -> SealedContentView:
         return SealedContentView(self)
 
+    @property
+    def is_revoked(self) -> bool:
+        return self._key is None
+
+    def revoke(self) -> None:
+        """Forget the payload key and close the file.
+
+        Every later read raises :class:`VaultLockedError`, including reads of
+        content a :class:`SealedContentView` had already decrypted. A read
+        already in flight finishes; it started while the vault was unlocked.
+        """
+
+        self._key = None
+        self._source.close()
+
     def close(self) -> None:
         self._source.close()
 
@@ -450,24 +471,35 @@ class SealedFile:
             return b""
         if offset < 0 or offset + length > self.plaintext_length:
             raise ValueError("Read outside the sealed plaintext.")
+        key = self._key
+        if key is None:
+            raise VaultLockedError("The sealed file was closed when the vault locked.")
         first = offset // self._chunk_size
         last = (offset + length - 1) // self._chunk_size
-        blob = self._source.read_at(
-            HEADER_BYTES + first * self._stride,
-            (last - first + 1) * self._stride,
-        )
+        try:
+            blob = self._source.read_at(
+                HEADER_BYTES + first * self._stride,
+                (last - first + 1) * self._stride,
+            )
+        except ValueError:
+            # The source refuses reads once closed. If a revoke closed it
+            # between the key check and this read, say so, rather than
+            # reporting a closed file nobody here closed.
+            if self._key is None:
+                raise VaultLockedError("The sealed file was closed when the vault locked.") from None
+            raise
         parts = [
-            self._decrypt_chunk(index, blob[position * self._stride : (position + 1) * self._stride])
+            self._decrypt_chunk(key, index, blob[position * self._stride : (position + 1) * self._stride])
             for position, index in enumerate(range(first, last + 1))
         ]
         start = offset - first * self._chunk_size
         return b"".join(parts)[start : start + length]
 
-    def _decrypt_chunk(self, index: int, piece: bytes) -> bytes:
+    def _decrypt_chunk(self, key: bytes, index: int, piece: bytes) -> bytes:
         final = index == self._chunks - 1
         if len(piece) != (self._last_stride if final else self._stride):
             raise VaultIntegrityError(f"Sealed chunk {index} is truncated.")
-        cipher = ChaCha20_Poly1305.new(key=self._key, nonce=_chunk_nonce(index, final))
+        cipher = ChaCha20_Poly1305.new(key=key, nonce=_chunk_nonce(index, final))
         try:
             return cipher.decrypt_and_verify(piece[:-TAG_BYTES], piece[-TAG_BYTES:])
         except ValueError:
@@ -529,6 +561,11 @@ class SealedContentView(io.RawIOBase):
         return size
 
     def _read_cached(self, offset: int, length: int) -> bytes:
+        if self._sealed.is_revoked:
+            # Already-decrypted chunks are still plaintext. After a lock they
+            # must stop being served like everything else.
+            self._cache.clear()
+            raise VaultLockedError("The sealed file was closed when the vault locked.")
         chunk_size = self._sealed.header.chunk_size
         first = offset // chunk_size
         last = (offset + length - 1) // chunk_size
@@ -689,6 +726,10 @@ class _PositionalFile(_Source):
     ``close`` waits for reads in flight before releasing the descriptor.
     Closing it under a running ``pread`` could let the OS hand the same
     number to another file, and the read would return that file's bytes.
+
+    A reader dropped without ``close`` -- an open that failed part-way, a
+    session nobody closed -- still releases its descriptor when it is
+    collected, instead of holding it until the process exits.
     """
 
     def __init__(self, path: Path) -> None:
@@ -697,8 +738,10 @@ class _PositionalFile(_Source):
         self._active = 0
         self._closed = False
         self._fd: int | None = None
+        self._release_fd: weakref.finalize | None = None
         if _HAS_PREAD:
             self._fd = os.open(path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+            self._release_fd = weakref.finalize(self, os.close, self._fd)
         else:
             # Fail at open, not on the first page, if the file is unreadable.
             with path.open("rb"):
@@ -743,7 +786,10 @@ class _PositionalFile(_Source):
 
     def _release_if_idle(self) -> None:
         if self._closed and self._active == 0 and self._fd is not None:
-            os.close(self._fd)
+            # Through the finalizer, which runs its callback at most once, so
+            # an explicit close and a later collection never close twice.
+            if self._release_fd is not None:
+                self._release_fd()
             self._fd = None
 
 

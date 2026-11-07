@@ -13,7 +13,9 @@ from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.app.event_hook import EventHook
 from joyread.app.reader_page_scheduler import ReaderPageScheduler
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
+from joyread.core.archive.formats.jrl_backend import JrlArchiveBackend
 from joyread.core.archive.limits import GIB, MEGAPIXEL
+from joyread.core.file_types import SEALED_EXTENSION
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.models.reader_prefetch import (
     PREFETCH_AFTER_DEFAULT,
@@ -32,6 +34,7 @@ from joyread.core.services.archive_extraction_pool import (
 from joyread.core.services.cache_service import ReaderCacheService
 from joyread.core.services.hash_service import HashService
 from joyread.core.services.path_issue_service import PathIssueService
+from joyread.core.vault import VaultKeyring
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.filesystem.path_service import PathService, WritableLocation
@@ -147,6 +150,10 @@ class ReaderRuntime:
     random_page_scheduler: ReaderPageScheduler
     random_page_tasks: TaskService
     library_random_page_tasks: TaskScope
+    #: The one holder of an unlocked Hidden Space key in this process. The
+    #: readers here are shared by every window, while a vault belongs to one
+    #: Library, so the Library unlocks this and every reader asks it.
+    vault_keyring: VaultKeyring
 
     def reload_settings(self) -> AppSettings:
         return self.preferences.refresh()
@@ -163,6 +170,9 @@ class ReaderRuntime:
         """Release a standalone Reader runtime in producer-to-engine order."""
 
         try:
+            # First: nothing that outlives this call should still be able to
+            # decrypt a sealed book, whatever else fails below.
+            self.vault_keyring.lock()
             self.close_random_pages()
             self.archive_warmup_coordinator.close()
         finally:
@@ -209,12 +219,11 @@ def create_reader_runtime(
     resources = resources or ResourceLoader()
     path_issue_service = path_issue_service or PathIssueService(WindowsLongPathCapability())
     archive_pool = create_archive_extraction_cache(paths, settings, path_issue_service)
-    archive_service = ArchiveImageService(
-        extraction_pool=archive_pool, session_temp_root=paths.session_temp_root
-    )
+    vault_keyring = VaultKeyring()
+    archive_service = create_archive_image_service(paths, archive_pool, vault_keyring)
     pdf_service = PdfImageService()
-    session_service = ReaderSessionService(
-        archive_service, pdf_service, path_issue_service=path_issue_service
+    session_service = create_reader_session_service(
+        archive_service, pdf_service, path_issue_service, vault_keyring
     )
     task_service = TaskService(config.max_background_workers)
     random_page_tasks = TaskService(config.max_background_workers)
@@ -245,6 +254,7 @@ def create_reader_runtime(
             random_page_scheduler=ReaderPageScheduler(capacity=config.max_background_workers),
             random_page_tasks=random_page_tasks,
             library_random_page_tasks=random_page_tasks.create_scope(),
+            vault_keyring=vault_keyring,
         )
     except BaseException:
         try:
@@ -253,6 +263,37 @@ def create_reader_runtime(
         finally:
             shutdown_pdf_thread()
         raise
+
+
+def create_archive_image_service(
+    paths: PathService, pool: ArchiveExtractionCache, vault_keyring: VaultKeyring
+) -> ArchiveImageService:
+    """The process's archive engine, able to read sealed books through *vault_keyring*.
+
+    One definition for every place that builds the engine, including the
+    rebuild after a cache-strategy change: an engine built without the sealed
+    backend would quietly make every hidden book unreadable.
+    """
+
+    return ArchiveImageService(
+        extraction_pool=pool,
+        session_temp_root=paths.session_temp_root,
+        extra_backends={SEALED_EXTENSION: JrlArchiveBackend(vault_keyring)},
+    )
+
+
+def create_reader_session_service(
+    archive_service: ArchiveImageService,
+    pdf_service: PdfImageService,
+    path_issue_service: PathIssueService,
+    vault_keyring: VaultKeyring,
+) -> ReaderSessionService:
+    return ReaderSessionService(
+        archive_service,
+        pdf_service,
+        path_issue_service=path_issue_service,
+        vault_keyring=vault_keyring,
+    )
 
 
 def create_archive_extraction_cache(

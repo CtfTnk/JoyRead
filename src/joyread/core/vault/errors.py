@@ -6,6 +6,10 @@ localized message without parsing exception text -- the same contract
 
 Messages never contain secrets, key material or decrypted bytes. They may name
 a chunk index or a size, which says nothing about the content.
+
+``task_failure_kind`` is the attribute JoyRead's task and logging layers read to
+choose a log level ("controlled", "expected", "cancelled"). It is a plain class
+attribute, so this module still imports nothing from the application.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ class VaultError(Exception):
     """Base class for every vault failure."""
 
     code = "vault_error"
+    task_failure_kind = "controlled"
 
     def __init__(self, message: str, *, code: str | None = None) -> None:
         super().__init__(message)
@@ -58,6 +63,7 @@ class VaultLockedError(VaultError):
     """The operation needs the private key and the vault is locked."""
 
     code = "locked"
+    task_failure_kind = "expected"
 
 
 class UnlockFailedError(VaultError):
@@ -68,6 +74,7 @@ class UnlockFailedError(VaultError):
     """
 
     code = "unlock_failed"
+    task_failure_kind = "expected"
 
 
 class PassphraseRuleError(VaultError):
@@ -77,6 +84,7 @@ class PassphraseRuleError(VaultError):
     """
 
     code = "rules"
+    task_failure_kind = "expected"
 
 
 class RecoveryCodeFormatError(VaultError):
@@ -87,12 +95,14 @@ class RecoveryCodeFormatError(VaultError):
     """
 
     code = "recovery_format"
+    task_failure_kind = "expected"
 
 
 class VaultOperationCancelled(VaultError):
     """A long seal or unseal stopped because its caller asked it to."""
 
     code = "cancelled"
+    task_failure_kind = "cancelled"
 
 
 __all__ = [

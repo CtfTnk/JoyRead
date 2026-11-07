@@ -14,7 +14,7 @@ from dataclasses import replace
 from tempfile import TemporaryDirectory
 from threading import RLock
 from time import perf_counter
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 from uuid import uuid4
 from zipfile import BadZipFile
 
@@ -65,6 +65,7 @@ from joyread.core.archive.formats import (
 from joyread.core.archive.records import ArchiveListing as _ArchiveListing
 from joyread.core.archive.records import ArchiveSource as _ArchiveSource
 from joyread.core.archive.records import PageRecord
+from joyread.core.archive.registry import ArchiveBackendRegistry
 from joyread.core.archive.canonical import (
     CanonicalWriteCancelled,
     CanonicalWriteResult,
@@ -451,6 +452,7 @@ class ArchiveImageService:
         extraction_pool: ArchiveExtractionCache | None = None,
         backend_resolver: ExtractionBackendResolver | None = None,
         session_temp_root: Path | None = None,
+        extra_backends: Mapping[str, ArchiveFormatBackend] | None = None,
     ) -> None:
         if extraction_pool is not None and page_cache_dir is not None:
             raise ValueError("Pass either extraction_pool or page_cache_dir, not both.")
@@ -483,11 +485,17 @@ class ArchiveImageService:
             self._rar_lock,
             self._request_password,
         )
-        self._format_backends: dict[str, ArchiveFormatBackend] = {
-            **{suffix: self._zip_backend for suffix in _ZIP_EXTENSIONS},
-            **{suffix: self._seven_zip_backend for suffix in _SEVEN_ZIP_EXTENSIONS},
-            **{suffix: self._rar_backend for suffix in _RAR_EXTENSIONS},
-        }
+        self._backends = ArchiveBackendRegistry()
+        self._backends.register(_ZIP_EXTENSIONS, self._zip_backend)
+        self._backends.register(_SEVEN_ZIP_EXTENSIONS, self._seven_zip_backend)
+        self._backends.register(_RAR_EXTENSIONS, self._rar_backend)
+        # Formats the core does not build itself, such as sealed Hidden Space
+        # books, whose backend needs the process's vault keyring. They are
+        # readable through ``open`` only: probing, import inspection and
+        # conversion stay limited to ``ARCHIVE_EXTENSIONS``, so a sealed file
+        # can never be imported or repackaged into plaintext.
+        for suffix, backend in (extra_backends or {}).items():
+            self._backends.register((suffix,), backend)
         self._scanner = ArchiveScanner(self._list_entries, self._read_entry)
 
     def probe_archive(
@@ -765,6 +773,11 @@ class ArchiveImageService:
         operation = create_operation("archive.canonical", category="archive")
         started = perf_counter()
         path = Path(archive_path)
+        if self._backends.is_confidential(path.suffix):
+            # Conversion stages pages in a workspace on disk, and its output
+            # is plaintext by definition. A sealed book's content is already
+            # canonical; unsealing it is a decrypting copy, never this.
+            raise ArchiveUnsupportedFormat("A sealed book cannot be converted.")
         with bind_operation(operation):
             effective_limits = limits if limits is not None else ArchiveOpenLimits()
             source = _ArchiveSource(
@@ -963,15 +976,34 @@ class ArchiveImageService:
             raise ArchiveOpenError(f"Archive does not exist: {path}")
         if not path.is_file():
             raise ArchiveOpenError(f"Archive path is not a file: {path}")
-        if suffix not in ARCHIVE_EXTENSIONS:
+        if suffix not in self._backends:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {suffix or path.name}")
         self._assert_source_size(path, effective_limits)
+        confidential = self._backends.is_confidential(suffix)
 
         effective_lease = cache_lease
         # A lease this method builds belongs to this method until the session
         # takes it. One the caller passed in stays the caller's.
         owned_lease: ArchiveCacheLease | None = None
-        if effective_lease is None and allow_persistent_cache and document_cache_key and self._page_cache:
+        if confidential:
+            # Every caller that opens a book for display asks for the pool, and
+            # a sealed book must never enter it. Refusing here, instead of
+            # trusting each caller to know which books are sealed, is what
+            # makes that hold. A lease the caller made would have passed to
+            # the session, so it is released now rather than left pinned.
+            if cache_lease is not None:
+                cache_lease.close()
+                logger.info(
+                    "Refused an extraction-cache lease for a confidential archive",
+                    extra={
+                        "event": "archive.open.cache_refused",
+                        "category": "archive",
+                        "status": "skipped",
+                        "action": suffix.lstrip("."),
+                    },
+                )
+            effective_lease = None
+        elif effective_lease is None and allow_persistent_cache and document_cache_key and self._page_cache:
             owned_lease = ArchiveCacheLease(
                 self._page_cache,
                 document_cache_key,
@@ -984,12 +1016,14 @@ class ArchiveImageService:
             suffix=suffix,
             path=path,
             allow_persistent_cache=effective_lease is not None,
+            confidential=confidential,
         )
         # Nested archives are spilled here so they have a real path, which is
         # what makes the 7-Zip helper reachable for them at all. Ownership
         # passes to the session on success; every path out before that has to
         # remove it, or an archive that fails to open leaks its nested bytes.
-        spill_dir = create_spill_directory(self._session_temp_root)
+        # A confidential source gets none: anything spilled would be plaintext.
+        spill_dir = None if confidential else create_spill_directory(self._session_temp_root)
         try:
             context = _ScanContext(
                 password_provider=password_provider,
@@ -1032,7 +1066,8 @@ class ArchiveImageService:
                 spill_dir=spill_dir,
             )
         except BaseException:
-            rmtree(spill_dir, ignore_errors=True)
+            if spill_dir is not None:
+                rmtree(spill_dir, ignore_errors=True)
             if owned_lease is not None:
                 owned_lease.close()
             raise
@@ -1043,10 +1078,13 @@ class ArchiveImageService:
         Only the top-level source is offered. A session whose pages come from
         several containers, or from a nested archive held in memory, refuses
         bulk conversion on its own; the capability is bound here to the backend
-        that owns the file on disk.
+        that owns the file on disk. A confidential source never gets one: bulk
+        extraction writes every member into a directory.
         """
 
-        backend = self._format_backends.get(source.suffix)
+        if source.confidential:
+            return None
+        backend = self._backends.get(source.suffix)
         supports_bulk = getattr(backend, "supports_bulk_extraction", None)
         extract_members = getattr(backend, "extract_members", None)
         if not callable(supports_bulk) or not callable(extract_members):
@@ -1144,7 +1182,7 @@ class ArchiveImageService:
         )
 
     def _backend_for(self, source: _ArchiveSource) -> ArchiveFormatBackend:
-        backend = self._format_backends.get(source.suffix)
+        backend = self._backends.get(source.suffix)
         if backend is None:
             raise ArchiveUnsupportedFormat(f"Unsupported archive format: {source.suffix}")
         return backend

@@ -300,3 +300,37 @@ def test_storage_rebuild_closes_only_library_owned_readers(qtbot, tmp_path: Path
         assert external.isVisible()
     finally:
         _close_windows(manager, qtbot)
+
+
+def test_a_sealed_book_never_opens_from_the_operating_system(qtbot, tmp_path: Path) -> None:
+    """A ``.jrl`` belongs to its Library's vault; an OS open has no key for it."""
+
+    manager, _mains, readers, _shelf = _manager()
+    sealed = tmp_path / "Books" / "ab" / "ab12.jrl"
+    hidden = SimpleNamespace(uuid="hidden", is_hidden=True)
+    try:
+        assert manager.open_files((sealed,)) == ()
+        # Even carrying a hidden book, a request with no Library owner is refused.
+        assert manager.open_reader(StandaloneReaderRequest(sealed, book=hidden)) is None  # type: ignore[arg-type]
+        assert readers == []
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_the_library_opens_a_sealed_book_only_as_its_own_hidden_book(qtbot, tmp_path: Path) -> None:
+    manager, _mains, readers, _shelf = _manager()
+    sealed = tmp_path / "Books" / "ab" / "ab12.jrl"
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        visible = SimpleNamespace(uuid="visible", is_hidden=False)
+        hidden = SimpleNamespace(uuid="hidden", is_hidden=True)
+
+        assert main.launcher(StandaloneReaderRequest(sealed)) is None
+        assert main.launcher(StandaloneReaderRequest(sealed, book=visible)) is None  # type: ignore[arg-type]
+        window = main.launcher(StandaloneReaderRequest(sealed, book=hidden))  # type: ignore[arg-type]
+
+        assert window is not None
+        assert [reader.request.path for reader in readers] == [sealed.resolve()]
+        assert window in manager.library_reader_windows
+    finally:
+        _close_windows(manager, qtbot)

@@ -22,6 +22,7 @@ from joyread.app.storage_transition_driver import StorageTransitionController
 from joyread.app.windows.ownership import WindowOwnership, ordered_close_sequence
 from joyread.app.windows.novel_provider import NovelReaderProvider
 from joyread.app.windows.requests import StandaloneReaderLauncher, StandaloneReaderRequest
+from joyread.core.file_types import SEALED_EXTENSION, SUPPORTED_READER_EXTENSIONS
 from joyread.ui.views.reader_window import ReaderWindow
 from joyread.ui.widgets.window_geometry import WindowGeometryController, fitted_window_rect
 from joyread.infrastructure import windows_activation
@@ -211,7 +212,13 @@ class ApplicationWindowManager(QObject):
         *,
         owner: QMainWindow | None = None,
     ) -> QMainWindow | None:
-        paths = normalize_launch_paths((request.path,))
+        extensions = SUPPORTED_READER_EXTENSIONS
+        if request.path.suffix.lower() == SEALED_EXTENSION:
+            if not self._may_open_sealed(request, owner):
+                logger.warning("Refusing a sealed book outside its Library path=%s", request.path)
+                return None
+            extensions = SUPPORTED_READER_EXTENSIONS | {SEALED_EXTENSION}
+        paths = normalize_launch_paths((request.path,), supported_extensions=extensions)
         if not paths:
             logger.warning("Ignoring unsupported standalone reader path=%s", request.path)
             return None
@@ -264,6 +271,26 @@ class ApplicationWindowManager(QObject):
             },
         )
         return window
+
+    def _may_open_sealed(
+        self, request: StandaloneReaderRequest, owner: QMainWindow | None
+    ) -> bool:
+        """A sealed book opens only as the Library's own hidden book.
+
+        Its key belongs to the Library's vault, so the Library is the one
+        place a Reader for it can come from. An operating-system open or a
+        dropped file never qualifies: ``normalize_launch_paths`` already drops
+        ``.jrl`` from those, and this keeps the rule true for any request that
+        reaches here some other way.
+        """
+
+        book = request.book
+        return (
+            owner is not None
+            and owner is self._main_window
+            and book is not None
+            and bool(getattr(book, "is_hidden", False))
+        )
 
     def handle_reopen(self) -> QMainWindow | None:
         """Answer a dock/reopen request: raise the last window, else build Main."""

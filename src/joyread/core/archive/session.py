@@ -156,8 +156,17 @@ class ArchiveImageSession:
         self._spill_finalizer = finalize(self, _remove_spill_directories, self._spill_dirs)
         self._pages = tuple(pages)
         self._read_entries = read_entries
-        self._bulk_extract = bulk_extract
         self._contents = tuple(contents)
+        # Readers a backend opened while listing (``ArchiveSource.handle``),
+        # one per distinct source. Closed once reads drain, never in close():
+        # a read still in flight is using them.
+        self._source_handles = tuple(
+            {
+                id(record.source.handle): record.source.handle
+                for record in self._pages
+                if record.source.handle is not None
+            }.values()
+        )
         if cache_lease is not None and (document_cache_key is not None or extraction_cache is not None):
             raise ValueError("Pass cache_lease or legacy cache arguments, not both.")
         if cache_lease is None and document_cache_key is not None and extraction_cache is not None:
@@ -166,6 +175,17 @@ class ArchiveImageSession:
                 document_cache_key,
                 ArchiveCacheScope.PERSISTENT,
             )
+        # The service already refuses both for a confidential source. Checked
+        # again here because this is where pages would actually be written:
+        # a session built some other way must still never persist plaintext
+        # or hand the document to an extractor that writes it to a directory.
+        self._confidential = any(record.source.confidential for record in self._pages)
+        if self._confidential:
+            if cache_lease is not None:
+                cache_lease.close()
+                cache_lease = None
+            bulk_extract = None
+        self._bulk_extract = bulk_extract
         self._cache_lease = cache_lease
         self._cache_signature = cache_signature
         self._limits = limits or ArchiveOpenLimits()
@@ -971,9 +991,16 @@ class ArchiveImageSession:
         mechanism that makes it usable. Encrypting the pool itself is the
         planned answer, and nothing here should be read as that problem
         having been solved.
+
+        A confidential source is the exception: a sealed Hidden Space book
+        never enters the pool, because that would undo the point of sealing it.
         """
 
-        return self._can_use_document_cache() and record.source.allow_persistent_cache
+        return (
+            self._can_use_document_cache()
+            and record.source.allow_persistent_cache
+            and not record.source.confidential
+        )
 
     def _record_is_cache_readable(self, record: PageRecord) -> bool:
         """Whether a cached copy of this page may be served.
@@ -1081,7 +1108,34 @@ class ArchiveImageSession:
         self._lease_finalized = True
         self._closed = True
         self._discard_spilled_archives()
+        self._close_source_handles()
         return True, self._cache_lease
+
+    def _close_source_handles(self) -> None:
+        """Close backend readers. Runs only after every read has drained.
+
+        Best-effort like spill removal: the session is over either way, and
+        one handle failing to close must not keep the others open.
+        """
+
+        handles, self._source_handles = self._source_handles, ()
+        for handle in handles:
+            close = getattr(handle, "close", None)
+            if not callable(close):
+                continue
+            try:
+                close()
+            except Exception:
+                logger.warning(
+                    "Archive source handle failed to close",
+                    exc_info=True,
+                    extra={
+                        "event": "archive.session.handle_close_failed",
+                        "category": "archive",
+                        "status": "failed",
+                        "document_id": self._session_id,
+                    },
+                )
 
     def _discard_spilled_archives(self) -> None:
         self._spill_finalizer.detach()

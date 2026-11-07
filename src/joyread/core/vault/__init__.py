@@ -32,6 +32,7 @@ from joyread.core.vault.errors import (
     VaultLockedError,
     VaultOperationCancelled,
 )
+from joyread.core.vault.keyring import VaultKeyring
 from joyread.core.vault.keys import VaultPrivateKey, VaultPublicKey
 from joyread.core.vault.recovery import RecoveryCode
 from joyread.core.vault.slots import (
@@ -70,6 +71,7 @@ __all__ = [
     "VaultFormatError",
     "VaultIntegrityError",
     "VaultKeyMismatchError",
+    "VaultKeyring",
     "VaultLockedError",
     "VaultOperationCancelled",
     "VaultPrivateKey",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 
@@ -31,6 +31,19 @@ class ArchiveSource:
     # Positive evidence that two page reads of this source run in parallel
     # instead of queueing on the GIL. Opt-in for the same reason as above.
     supports_concurrent_reads: bool = False
+    # The plaintext behind this source must never reach the disk: no
+    # extraction-pool entry, no spilled nested archive, no bulk extraction
+    # (which writes members into a directory), no conversion workspace. Set
+    # for a backend that decrypts in memory -- a sealed Hidden Space book --
+    # and carried by every record scanned out of it. Opt-in like the flags
+    # above: a backend nobody marked is treated as an ordinary archive.
+    confidential: bool = False
+    # A reader the backend opened while listing and needs for every later
+    # read, such as the sealed backend's decrypting index. It belongs to the
+    # session holding this source's pages, which closes it once reads have
+    # drained. Not part of the source's identity, so it never affects
+    # equality, and never printed: it can hold key-derived state.
+    handle: object | None = field(default=None, compare=False, repr=False)
 
     @property
     def display_name(self) -> str:
@@ -71,6 +84,8 @@ class ArchiveListing:
     requires_sequential_warmup: bool = False
     random_access_confirmed: bool = False
     supports_concurrent_reads: bool = False
+    #: Attached to the listed source as ``ArchiveSource.handle``.
+    handle: object | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)

@@ -10,7 +10,6 @@ from time import perf_counter
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits
 from joyread.core.models.cache import ArchiveCacheStrategy, normalize_archive_cache_strategy
 from joyread.core.models.import_policy import normalize_canonical_import_policy
-from joyread.core.reader import ReaderSessionService
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.app.archive_pool_usage_bridge import ArchivePoolUsageBridge
 from joyread.app.event_hook import EventHook
@@ -20,7 +19,9 @@ from joyread.app.reader_runtime import (
     ReaderRuntime,
     archive_open_limits_from_settings as _archive_open_limits_from_settings,
     create_archive_extraction_cache as _create_archive_extraction_cache,
+    create_archive_image_service,
     create_reader_runtime,
+    create_reader_session_service,
 )
 from joyread.app.library_runtime import (
     LibraryRuntime, create_library_runtime, library_construction_settings,
@@ -750,11 +751,10 @@ class AppContext(RuntimeAccess):
             # Stage the new strategy's dependent services before retiring the
             # old pool. A failure leaves the current Reader and Library usable.
             pool = _create_archive_extraction_cache(self.paths, settings, self.path_issue_service)
-            archive = ArchiveImageService(
-                extraction_pool=pool, session_temp_root=self.paths.session_temp_root
-            )
-            session = ReaderSessionService(
-                archive, self.pdf_image_service, path_issue_service=self.path_issue_service
+            keyring = self.reader_runtime.vault_keyring
+            archive = create_archive_image_service(self.paths, pool, keyring)
+            session = create_reader_session_service(
+                archive, self.pdf_image_service, self.path_issue_service, keyring
             )
             reader_cache = self.reader_runtime.cache_service.with_archive_pool(pool)
             cache = CacheService(

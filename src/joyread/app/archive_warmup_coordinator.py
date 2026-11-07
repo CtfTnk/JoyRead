@@ -14,6 +14,7 @@ from uuid import uuid4
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority, TaskStatus
 from joyread.core.archive import ArchiveOpenLimits
 from joyread.core.diagnostics import cache_identity_kind
+from joyread.core.file_types import SEALED_EXTENSION
 from joyread.core.reader import ReaderSessionService
 
 
@@ -77,6 +78,15 @@ class ArchiveWarmupCoordinator:
                 100 if global_depth is None else _core_depth_limit(global_depth)
             ),
         )
+        if Path(source_path).suffix.lower() == SEALED_EXTENSION:
+            # Warming exists to fill the extraction pool, and a sealed book
+            # never enters it. Its sessions report a direct-access plan, so no
+            # caller should get here; refusing keeps that true if one does.
+            logger.debug(
+                "Archive cache warmup refused for a sealed book",
+                extra={"event": "archive.warmup.refused", "category": "cache", "status": "skipped"},
+            )
+            return
         cache_key = document_cache_key or f"session:{uuid4().hex}"
         if self._quiesced_storage_root is not None and self._uses_library(
             Path(source_path), cache_key, self._quiesced_storage_root

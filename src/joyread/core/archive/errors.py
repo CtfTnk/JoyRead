@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from joyread.core.vault.errors import VaultLockedError
+
 
 class ArchiveError(Exception):
     """Base class for controlled archive failures."""
@@ -47,6 +49,21 @@ class ArchivePasswordRejected(ArchiveError):
     def __init__(self, message: str, *, archive_path: str | None = None) -> None:
         super().__init__(message)
         self.archive_path = archive_path
+
+
+class ArchiveVaultLocked(ArchiveError, VaultLockedError):
+    """A sealed book was read while Hidden Space is locked.
+
+    Both an archive error, so archive code treats it as a controlled failure
+    rather than a crash, and a :class:`VaultLockedError`, so a reader can tell
+    "locked" apart from "broken" the same way whether the archive engine or
+    the PDF engine raised it.
+    """
+
+    task_failure_kind = "expected"
+
+    def __init__(self, message: str = "Hidden Space is locked.") -> None:
+        super().__init__(message)
 
 
 class ArchiveDependencyMissing(ArchiveError):

@@ -17,10 +17,12 @@ from joyread.core.archive.models import (
     ArchivePasswordResponse,
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
+from joyread.core.file_types import SEALED_EXTENSION
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease
 from joyread.core.services.path_issue_service import PathIssueService
+from joyread.core.vault import ContentType, VaultKeyring, VaultLockedError
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +60,11 @@ class ReaderSessionService:
     Image-paged formats only. The novel reader's chapter-flow sessions are
     DOM-based rather than image-based, share none of this surface, and are
     opened by that feature's own package -- see ``src/joyread/novel``.
+
+    A sealed Hidden Space book (``.jrl``) opens through *vault_keyring*. Its
+    file name says nothing about what it holds, so the sealed content type
+    decides: a CBZ goes to the archive engine, whose sealed backend reads it
+    in place, and a PDF to the PDF engine through a decrypting device.
     """
 
     def __init__(
@@ -66,10 +73,12 @@ class ReaderSessionService:
         pdf_image_service: PdfImageServicePort | None = None,
         *,
         path_issue_service: PathIssueService | None = None,
+        vault_keyring: VaultKeyring | None = None,
     ) -> None:
         self._archive_image_service = archive_image_service
         self._pdf_image_service = pdf_image_service
         self._path_issue_service = path_issue_service
+        self._vault_keyring = vault_keyring
 
     def open_document(
         self,
@@ -107,6 +116,8 @@ class ReaderSessionService:
                 if self._pdf_image_service is None:
                     raise RuntimeError("No PDF image service is configured.")
                 return self._pdf_image_service.open(path)
+            if suffix == SEALED_EXTENSION:
+                return self._open_sealed(Path(path), limits=limits, cache_lease=cache_lease)
             raise ValueError(f"Unsupported reader format: {suffix or Path(path).name}")
         except Exception as exc:
             if self._path_issue_service is not None:
@@ -116,6 +127,40 @@ class ReaderSessionService:
                     operation="reader_open",
                 )
             raise
+
+    def _open_sealed(
+        self,
+        path: Path,
+        *,
+        limits: ArchiveOpenLimits | None,
+        cache_lease: ArchiveCacheLease | None,
+    ) -> ReaderImageSession:
+        """Open a sealed book with the unlocked vault key.
+
+        Passwords and cache arguments do not apply: a sealed book has no
+        archive password, and its pages are never cached on disk. A lease the
+        caller made is released here rather than silently dropped.
+        """
+
+        if cache_lease is not None:
+            cache_lease.close()
+        keyring = self._vault_keyring
+        if keyring is None:
+            raise VaultLockedError("This reader has no access to Hidden Space.")
+        sealed = keyring.open_sealed(path)
+        content_type = sealed.content_type
+        if content_type is ContentType.PDF:
+            if self._pdf_image_service is None:
+                sealed.close()
+                raise RuntimeError("No PDF image service is configured.")
+            # Ownership of the open file passes to the PDF session.
+            return self._pdf_image_service.open_sealed(sealed, source_path=path)
+        # The archive backend opens its own reader: it needs one per session,
+        # and an extra key unwrap costs about a millisecond.
+        sealed.close()
+        if content_type is ContentType.CBZ:
+            return self._archive_image_service.open(path, limits=limits)
+        raise ValueError("This sealed file does not hold a book.")
 
     def open_archive(
         self,

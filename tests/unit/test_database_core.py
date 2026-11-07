@@ -1337,6 +1337,10 @@ def test_app_context_switches_archive_cache_strategy_and_clears_old_pool(monkeyp
     # everything written into it afterwards.
     survivors = {path.name for path in old_directory.rglob("*") if path.is_file()}
     assert survivors == {ArchiveExtractionPool._SCHEMA_MARKER}
+    # The rebuilt engines still read sealed Hidden Space books, through the
+    # same process-wide keyring.
+    assert ".jrl" in context.archive_image_service._backends
+    assert context.reader_session_service._vault_keyring is context.reader_runtime.vault_keyring
     context.close()
 
 

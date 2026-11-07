@@ -736,3 +736,27 @@ def test_failed_cache_strategy_rebuild_keeps_live_services(tmp_path, monkeypatch
         assert context.book_repository.list_books() == []
     finally:
         context.close()
+
+
+def test_the_reader_runtime_reads_sealed_books_and_locks_them_on_close(tmp_path: Path, qtbot) -> None:  # noqa: ARG001
+    from joyread.core.vault import ContentType, VaultLockedError, VaultPrivateKey
+    from tests.support.sealed_books import canonical_cbz, png_page, seal_file
+
+    store = _store(tmp_path)
+    reader = create_reader_runtime(AppConfig(), store.load(), store)
+    key = VaultPrivateKey.generate()
+    page = png_page(1)
+    book = seal_file(tmp_path / "hidden.jrl", canonical_cbz([page]), key, ContentType.CBZ)
+    session = None
+    try:
+        reader.vault_keyring.unlock(key)
+        session = reader.reader_session_service.open_document(book)
+        assert session.read_pages((0,))[0].image_bytes == page
+    finally:
+        reader.close()
+    try:
+        assert not reader.vault_keyring.is_unlocked
+        with pytest.raises(VaultLockedError):
+            session.read_pages((0,))
+    finally:
+        session.close()
