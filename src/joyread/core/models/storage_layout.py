@@ -20,6 +20,11 @@ So canonical artifacts are addressed by ``file_id`` instead. The cost is one
 duplicated file in a rare case; the benefit is that the one-row-one-file
 invariant stays true for every row, and nothing downstream needs to learn about
 sharing.
+
+Sealed files (Hidden Space, ``joyread.core.vault``) are addressed by
+``file_id`` for a stronger reason: their bytes are fresh random ciphertext on
+every seal, so a content address would change each time the same book is
+sealed, and equal hashes can never mean equal books.
 """
 
 from __future__ import annotations
@@ -33,7 +38,12 @@ STORAGE_KIND_VERBATIM = "verbatim"
 #: JoyRead repackaged the source into its canonical container.
 STORAGE_KIND_CANONICAL = "canonical"
 
-STORAGE_KINDS = frozenset({STORAGE_KIND_VERBATIM, STORAGE_KIND_CANONICAL})
+#: The content is sealed in a ``.jrl`` to the Library's vault key. The stored
+#: hash covers the ciphertext, so integrity checks work while the vault is
+#: locked.
+STORAGE_KIND_SEALED = "sealed"
+
+STORAGE_KINDS = frozenset({STORAGE_KIND_VERBATIM, STORAGE_KIND_CANONICAL, STORAGE_KIND_SEALED})
 
 
 def storage_target(
@@ -50,7 +60,7 @@ def storage_target(
     "repair" a healthy book by moving it somewhere import would never look.
     """
 
-    if storage_kind == STORAGE_KIND_CANONICAL:
+    if not is_content_addressed(storage_kind):
         return books_root / file_id[:2] / f"{file_id}{suffix}"
     return books_root / stored_hash[:2] / f"{stored_hash}{suffix}"
 
@@ -59,15 +69,18 @@ def is_content_addressed(storage_kind: str) -> bool:
     """Whether the artifact's path is derived from its bytes.
 
     Only content-addressed rows may be relocated when their hash changes, or
-    merged with another row that hashes the same.
+    merged with another row that hashes the same. That is verbatim rows only;
+    a kind this code does not recognize is never assumed to qualify, because
+    a wrong "yes" lets maintenance merge two books into one.
     """
 
-    return storage_kind != STORAGE_KIND_CANONICAL
+    return storage_kind == STORAGE_KIND_VERBATIM
 
 
 __all__ = [
     "STORAGE_KINDS",
     "STORAGE_KIND_CANONICAL",
+    "STORAGE_KIND_SEALED",
     "STORAGE_KIND_VERBATIM",
     "is_content_addressed",
     "storage_target",

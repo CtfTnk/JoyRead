@@ -19,3 +19,9 @@ SUPPORTED_READER_EXTENSIONS: frozenset[str] = (
     | PDF_EXTENSIONS
     | (EPUB_EXTENSIONS if EPUB_ACCESS_ENABLED else frozenset())
 )
+
+#: A Hidden Space book sealed to the Library's vault (``joyread.core.vault``).
+#: Deliberately *not* in ``SUPPORTED_READER_EXTENSIONS``: a sealed file opens
+#: only through the Library that owns its key, so it must never become an OS
+#: document type, a launch target or an import candidate.
+SEALED_EXTENSION = ".jrl"

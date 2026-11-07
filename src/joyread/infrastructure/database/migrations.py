@@ -176,6 +176,126 @@ def _migrate_book_files_v13(connection: sqlite3.Connection) -> None:
     connection.execute("CREATE INDEX idx_book_files_state ON book_files(state)")
 
 
+def _migrate_v15_sealed_storage(connection: sqlite3.Connection) -> None:
+    """Add the storage the Hidden Space vault needs, before any code writes it.
+
+    Format-neutral on purpose, so it can land and ship ahead of the feature:
+    nothing reads or writes these until a book is sealed, and an old row means
+    exactly what it meant before.
+
+    * ``book_files.storage_kind`` gains ``'sealed'``. SQLite cannot alter a
+      CHECK constraint, so the table is rebuilt the way migration 13 did it;
+      ``_apply_callable_migration`` switches foreign keys off so the rebuild's
+      ``DROP TABLE`` does not cascade into ``books``.
+    * ``vaults`` holds each vault's public key. ``vault_slots`` holds the
+      private key wrapped once per unlock method. ``slot_type`` has no CHECK:
+      a later build may add a type, and this one must store and skip it.
+    * ``vault_jobs`` is the persistent seal/unseal queue. Hiding a book
+      enqueues a job in the same transaction that hides it, so a crash or quit
+      part-way through resumes instead of leaving a plaintext book hidden.
+    """
+
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(book_files)").fetchall()
+    }
+    if "storage_kind" not in columns:
+        raise sqlite3.OperationalError("book_files is missing storage_kind before migration 15")
+    connection.execute(
+        """
+        CREATE TABLE book_files_v15 (
+            file_id TEXT PRIMARY KEY,
+            original_path TEXT NOT NULL,
+            original_file_name TEXT NOT NULL,
+            storage_path TEXT NOT NULL,
+            file_format TEXT NOT NULL,
+            hash_algorithm TEXT NOT NULL,
+            source_hash TEXT NOT NULL,
+            stored_hash TEXT NOT NULL,
+            storage_kind TEXT NOT NULL
+                CHECK (storage_kind IN ('verbatim', 'canonical', 'sealed')),
+            state TEXT NOT NULL CHECK (state IN ('healthy', 'missing', 'unavailable')),
+            integrity_error_code TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(hash_algorithm, source_hash)
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO book_files_v15(
+            file_id, original_path, original_file_name, storage_path, file_format,
+            hash_algorithm, source_hash, stored_hash, storage_kind,
+            state, integrity_error_code, created_at, updated_at
+        )
+        SELECT
+            file_id, original_path, original_file_name, storage_path, file_format,
+            hash_algorithm, source_hash, stored_hash, storage_kind,
+            state, integrity_error_code, created_at, updated_at
+        FROM book_files
+        """
+    )
+    connection.execute("DROP TABLE book_files")
+    connection.execute("ALTER TABLE book_files_v15 RENAME TO book_files")
+    connection.execute(
+        "CREATE INDEX idx_book_files_source_hash ON book_files(hash_algorithm, source_hash)"
+    )
+    connection.execute(
+        "CREATE INDEX idx_book_files_stored_hash ON book_files(hash_algorithm, stored_hash)"
+    )
+    connection.execute("CREATE INDEX idx_book_files_state ON book_files(state)")
+
+    connection.execute(
+        """
+        CREATE TABLE vaults (
+            vault_id TEXT PRIMARY KEY,
+            format_version INTEGER NOT NULL,
+            public_key BLOB NOT NULL CHECK (length(public_key) = 32),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        CREATE TABLE vault_slots (
+            slot_id TEXT PRIMARY KEY,
+            vault_id TEXT NOT NULL REFERENCES vaults(vault_id) ON DELETE CASCADE,
+            slot_type TEXT NOT NULL,
+            params_json TEXT NOT NULL,
+            wrapped_key BLOB NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute("CREATE INDEX idx_vault_slots_vault ON vault_slots(vault_id)")
+    connection.execute(
+        """
+        CREATE TABLE vault_jobs (
+            job_id TEXT PRIMARY KEY,
+            book_id TEXT NOT NULL REFERENCES books(book_id) ON DELETE CASCADE,
+            file_id TEXT NOT NULL,
+            direction TEXT NOT NULL CHECK (direction IN ('seal', 'unseal')),
+            phase TEXT NOT NULL CHECK (phase IN ('queued', 'written', 'committed', 'failed')),
+            partial_path TEXT,
+            target_path TEXT,
+            previous_path TEXT,
+            expected_hash TEXT,
+            error_code TEXT,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    # One outstanding job per book. Hide-then-unhide replaces the job rather
+    # than queueing a second one that would race the first over the same file.
+    connection.execute("CREATE UNIQUE INDEX idx_vault_jobs_book ON vault_jobs(book_id)")
+    connection.execute("CREATE INDEX idx_vault_jobs_phase ON vault_jobs(phase)")
+
+
 MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
     (
         1,
@@ -508,6 +628,7 @@ MIGRATIONS: tuple[tuple[int, MigrationStep], ...] = (
             DELETE FROM shelf_book_order WHERE scope = 'collection:' || OLD.collection_id AND book_id = OLD.book_id;
         END;
     """),
+    (15, _migrate_v15_sealed_storage),
 )
 
 
