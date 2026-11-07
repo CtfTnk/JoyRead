@@ -44,7 +44,6 @@ def passphrase_slot(key: VaultPrivateKey) -> UnlockSlot:
 
 def test_the_default_cost_is_not_weakened() -> None:
     assert (DEFAULT_SCRYPT_COST.n, DEFAULT_SCRYPT_COST.r, DEFAULT_SCRYPT_COST.p) == (1 << 17, 8, 1)
-    assert PASSPHRASE_MIN_LENGTH == 12
 
 
 def test_the_passphrase_unlocks_and_nothing_else_does(key: VaultPrivateKey, passphrase_slot: UnlockSlot) -> None:
@@ -65,21 +64,38 @@ def test_composed_and_decomposed_accents_are_the_same_passphrase(key: VaultPriva
 
 
 def test_new_passphrase_rules() -> None:
-    assert validate_new_passphrase("a" * 12, "a" * 12) == "a" * 12
-    assert validate_new_passphrase("twelve chars", "twelve chars") == "twelve chars"
-    assert validate_new_passphrase("\U0001f600" * 12, "\U0001f600" * 12)  # characters, not bytes
+    # The soft Hidden Space password's floor, so every existing password
+    # (four or more ASCII letters and digits) is also a valid passphrase.
+    assert PASSPHRASE_MIN_LENGTH == 4
+    for simple in ("abcd", "1234", "twelve chars", "\U0001f600" * 4):
+        assert validate_new_passphrase(simple, simple) == simple
 
-    with pytest.raises(PassphraseRuleError) as short:
-        validate_new_passphrase("a" * 11, "a" * 11)
-    assert short.value.code == "too_short"
+    # Characters, not bytes: three emoji are twelve bytes but too short.
+    for short in ("abc", "\U0001f600" * 3):
+        with pytest.raises(PassphraseRuleError) as refused:
+            validate_new_passphrase(short, short)
+        assert refused.value.code == "too_short"
     with pytest.raises(PassphraseRuleError) as blank:
         validate_new_passphrase(" " * 20, " " * 20)
     assert blank.value.code == "too_short"
     with pytest.raises(PassphraseRuleError) as mismatch:
-        validate_new_passphrase("a" * 12, "a" * 13)
+        validate_new_passphrase("abcd", "abce")
     assert mismatch.value.code == "mismatch"
-    # A decomposed accent is one character, and matches its composed confirm.
-    assert validate_new_passphrase("é" * 12, "é" * 12) == "é" * 12
+
+    # Length counts after NFC: a decomposed accent is one character, and
+    # matches its composed confirm.
+    assert validate_new_passphrase("e\u0301" * 4, "\u00e9" * 4) == "\u00e9" * 4
+    with pytest.raises(PassphraseRuleError) as decomposed:
+        validate_new_passphrase("e\u0301" * 3, "e\u0301" * 3)
+    assert decomposed.value.code == "too_short"
+
+
+def test_a_simple_passphrase_wraps_and_unlocks_like_any_other(key: VaultPrivateKey) -> None:
+    slot = create_passphrase_slot(VAULT, key, validate_new_passphrase("1234", "1234"), cost=FAST)
+
+    assert unlock_with_passphrase(VAULT, [slot], "1234", key.public_key).raw() == key.raw()
+    with pytest.raises(UnlockFailedError):
+        unlock_with_passphrase(VAULT, [slot], "1235", key.public_key)
 
 
 def test_unknown_slot_types_are_skipped(key: VaultPrivateKey, passphrase_slot: UnlockSlot) -> None:

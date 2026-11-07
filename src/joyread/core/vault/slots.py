@@ -46,10 +46,15 @@ from joyread.core.vault.recovery import RecoveryCode
 SLOT_TYPE_PASSPHRASE = "passphrase"
 SLOT_TYPE_RECOVERY = "recovery"
 
-#: Length, not character classes, is what slows an offline guesser. At about
-#: 175 ms per guess an 8-core machine still works through every 4-character
-#: password in days, so the floor sits well above that.
-PASSPHRASE_MIN_LENGTH = 12
+#: Four characters, the floor of the soft Hidden Space password this vault
+#: replaces: people who only want books out of casual sight may keep a short
+#: password, and every existing password is also a valid passphrase. Length,
+#: not character classes, is what slows an offline guesser. At about 175 ms
+#: per guess, eight cores try every 4-character letters-and-digits password
+#: in about four days and every 4-digit PIN in under four minutes, so a short
+#: passphrase stops casual snooping, not someone who copies the Library.
+#: Setup must say so.
+PASSPHRASE_MIN_LENGTH = 4
 
 _SLOT_VERSION = 1
 _AAD_LABEL = b"joyread-vault-slot-v1"
