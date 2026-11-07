@@ -75,6 +75,9 @@ class Theme:
         '"Noto Sans SC", "Noto Sans JP", "Helvetica Neue", '
         '"PingFang SC", "Hiragino Sans", "Arial"'
     )
+    # Fixed-width text the user copies by hand, such as a recovery code:
+    # every character keeps its own column, so a group is easy to re-read.
+    mono_font_family_qss = '"Menlo", "Consolas", "DejaVu Sans Mono", "Courier New", monospace'
 
     # Window and page layout
     window_width = 1200
@@ -547,6 +550,10 @@ class Theme:
     dialog_input_field_padding_vertical = 4
     dialog_input_header_font_size = 14
     dialog_input_state_font_size = 12
+    # Hidden Space recovery code page: the code is the content, so it is
+    # larger than the message around it.
+    dialog_recovery_code_font_size = 16
+    dialog_recovery_code_gap = 8
     dialog_collection_scroll_width = 260
     dialog_collection_scroll_radius = 6
     dialog_collection_scroll_border_width = 1
@@ -902,6 +909,8 @@ class Theme:
             "__DIALOG_FONT_SIZE__": f"{cls.dialog_font_size}px",
             "__DIALOG_INPUT_HEADER_FONT_SIZE__": f"{cls.dialog_input_header_font_size}px",
             "__DIALOG_INPUT_STATE_FONT_SIZE__": f"{cls.dialog_input_state_font_size}px",
+            "__DIALOG_RECOVERY_CODE_FONT_SIZE__": f"{cls.dialog_recovery_code_font_size}px",
+            "__MONO_FONT_FAMILY__": cls.mono_font_family_qss,
             "__DIALOG_INPUT_FIELD_BORDER_WIDTH__": f"{cls.dialog_input_field_border_width}px",
             "__DIALOG_INPUT_FIELD_RADIUS__": f"{cls.dialog_input_field_radius}px",
             "__DIALOG_INPUT_FIELD_PADDING__": (

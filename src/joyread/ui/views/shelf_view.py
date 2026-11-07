@@ -10,6 +10,7 @@ from PySide6.QtGui import QKeyEvent, QKeySequence, QMouseEvent, QResizeEvent, QS
 from PySide6.QtWidgets import QStackedWidget, QVBoxLayout, QWidget
 
 from joyread.core.models.book import Book
+from joyread.core.models.cover_image import CoverImage
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, ShelfViewModel, ViewMode
@@ -69,7 +70,7 @@ class ShelfView(QWidget):
         self._density_timer.setSingleShot(True)
         self._density_timer.timeout.connect(self._sync_display_density)
         self._cover_request_books: dict[str, Book] = {}
-        self._known_cover_paths: dict[str, Path] = {}
+        self._known_covers: dict[str, CoverImage] = {}
         self._pending_cover_requests: set[str] = set()
         self._cover_request_timer = QTimer(self)
         self._cover_request_timer.setSingleShot(True)
@@ -230,18 +231,19 @@ class ShelfView(QWidget):
             return
 
         selected_ids = set(self._viewmodel.selected_book_ids)
-        cover_paths = self._viewmodel.cover_paths
+        covers = self._viewmodel.covers
+        seal_states = self._viewmodel.seal_states
         if self._viewmodel.view_mode == ViewMode.GRID:
-            self.grid.set_books(books, selected_ids, cover_paths)
+            self.grid.set_books(books, selected_ids, covers, seal_states)
             self.stack.setCurrentWidget(self.grid)
         else:
-            self.list_view.set_books(books, selected_ids, cover_paths)
+            self.list_view.set_books(books, selected_ids, covers, seal_states)
             self.stack.setCurrentWidget(self.list_view)
         self.gestures.bind_controls()
-        self._sync_cover_requests(books, cover_paths)
+        self._sync_cover_requests(books, covers)
         self._render_detail_panel()
 
-    def _sync_cover_requests(self, books: list[Book], cover_paths: dict[str, Path]) -> None:
+    def _sync_cover_requests(self, books: list[Book], covers: dict[str, CoverImage]) -> None:
         """Resolve covers for changed entries, coalescing rapid shelf changes.
 
         Selection and reordering leave the book snapshots equal and enqueue no
@@ -250,9 +252,9 @@ class ShelfView(QWidget):
         """
         current = {book.uuid: book for book in books}
         changed = {key for key, book in current.items() if self._cover_request_books.get(key) != book}
-        changed.update((self._known_cover_paths.keys() - cover_paths.keys()) & current.keys())
+        changed.update((self._known_covers.keys() - covers.keys()) & current.keys())
         self._cover_request_books = current
-        self._known_cover_paths = dict(cover_paths)
+        self._known_covers = dict(covers)
         self._pending_cover_requests.update(changed)
         self._pending_cover_requests.intersection_update(current)
         if self._pending_cover_requests:
@@ -273,10 +275,9 @@ class ShelfView(QWidget):
             return
         target_ids = self._menu_target_ids(book_uuid)
         next_favourite_state = not book.is_favourite
-        show_hide_action = (
-            self._viewmodel.hidden_space_initialized
-            and self._viewmodel.show_hidden_collection
-        )
+        # Hide and Unhide appear only while Hidden Space is on screen, which
+        # means unlocked: a hidden book is encrypted at once.
+        show_hide_action = self._viewmodel.show_hidden_collection
         menu = build_book_context_menu(
             self,
             book,
@@ -409,7 +410,7 @@ class ShelfView(QWidget):
             return
         self.detail_panel.set_book(
             book,
-            self._viewmodel.cover_paths.get(book.uuid),
+            self._viewmodel.covers.get(book.uuid),
             self._viewmodel.tags_for_book(book.uuid),
         )
         self._detail_panel_scrim.setGeometry(self.rect())
@@ -435,13 +436,13 @@ class ShelfView(QWidget):
         height = max(0, self.height() - top)
         self._detail_panel.setGeometry(left, top, width, height)
 
-    def _handle_cover_ready(self, book_uuid: str, path: Path) -> None:
+    def _handle_cover_ready(self, book_uuid: str, cover: CoverImage) -> None:
         if book_uuid in self._cover_request_books:
-            self._known_cover_paths[book_uuid] = path
-        self.grid.set_cover_path(book_uuid, path)
-        self.list_view.set_cover_path(book_uuid, path)
+            self._known_covers[book_uuid] = cover
+        self.grid.set_cover(book_uuid, cover)
+        self.list_view.set_cover(book_uuid, cover)
         if self._detail_panel is not None:
-            self._detail_panel.set_cover_path(book_uuid, path)
+            self._detail_panel.set_cover(book_uuid, cover)
 
     def _handle_page_thumbnail_ready(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._is_popup_interaction_active():

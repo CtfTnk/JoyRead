@@ -55,6 +55,9 @@ SLOT_TYPE_RECOVERY = "recovery"
 #: passphrase stops casual snooping, not someone who copies the Library.
 #: Setup must say so.
 PASSPHRASE_MIN_LENGTH = 4
+#: Below this, setup cautions that the passphrase only stops casual snooping.
+#: Twelve letters and digits put an offline search out of reach of a desktop.
+PASSPHRASE_RECOMMENDED_LENGTH = 12
 
 _SLOT_VERSION = 1
 _AAD_LABEL = b"joyread-vault-slot-v1"

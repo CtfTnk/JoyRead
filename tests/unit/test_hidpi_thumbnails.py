@@ -57,11 +57,11 @@ def test_old_density_worker_cannot_replace_current_request():
     vm.set_thumbnail_device_pixel_ratio(2)
     vm.request_covers_for_books(('mock-book-01',))
     tasks.complete(0)
-    assert 'mock-book-01' not in vm.cover_paths
+    assert 'mock-book-01' not in vm.covers
     assert 'mock-book-01' in vm._pending_cover_ids
     tasks.complete(1)
     assert service.cover_sizes == [(200,284),(400,568)]
-    assert str(vm.cover_paths['mock-book-01']).endswith('400x568.png')
+    assert str(vm.covers['mock-book-01'].path).endswith('400x568.png')
 
 
 def test_pending_generated_cover_does_not_overwrite_new_custom_cover():
@@ -70,7 +70,7 @@ def test_pending_generated_cover_does_not_overwrite_new_custom_cover():
     custom = Path('/tmp/chosen-crop.png')
     vm._handle_book_cover_success('mock-book-01', custom)
     tasks.complete(0)
-    assert vm.cover_paths['mock-book-01'] == custom
+    assert vm.covers['mock-book-01'].path == custom
 
 
 def test_detail_density_change_uses_latest_size_and_reuses_open_source():

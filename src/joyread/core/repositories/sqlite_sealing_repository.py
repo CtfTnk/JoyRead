@@ -29,15 +29,11 @@ import sqlite3
 from typing import Iterable
 
 from joyread.core.models.storage_layout import STORAGE_KIND_SEALED
-from joyread.core.models.vault import VaultJob, VaultJobDirection, VaultJobPhase
+from joyread.core.models.vault import CANCELLED_ERROR_CODE, VaultJob, VaultJobDirection, VaultJobPhase
 from joyread.core.repositories.sqlite_book_repository import apply_book_hidden_state
 from joyread.core.repositories.sqlite_vault_repository import insert_vault_job, job_from_row
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 
-
-#: ``error_code`` of an unseal job that a later hide cancelled. Not a failure
-#: to retry: the worker deletes what the job wrote and drops it.
-CANCELLED_ERROR_CODE = "cancelled"
 
 
 class UnhideOutcome(StrEnum):

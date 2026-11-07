@@ -173,7 +173,7 @@ class VaultService:
     def create(self, draft: VaultDraft, typed_code: str) -> VaultRecord:
         """Store *draft* once *typed_code* matches its recovery code, then unlock."""
 
-        _confirm_code(draft.recovery_code, typed_code)
+        confirm_recovery_code(draft.recovery_code, typed_code)
         record = self._repository.create_vault(draft.public_key, draft.slots, vault_id=draft.vault_id)
         with self._lock:
             self._vault = record
@@ -253,7 +253,7 @@ class VaultService:
         return RecoveryCodeDraft(vault.vault_id, code, slot)
 
     def replace_recovery_code(self, draft: RecoveryCodeDraft, typed_code: str) -> None:
-        _confirm_code(draft.recovery_code, typed_code)
+        confirm_recovery_code(draft.recovery_code, typed_code)
         self._repository.replace_slots(draft.vault_id, SLOT_TYPE_RECOVERY, draft.slot)
         logger.info(
             "Hidden Space recovery code replaced",
@@ -281,7 +281,7 @@ class VaultService:
         return vault
 
 
-def _confirm_code(expected: RecoveryCode, typed: str) -> None:
+def confirm_recovery_code(expected: RecoveryCode, typed: str) -> None:
     """Raise unless *typed* is the code shown. Typos and wrong codes differ."""
 
     parsed = RecoveryCode.parse(typed)
@@ -295,4 +295,5 @@ __all__ = [
     "VaultDraft",
     "VaultMissingError",
     "VaultService",
+    "confirm_recovery_code",
 ]

@@ -623,6 +623,8 @@ QWidget#JoyReadDialogOptionArea,
 QWidget#DialogMessageContent,
 QWidget#DialogInputContent,
 QWidget#DialogPasswordContent,
+QWidget#DialogRecoveryCodeContent,
+QWidget#DialogRecoveryCodeActions,
 QWidget#DialogCollectionSelectContent,
 QWidget#DialogTagFilterContent,
 QWidget#DialogInputArea {
@@ -683,6 +685,14 @@ QLabel#DialogDetailPrompt {
     color: __TEXT_COLOR__;
     font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
     font-weight: 400;
+}
+
+/* Hidden Space recovery code page */
+QLabel#DialogRecoveryCode {
+    color: __TEXT_COLOR__;
+    font-family: __MONO_FONT_FAMILY__;
+    font-size: __DIALOG_RECOVERY_CODE_FONT_SIZE__;
+    font-weight: 600;
 }
 
 QFrame#DialogCollectionScrollPanel {
@@ -1221,10 +1231,16 @@ QLabel[class="BookAuthor"] {
     font-weight: 400;
 }
 
-QLabel[class="BookProgressPercent"] {
+QLabel[class="BookProgressPercent"],
+QLabel[class="BookSealState"] {
     color: __TEXT_COLOR__;
     font-size: 12px;
     font-weight: 400;
+}
+
+/* Hidden Space work on a book: in place of its reading progress. */
+QLabel[class="BookSealState"][failed="true"] {
+    color: __MENU_DESTRUCTIVE__;
 }
 
 QToolButton[class="CardButton"] {
@@ -1522,14 +1538,33 @@ QWidget#HiddenSpaceLockOverlay {
 }
 
 QLabel#HiddenSpaceLockState {
-    color: __MENU_DESTRUCTIVE__;
+    color: __TEXT_COLOR__;
     font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
+}
+
+QLabel#HiddenSpaceLockState[error="true"] {
+    color: __MENU_DESTRUCTIVE__;
 }
 
 QLabel[class="HiddenSpaceLockButtonText"] {
     color: __TEXT_COLOR__;
     font-size: __DIALOG_INPUT_HEADER_FONT_SIZE__;
     font-weight: 600;
+}
+
+QFrame[class="HiddenSpaceLockLink"] {
+    background: transparent;
+    border: none;
+}
+
+QLabel[class="HiddenSpaceLockLinkText"] {
+    color: __DIALOG_INPUT_HEADER_COLOR__;
+    font-size: __DIALOG_INPUT_STATE_FONT_SIZE__;
+    text-decoration: underline;
+}
+
+QFrame[class="HiddenSpaceLockLink"]:hover QLabel[class="HiddenSpaceLockLinkText"] {
+    color: __TEXT_COLOR__;
 }
 
 /* Destructive variants reuse the menu red token. */

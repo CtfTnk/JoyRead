@@ -13,6 +13,7 @@ from joyread.core.models.import_policy import normalize_canonical_import_policy
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionCache
 from joyread.app.archive_pool_usage_bridge import ArchivePoolUsageBridge
 from joyread.app.event_hook import EventHook
+from joyread.app.hidden_space_bridge import HiddenSpaceBridge
 from joyread.app.open_policy import LibraryState
 from joyread.app.tasking import TaskHandle, TaskPriority
 from joyread.app.reader_runtime import (
@@ -130,6 +131,7 @@ class AppContext(RuntimeAccess):
     archive_pool_usage_bridge: ArchivePoolUsageBridge | None = None
     #: Queues worker-side path diagnostics onto the GUI thread.
     path_issue_bridge: PathIssueBridge | None = None
+    _hidden_space_bridge: HiddenSpaceBridge | None = None
     # Populated when startup recovery had to fall back to another library;
     # the main window shows it once on launch.
     storage_startup_notice: str | None = None
@@ -147,6 +149,24 @@ class AppContext(RuntimeAccess):
         if self.initial_settings_viewmodel is None:
             raise RuntimeError("Settings ViewModel is unavailable")
         return self.initial_settings_viewmodel
+
+    @property
+    def hidden_space_bridge(self) -> HiddenSpaceBridge:
+        """Vault-lock and sealing events on the GUI thread; see the module.
+
+        Made on first use: the keyring it listens to is the Reader runtime's,
+        which exists before any Library does, so windows can connect to it
+        while the Library is still loading.
+        """
+
+        if self._hidden_space_bridge is None:
+            self._hidden_space_bridge = HiddenSpaceBridge(self.reader_runtime.vault_keyring)
+        return self._hidden_space_bridge
+
+    def attach_hidden_space_bridge(self) -> None:
+        """Follow the open Library's sealing worker, wherever it was replaced."""
+
+        self.hidden_space_bridge.attach_sealing(self._sealing_service())
 
     def close(self) -> None:
         self._closed = True
@@ -186,6 +206,8 @@ class AppContext(RuntimeAccess):
             close_component("archive_warmup", self.archive_warmup_coordinator.close)
         if self.path_issue_bridge is not None:
             close_component("path_issue_bridge", self.path_issue_bridge.detach)
+        if self._hidden_space_bridge is not None:
+            close_component("hidden_space_bridge", self._hidden_space_bridge.close)
         close_component("random_pages", self.reader_runtime.close_random_pages)
         close_component("task_service", self.reader_runtime.task_service.shutdown)
         sealing = self._sealing_service()
@@ -355,7 +377,10 @@ class AppContext(RuntimeAccess):
         if library is None:
             return
         viewmodel = library.settings_viewmodel
-        viewmodel.set_hidden_space_service(library.hidden_space_service)
+        viewmodel.set_hidden_space_service(
+            library.hidden_space_service, task_service=self.reader_runtime.library_task_service
+        )
+        self.attach_hidden_space_bridge()
         viewmodel.set_storage_location(self.settings.storage_location)
         viewmodel.prefetch_window_changed.connect(self.reader_runtime.preferences.refresh)
         viewmodel.archive_open_limits_changed.connect(self.reader_runtime.preferences.refresh)
@@ -687,8 +712,15 @@ class AppContext(RuntimeAccess):
         tag_vm = old_library.tag_management_viewmodel
         main_vm = old_library.main_window_viewmodel
         try:
-            shelf.replace_services(library.library_service, library.thumbnail_service, library.tag_service)
-            settings_vm.set_hidden_space_service(library.hidden_space_service)
+            shelf.replace_services(
+                library.library_service,
+                library.thumbnail_service,
+                library.tag_service,
+                library.hidden_space_service,
+            )
+            settings_vm.set_hidden_space_service(
+                library.hidden_space_service, task_service=self.reader_runtime.library_task_service
+            )
             tag_vm.replace_service(library.tag_service)
         except BaseException:
             # Each rebind changes a retained ViewModel before its next step can
@@ -700,6 +732,7 @@ class AppContext(RuntimeAccess):
                         old_library.library_service,
                         old_library.thumbnail_service,
                         old_library.tag_service,
+                        old_library.hidden_space_service,
                     ),
                 ),
                 (
@@ -724,6 +757,7 @@ class AppContext(RuntimeAccess):
 
         self.reader_runtime.paths = paths
         self.library_runtime = library
+        self.attach_hidden_space_bridge()
         self.settings = settings
         self.paths = paths
         self.cache_service.apply_cache_budgets(
@@ -806,6 +840,8 @@ class AppContext(RuntimeAccess):
                     archive_global_file_max_depth=settings.archive_global_file_max_depth,
                     archive_limits=_archive_open_limits_from_settings(settings),
                     thumbnail_renderer=self.thumbnail_renderer or QtThumbnailRenderer(),
+                    vault=self.library_runtime.vault_service,
+                    sealed_covers=self.library_runtime.sealed_cover_store,
                 )
                 importer = ImportService(
                     self.paths,
@@ -858,6 +894,9 @@ class AppContext(RuntimeAccess):
             self.import_service = importer
             self.library_maintenance_service = maintenance
             self.archive_warmup_coordinator.replace_session_service(session)
+            sealing = self._sealing_service()
+            if sealing is not None:
+                sealing.set_archive_service(archive)
             self.attach_archive_pool_usage_bridge()
             self.settings_viewmodel.set_archive_pool_bytes_provider(lambda: self.archive_extraction_pool.current_bytes)
             cache.apply_cache_budgets(
@@ -1071,6 +1110,7 @@ def _create_app_context_bound(
         lambda _usage: settings_viewmodel.refresh_archive_pool_usage()
     )
     context.attach_archive_pool_usage_bridge()
+    context.attach_hidden_space_bridge()
     context.path_issue_bridge = PathIssueBridge()
     context.path_issue_bridge.issue_detected.connect(reader_runtime.path_issue_viewmodel.present)
     context.path_issue_bridge.attach(path_issue_service)

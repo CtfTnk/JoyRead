@@ -2,13 +2,16 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from tests.support.hidden_space_fakes import FlagHiddenSpaceService
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+from joyread.core.models.cover_image import CoverImage
 from joyread.core.models.tag import Tag
 from joyread.core.services.library_service import LibraryService
 from joyread.core.services.archive_extraction_pool import ArchiveExtractionPool
 from joyread.core.services.cache_service import CacheService
 from joyread.app.tasking import TaskHandle, TaskStatus
 from joyread.core.services.thumbnail_service import DetailThumbnailItem
+from joyread.core.vault import VaultError
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.ui.viewmodels.shelf_viewmodel import (
     FileFilter,
@@ -21,7 +24,8 @@ from joyread.ui.viewmodels.shelf_viewmodel import (
 
 
 def make_viewmodel() -> ShelfViewModel:
-    return ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    repository = InMemoryBookRepository()
+    return ShelfViewModel(LibraryService(repository), hidden_space_service=FlagHiddenSpaceService(repository))
 
 
 class _FakeShelfTagService:
@@ -44,9 +48,11 @@ class _FakeShelfTagService:
 
 
 def make_viewmodel_with_tag_links(links: dict[str, tuple[str, ...]]) -> ShelfViewModel:
+    repository = InMemoryBookRepository()
     return ShelfViewModel(
-        LibraryService(InMemoryBookRepository()),
+        LibraryService(repository),
         tag_service=_FakeShelfTagService(links),  # type: ignore[arg-type]
+        hidden_space_service=FlagHiddenSpaceService(repository),
     )
 
 
@@ -669,9 +675,17 @@ class FakeThumbnailService:
         del book, size
         return None
 
+    def existing_cover(self, book, size):  # noqa: ANN001
+        path = self.existing_cover_path(book, size)
+        return CoverImage.from_path(path) if path is not None else None
+
     def generate_cover(self, book, size):  # noqa: ANN001
         del size
         return Path(f"/tmp/{book.uuid}.png")
+
+    def load_cover(self, book, size):  # noqa: ANN001
+        path = self.generate_cover(book, size)
+        return CoverImage.from_path(path) if path is not None else None
 
     def issue_thumbnail_cache_client(self, client_id):  # noqa: ANN001
         return self.cache_service.issue_thumbnail_client(client_id)
@@ -725,8 +739,8 @@ def test_set_book_cover_path_updates_state_and_emits_cover_even_for_same_path() 
     repo = InMemoryBookRepository()
     vm = ShelfViewModel(LibraryService(repo))
     vm.load_books()
-    emitted: list[tuple[str, Path]] = []
-    vm.cover_ready.connect(lambda book_uuid, path: emitted.append((book_uuid, path)))
+    emitted: list[tuple[str, CoverImage]] = []
+    vm.cover_ready.connect(lambda book_uuid, cover: emitted.append((book_uuid, cover)))
     cover_path = Path("/tmp/mock-book-01-custom-170x241.png")
 
     vm.set_book_cover_path("mock-book-01", cover_path)
@@ -735,7 +749,8 @@ def test_set_book_cover_path_updates_state_and_emits_cover_even_for_same_path() 
     book = next(book for book in vm.books if book.uuid == "mock-book-01")
     assert book.cover_thumbnail_path == str(cover_path)
     assert repo.get_book("mock-book-01").cover_thumbnail_path == str(cover_path)
-    assert emitted == [("mock-book-01", cover_path), ("mock-book-01", cover_path)]
+    cover = CoverImage.from_path(cover_path)
+    assert emitted == [("mock-book-01", cover), ("mock-book-01", cover)]
 
 
 def test_detail_open_submits_one_source_task_and_waits_for_viewport_interest() -> None:
@@ -999,6 +1014,107 @@ def test_hidden_books_can_be_added_to_hidable_collections() -> None:
 
     refreshed = next(book for book in vm.books if book.uuid == "mock-book-04")
     assert "collection-a" in refreshed.collection_ids
+
+
+class _RefusingHiddenSpaceService(FlagHiddenSpaceService):
+    """A Library with no vault yet: hiding is refused, as HiddenSpaceService does."""
+
+    def hide_books(self, book_uuids: tuple[str, ...]) -> tuple[str, ...]:
+        raise VaultError("Set up Hidden Space before hiding books.", code="no_vault")
+
+
+def test_hiding_asks_the_books_readers_to_close_before_it_starts() -> None:
+    repository = InMemoryBookRepository()
+    vm = ShelfViewModel(LibraryService(repository), hidden_space_service=FlagHiddenSpaceService(repository))
+    vm.load_books()
+    requests: list[tuple[tuple[str, ...], bool]] = []
+    # A Reader holding the plaintext open would stop the seal deleting it.
+    vm.book_readers_close_requested.connect(
+        lambda ids: requests.append((ids, repository.get_book("mock-book-03").is_hidden))
+    )
+
+    vm.hide_books(["mock-book-03", "mock-book-03", ""])
+
+    assert requests == [(("mock-book-03",), False)]
+    assert repository.get_book("mock-book-03").is_hidden
+
+
+def test_a_refused_hide_says_why_and_leaves_the_book_where_it_was() -> None:
+    repository = InMemoryBookRepository()
+    vm = ShelfViewModel(LibraryService(repository), hidden_space_service=_RefusingHiddenSpaceService(repository))
+    vm.load_books()
+    errors: list[str] = []
+    vm.hidden_books_failed.connect(errors.append)
+
+    vm.hide_books(["mock-book-03"])
+
+    assert errors == ["Hidden Space is not available right now."]  # Not the developer message.
+    assert "mock-book-03" in {book.uuid for book in vm.visible_books}
+
+
+def test_hiding_without_hidden_space_is_reported_not_attempted() -> None:
+    vm = ShelfViewModel(LibraryService(InMemoryBookRepository()))
+    vm.load_books()
+    errors: list[str] = []
+    closing: list[tuple[str, ...]] = []
+    vm.hidden_books_failed.connect(errors.append)
+    vm.book_readers_close_requested.connect(closing.append)
+
+    vm.hide_books(["mock-book-03"])
+
+    assert errors == ["Hidden Space is not available right now."]
+    assert closing == []
+
+
+class _DecryptingThumbnailService(FakeThumbnailService):
+    """Hands back mock-book-01's cover as decrypted bytes, as for a sealed book."""
+
+    def load_cover(self, book, size):  # noqa: ANN001
+        if book.uuid == "mock-book-01":
+            return CoverImage.from_bytes(b"decrypted cover")
+        return super().load_cover(book, size)
+
+
+def _decrypted_cover_viewmodel() -> tuple[ShelfViewModel, RecordingTaskService]:
+    repository = InMemoryBookRepository()
+    tasks = RecordingTaskService()
+    vm = ShelfViewModel(
+        LibraryService(repository),
+        _DecryptingThumbnailService(),  # type: ignore[arg-type]
+        tasks,  # type: ignore[arg-type]
+        cover_size=(200, 284),
+        hidden_space_service=FlagHiddenSpaceService(repository),
+    )
+    vm.load_books()
+    return vm, tasks
+
+
+def test_decrypted_covers_are_forgotten_when_hidden_space_leaves_the_screen() -> None:
+    vm, tasks = _decrypted_cover_viewmodel()
+    vm.set_show_hidden_collection(True)
+    vm.request_covers_for_books(["mock-book-01", "mock-book-15"])
+    for index in range(len(tasks.callbacks)):
+        tasks.complete(index)
+    assert vm.covers["mock-book-01"].is_in_memory
+
+    vm.set_show_hidden_collection(False)
+
+    assert "mock-book-01" not in vm.covers
+    assert vm.covers["mock-book-15"] == CoverImage.from_path(Path("/tmp/mock-book-15.png"))
+
+
+def test_a_decrypted_cover_finishing_after_the_lock_is_dropped() -> None:
+    vm, tasks = _decrypted_cover_viewmodel()
+    vm.set_show_hidden_collection(True)
+    shown: list[str] = []
+    vm.cover_ready.connect(lambda book_uuid, _cover: shown.append(book_uuid))
+    vm.request_covers_for_books(["mock-book-01"])
+
+    vm.set_show_hidden_collection(False)  # Locked while the cover was decrypting.
+    tasks.complete()
+
+    assert shown == []
+    assert "mock-book-01" not in vm.covers
 
 
 class _FailingDeleteLibraryService(LibraryService):

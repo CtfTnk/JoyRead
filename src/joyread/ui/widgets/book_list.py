@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.book import Book
+from joyread.core.models.vault import BookSealState
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
-from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
+from joyread.core.models.cover_image import CoverImage
+from joyread.ui.widgets.book_card import BookCoverWidget, _apply_seal_state, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
@@ -52,7 +54,7 @@ class BookListWidget(QScrollArea):
         self._rows: dict[str, BookListRowWidget] = {}
         self._book_ids: tuple[str, ...] = ()
         self._selected_ids: set[str] = set()
-        self._cover_paths: dict[str, Path] = {}
+        self._covers: dict[str, CoverImage] = {}
 
         self._content = QWidget()
         self._content.setObjectName("BookListContent")
@@ -104,9 +106,11 @@ class BookListWidget(QScrollArea):
         self,
         books: list[Book],
         selected_ids: set[str],
-        cover_paths: dict[str, Path] | None = None,
+        covers: dict[str, CoverImage] | None = None,
+        seal_states: dict[str, BookSealState] | None = None,
     ) -> None:
-        next_cover_paths = dict(cover_paths or {})
+        next_covers = dict(covers or {})
+        states = seal_states or {}
         book_ids = tuple(book.uuid for book in books)
         wanted = set(book_ids)
         order_changed = self._book_ids != book_ids
@@ -127,14 +131,15 @@ class BookListWidget(QScrollArea):
                 row.set_selected(book.uuid in selected_ids)
             elif row.book != book:
                 row.set_book(book)
-            cover_path = next_cover_paths.get(book.uuid)
-            if cover_path is not None:
-                if cover_path != self._cover_paths.get(book.uuid) or not row.has_cover_path(cover_path):
-                    row.set_cover_path(cover_path)
-            elif book.uuid in self._cover_paths:
+            row.set_seal_state(states.get(book.uuid))
+            cover = next_covers.get(book.uuid)
+            if cover is not None:
+                if cover != self._covers.get(book.uuid) or not row.has_cover(cover):
+                    row.set_cover(cover)
+            elif book.uuid in self._covers:
                 row.clear_cover()
         self.set_selected_ids(selected_ids)
-        self._cover_paths = next_cover_paths
+        self._covers = next_covers
         self._book_ids = book_ids
         if order_changed:
             # Detach layout items, not their widgets. Children retain ownership,
@@ -152,11 +157,11 @@ class BookListWidget(QScrollArea):
                 row.set_selected(book_uuid in selected_ids)
         self._selected_ids = set(selected_ids)
 
-    def set_cover_path(self, book_uuid: str, path: Path) -> None:
-        self._cover_paths[book_uuid] = path
+    def set_cover(self, book_uuid: str, cover: CoverImage) -> None:
+        self._covers[book_uuid] = cover
         row = self._rows.get(book_uuid)
         if row is not None:
-            row.set_cover_path(path, force=True)
+            row.set_cover(cover, force=True)
 
     def eventFilter(self, watched: object, event: QEvent) -> bool:
         if watched in (self.viewport(), self._content) and event.type() == QEvent.Type.MouseButtonPress:
@@ -252,6 +257,12 @@ class BookListRowWidget(QFrame):
         progress_unit_layout.addWidget(self._progress_percent_label)
 
         control_bar.addWidget(progress_unit)
+        self._progress_unit = progress_unit
+        self._seal_state: BookSealState | None = None
+        self._seal_state_label = LocalizedLabel("")
+        self._seal_state_label.setProperty("class", "BookSealState")
+        self._seal_state_label.hide()
+        control_bar.addWidget(self._seal_state_label)
         control_bar.addStretch(1)
 
         option_frame = QWidget()
@@ -301,6 +312,13 @@ class BookListRowWidget(QFrame):
         if previous.is_available != book.is_available:
             self._apply_availability(book.is_available)
 
+    def set_seal_state(self, state: BookSealState | None) -> None:
+        if state == self._seal_state:
+            return
+        self._seal_state = state
+        _apply_seal_state(self._seal_state_label, state)
+        self._progress_unit.setVisible(state is None)
+
     def _apply_availability(self, available: bool) -> None:
         if not available:
             effect = QGraphicsOpacityEffect(self)
@@ -325,14 +343,14 @@ class BookListRowWidget(QFrame):
         set_localized(self._detail_button, "setToolTip", t("menu.detail"))
         set_localized(self._option_button, "setToolTip", t("detail.more_options"))
 
-    def has_cover_path(self, path: Path) -> bool:
-        return self._cover.loaded_path == path
+    def has_cover(self, cover: CoverImage) -> bool:
+        return self._cover.loaded_cover == cover
 
     def clear_cover(self) -> None:
         self._cover.set_pixmap(_placeholder_cover())
 
-    def set_cover_path(self, path: Path, *, force: bool = False) -> None:
-        self._cover.set_pixmap_from_path(path, force=force)
+    def set_cover(self, cover: CoverImage, *, force: bool = False) -> None:
+        self._cover.set_cover_image(cover, force=force)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

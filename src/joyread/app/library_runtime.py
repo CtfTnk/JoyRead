@@ -57,7 +57,6 @@ def library_construction_settings(settings: AppSettings) -> tuple[object, ...]:
         settings.shelf_sort_field, settings.shelf_sort_ascending,
         settings.shelf_file_filter, settings.shelf_view_mode,
         settings.sidebar_collapsed_sections,
-        settings.show_hidden_collection, settings.hidden_space_password_hash,
     )
 
 
@@ -158,6 +157,11 @@ def create_library_runtime(
             ),
         )
         export_service = ExportService(book_repository, reader.hash_service, vault_keyring=reader.vault_keyring)
+        # The vault belongs to this Library's database; the keyring it unlocks
+        # into is process-wide, shared with the Reader engines. Thumbnails need
+        # both: sealed covers live in the store, and sealed pages need the key.
+        vault = VaultService(SqliteVaultRepository(database), reader.vault_keyring)
+        sealed_covers = SealedCoverStore(paths, reader.vault_keyring)
         library_caches = LibraryCacheService(config.cover_index_max_items)
         cache_service = CacheService(
             reader.archive_extraction_pool,
@@ -176,6 +180,8 @@ def create_library_runtime(
             archive_global_file_max_depth=settings.archive_global_file_max_depth,
             archive_limits=limits,
             thumbnail_renderer=reader.thumbnail_renderer,
+            vault=vault,
+            sealed_covers=sealed_covers,
         )
         maintenance = LibraryMaintenanceService(
             paths,
@@ -189,10 +195,6 @@ def create_library_runtime(
             pdf_service=reader.pdf_image_service,
         )
         recovery = maintenance.recover_pending_journal()
-        # The vault belongs to this Library's database; the keyring it unlocks
-        # into is process-wide, shared with the Reader engines.
-        vault = VaultService(SqliteVaultRepository(database), reader.vault_keyring)
-        sealed_covers = SealedCoverStore(paths, reader.vault_keyring)
         sealing = SealingService(
             paths,
             vault,
@@ -220,8 +222,11 @@ def create_library_runtime(
             archive_warmup_coordinator=reader.archive_warmup_coordinator,
             random_page_scheduler=reader.random_page_scheduler,
             random_page_executor=reader.library_random_page_tasks,
+            hidden_space_service=hidden_space,
         )
-        settings_viewmodel = settings_viewmodel or SettingsViewModel(settings, settings_store, hidden_space)
+        settings_viewmodel = settings_viewmodel or SettingsViewModel(
+            settings, settings_store, hidden_space, task_service=reader.library_task_service
+        )
         runtime = LibraryRuntime(
             paths=paths,
             database_interpreter=database,

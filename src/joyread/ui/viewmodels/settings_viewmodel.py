@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Callable
+from pathlib import Path
+from typing import Callable, TypeVar
 
 from joyread.core.models.reader_prefetch import (
     PREFETCH_BEFORE_DEFAULT, PREFETCH_AFTER_DEFAULT,
@@ -25,8 +26,8 @@ from joyread.core.models.import_policy import (
 from joyread.core.archive.limits import ArchiveOpenLimits, GIB, MEGAPIXEL
 from joyread.core.reader.models import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.hidden_space_service import (
-    HiddenSpacePasswordError,
     HiddenSpaceService,
+    HiddenSpaceState,
 )
 from joyread.infrastructure.config.settings_store import (
     AppSettings,
@@ -36,6 +37,19 @@ from joyread.infrastructure.config.settings_store import (
 )
 from joyread.app.open_policy import LibraryState, OpenDisposition, OpenOrigin, decide_open
 from joyread.infrastructure.i18n import locale_service
+from joyread.app.tasking import TaskExecutor, TaskPriority
+from joyread.core.repositories.sqlite_sealing_repository import UnhideOutcome
+from joyread.core.models.vault import BookSealState, book_seal_states
+from joyread.core.services.vault_service import RecoveryCodeDraft, VaultDraft, confirm_recovery_code
+from joyread.core.vault import (
+    PASSPHRASE_RECOMMENDED_LENGTH,
+    RecoveryCode,
+    VaultError,
+    VaultLockedError,
+    normalize_passphrase,
+    validate_new_passphrase,
+)
+from joyread.ui.viewmodels.hidden_space_text import hidden_space_error_text
 from joyread.ui.viewmodels.signals import Signal
 
 
@@ -124,12 +138,40 @@ def canonical_import_policy_from_label(value: str) -> CanonicalImportPolicy:
     return normalize_canonical_import_policy(value)
 
 
+_T = TypeVar("_T")
+
+#: Unhide outcomes that leave a book in Hidden until the worker decrypts it.
+_STILL_DECRYPTING = frozenset({UnhideOutcome.UNSEALING, UnhideOutcome.BUSY})
+
+
+@dataclass(frozen=True)
+class HiddenSpaceStatus:
+    """Outstanding Hidden Space work, for the Privacy status line."""
+
+    encrypting: int = 0
+    decrypting: int = 0
+    failed: int = 0
+
+    @classmethod
+    def from_states(cls, states) -> HiddenSpaceStatus:  # noqa: ANN001 - iterable of BookSealState.
+        counts = {state: 0 for state in BookSealState}
+        for state in states:
+            counts[state] += 1
+        return cls(
+            encrypting=counts[BookSealState.ENCRYPTING],
+            decrypting=counts[BookSealState.DECRYPTING],
+            failed=counts[BookSealState.ENCRYPT_FAILED] + counts[BookSealState.DECRYPT_FAILED],
+        )
+
+
 class SettingsViewModel:
     def __init__(
         self,
         settings: AppSettings | None = None,
         settings_store: SettingsStore | None = None,
         hidden_space_service: HiddenSpaceService | None = None,
+        *,
+        task_service: TaskExecutor | None = None,
     ) -> None:
         settings = settings or AppSettings(storage_location="~/Documents/JoyRead-Library")
         self.state_changed: Signal[None] = Signal()
@@ -160,14 +202,18 @@ class SettingsViewModel:
         # The ViewModel owns only the user intent. AppContext/MainWindow owns
         # task scheduling, confirmation, and the maintenance service itself.
         self.library_maintenance_requested: Signal[None] = Signal()
-        # Hidden Space side effects: surface password-setup outcome and
-        # reset/revert events so MainWindow can refresh the shelf + sidebar
-        # without poking VM internals.
+        # Hidden Space: ``hidden_space_changed`` follows every state change
+        # (set up, unlocked, locked, reset) so MainWindow can refresh the
+        # shelf and sidebar; ``hidden_space_status_changed`` only the
+        # encryption status line, which moves on its own as books seal.
         self.hidden_space_changed: Signal[None] = Signal()
-        self.hidden_space_error: Signal[str] = Signal()
+        self.hidden_space_status_changed: Signal[None] = Signal()
 
         self._settings_store = settings_store
         self._hidden_space_service = hidden_space_service
+        # Hidden Space work is slow (scrypt) or waits on the sealing worker,
+        # so it runs here and reports back on the UI thread.
+        self._task_service = task_service
         self._archive_pool_bytes_provider: Callable[[], int] | None = None
         self.sections = (
             SettingsSection(SettingsSectionKey.GENERAL, locale_service.t("settings.section_general")),
@@ -265,10 +311,11 @@ class SettingsViewModel:
             maximum=ARCHIVE_EXTERNAL_COMMAND_TIMEOUT_MAX_SECONDS,
         )
         self.archive_pool_current_bytes = 0
-        # Hidden Space surface state. The service is the source of truth;
-        # mirroring these on the VM keeps the settings page renders synchronous.
-        self.hidden_space_initialized = settings.hidden_space_password_hash is not None
+        # The persisted Show Collections preference: whether to ask for the
+        # passphrase at launch. Whether Hidden Space is on screen now also
+        # needs the vault unlocked; see ``hidden_space_visible``.
         self.show_hidden_collection = bool(settings.show_hidden_collection)
+        self.hidden_space_status = HiddenSpaceStatus()
         self.purge_encrypted_cache_on_close = bool(
             getattr(settings, "purge_encrypted_cache_on_close", True)
         )
@@ -629,80 +676,457 @@ class SettingsViewModel:
         # including any popup the user has open on one.
         self.archive_pool_usage_changed.emit()
 
-    def set_hidden_space_service(self, service: HiddenSpaceService | None) -> None:
+    def set_hidden_space_service(
+        self,
+        service: HiddenSpaceService | None,
+        *,
+        task_service: TaskExecutor | None = None,
+    ) -> None:
         # Storage reconfiguration rebuilds the service; the VM holds a
         # reference so the settings page can still call methods after a
         # storage swap without re-binding the widget tree.
         self._hidden_space_service = service
+        if task_service is not None:
+            self._task_service = task_service
+        self.refresh_hidden_space_status()
 
-    def initialize_hidden_space(self, password: str, confirm: str) -> bool:
-        service = self._require_hidden_space_service()
-        if service is None:
-            return False
+    # -- Hidden Space: state ------------------------------------------------------
+
+    @property
+    def hidden_space_state(self) -> HiddenSpaceState:
+        service = self._hidden_space_service
+        return service.state if service is not None else HiddenSpaceState.NONE
+
+    @property
+    def hidden_space_visible(self) -> bool:
+        """Hidden Space is on screen: Show Collections on and the vault unlocked."""
+
+        return self.show_hidden_collection and self.hidden_space_state is HiddenSpaceState.UNLOCKED
+
+    @property
+    def hidden_space_has_vault(self) -> bool:
+        return self.hidden_space_state in (HiddenSpaceState.LOCKED, HiddenSpaceState.UNLOCKED)
+
+    @staticmethod
+    def passphrase_rule_error(passphrase: str, confirm: str) -> str | None:
+        """Fast check of a new passphrase pair, for keeping its dialog open."""
+
         try:
-            service.initialize(password, confirm)
-        except HiddenSpacePasswordError as exc:
-            self.hidden_space_error.emit(_hidden_password_error_text(exc))
-            return False
-        self._refresh_hidden_space_state()
-        self.hidden_space_changed.emit()
-        return True
+            validate_new_passphrase(passphrase, confirm)
+        except VaultError as error:
+            return hidden_space_error_text(error)
+        return None
 
-    def verify_hidden_space_password(self, password: str) -> bool:
-        service = self._require_hidden_space_service()
-        if service is None:
-            return False
-        return service.verify(password)
+    @staticmethod
+    def passphrase_is_short(passphrase: str) -> bool:
+        return len(normalize_passphrase(passphrase or "")) < PASSPHRASE_RECOMMENDED_LENGTH
 
-    def change_hidden_space_password(self, old_password: str, new_password: str, confirm: str) -> bool:
-        service = self._require_hidden_space_service()
-        if service is None:
-            return False
+    @staticmethod
+    def recovery_code_format_error(typed: str) -> str | None:
+        """Fast check that *typed* reads as a recovery code at all."""
+
         try:
-            service.change_password(old_password, new_password, confirm)
-        except HiddenSpacePasswordError as exc:
-            self.hidden_space_error.emit(_hidden_password_error_text(exc))
-            return False
+            RecoveryCode.parse(typed)
+        except VaultError as error:
+            return hidden_space_error_text(error)
+        return None
+
+    @staticmethod
+    def export_recovery_code(code: RecoveryCode, destination: Path) -> str | None:
+        """Write the recovery code to a file the user chose. Returns error text.
+
+        Plain text so it opens anywhere and prints; the user picked the place,
+        so it is not app data and does not go through PathService.
+        """
+
+        text = locale_service.t("hidden_space.code_file_text", code=code.formatted())
+        try:
+            Path(destination).write_text(text.rstrip("\n") + "\n", encoding="utf-8")
+        except OSError as error:
+            logger.warning("Recovery code could not be saved: %s", type(error).__name__)
+            return locale_service.t("hidden_space_error.code_not_saved")
+        return None
+
+    @staticmethod
+    def recovery_code_confirmation_error(expected: RecoveryCode, typed: str) -> str | None:
+        """Fast check that *typed* is the code just shown. No secret leaves here."""
+
+        try:
+            confirm_recovery_code(expected, typed)
+        except VaultError as error:
+            return hidden_space_error_text(error)
+        return None
+
+    @property
+    def hidden_space_status_text(self) -> str:
+        """One line for Privacy: problems first, then work still running."""
+
+        status = self.hidden_space_status
+        t = locale_service.t
+        if status.failed:
+            return t("settings.hidden_status_failed", count=status.failed)
+        if status.encrypting:
+            return t("settings.hidden_status_encrypting", count=status.encrypting)
+        if status.decrypting:
+            if self.hidden_space_state is HiddenSpaceState.LOCKED:
+                return t("settings.hidden_status_decrypt_waiting", count=status.decrypting)
+            return t("settings.hidden_status_decrypting", count=status.decrypting)
+        return t("settings.hidden_status_encrypted")
+
+    def refresh_hidden_space_status(self) -> None:
+        """Re-count outstanding encryption work, for the Privacy status line."""
+
+        service = self._hidden_space_service
+        sealing = service.sealing if service is not None and service.has_vault else None
+        status = HiddenSpaceStatus()
+        if sealing is not None:
+            try:
+                states = book_seal_states(sealing.jobs_by_book())
+            except Exception:
+                logger.warning("Hidden Space status could not be read", exc_info=True)
+            else:
+                status = HiddenSpaceStatus.from_states(states.values())
+        if status != self.hidden_space_status:
+            self.hidden_space_status = status
+            self.hidden_space_status_changed.emit()
+
+    def handle_hidden_space_locked(self) -> None:
+        """The vault locked, for whatever reason. The preference is unchanged."""
+
         self._refresh_hidden_space_state()
-        self.hidden_space_changed.emit()
-        return True
+
+    # -- Hidden Space: setup, the legacy upgrade, unlocking ---------------------------
+    #
+    # Each command runs on the task service and calls exactly one of
+    # ``on_success`` or ``on_failure`` (with text to show) on the UI thread.
+
+    def prepare_hidden_space_setup(
+        self,
+        passphrase: str,
+        confirm: str,
+        *,
+        on_success: Callable[[VaultDraft], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Build a new vault to confirm. Nothing is stored until it is."""
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        self._run_hidden_space_task(
+            "hidden-space-prepare",
+            lambda: service.prepare_vault(passphrase, confirm),
+            on_success,
+            on_failure,
+            changes_state=False,
+        )
+
+    def prepare_hidden_space_upgrade(
+        self,
+        old_password: str,
+        *,
+        on_success: Callable[[VaultDraft], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Check the earlier password and build a vault that keeps it."""
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        self._run_hidden_space_task(
+            "hidden-space-prepare-upgrade",
+            lambda: service.prepare_upgrade(old_password),
+            on_success,
+            on_failure,
+            changes_state=False,
+        )
+
+    def finish_hidden_space_setup(
+        self,
+        draft: VaultDraft,
+        typed_code: str,
+        *,
+        on_success: Callable[[int], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Store the vault once its recovery code is confirmed; it starts unlocked.
+
+        Works for a new setup and for the legacy upgrade alike. Succeeds with
+        the number of hidden books queued for encryption.
+        """
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        upgrading = service.state is HiddenSpaceState.LEGACY
+
+        def finish() -> int:
+            if upgrading:
+                queued = service.complete_upgrade(draft, typed_code)
+            else:
+                queued = service.create_vault(draft, typed_code)
+            service.set_show_hidden_collection(True)
+            return queued
+
+        self._run_hidden_space_task("hidden-space-create", finish, on_success, on_failure)
+
+    def unlock_hidden_space(
+        self,
+        passphrase: str,
+        *,
+        on_success: Callable[[None], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Unlock and show Hidden Space. Waiting decryptions and failed seals resume."""
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+
+        def unlock() -> None:
+            service.unlock(passphrase)
+            service.set_show_hidden_collection(True)
+
+        self._run_hidden_space_task(
+            "hidden-space-unlock",
+            unlock,
+            on_success,
+            on_failure,
+            unlock_failed_key="hidden_space_error.incorrect_passphrase",
+        )
+
+    def recover_hidden_space(
+        self,
+        typed_code: str,
+        new_passphrase: str,
+        confirm: str,
+        *,
+        on_success: Callable[[None], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Unlock with the recovery code and set a new passphrase."""
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+
+        def recover() -> None:
+            service.recover(typed_code, new_passphrase, confirm)
+            service.set_show_hidden_collection(True)
+
+        self._run_hidden_space_task(
+            "hidden-space-recover",
+            recover,
+            on_success,
+            on_failure,
+            unlock_failed_key="hidden_space_error.incorrect_recovery_code",
+        )
+
+    def change_hidden_space_passphrase(
+        self,
+        current: str,
+        new_passphrase: str,
+        confirm: str,
+        *,
+        on_success: Callable[[None], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        self._run_hidden_space_task(
+            "hidden-space-change-passphrase",
+            lambda: service.change_passphrase(current, new_passphrase, confirm),
+            on_success,
+            on_failure,
+            changes_state=False,
+            unlock_failed_key="hidden_space_error.incorrect_current_passphrase",
+        )
+
+    def prepare_hidden_space_recovery_code(
+        self,
+        passphrase: str,
+        *,
+        on_success: Callable[[RecoveryCodeDraft], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Make a replacement recovery code to confirm; the old one works until then."""
+
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        self._run_hidden_space_task(
+            "hidden-space-prepare-recovery-code",
+            lambda: service.prepare_recovery_code(passphrase),
+            on_success,
+            on_failure,
+            changes_state=False,
+            unlock_failed_key="hidden_space_error.incorrect_passphrase",
+        )
+
+    def replace_hidden_space_recovery_code(
+        self,
+        draft: RecoveryCodeDraft,
+        typed_code: str,
+        *,
+        on_success: Callable[[None], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        service = self._require_hidden_space_service()
+        if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
+            return
+        self._run_hidden_space_task(
+            "hidden-space-replace-recovery-code",
+            lambda: service.replace_recovery_code(draft, typed_code),
+            on_success,
+            on_failure,
+            changes_state=False,
+        )
+
+    # -- Hidden Space: showing, locking, reverting, erasing ----------------------------
 
     def set_show_hidden_collection(self, enabled: bool) -> None:
-        # Caller (settings page) is responsible for password gating before
-        # turning the toggle on. We just persist + mirror here. No
-        # early-return on "same value" because the mirrored ``self.show_hidden_collection``
-        # can lag the persisted state (e.g. when the service was initialised
-        # after VM construction); cheap settings_store.update is preferable
-        # to a stale-cache no-op.
+        """Persist Show Collections. Turning it off also locks the vault.
+
+        Turning it on alone never shows anything: the caller unlocks first,
+        and the unlock commands persist the preference themselves.
+        """
+
         service = self._require_hidden_space_service()
         if service is None:
             return
         service.set_show_hidden_collection(bool(enabled))
+        if not enabled:
+            # Locking runs the keyring's listeners on this thread (dropping
+            # decrypted covers and pages) and is quick.
+            service.lock()
         self._refresh_hidden_space_state()
-        self.hidden_space_changed.emit()
 
-    def revert_hidden_space(self) -> None:
+    def lock_hidden_space(self, *, notify: bool = True) -> None:
+        """Lock without touching the preference: the next launch asks again.
+
+        ``notify=False`` for a closing window, which has nothing left to
+        refresh; the keyring's own listeners still run either way.
+        """
+
+        service = self._hidden_space_service
+        if service is not None:
+            service.lock()
+        if notify:
+            self._refresh_hidden_space_state()
+
+    def revert_hidden_space(
+        self,
+        *,
+        on_success: Callable[[int], None],
+        on_failure: Callable[[str], None],
+        legacy_password: str | None = None,
+    ) -> None:
+        """Unhide every book and make every hidable collection a normal one.
+
+        With a vault this needs it unlocked: each book is decrypted in the
+        background and leaves Hidden when it is. Succeeds with the number of
+        books still decrypting. ``legacy_password`` is checked first for a
+        Library still on the earlier password.
+        """
+
         service = self._require_hidden_space_service()
         if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
             return
-        service.revert_all()
-        self.hidden_space_changed.emit()
 
-    def reset_hidden_space(self) -> None:
+        def revert() -> int:
+            state = service.state
+            if state is HiddenSpaceState.LEGACY:
+                if legacy_password is None or not service.verify(legacy_password):
+                    raise VaultError("Incorrect password.", code="incorrect_current")
+            elif state is HiddenSpaceState.LOCKED:
+                # Decrypting needs the key; the caller unlocks first.
+                raise VaultLockedError("Hidden Space is locked.")
+            outcomes = service.revert_all()
+            return sum(1 for outcome in outcomes.values() if outcome in _STILL_DECRYPTING)
+
+        self._run_hidden_space_task("hidden-space-revert", revert, on_success, on_failure)
+
+    def reset_hidden_space(
+        self,
+        *,
+        on_success: Callable[[None], None],
+        on_failure: Callable[[str], None],
+    ) -> None:
+        """Delete every hidden book and the vault. Works in every state."""
+
         service = self._require_hidden_space_service()
         if service is None:
+            on_failure(locale_service.t("hidden_space_error.unavailable"))
             return
-        service.reset_and_erase()
-        self._refresh_hidden_space_state()
-        self.hidden_space_changed.emit()
+        self._run_hidden_space_task("hidden-space-reset", service.reset_and_erase, on_success, on_failure)
+
+    def retry_hidden_space_failures(self) -> int:
+        """Try every failed encryption or decryption again now."""
+
+        service = self._hidden_space_service
+        sealing = service.sealing if service is not None and service.has_vault else None
+        if sealing is None:
+            return 0
+        retried = sealing.retry_failed()
+        self.refresh_hidden_space_status()
+        return retried
+
+    # -- Hidden Space: plumbing ----------------------------------------------------------
+
+    def _run_hidden_space_task(
+        self,
+        name: str,
+        work: Callable[[], _T],
+        on_success: Callable[[_T], None],
+        on_failure: Callable[[str], None],
+        *,
+        changes_state: bool = True,
+        unlock_failed_key: str | None = None,
+    ) -> None:
+        def succeeded(result: _T) -> None:
+            if changes_state:
+                self._refresh_hidden_space_state()
+            on_success(result)
+
+        def failed(error: Exception) -> None:
+            if not isinstance(error, VaultError):
+                # Expected failures are the user's to fix and say nothing
+                # secret; anything else is a defect worth its traceback.
+                logger.error(
+                    "Hidden Space task failed name=%s", name,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
+            if changes_state:
+                self._refresh_hidden_space_state()
+            on_failure(hidden_space_error_text(error, unlock_failed_key=unlock_failed_key))
+
+        executor = self._task_service
+        if executor is None:
+            try:
+                result = work()
+            except Exception as error:
+                failed(error)
+                return
+            succeeded(result)
+            return
+        executor.submit(name, work, on_success=succeeded, on_failure=failed, priority=TaskPriority.HIGH)
 
     def _refresh_hidden_space_state(self) -> None:
-        if self._settings_store is None:
-            return
-        current = self._settings_store.load()
-        self.hidden_space_initialized = current.hidden_space_password_hash is not None
-        self.show_hidden_collection = bool(current.show_hidden_collection)
+        if self._settings_store is not None:
+            self.show_hidden_collection = bool(self._settings_store.load().show_hidden_collection)
+        self.refresh_hidden_space_status()
         self.state_changed.emit()
+        self.hidden_space_changed.emit()
 
     def _require_hidden_space_service(self) -> HiddenSpaceService | None:
         if self._hidden_space_service is None:
@@ -801,15 +1225,3 @@ def _depth_to_core_limit(value: int) -> int | None:
     """Convert the settings-only ``-1`` sentinel at the core boundary."""
 
     return None if value == UNLIMITED_DEPTH else value
-
-
-def _hidden_password_error_text(error: HiddenSpacePasswordError) -> str:
-    keys = {
-        "already_setup": "password_error.already_setup",
-        "not_setup": "password_error.not_setup",
-        "incorrect_current": "password_error.incorrect_current",
-        "mismatch": "password_error.mismatch",
-        "rules": "password_error.rules",
-    }
-    key = keys.get(error.code)
-    return locale_service.t(key) if key else locale_service.t("error.operation_failed", detail=str(error))

@@ -148,7 +148,8 @@ menu on a tile for everything else:
 - **Add to…** — put it in a collection
 - **Export** — copy the managed file back out to a folder you choose
 - **Remove** — take it off the shelf, leaving the file alone
-- **Hide** — move it into [Hidden Space](#hidden-space)
+- **Hide** / **Unhide** — move it into or out of [Hidden Space](#hidden-space),
+  which encrypts hidden books; shown while Hidden Space is unlocked
 - **Delete** — remove the library record *and* the app-managed copy
 
 Delete is permanent and asks first. Remove is not — it only drops JoyRead's
@@ -387,30 +388,161 @@ never modified — the cover is stored alongside the library record.
 
 ## Hidden Space
 
-Hidden Space keeps books off the shelf. Hide a book from its **More** menu, and
-it moves out of All, Recent, Favourites, and search results into **Hidden** in
-the sidebar. Collections can be hidden too — right-click a collection and choose
-**Make hidable**, which hides the collection and everything in it. **Make
-normal** puts it back.
+Hidden Space keeps books off the shelf and encrypts them. A hidden book leaves
+All, Recent, Favourites, normal collections, and search results, and appears
+only under **Hidden** in the sidebar. Its file and its cover are stored
+encrypted, so they can be read only with your passphrase or your recovery
+code.
 
-The first time you open Hidden it asks you to set a password, and asks for it
-again each session. Everything else lives in Settings → Privacy → Hidden Space:
-**Show Collections** (whether hidable collections appear in the sidebar),
-**Change Password**, and **Revert all**, which un-hides everything at once.
+### Setting it up
 
-**What Hidden Space is:** a way to keep books off a shelf that someone else
-might glance at.
+Turn on **Show Collections** in Settings → Privacy → Hidden Space. The first
+time, JoyRead sets up Hidden Space:
 
-**What it is not:** encryption. The files are stored exactly like any other book
-in your library, and anyone with access to your account and a file browser can
-read them. The password gates JoyRead's UI, nothing more. If you need real
-secrecy, use an encrypted disk image or full-disk encryption.
+1. **Choose a passphrase** and type it again. It needs at least 4 characters,
+   and any characters work. Under 12 characters, JoyRead warns you: a short
+   passphrase keeps books out of casual view, but someone who copies your
+   library could guess it. Choose **Use It** or **Change It**.
+2. **Save the recovery code.** **Copy** it or use **Save…** to write it to a
+   file. Keep it somewhere safe, away from your library.
+3. **Type the code back** to confirm you saved it. Spaces and letter case do
+   not matter.
 
-**Reset and Erase**, also under Settings → Privacy, permanently deletes every
-hidden book from disk, deletes every hidable collection, and clears the
-password. It cannot be undone, and it asks you to type `delete` first.
-There is no password hint, so if you forget the password, Reset and Erase is
-the only way to start over.
+Cancelling at any step sets nothing up.
+
+The recovery code is the only way back in if you forget your passphrase. There
+is no passphrase hint. **If you lose both, nobody can recover your hidden
+books**, not even JoyRead's developers. Each library has its own Hidden Space,
+with its own passphrase and recovery code.
+
+### Hiding books
+
+**Hide** and **Unhide** appear in a book's **More** menu only while Hidden
+Space is shown.
+
+- **Hide:** the book moves into **Hidden** at once, and JoyRead encrypts it in
+  the background. Its card says **Encrypting…** until that finishes, and you
+  can keep using JoyRead meanwhile.
+- **Unhide:** the book is decrypted first. It shows **Decrypting…** and stays
+  in Hidden until that finishes, then returns to your shelf.
+
+A Reader showing the book closes first. Hiding also takes the book out of
+Favourites, Recent, and normal collections for good; unhiding does not put it
+back. The title, tags, reading position, and bookmarks stay.
+
+Hiding changes how JoyRead stores the book, not its pages: an archive is kept
+as a CBZ inside the encrypted file and comes back as a CBZ when you unhide it.
+A PDF comes back as the same PDF. **Export** works on a hidden book while
+Hidden Space is unlocked, and writes a normal, unencrypted CBZ or PDF where you
+choose.
+
+**Collections can be hidden too.** Right-click a collection and choose **Make
+hidable**. A hidable collection appears only while Hidden Space is shown, and it
+can hold hidden books. **Make normal** turns it back into an ordinary
+collection.
+
+### Locking and unlocking
+
+Hidden Space locks when you:
+
+- turn off **Show Collections**
+- close the Library window
+- quit JoyRead
+- move the library, select another one, or reset it
+
+Locking closes every Reader showing a hidden book, and JoyRead forgets the
+decrypted covers. Hidden Space does not lock by itself after a while or when
+your computer sleeps.
+
+If you closed the Library window with Show Collections still on, the next
+Library window asks for your passphrase:
+
+- **Unlock** shows Hidden Space.
+- **Hide** turns Show Collections off and leaves Hidden Space locked.
+
+Turning Show Collections back on also asks for the passphrase.
+
+**Forgot your passphrase?** Choose **Use recovery code** on that screen, or
+**Recovery Code** in the passphrase dialog. Enter the code, then choose a new
+passphrase. The recovery code keeps working.
+
+### Hidden Space settings
+
+Settings → Privacy → Hidden Space has:
+
+- **Show Collections:** show or hide Hidden Space. Turning it off also locks
+  it.
+- **Encryption:** whether every hidden book is encrypted, how many are still
+  being encrypted or decrypted, and how many failed. **Retry** tries the failed
+  ones again. JoyRead also retries them the next time Hidden Space unlocks and
+  the next time JoyRead starts.
+- **Change Passphrase:** asks for the current passphrase. Your recovery code
+  stays the same.
+- **New Recovery Code:** asks for your passphrase. The old code keeps working
+  until you confirm the new one.
+- **Revert all:** asks for your passphrase, then decrypts and unhides every
+  hidden book and makes hidable collections normal again. Each book returns to
+  the shelf as it finishes.
+- **Reset and Erase:** permanently deletes every hidden book and every hidable
+  collection, and removes the passphrase and the recovery code. It cannot be
+  undone. It does not ask for the passphrase, so it is how you start over if
+  you lost both.
+
+### Upgrading from an earlier version
+
+Earlier versions of JoyRead hid books without encrypting them, behind a Hidden
+Space password. Those books stay hidden, but unencrypted, until you upgrade.
+The next time you show Hidden Space, JoyRead asks for that password:
+
+1. Your password becomes your passphrase.
+2. You save and confirm a recovery code.
+3. JoyRead encrypts the books you had hidden.
+
+You can choose a longer passphrase afterwards with **Change Passphrase**.
+Cancelling changes nothing.
+
+### What Hidden Space protects, and what it does not
+
+**Protected:**
+
+- hidden book files
+- their covers
+- pages JoyRead caches while you read them
+
+JoyRead never writes a decrypted page or cover to disk.
+
+**Not protected:**
+
+- **The library database.** Anyone who can read your files can still see each
+  hidden book's:
+  - title and author
+  - tags and collection names
+  - original file name and location
+  - reading progress and bookmarks
+
+  Importing the same file again is still reported as a duplicate.
+- **Copies from before you hid a book.** Hiding deletes JoyRead's unencrypted
+  copy, but earlier copies can survive:
+  - your original file outside the library
+  - backups such as Time Machine or File History
+  - file-system snapshots
+  - deleted blocks on the disk
+
+  Hiding some RAR and 7z books also unpacks their pages briefly into a
+  temporary folder while JoyRead converts them.
+- **Memory while unlocked.** Decrypted pages and the key are in memory while
+  Hidden Space is unlocked. Your operating system may write memory to disk,
+  for example when it swaps or hibernates.
+- **Short passphrases.** Someone who copies your library can try passphrases
+  offline, as fast as their computer allows. A short passphrase can fall within
+  days, and a 4-digit PIN within minutes. Use 12 characters or more if that
+  matters to you. The recovery code is long enough that it is never the weak
+  point.
+- **Password-protected archives.** JoyRead cannot encrypt these. They stay
+  hidden, marked **Not encrypted**.
+
+If you need everything protected, including the library database, keep your
+library on an encrypted disk or use full-disk encryption as well.
 
 ## Settings
 
@@ -478,8 +610,8 @@ Create, rename, and delete tags across the whole library. See [Tags](#tags).
 
 Three groups:
 
-**Hidden Space** — Show Collections, Change Password, Revert all, and Reset and
-Erase. See [Hidden Space](#hidden-space).
+**Hidden Space** — Show Collections, Encryption, Change Passphrase, New Recovery
+Code, Revert all, and Reset and Erase. See [Hidden Space settings](#hidden-space-settings).
 
 **Storage** — **Library Location** moves your library somewhere else,
 **Select Existing Library** points JoyRead at one that already exists, and
@@ -542,6 +674,9 @@ replaces `~/.cache`. Logs are under the configuration root shown above.
 
 The Library contains `Books/` for managed books, `Database/joyread.sqlite3`
 for records, `Thumbnails/` for covers and thumbnails, and `Backups/` for backups.
+Hidden books and their covers are stored encrypted as `.jrl` files in `Books/`
+and `Thumbnails/covers/`. They open only from the Library, and moving the
+Library takes Hidden Space with it.
 The logs directory contains `joyread.log` and rotated log files. Custom
 translations live in `Config/locales/` beside `settings.json`.
 
@@ -616,6 +751,13 @@ without prepared conversion/cache data. For importable, unencrypted files,
 set **Convert archives on import** to *Always* and re-import; also check that
 the extraction pool has room. Encrypted files can only be read directly and
 cannot use import conversion.
+
+**A hidden book says Not encrypted or Not decrypted.** JoyRead could not
+finish encrypting or decrypting it, for example because the disk was full or
+another app held the file open. The book stays where it was. Fix the cause and
+choose **Retry** in Settings → Privacy → Hidden Space; JoyRead also retries at
+the next unlock and the next start. Password-protected archives cannot be
+encrypted at all.
 
 **Something is inconsistent.** Settings → General → **Verify Library & Clean
 Cache** checks the selected library — changed files, duplicates, missing files,

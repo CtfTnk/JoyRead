@@ -1074,7 +1074,7 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
     ]
 
     assert any("Show Collections" in label for label in labels)
-    assert {"Change Password", "Revert all", "Reset and Erase"}.issubset(set(labels))
+    assert {"Change Passphrase", "New Recovery Code", "Revert all", "Reset and Erase"}.issubset(set(labels))
     # Storage management rows live on the Privacy tab too. The Library Location
     # row shows the directory (address item); Select/Reset are button rows.
     assert {"Library Location", "Select Existing Library", "Reset Library"}.issubset(
@@ -1092,11 +1092,11 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
         return label.text()
 
     by_name = {_row_name(item): item for item in button_items}
-    # Three Hidden Space rows + two Storage button rows (Move is an address row).
-    assert len(button_items) == 5
+    # Four Hidden Space rows + two Storage button rows (Move is an address row).
+    assert len(button_items) == 6
     # Hidden Space buttons are disabled until the feature is initialised; the
     # Storage buttons are always actionable.
-    for hidden_label in ("Change Password", "Revert all", "Reset and Erase"):
+    for hidden_label in ("Change Passphrase", "New Recovery Code", "Revert all", "Reset and Erase"):
         assert by_name[hidden_label].button.isEnabled() is False
     for storage_label in ("Select Existing Library", "Reset Library"):
         assert by_name[storage_label].button.isEnabled() is True
@@ -1109,7 +1109,7 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
     ]
 
 
-def test_privacy_show_collections_toggle_emits_setup_request_when_uninitialised(qtbot) -> None:
+def test_privacy_show_collections_toggle_asks_the_window_to_show_hidden_space(qtbot) -> None:
     apply_theme()
     viewmodel = SettingsViewModel()
     page = SettingsPageWidget(viewmodel, ResourceLoader())
@@ -1118,40 +1118,52 @@ def test_privacy_show_collections_toggle_emits_setup_request_when_uninitialised(
     QApplication.processEvents()
 
     emitted: list[str] = []
-    page.hidden_space_setup_requested.connect(lambda: emitted.append("setup"))
-    page.hidden_space_verify_requested.connect(lambda: emitted.append("verify"))
+    page.hidden_space_show_requested.connect(lambda: emitted.append("show"))
 
     switch = page.findChildren(SettingsSwitchItem)[0].switch
     switch.set_checked(True)
 
-    assert emitted == ["setup"]
+    # Setup, upgrade or unlock is the window's decision, from the vault state.
+    assert emitted == ["show"]
 
 
-def test_privacy_show_collections_toggle_off_persists_immediately(qtbot, tmp_path) -> None:
-    apply_theme()
+def _vault_viewmodel(tmp_path, *, locked: bool):  # noqa: ANN001, ANN202
     from joyread.core.services.hidden_space_service import HiddenSpaceService
     from joyread.core.services.library_service import LibraryService
     from joyread.infrastructure.config.settings_store import SettingsStore
-    from tests.support.in_memory_book_repository import InMemoryBookRepository
+    from tests.support.vault_library import build_vault_library
 
+    library = build_vault_library(tmp_path / "library")
     store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
-    settings = store.load()
-    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
-    service.initialize("Pass1234", "Pass1234")
-    settings = store.load()
-    viewmodel = SettingsViewModel(settings, store, service)
-    page = SettingsPageWidget(viewmodel, ResourceLoader())
-    qtbot.addWidget(page)
-    viewmodel.set_section(SettingsSectionKey.PRIVACY)
-    QApplication.processEvents()
-    assert viewmodel.show_hidden_collection is True
+    service = HiddenSpaceService(
+        store, LibraryService(library.books), vault=library.vault, sealing=library.sealing
+    )
+    draft = service.prepare_vault("Pass1234", "Pass1234")
+    service.create_vault(draft, draft.recovery_code.formatted())
+    if locked:
+        service.lock()
+    return SettingsViewModel(store.load(), store, service), library, store
 
-    switch = page.findChildren(SettingsSwitchItem)[0].switch
-    switch.set_checked(False)
-    QApplication.processEvents()
 
-    assert viewmodel.show_hidden_collection is False
-    assert store.load().show_hidden_collection is False
+def test_privacy_show_collections_toggle_off_locks_and_persists(qtbot, tmp_path) -> None:
+    apply_theme()
+    viewmodel, library, store = _vault_viewmodel(tmp_path, locked=False)
+    try:
+        page = SettingsPageWidget(viewmodel, ResourceLoader())
+        qtbot.addWidget(page)
+        viewmodel.set_section(SettingsSectionKey.PRIVACY)
+        QApplication.processEvents()
+        assert viewmodel.hidden_space_visible is True
+
+        switch = page.findChildren(SettingsSwitchItem)[0].switch
+        switch.set_checked(False)
+        QApplication.processEvents()
+
+        assert viewmodel.show_hidden_collection is False
+        assert store.load().show_hidden_collection is False
+        assert library.keyring.is_unlocked is False
+    finally:
+        library.close()
 
 
 def test_privacy_storage_rows_emit_move_select_reset(qtbot) -> None:
@@ -1232,28 +1244,62 @@ def test_storage_reset_requires_two_step_delete_confirmation(qtbot, monkeypatch)
     window._context.close()
 
 
-def test_privacy_buttons_enable_once_hidden_space_initialised(qtbot, tmp_path) -> None:
+def test_privacy_buttons_follow_the_hidden_space_state(qtbot, tmp_path) -> None:
     apply_theme()
-    from joyread.core.services.hidden_space_service import HiddenSpaceService
-    from joyread.core.services.library_service import LibraryService
-    from joyread.infrastructure.config.settings_store import SettingsStore
-    from joyread.ui.widgets.settings_page import SettingsButtonItem
-    from tests.support.in_memory_book_repository import InMemoryBookRepository
+    from joyread.ui.widgets.settings_page import SettingsButtonItem, SettingsHiddenSpaceStatusItem
 
-    store = SettingsStore(support_root=tmp_path / "support", default_storage_root=tmp_path / "storage")
-    settings = store.load()
-    service = HiddenSpaceService(store, LibraryService(InMemoryBookRepository()))
-    service.initialize("Pass1234", "Pass1234")
-    settings = store.load()
-    viewmodel = SettingsViewModel(settings, store, service)
-    page = SettingsPageWidget(viewmodel, ResourceLoader())
-    qtbot.addWidget(page)
-    viewmodel.set_section(SettingsSectionKey.PRIVACY)
-    QApplication.processEvents()
+    viewmodel, library, _store = _vault_viewmodel(tmp_path, locked=True)
+    try:
+        page = SettingsPageWidget(viewmodel, ResourceLoader())
+        qtbot.addWidget(page)
+        viewmodel.set_section(SettingsSectionKey.PRIVACY)
+        QApplication.processEvents()
 
-    button_items = page.findChildren(SettingsButtonItem)
-    for item in button_items:
-        assert item.button.isEnabled() is True
+        # Locked: everything works without unlocking first, and the switch
+        # says what is true -- Hidden Space is not on screen.
+        for item in page.findChildren(SettingsButtonItem):
+            assert item.button.isEnabled() is True
+        assert page.findChildren(SettingsSwitchItem)[0].switch.checked is False
+        status = page.findChild(SettingsHiddenSpaceStatusItem)
+        assert status is not None
+        assert status.findChild(QLabel, "SettingsHiddenSpaceStatusLabel").text() == "All hidden books encrypted"
+    finally:
+        library.close()
+
+
+def test_privacy_status_line_updates_in_place_and_offers_retry_on_failure(qtbot, tmp_path) -> None:
+    apply_theme()
+    from joyread.ui.widgets.settings_page import SettingsHiddenSpaceStatusItem
+    from tests.support.vault_library import sample_pages, write_cbz
+
+    viewmodel, library, _store = _vault_viewmodel(tmp_path, locked=False)
+    try:
+        page = SettingsPageWidget(viewmodel, ResourceLoader())
+        qtbot.addWidget(page)
+        viewmodel.set_section(SettingsSectionKey.PRIVACY)
+        QApplication.processEvents()
+        status = page.findChild(SettingsHiddenSpaceStatusItem)
+        label = status.findChild(QLabel, "SettingsHiddenSpaceStatusLabel")
+
+        book = library.import_file(write_cbz(tmp_path / "incoming" / "Book.cbz", sample_pages(1)))
+        library.sealing.hide_books([book])
+        viewmodel.refresh_hidden_space_status()
+        assert page.findChild(SettingsHiddenSpaceStatusItem) is status, "the section was rebuilt"
+        assert label.text() == "Encrypting: 1"
+        assert status._action_button.isHidden()
+
+        job = library.sealing.jobs_by_book()[book]
+        library.sealing_repository.fail_job(job.job_id, "io_error")
+        viewmodel.refresh_hidden_space_status()
+        assert label.text() == "Failed: 1"
+        assert not status._action_button.isHidden()
+
+        retried: list[bool] = []
+        page.hidden_space_retry_requested.connect(lambda: retried.append(True))
+        status._action_button.click()
+        assert retried == [True]
+    finally:
+        library.close()
 
 
 def test_encrypted_cache_switch_persists_and_defaults_on(qtbot, tmp_path) -> None:

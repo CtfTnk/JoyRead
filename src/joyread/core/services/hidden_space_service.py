@@ -1,18 +1,18 @@
-"""Hidden Space: hide books and collections, encrypted once a vault exists.
+"""Hidden Space: hide books and collections, each hidden book encrypted.
 
 A Library is in one of four states (:class:`HiddenSpaceState`):
 
 * ``NONE`` -- never set up.
-* ``LEGACY`` -- the soft hiding JoyRead shipped before the vault: a PBKDF2
-  password hash in settings gating a visibility flag. Books stay plaintext.
+* ``LEGACY`` -- set up by a JoyRead from before the vault: a PBKDF2 password
+  hash in settings gated a visibility flag, and the hidden books are still
+  plaintext. Nothing can be hidden or shown until the upgrade below.
 * ``LOCKED`` / ``UNLOCKED`` -- a vault exists (``VaultService``). Hidden books
   are sealed to it by ``SealingService``, and their pages and covers can be
   read only while it is unlocked.
 
-Until the UI switches over, the legacy methods (``initialize``, ``verify``,
-``change_password``) keep working exactly as before, and hiding without a
-vault is still a flag. Once a vault exists every hide, unhide, revert and
-reset goes through sealing instead.
+Every hide and unhide goes through sealing, so there is no way to hide a book
+without encrypting it. A ``LEGACY`` Library can still revert (after its old
+password) or reset; both are ways out that do not need a vault.
 
 **The upgrade.** A ``LEGACY`` Library keeps its old password: every password
 the soft lock accepted (four or more letters and digits) is a valid vault
@@ -28,7 +28,6 @@ import base64
 from enum import StrEnum
 import hashlib
 import logging
-import re
 import secrets
 
 from joyread.core.repositories.sqlite_sealing_repository import UnhideOutcome
@@ -42,16 +41,9 @@ from joyread.infrastructure.config.settings_store import AppSettings, SettingsSt
 logger = logging.getLogger(__name__)
 
 
-# Password rule: 4+ chars, ASCII letters + digits only. The shorter floor
-# matches the user spec; restricting the alphabet keeps the typing flow on
-# the lock screen predictable across keyboard layouts.
-_PASSWORD_RE = re.compile(r"^[A-Za-z0-9]{4,}$")
-
-# PBKDF2 work factor. 200k iterations sits between OWASP's 2023 SHA-256
-# floor (600k) and the older 100k baseline — comfortable for a desktop app
-# where the unlock happens once per launch.
+# The earlier password's PBKDF2 work factor, needed only to check that
+# password once during the upgrade (and before a legacy revert).
 _PBKDF2_ITERATIONS = 200_000
-_SALT_BYTES = 16
 
 #: How long reset waits for a running seal or unseal to stop.
 _RESET_DRAIN_SECONDS = 30.0
@@ -91,8 +83,8 @@ class HiddenSpaceService:
         return self._settings_store.load()
 
     @property
-    def is_initialized(self) -> bool:
-        """Whether the legacy password is set. The vault states use :attr:`state`."""
+    def has_legacy_password(self) -> bool:
+        """Whether settings still hold the earlier password. See :attr:`state`."""
 
         return self._settings.hidden_space_password_hash is not None
 
@@ -100,7 +92,7 @@ class HiddenSpaceService:
     def state(self) -> HiddenSpaceState:
         if self._vault is not None and self._vault.has_vault:
             return HiddenSpaceState.UNLOCKED if self._vault.is_unlocked else HiddenSpaceState.LOCKED
-        if self.is_initialized:
+        if self.has_legacy_password:
             return HiddenSpaceState.LEGACY
         return HiddenSpaceState.NONE
 
@@ -187,26 +179,15 @@ class HiddenSpaceService:
             self._sealing.wake()
 
     # ------------------------------------------------------------------
-    # Legacy password lifecycle
+    # The earlier password, kept only to be checked once.
     #
     # There is deliberately no password hint. A hint is stored in plaintext
     # beside the hash and shown on the lock screen to whoever is at the
     # keyboard, so it only helps the people the password is meant to stop.
 
-    def initialize(self, password: str, confirm: str) -> None:
-        if self.is_initialized:
-            raise HiddenSpacePasswordError("Hidden Space is already set up.", code="already_setup")
-        self._validate_pair(password, confirm)
-        salt = secrets.token_bytes(_SALT_BYTES)
-        digest = _hash_password(password, salt)
-        self._settings_store.update(
-            hidden_space_password_hash=digest,
-            hidden_space_password_salt=base64.b64encode(salt).decode("ascii"),
-            show_hidden_collection=True,
-        )
-        logger.info("Hidden Space initialized")
-
     def verify(self, password: str) -> bool:
+        """Check the earlier password of a ``LEGACY`` Library. Slow (PBKDF2)."""
+
         settings = self._settings
         stored_hash = settings.hidden_space_password_hash
         stored_salt = settings.hidden_space_password_salt
@@ -222,39 +203,17 @@ class HiddenSpaceService:
         # against timing oracles on the hex string itself.
         return secrets.compare_digest(candidate, stored_hash)
 
-    def change_password(self, old_password: str, new_password: str, confirm: str) -> None:
-        if not self.is_initialized:
-            raise HiddenSpacePasswordError("Hidden Space has not been set up yet.", code="not_setup")
-        if not self.verify(old_password):
-            raise HiddenSpacePasswordError("Current password is incorrect.", code="incorrect_current")
-        self._validate_pair(new_password, confirm)
-        salt = secrets.token_bytes(_SALT_BYTES)
-        digest = _hash_password(new_password, salt)
-        self._settings_store.update(
-            hidden_space_password_hash=digest,
-            hidden_space_password_salt=base64.b64encode(salt).decode("ascii"),
-        )
-        logger.info("Hidden Space password rotated")
-
     def set_show_hidden_collection(self, enabled: bool) -> None:
         self._settings_store.update(show_hidden_collection=bool(enabled))
 
     # ------------------------------------------------------------------
     # Book / collection mutations
 
-    def hide_book(self, book_uuid: str) -> None:
-        self.hide_books((book_uuid,))
-
     def hide_books(self, book_uuids: tuple[str, ...]) -> tuple[str, ...]:
-        """Hide books. With a vault, queue their seals; returns the books queued."""
+        """Hide books and queue their encryption; returns the books queued."""
 
-        if self.has_vault:
-            return self._require_sealing().hide_books(book_uuids)
-        self._library_service.set_books_hidden(tuple(book_uuids), True)
-        return ()
-
-    def unhide_book(self, book_uuid: str) -> None:
-        self.unhide_books((book_uuid,))
+        self._require_vault_exists()
+        return self._require_sealing().hide_books(book_uuids)
 
     def unhide_books(
         self,
@@ -264,10 +223,8 @@ class HiddenSpaceService:
     ) -> dict[str, UnhideOutcome]:
         """Unhide books. A sealed one stays in Hidden until it is decrypted."""
 
-        if self.has_vault:
-            return self._require_sealing().unhide_books(book_uuids, wait_seconds=wait_seconds)
-        self._library_service.set_books_hidden(tuple(book_uuids), False)
-        return {book_uuid: UnhideOutcome.VISIBLE for book_uuid in book_uuids}
+        self._require_vault_exists()
+        return self._require_sealing().unhide_books(book_uuids, wait_seconds=wait_seconds)
 
     def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
         self._library_service.set_collection_hidable(collection_uuid, hidable)
@@ -345,14 +302,11 @@ class HiddenSpaceService:
             raise VaultError("Hidden Space encryption is unavailable in this runtime.", code="no_vault")
         return self._sealing
 
-    def _validate_pair(self, password: str, confirm: str) -> None:
-        if not _PASSWORD_RE.fullmatch(password or ""):
-            raise HiddenSpacePasswordError(
-                "Password must be at least 4 characters and contain only letters and digits.",
-                code="rules",
-            )
-        if password != confirm:
-            raise HiddenSpacePasswordError("Passwords do not match.", code="mismatch")
+    def _require_vault_exists(self) -> None:
+        # Hiding is encrypting: without a vault there is nothing to seal to,
+        # and a hidden-but-plaintext book is what the vault replaced.
+        if not self.has_vault:
+            raise VaultError("Set up Hidden Space first.", code="no_vault")
 
 
 def _hash_password(password: str, salt: bytes) -> str:

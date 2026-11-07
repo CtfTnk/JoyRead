@@ -145,6 +145,30 @@ class SealedCoverStore:
         self._remember(book_uuid, data, generation)
         return data
 
+    def cached(self, book_uuid: str) -> bytes | None:
+        """The decrypted cover if it is already in memory. Never reads a file.
+
+        For callers on the UI thread, which must not open and decrypt files:
+        a miss means "ask a worker to :meth:`read` it".
+        """
+
+        with self._lock:
+            cached = self._cache.get(book_uuid)
+            if cached is not None:
+                self._cache.move_to_end(book_uuid)
+            return cached
+
+    def remember(self, book_uuid: str, png: bytes) -> None:
+        """Keep a cover rendered in memory, for a book with no sealed cover yet.
+
+        Kept only while unlocked, under the same budget and lock rules as a
+        decrypted one. Nothing is written to disk.
+        """
+
+        with self._lock:
+            generation = self._generation
+        self._remember(book_uuid, bytes(png), generation)
+
     def delete(self, book_uuid: str) -> None:
         self._forget(book_uuid)
         path = self.path_for(book_uuid)

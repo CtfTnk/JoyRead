@@ -5,6 +5,34 @@ All notable changes to JoyRead are documented here. This project follows
 
 ## [Unreleased]
 
+### Added
+
+- Hidden Space encrypts hidden books and their covers inside the Library as
+  `.jrl` files ([format](docs/jrl-format.md)). Hiding encrypts a book in the
+  background and unhiding decrypts it first; JoyRead never writes decrypted
+  pages or covers to disk. Earlier versions only hid books from the shelf.
+- Set up Hidden Space with a passphrase of at least 4 characters, then save
+  and confirm a recovery code. A passphrase under 12 characters gets a warning.
+  If both are lost, nobody can recover the hidden books.
+- Hidden Space locks when Show Collections is turned off, the Library window
+  closes, JoyRead quits, or the library is moved, selected, or reset. Locking
+  closes every Reader showing a hidden book.
+- Privacy settings show encryption progress and failures with Retry, and add
+  Change Passphrase and New Recovery Code. Revert all decrypts every book
+  before unhiding it; Reset and Erase still needs no passphrase.
+- A Library that used the earlier Hidden Space password upgrades at its next
+  unlock: the password becomes the passphrase, a recovery code is saved, and
+  the books already hidden are encrypted.
+
+### Known limitations
+
+- The library database is not encrypted, so hidden books' titles, tags,
+  collection names, file names, and reading progress stay readable. Copies
+  made before hiding can survive in backups and snapshots. See
+  [what Hidden Space protects](docs/MANUAL.md#what-hidden-space-protects-and-what-it-does-not).
+- Password-protected archives cannot be encrypted; they stay hidden and are
+  marked Not encrypted.
+
 ## [1.3.1] — 2026-10-20
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.3.1.md)

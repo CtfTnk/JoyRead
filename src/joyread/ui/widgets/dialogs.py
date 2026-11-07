@@ -299,11 +299,15 @@ class DialogInputContent(QWidget):
 class DialogPasswordContent(QWidget):
     """Future-ready password input content following the Figma password frame."""
 
+    submitted = QtSignal()
+
     def __init__(
         self,
         headers: tuple[str, ...] | None = None,
         echo_modes: tuple[QLineEdit.EchoMode, ...] | None = None,
         parent: QWidget | None = None,
+        *,
+        detail_text: str | None = None,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogPasswordContent")
@@ -341,11 +345,26 @@ class DialogPasswordContent(QWidget):
             field = DialogInputFieldWithHeader(header, echo_mode=echo_mode)
             self.fields.append(field)
             input_layout.addWidget(field, alignment=Qt.AlignmentFlag.AlignHCenter)
+        # Return in the last field submits; in an earlier one it moves on.
+        for current, following in zip(self.fields, self.fields[1:]):
+            current.line_edit.returnPressed.connect(
+                lambda following=following: following.line_edit.setFocus(Qt.FocusReason.TabFocusReason)
+            )
+        if self.fields:
+            self.fields[-1].line_edit.returnPressed.connect(self.submitted.emit)
         layout.addWidget(input_area)
+
+        self._detail_label = LocalizedLabel(detail_text or "")
+        self._detail_label.setObjectName("DialogDetailPrompt")
+        self._detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._detail_label.setWordWrap(True)
+        self._detail_label.setVisible(bool(detail_text))
+        layout.addWidget(self._detail_label)
 
         self._state_label = LocalizedLabel("")
         self._state_label.setObjectName("DialogStatePrompt")
         self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_label.setWordWrap(True)
         layout.addWidget(self._state_label)
 
     @property
@@ -358,6 +377,94 @@ class DialogPasswordContent(QWidget):
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
+        label_width = max(1, width - (Theme.dialog_content_outer_padding * 2))
+        for label in (self._detail_label, self._state_label):
+            label.setFixedWidth(label_width)
+            if label.isVisible() and label.text():
+                label.setMinimumHeight(0)
+                label.setMaximumHeight(_UNBOUNDED_HEIGHT)
+                label.setFixedHeight(_wrapped_label_height(label, label_width))
+        self.updateGeometry()
+
+
+class DialogRecoveryCodeContent(QWidget):
+    """A Hidden Space recovery code, shown once, with Copy and Save beside it.
+
+    Copy and Save act in place and leave the dialog open: the user may do
+    both, and only Continue (the panel's own button) moves on. The code is
+    shown in groups separated by spaces so it wraps between groups rather
+    than mid-group; parsing ignores separators, so either form types back.
+    """
+
+    copy_requested = QtSignal()
+    save_requested = QtSignal()
+
+    def __init__(self, message: str, code: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("DialogRecoveryCodeContent")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+            Theme.dialog_content_padding,
+        )
+        layout.setSpacing(Theme.dialog_recovery_code_gap)
+        layout.setAlignment(Qt.AlignmentFlag.AlignHCenter)
+
+        self._message = LocalizedLabel(message)
+        self._message.setProperty("class", "JoyReadDialogContent")
+        self._message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._message.setWordWrap(True)
+        layout.addWidget(self._message)
+
+        self._code = QLabel(code.replace("-", " "))
+        self._code.setObjectName("DialogRecoveryCode")
+        self._code.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._code.setWordWrap(True)
+        self._code.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self._code)
+
+        actions = QWidget()
+        actions.setObjectName("DialogRecoveryCodeActions")
+        actions_layout = QHBoxLayout(actions)
+        actions_layout.setContentsMargins(0, 0, 0, 0)
+        actions_layout.setSpacing(Theme.dialog_option_gap)
+        actions_layout.addStretch(1)
+        self.copy_button = DialogTextButton(t("hidden_space.btn_copy"))
+        self.copy_button.clicked.connect(self.copy_requested.emit)
+        actions_layout.addWidget(self.copy_button)
+        self.save_button = DialogTextButton(t("hidden_space.btn_save"))
+        self.save_button.clicked.connect(self.save_requested.emit)
+        actions_layout.addWidget(self.save_button)
+        actions_layout.addStretch(1)
+        layout.addWidget(actions)
+
+        self._state_label = LocalizedLabel("")
+        self._state_label.setObjectName("DialogStatePrompt")
+        self._state_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._state_label.setWordWrap(True)
+        self._state_label.hide()
+        layout.addWidget(self._state_label)
+
+    def set_state_prompt(self, message: str) -> None:
+        set_localized(self._state_label, "setText", message)
+        self._state_label.setVisible(bool(message))
+        self.updateGeometry()
+
+    def set_available_width(self, width: int) -> None:
+        self.setFixedWidth(width)
+        inner_width = max(1, width - (Theme.dialog_content_padding * 2))
+        for label in (self._message, self._code, self._state_label):
+            label.setFixedWidth(inner_width)
+            # As in DialogMessageContent: release the previous clamp before
+            # measuring, or each refresh adds the clip guard again.
+            label.setMinimumHeight(0)
+            label.setMaximumHeight(_UNBOUNDED_HEIGHT)
+            if label.isVisible() or label is not self._state_label:
+                label.setFixedHeight(_wrapped_label_height(label, inner_width))
+        self.updateGeometry()
 
 
 def _wrapped_label_height(label: QLabel, width: int) -> int:
@@ -1090,8 +1197,13 @@ class JoyReadDialogOverlay(QWidget):
         confirm_text: str | None = None,
         cancel_text: str | None = None,
         validator: Callable[[str], str | None] | None = None,
+        on_cancel: Callable[[], None] | None = None,
+        detail_text: str | None = None,
+        state_prompt: str | None = None,
     ) -> None:
-        content = DialogInputContent(header, initial_text)
+        content = DialogInputContent(header, initial_text, detail_text=detail_text)
+        if state_prompt:
+            content.set_state_prompt(state_prompt)
 
         def before_accept() -> bool:
             if validator is None:
@@ -1106,7 +1218,7 @@ class JoyReadDialogOverlay(QWidget):
 
         self._before_accept = before_accept
         self._on_accept = lambda: on_confirm(content.value)
-        self._on_reject = None
+        self._on_reject = on_cancel
         self._on_skip = None
         self._panel.set_input_content(
             title,
@@ -1134,9 +1246,14 @@ class JoyReadDialogOverlay(QWidget):
         skip_text: str | None = None,
         detail_text: str | None = None,
         state_prompt: str | None = None,
+        echo_mode: QLineEdit.EchoMode = QLineEdit.EchoMode.Normal,
     ) -> None:
+        # Normal echo by default: an archive password is read off a label or
+        # a forum post and is easier to get right when visible. A passphrase
+        # the user made up asks for ``Password`` echo.
         content = DialogInputContent(
             header,
+            echo_mode=echo_mode,
             detail_text=detail_text,
         )
         if state_prompt:
@@ -1178,13 +1295,17 @@ class JoyReadDialogOverlay(QWidget):
         cancel_text: str | None = None,
         validator: Callable[[tuple[str, ...]], str | None] | None = None,
         on_cancel: Callable[[], None] | None = None,
+        detail_text: str | None = None,
+        state_prompt: str | None = None,
     ) -> None:
-        # Multi-field password panel used by Hidden Space setup (Password /
-        # Confirm) and Change Password (Old / New / Confirm). The
+        # Multi-field password panel used by Hidden Space setup (Passphrase /
+        # Confirm) and Change Passphrase (Current / New / Confirm). The
         # validator returns ``None`` on success or a user-visible error
         # string that gets piped into ``set_state_prompt`` so the panel
         # stays open on validation failure.
-        content = DialogPasswordContent(headers=headers, echo_modes=echo_modes)
+        content = DialogPasswordContent(headers=headers, echo_modes=echo_modes, detail_text=detail_text)
+        if state_prompt:
+            content.set_state_prompt(state_prompt)
 
         def before_accept() -> bool:
             if validator is None:
@@ -1207,8 +1328,45 @@ class JoyReadDialogOverlay(QWidget):
             cancel_text or t("dialog.btn_cancel"),
             confirm_text or t("dialog.btn_confirm"),
         )
+        content.submitted.connect(self._panel.accepted.emit)
         focus_target = content.fields[0].line_edit if content.fields else None
         self._show_centered(focus_target=focus_target)
+
+    def show_recovery_code(
+        self,
+        title: str,
+        message: str,
+        code: str,
+        *,
+        on_continue: Callable[[], None],
+        on_copy: Callable[[DialogRecoveryCodeContent], None],
+        on_save: Callable[[DialogRecoveryCodeContent], None],
+        on_cancel: Callable[[], None] | None = None,
+        continue_text: str | None = None,
+        cancel_text: str | None = None,
+    ) -> None:
+        """Show a recovery code once. Copy and Save report back on the content."""
+
+        content = DialogRecoveryCodeContent(message, code)
+
+        def report(callback: Callable[[DialogRecoveryCodeContent], None]) -> None:
+            callback(content)
+            self._panel.refresh_size()
+            self._position_panel()
+
+        content.copy_requested.connect(lambda: report(on_copy))
+        content.save_requested.connect(lambda: report(on_save))
+        self._before_accept = None
+        self._on_accept = on_continue
+        self._on_reject = on_cancel
+        self._on_skip = None
+        self._panel.set_input_content(
+            title,
+            content,
+            cancel_text or t("dialog.btn_cancel"),
+            continue_text or t("hidden_space.btn_continue"),
+        )
+        self._show_centered()
 
     def show_collection_select(
         self,

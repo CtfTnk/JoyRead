@@ -171,6 +171,11 @@ class SealingService:
     def set_archive_open_limits(self, limits: ArchiveOpenLimits) -> None:
         self._archive_limits = limits
 
+    def set_archive_service(self, archive_service: ArchiveImageService) -> None:
+        """Use the engine a cache-strategy change put in place, from the next job on."""
+
+        self._archive_service = archive_service
+
     # -- requests (any thread) ------------------------------------------------
 
     def hide_books(self, book_ids: Iterable[str]) -> tuple[str, ...]:

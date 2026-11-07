@@ -63,15 +63,6 @@ class LibraryService:
             self._book_repository.set_favourite(book_uuid, is_favourite)
         self._book_repository.list_shelf_orders()
 
-    def set_book_hidden(self, book_uuid: str, hidden: bool) -> None:
-        self._book_repository.set_book_hidden(book_uuid, hidden)
-        self._book_repository.list_shelf_orders()
-
-    def set_books_hidden(self, book_uuids: tuple[str, ...], hidden: bool) -> None:
-        for book_uuid in book_uuids:
-            self._book_repository.set_book_hidden(book_uuid, hidden)
-        self._book_repository.list_shelf_orders()
-
     def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
         self._book_repository.set_collection_hidable(collection_uuid, hidable)
 

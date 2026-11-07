@@ -31,11 +31,15 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.book import Book
+from joyread.core.models.vault import BookSealState
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
-from joyread.infrastructure.resources.pixmaps import load_thumbnail_pixmap
+from joyread.core.models.cover_image import CoverImage
+from joyread.infrastructure.resources.pixmaps import load_cover_pixmap
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.viewmodels.hidden_space_text import seal_state_failed, seal_state_text
+from joyread.ui.widgets.localized_text import LocalizedLabel
 from joyread.ui.widgets.progress_bar import BookProgressBar
 
 
@@ -91,6 +95,13 @@ class BookCardWidget(QFrame):
 
         self._progress = BookProgressBar(book.progress_percent)
         control_bar.addWidget(self._progress)
+        # Hidden Space work in progress replaces the progress bar: it is what
+        # the book is doing, and the bar returns when it is done.
+        self._seal_state: BookSealState | None = None
+        self._seal_state_label = LocalizedLabel("")
+        self._seal_state_label.setProperty("class", "BookSealState")
+        self._seal_state_label.hide()
+        control_bar.addWidget(self._seal_state_label)
         control_bar.addStretch(1)
 
         option_frame = QWidget()
@@ -134,6 +145,13 @@ class BookCardWidget(QFrame):
             self.setProperty("unavailable", "true" if book.is_unavailable else "false")
             self._apply_unavailable_state(not book.is_available, force=True)
 
+    def set_seal_state(self, state: BookSealState | None) -> None:
+        if state == self._seal_state:
+            return
+        self._seal_state = state
+        _apply_seal_state(self._seal_state_label, state)
+        self._progress.setVisible(state is None)
+
     def refresh_labels(self) -> None:
         set_localized(self._detail_button, "setToolTip", t("menu.detail"))
         set_localized(self._option_button, "setToolTip", t("detail.more_options"))
@@ -147,14 +165,14 @@ class BookCardWidget(QFrame):
         self.style().polish(self)
         self.update()
 
-    def has_cover_path(self, path: Path) -> bool:
-        return self._cover.loaded_path == path
+    def has_cover(self, cover: CoverImage) -> bool:
+        return self._cover.loaded_cover == cover
 
     def clear_cover(self) -> None:
         self._cover.set_pixmap(_placeholder_cover())
 
-    def set_cover_path(self, path: Path, *, force: bool = False) -> None:
-        self._cover.set_pixmap_from_path(path, force=force)
+    def set_cover(self, cover: CoverImage, *, force: bool = False) -> None:
+        self._cover.set_cover_image(cover, force=force)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -200,7 +218,7 @@ class BookCoverWidget(QFrame):
     def __init__(self, pixmap: QPixmap, size: QSize, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pixmap = pixmap
-        self._loaded_path: Path | None = None
+        self._loaded_cover: CoverImage | None = None
         self.setObjectName("BookCover")
         self.setFixedSize(size)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -209,20 +227,20 @@ class BookCoverWidget(QFrame):
         if pixmap.isNull():
             return
         self._pixmap = pixmap
-        self._loaded_path = None
+        self._loaded_cover = None
         self.update()
 
     @property
-    def loaded_path(self) -> Path | None:
-        return self._loaded_path
+    def loaded_cover(self) -> CoverImage | None:
+        return self._loaded_cover
 
-    def set_pixmap_from_path(self, path: Path, *, force: bool = False) -> None:
-        if not force and self._loaded_path == path:
+    def set_cover_image(self, cover: CoverImage, *, force: bool = False) -> None:
+        if not force and self._loaded_cover == cover:
             return
-        pixmap = load_thumbnail_pixmap(path)
+        pixmap = load_cover_pixmap(cover)
         if not pixmap.isNull():
             self.set_pixmap(pixmap)
-            self._loaded_path = path
+            self._loaded_cover = cover
 
     def paintEvent(self, event: QPaintEvent) -> None:
         del event
@@ -235,6 +253,19 @@ class BookCoverWidget(QFrame):
         painter.setClipPath(path)
         painter.drawPixmap(self.rect(), self._pixmap)
         painter.end()
+
+
+def _apply_seal_state(label: LocalizedLabel, state: BookSealState | None) -> None:
+    """Show *state* on a card's or row's seal-state label, or hide it."""
+
+    if state is None:
+        label.hide()
+        return
+    set_localized(label, "setText", seal_state_text(state))
+    label.setProperty("failed", "true" if seal_state_failed(state) else "false")
+    label.style().unpolish(label)
+    label.style().polish(label)
+    label.show()
 
 
 @lru_cache(maxsize=1)

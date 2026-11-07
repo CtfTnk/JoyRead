@@ -6,6 +6,7 @@ import pytest
 from PySide6.QtGui import QImage, QColor
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 
+from joyread.core.models.cover_image import CoverImage
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel, SortField, ViewMode
@@ -74,14 +75,14 @@ def test_selection_does_not_refresh_content_or_covers(book_view, monkeypatch, tm
     initial = books()
     path = tmp_path / "cover.png"
     write_cover(path, "red")
-    paths = {book.uuid: path for book in initial}
+    paths = {book.uuid: CoverImage.from_path(path) for book in initial}
     book_view.set_books(initial, {initial[0].uuid}, paths)
     changed = []
     def unexpected(*args, **kwargs):
         pytest.fail("Selection should not update book data or reload a cover")
     for key, control in controls(book_view).items():
         monkeypatch.setattr(control, "set_book", unexpected)
-        monkeypatch.setattr(control, "set_cover_path", unexpected)
+        monkeypatch.setattr(control, "set_cover", unexpected)
         original = control.set_selected
         def record(value, key=key, original=original):
             changed.append((key, value))
@@ -118,13 +119,13 @@ def test_same_path_cover_edit_refreshes_but_ordinary_render_reuses(book_view, tm
     initial = books()
     path = tmp_path / "cover.png"
     write_cover(path, "red")
-    paths = {book.uuid: path for book in initial}
+    paths = {book.uuid: CoverImage.from_path(path) for book in initial}
     calls = []
-    original = card_module.load_thumbnail_pixmap
-    def load(path):
-        calls.append(path)
-        return original(path)
-    monkeypatch.setattr(card_module, "load_thumbnail_pixmap", load)
+    original = card_module.load_cover_pixmap
+    def load(cover):
+        calls.append(cover.path)
+        return original(cover)
+    monkeypatch.setattr(card_module, "load_cover_pixmap", load)
     book_view.set_books(initial, set(), paths)
     before = controls(book_view)[initial[0].uuid]._cover._pixmap.cacheKey()
     calls.clear()
@@ -134,7 +135,7 @@ def test_same_path_cover_edit_refreshes_but_ordinary_render_reuses(book_view, tm
     stamp = path.stat()
     write_cover(path, "blue")
     os.utime(path, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
-    book_view.set_cover_path(initial[0].uuid, path)
+    book_view.set_cover(initial[0].uuid, CoverImage.from_path(path))
     assert calls == [path]
     assert controls(book_view)[initial[0].uuid]._cover._pixmap.toImage().pixelColor(0, 0) == QColor("blue")
     calls.clear()
@@ -144,7 +145,7 @@ def test_same_path_cover_edit_refreshes_but_ordinary_render_reuses(book_view, tm
     book_view.set_books(initial, set(), paths)
     assert calls == [path]  # only the reappearing book needs an image again
     book_view.set_books(initial, set(), {})
-    assert all(control._cover.loaded_path is None for control in controls(book_view).values())
+    assert all(control._cover.loaded_cover is None for control in controls(book_view).values())
 
 
 def test_shelf_coalesces_cover_requests_and_skips_selection_and_sort(qtbot, monkeypatch):
@@ -189,11 +190,11 @@ def test_clearing_cover_map_requests_resolution_again(qtbot, monkeypatch, tmp_pa
     monkeypatch.setattr(vm, "request_covers_for_books", lambda ids: requests.append(set(ids)))
     shelf = ShelfView(vm, ResourceLoader())
     qtbot.addWidget(shelf)
-    vm._cover_paths = {book.uuid: tmp_path / f"{book.uuid}.png" for book in initial}
+    vm._covers = {book.uuid: CoverImage.from_path(tmp_path / f"{book.uuid}.png") for book in initial}
     shelf.render()
     qtbot.wait(1)
     requests.clear()
-    vm._cover_paths.clear()
+    vm._covers.clear()
     shelf.render()
     qtbot.wait(1)
     assert requests == [{book.uuid for book in initial}]

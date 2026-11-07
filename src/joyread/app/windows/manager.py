@@ -67,6 +67,11 @@ class ApplicationWindowManager(QObject):
         self._main_window: QMainWindow | None = None
         self._reader_windows: dict[str, QMainWindow] = {}
         self._reader_keys: dict[int, str] = {}
+        # The Library book each Reader shows, and whether it is a Hidden Space
+        # book, so a lock can close exactly those Readers. Hidden is fixed at
+        # open: hiding or unhiding a book closes its Readers first.
+        self._reader_books: dict[int, tuple[str, bool]] = {}
+        self._hidden_space_events_connected = False
         self._window_log_ids: dict[int, str] = {}
         self._live_windows: dict[int, QMainWindow] = {}
         self._ownership = WindowOwnership()
@@ -117,6 +122,38 @@ class ApplicationWindowManager(QObject):
                 and self._ownership.owner_of(id(window)) == id(self._main_window))
         )
 
+    def close_hidden_readers(self) -> int:
+        """Close every Reader on a Hidden Space book. The vault has locked."""
+
+        readers = tuple(
+            window for window in self._reader_windows.values()
+            if self._reader_books.get(id(window), ("", False))[1]
+        )
+        for window in readers:
+            window.close()
+        if readers:
+            logger.info(
+                "Closed Hidden Space readers after the vault locked",
+                extra={"event": "window.hidden_readers.closed", "category": "window", "count": len(readers)},
+            )
+        return len(readers)
+
+    def close_readers_for_books(self, book_ids: Iterable[str]) -> int:
+        """Close Readers on these Library books, before they are hidden or unhidden.
+
+        Encrypting a book deletes its plaintext file, and decrypting one deletes
+        the sealed file; Windows refuses to delete a file a Reader holds open.
+        """
+
+        wanted = set(book_ids)
+        readers = tuple(
+            window for window in self._reader_windows.values()
+            if self._reader_books.get(id(window), ("", False))[0] in wanted
+        )
+        for window in readers:
+            window.close()
+        return len(readers)
+
     def close_library_readers(self) -> int:
         """Retire Readers bound to the Library being replaced."""
 
@@ -165,6 +202,7 @@ class ApplicationWindowManager(QObject):
 
         if self._library_context_factory is not None:
             self._context = self._library_context_factory()
+        self._connect_hidden_space_events()
         window = self._main_window_factory(self.open_reader_from_library)
         self._main_window = window
         self._register_window(window, owner=None)
@@ -251,6 +289,12 @@ class ApplicationWindowManager(QObject):
         window = self._reader_window_factory(normalized_request)
         self._reader_windows[key] = window
         self._reader_keys[id(window)] = key
+        book = request.book
+        if book is not None:
+            self._reader_books[id(window)] = (
+                str(getattr(book, "uuid", "")),
+                bool(getattr(book, "is_hidden", False)) or source.suffix.lower() == SEALED_EXTENSION,
+            )
         self._register_window(window, owner=owner)
 
         progress_changed = getattr(window, "progress_changed", None)
@@ -376,6 +420,7 @@ class ApplicationWindowManager(QObject):
         self._ownership.remove(window_id)
         self._activation.forget(window_id)
 
+        self._reader_books.pop(window_id, None)
         key = self._reader_keys.pop(window_id, None)
         if key is not None:
             current = self._reader_windows.get(key)
@@ -415,6 +460,13 @@ class ApplicationWindowManager(QObject):
                 return window
         return None
 
+    def _connect_hidden_space_events(self) -> None:
+        bridge = getattr(self._context, "hidden_space_bridge", None)
+        if bridge is None or self._hidden_space_events_connected:
+            return
+        bridge.locked.connect(self.close_hidden_readers)
+        self._hidden_space_events_connected = True
+
     def _create_main_window(self, launcher: StandaloneReaderLauncher) -> QMainWindow:
         # No Library widget import is needed until the user actually asks for
         # the Library window. Cold Reader opens keep this UI tree out of scope.
@@ -425,6 +477,7 @@ class ApplicationWindowManager(QObject):
             standalone_reader_launcher=launcher,
             storage_transition_controller=self.storage_transition_controller,
             novel_reader_provider=self._novel_reader_provider,
+            book_reader_closer=self.close_readers_for_books,
         )
 
     def _create_reader_window(self, request: StandaloneReaderRequest) -> QMainWindow:

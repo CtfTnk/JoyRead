@@ -49,6 +49,11 @@ class VaultJobPhase(StrEnum):
     FAILED = "failed"
 
 
+#: ``error_code`` of an unseal job that a later hide cancelled. Not a failure
+#: to retry: the worker deletes what the job wrote and drops it.
+CANCELLED_ERROR_CODE = "cancelled"
+
+
 @dataclass(frozen=True)
 class VaultJob:
     """One queued seal or unseal. Paths are storage-relative, like ``book_files``."""
@@ -68,8 +73,47 @@ class VaultJob:
     updated_at: str
 
 
+class BookSealState(StrEnum):
+    """What a hidden book's outstanding job means to someone looking at it.
+
+    Lives with the job records, not the sealing service, so shelf widgets on
+    the Reader's import path can name it without pulling in the database.
+    """
+
+    ENCRYPTING = "encrypting"
+    DECRYPTING = "decrypting"
+    #: The book stays hidden but is still a plaintext file.
+    ENCRYPT_FAILED = "encrypt_failed"
+    #: The book stays hidden and sealed; it can be unhidden again later.
+    DECRYPT_FAILED = "decrypt_failed"
+
+
+def book_seal_states(jobs: dict[str, VaultJob]) -> dict[str, BookSealState]:
+    """Each book's state from its outstanding job (``jobs_by_book``).
+
+    A committed job is still shown as in progress: its book is sealed (or
+    decrypted) but its cleanup -- deleting the other copy -- is not done yet.
+    A cancelled unseal is the worker tidying a decrypted copy nobody wants;
+    its book is simply sealed, so it has no state to show.
+    """
+
+    states: dict[str, BookSealState] = {}
+    for book_id, job in jobs.items():
+        sealing = job.direction is VaultJobDirection.SEAL
+        if job.phase is VaultJobPhase.FAILED:
+            if job.error_code == CANCELLED_ERROR_CODE:
+                continue
+            states[book_id] = BookSealState.ENCRYPT_FAILED if sealing else BookSealState.DECRYPT_FAILED
+        else:
+            states[book_id] = BookSealState.ENCRYPTING if sealing else BookSealState.DECRYPTING
+    return states
+
+
 __all__ = [
+    "BookSealState",
+    "CANCELLED_ERROR_CODE",
     "VAULT_FORMAT_VERSION",
+    "book_seal_states",
     "VaultAlreadyExistsError",
     "VaultJob",
     "VaultJobDirection",

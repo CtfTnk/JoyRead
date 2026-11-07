@@ -49,12 +49,14 @@ from joyread.core.services.import_service import (
     ImportProgress,
     ImportStage,
 )
+from joyread.core.services.hidden_space_service import HiddenSpaceState
 from joyread.core.services.library_maintenance_service import LibraryAuditPlan, LibraryAuditReport
 from joyread.core.services.storage_validation_service import StorageValidationCode
 from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
+from joyread.ui.views.hidden_space_flows import HiddenSpaceFlows
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.settings_view import SettingsView
@@ -87,10 +89,14 @@ class MainWindow(QMainWindow):
         standalone_reader_launcher: StandaloneReaderLauncher | None = None,
         storage_transition_controller: StorageTransitionController | None = None,
         novel_reader_provider: NovelReaderProvider | None = None,
+        book_reader_closer: Callable[[Iterable[str]], int] | None = None,
     ) -> None:
         super().__init__()
         self._context = context
         self._standalone_reader_launcher = standalone_reader_launcher
+        # Supplied by the window manager, which owns standalone Readers; it
+        # closes the ones on books about to be hidden or unhidden.
+        self._book_reader_closer = book_reader_closer
         self._closing = False
         # Storage transitions after a ready Library can still fail later.
         self._library_failed = False
@@ -109,7 +115,9 @@ class MainWindow(QMainWindow):
         # Either reader shell, named by what Main actually requires of one
         # rather than by a class -- the novel shell is not importable here.
         self._embedded_reader: EmbeddedReaderShell | None = None
+        self._embedded_reader_book: Book | None = None
         self._cover_editor_book_uuid: str | None = None
+        self._hidden_space_flows: HiddenSpaceFlows | None = None
         self._library_maintenance_task_active = False
         self._library_maintenance_plan_pending = False
         self._pending_shelf: QWidget | None = None
@@ -299,13 +307,24 @@ class MainWindow(QMainWindow):
         if not reuse_shell:
             self.settings_view.storage_select_requested.connect(self._request_select_storage)
         self.settings_view.storage_reset_requested.connect(self._request_reset_storage)
-        self.settings_view.hidden_space_setup_requested.connect(self._show_hidden_space_setup_dialog)
-        self.settings_view.hidden_space_verify_requested.connect(self._show_hidden_space_unlock_dialog)
-        self.settings_view.hidden_space_change_password_requested.connect(
-            self._show_hidden_space_change_password_dialog
+        flows = HiddenSpaceFlows(
+            self.dialog_overlay,
+            context.settings_viewmodel,
+            self,
+            on_cancelled=self.settings_view.page.revert_show_hidden_switch,
         )
-        self.settings_view.hidden_space_revert_requested.connect(self._show_hidden_space_revert_dialog)
-        self.settings_view.hidden_space_reset_requested.connect(self._show_hidden_space_reset_dialog)
+        self._hidden_space_flows = flows
+        self.settings_view.hidden_space_show_requested.connect(flows.request_show)
+        self.settings_view.hidden_space_change_passphrase_requested.connect(flows.start_change_passphrase)
+        self.settings_view.hidden_space_new_recovery_code_requested.connect(flows.start_new_recovery_code)
+        self.settings_view.hidden_space_retry_requested.connect(
+            context.settings_viewmodel.retry_hidden_space_failures
+        )
+        self.settings_view.hidden_space_revert_requested.connect(flows.start_revert)
+        self.settings_view.hidden_space_reset_requested.connect(flows.start_reset)
+        bridge = context.hidden_space_bridge
+        bridge.locked.connect(self._handle_hidden_space_locked)
+        bridge.books_changed.connect(self._handle_hidden_books_changed)
         context.shelf_viewmodel.state_changed.connect(self._sync_sidebar)
         context.shelf_viewmodel.state_changed.connect(self._sync_chrome)
         context.shelf_viewmodel.books_deleted.connect(self._handle_books_deleted)
@@ -314,7 +333,8 @@ class MainWindow(QMainWindow):
         # into the ShelfViewModel and re-render the sidebar so the Hidden
         # row + hidable collections appear/disappear in lockstep.
         context.settings_viewmodel.hidden_space_changed.connect(self._handle_hidden_space_changed)
-        context.settings_viewmodel.hidden_space_error.connect(self._show_hidden_space_error)
+        context.shelf_viewmodel.hidden_books_failed.connect(self._show_hidden_space_error)
+        context.shelf_viewmodel.book_readers_close_requested.connect(self._close_readers_for_books)
         context.settings_viewmodel.language_changed.connect(self._on_language_changed)
         # Shelf clicks travel through the viewmodel (book_card →
         # shelf_view → vm.open_book) so every "open" is gated by
@@ -344,16 +364,11 @@ class MainWindow(QMainWindow):
         self._sync_chrome()
         self.shelf_view.render()
 
-        # Launch-time Hidden Space gate. If the user closed the previous
-        # session with "Show Collections" still on, the shelf is hidden
-        # behind an #ECECEC lock overlay until they verify the password
-        # (or press Hide to flip the toggle off). Read both flags from
-        # the ViewModel so the View layer doesn't reach into Service /
-        # settings directly.
+        # Launch-time Hidden Space prompt: the user left Hidden Space shown
+        # last time, so ask for the passphrase (or Hide) before the Library.
         self._lock_overlay: HiddenSpaceLockOverlay | None = None
-        settings_vm = context.settings_viewmodel
-        if settings_vm.show_hidden_collection and settings_vm.hidden_space_initialized:
-            self._show_hidden_space_lock_overlay(root)
+        self._handle_hidden_space_changed()
+        self._maybe_show_hidden_space_lock_overlay()
 
         # Surface a recovery notice once if startup had to fall back to another
         # library (configured storage missing, schema unsupported, etc.).
@@ -543,6 +558,10 @@ class MainWindow(QMainWindow):
             return
         if not book.is_available:
             self._show_unavailable_book_dialog(book_uuid)
+            return
+        if book.is_hidden and not self._context.shelf_viewmodel.show_hidden_collection:
+            # Hidden Space locked between the click and here: nothing to show.
+            logger.info("open_reader_for_book: Hidden Space is not shown uuid=%s", book_uuid)
             return
         source_path = Path(book.file_path)
         if self._is_shelved_epub(source_path):
@@ -901,6 +920,7 @@ class MainWindow(QMainWindow):
             return
         self._hide_settings_page()
         self._close_embedded_reader(restore_window_state=False)
+        self._embedded_reader_book = book
         provider = self._novel_reader_provider
         if provider is not None and self._is_novel_source(path):
             self._embedded_reader = provider.create_embedded_shell(
@@ -938,6 +958,7 @@ class MainWindow(QMainWindow):
         logger.debug("Closing embedded reader")
         reader = self._embedded_reader
         self._embedded_reader = None
+        self._embedded_reader_book = None
         reader.cancel()
         reader.hide()
         reader.deleteLater()
@@ -965,6 +986,11 @@ class MainWindow(QMainWindow):
         self._close_embedded_reader(restore_window_state=False)
         if hasattr(self, "_cover_editor_thumbnail_viewmodel"):
             self._cover_editor_thumbnail_viewmodel.cancel()
+        if self._context.library_runtime is not None:
+            # Hidden Space does not outlive its Library window, even where the
+            # app keeps running without one. The preference stays: the next
+            # Library window asks for the passphrase again.
+            self._context.settings_viewmodel.lock_hidden_space(notify=False)
         self.closed.emit()
         super().closeEvent(event)
 
@@ -1296,135 +1322,6 @@ class MainWindow(QMainWindow):
             t("dialog.unavailable_file_msg", title=title),
         )
 
-    def _show_hidden_space_setup_dialog(self) -> None:
-        # First-time enable of "Show Collections": prompt for a new password
-        # and its confirmation. There is no hint field; HiddenSpaceService
-        # explains why. The dialog stays open on validation failure
-        # (mismatched / weak password) via the state-prompt; final confirm
-        # only fires when the VM accepts.
-        def on_confirm(values: tuple[str, ...]) -> None:
-            password, confirm = (values + ("", ""))[:2]
-            ok = self._context.settings_viewmodel.initialize_hidden_space(password, confirm)
-            if not ok:
-                # Validation error already surfaced via hidden_space_error;
-                # the page re-renders so the switch snaps back off.
-                self.settings_view.page.revert_show_hidden_switch()
-
-        def on_cancel() -> None:
-            self.settings_view.page.revert_show_hidden_switch()
-
-        def validator(values: tuple[str, ...]) -> str | None:
-            # Cheap pre-flight before the VM call so the most common
-            # mistakes don't write a state-prompt by emitting an error
-            # signal that may bypass the dialog.
-            password, confirm = (values + ("", ""))[:2]
-            if len(password) < 4 or not password.isalnum() or not password.isascii():
-                return t("dialog.password_rules_error")
-            if password != confirm:
-                return t("dialog.password_mismatch")
-            return None
-
-        self.dialog_overlay.show_multi_password_input(
-            t("dialog.set_password_title"),
-            (t("dialog.password_header"), t("dialog.confirm_password_header")),
-            on_confirm=on_confirm,
-            confirm_text=t("dialog.btn_confirm"),
-            cancel_text=t("dialog.btn_cancel"),
-            validator=validator,
-            on_cancel=on_cancel,
-        )
-
-    def _show_hidden_space_unlock_dialog(self) -> None:
-        # Toggling Show Collections on once the feature is initialised:
-        # single password input.
-        def on_confirm(password: str) -> None:
-            if self._context.settings_viewmodel.verify_hidden_space_password(password):
-                self._context.settings_viewmodel.set_show_hidden_collection(True)
-                return
-            self.settings_view.page.revert_show_hidden_switch()
-            self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.incorrect_password"))
-
-        def on_cancel() -> None:
-            self.settings_view.page.revert_show_hidden_switch()
-
-        self.dialog_overlay.show_password_input(
-            t("dialog.unlock_title"),
-            t("dialog.password_header"),
-            on_confirm=on_confirm,
-            confirm_text=t("dialog.btn_verify"),
-            cancel_text=t("dialog.btn_cancel"),
-            on_cancel=on_cancel,
-        )
-
-    def _show_hidden_space_change_password_dialog(self) -> None:
-        from PySide6.QtWidgets import QLineEdit
-
-        echo_modes = (
-            QLineEdit.EchoMode.Password,
-            QLineEdit.EchoMode.Password,
-            QLineEdit.EchoMode.Password,
-        )
-
-        def validator(values: tuple[str, ...]) -> str | None:
-            _old, new, confirm = (values + ("", "", ""))[:3]
-            if len(new) < 4 or not new.isalnum() or not new.isascii():
-                return t("dialog.new_password_rules_error")
-            if new != confirm:
-                return t("dialog.new_password_mismatch")
-            return None
-
-        def on_confirm(values: tuple[str, ...]) -> None:
-            old, new, confirm = (values + ("", "", ""))[:3]
-            ok = self._context.settings_viewmodel.change_hidden_space_password(old, new, confirm)
-            if ok:
-                self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.password_updated"))
-
-        self.dialog_overlay.show_multi_password_input(
-            t("dialog.change_password_title"),
-            (t("dialog.current_password_header"), t("dialog.new_password_header"), t("dialog.confirm_new_password_header")),
-            on_confirm=on_confirm,
-            echo_modes=echo_modes,
-            confirm_text=t("dialog.btn_update"),
-            cancel_text=t("dialog.btn_cancel"),
-            validator=validator,
-        )
-
-    def _show_hidden_space_revert_dialog(self) -> None:
-        # "Revert all" is password-gated per the user spec: verifying the
-        # password is itself the confirmation, so no second confirm dialog.
-        def on_confirm(password: str) -> None:
-            if not self._context.settings_viewmodel.verify_hidden_space_password(password):
-                self.dialog_overlay.show_info(t("dialog.hidden_space_title"), t("dialog.incorrect_password"))
-                return
-            self._context.settings_viewmodel.revert_hidden_space()
-            self.dialog_overlay.show_info(
-                t("dialog.hidden_space_title"),
-                t("dialog.hidden_reverted_msg"),
-            )
-
-        self.dialog_overlay.show_password_input(
-            t("dialog.revert_hidden_title"),
-            t("dialog.password_header"),
-            on_confirm=on_confirm,
-            confirm_text=t("dialog.btn_revert"),
-            cancel_text=t("dialog.btn_cancel"),
-        )
-
-    def _show_hidden_space_reset_dialog(self) -> None:
-        # "Reset and Erase" is intentionally not password-gated — the user
-        # asked for an escape hatch in case the password is forgotten. We
-        # still gate it behind a destructive-styled confirmation so it
-        # can't fire by accident.
-        self.dialog_overlay.show_confirm(
-            t("dialog.reset_hidden_title"),
-            t("dialog.reset_hidden_msg"),
-            on_confirm=self._context.settings_viewmodel.reset_hidden_space,
-            on_cancel=None,
-            confirm_text=t("dialog.btn_erase"),
-            cancel_text=t("dialog.btn_cancel"),
-            destructive=True,
-        )
-
     def _handle_tag_operation_result(self, success: bool, title: str, message: str) -> None:
         # Both success and failure flow through ``show_info`` so the user
         # always sees an explicit outcome for tag CRUD.
@@ -1621,6 +1518,9 @@ class MainWindow(QMainWindow):
             )
             return
         self._handle_storage_location_changed(reload=False)
+        # Another Library is open now, with its own Hidden Space.
+        self._handle_hidden_space_changed()
+        self._maybe_show_hidden_space_lock_overlay()
 
     def _handle_storage_location_changed(self, *, reload: bool = True) -> None:
         if reload:
@@ -1698,7 +1598,9 @@ class MainWindow(QMainWindow):
         if collection is None:
             return
         shelf_vm = self._context.shelf_viewmodel
-        show_hide_action = shelf_vm.hidden_space_initialized and shelf_vm.show_hidden_collection
+        # Making a collection hidable belongs to Hidden Space, so the action
+        # is offered only while Hidden Space is on screen.
+        show_hide_action = shelf_vm.show_hidden_collection
         menu = build_collection_context_menu(
             self,
             collection_uuid,
@@ -2035,11 +1937,54 @@ class MainWindow(QMainWindow):
     def _handle_hidden_space_changed(self) -> None:
         settings_vm = self._context.settings_viewmodel
         shelf_vm = self._context.shelf_viewmodel
-        shelf_vm.set_hidden_space_initialized(settings_vm.hidden_space_initialized)
-        shelf_vm.set_show_hidden_collection(settings_vm.show_hidden_collection)
+        visible = settings_vm.hidden_space_visible
+        if not visible:
+            self._close_hidden_surfaces()
+        shelf_vm.set_show_hidden_collection(visible)
         # State-flip can imply DB side effects (revert/reset), so reload.
         shelf_vm.load_books()
         self._refresh_sidebar_collections()
+
+    def _handle_hidden_space_locked(self) -> None:
+        """The vault locked: nothing decrypted may stay on this window.
+
+        Standalone Readers on hidden books are the window manager's to close;
+        it hears the same signal. Showing Hidden Space again needs the
+        passphrase, which the launch prompt asks for only when a Library opens.
+        """
+
+        if self._closing or self._context.library_runtime is None:
+            return
+        self._close_hidden_surfaces()
+        self._context.settings_viewmodel.handle_hidden_space_locked()
+
+    def _handle_hidden_books_changed(self, _book_ids: tuple[str, ...]) -> None:
+        if self._closing or self._context.library_runtime is None:
+            return
+        self._context.shelf_viewmodel.refresh_seal_states()
+        self._context.settings_viewmodel.refresh_hidden_space_status()
+
+    def _close_hidden_surfaces(self) -> None:
+        """Close the embedded Reader and the cover editor if they show a hidden book."""
+
+        book = self._embedded_reader_book
+        if self._embedded_reader is not None and book is not None and book.is_hidden:
+            self._close_embedded_reader()
+        editing = self._cover_editor_book()
+        if editing is not None and editing.is_hidden and self.cover_editor_overlay.isVisible():
+            self.cover_editor_overlay.hide()
+            self._cover_editor_thumbnail_viewmodel.cancel()
+            self._cover_editor_book_uuid = None
+
+    def _close_readers_for_books(self, book_ids: tuple[str, ...]) -> None:
+        """Before hiding or unhiding: no Reader may hold these books' files."""
+
+        wanted = set(book_ids)
+        book = self._embedded_reader_book
+        if self._embedded_reader is not None and book is not None and book.uuid in wanted:
+            self._close_embedded_reader()
+        if self._book_reader_closer is not None:
+            self._book_reader_closer(book_ids)
 
     def _refresh_sidebar_collections(self) -> None:
         # Sidebar only renders what is currently allowed under the Privacy
@@ -2139,32 +2084,85 @@ class MainWindow(QMainWindow):
         if hasattr(self, "dialog_overlay") and self.dialog_overlay.isVisible():
             self.dialog_overlay.raise_()
 
-    def _show_hidden_space_lock_overlay(self, root: QWidget) -> None:
+    def _maybe_show_hidden_space_lock_overlay(self) -> None:
+        """Ask for the passphrase if this Library left Hidden Space shown."""
+
+        settings_vm = self._context.settings_viewmodel
+        state = settings_vm.hidden_space_state
+        if (
+            self._lock_overlay is None
+            and settings_vm.show_hidden_collection
+            and state in (HiddenSpaceState.LOCKED, HiddenSpaceState.LEGACY)
+        ):
+            root = self.centralWidget()
+            if root is not None:
+                self._show_hidden_space_lock_overlay(root, legacy=state is HiddenSpaceState.LEGACY)
+
+    def _show_hidden_space_lock_overlay(self, root: QWidget, *, legacy: bool = False) -> None:
         # Build the overlay as a child of root so it lives in the same
         # coordinate space as ``dialog_overlay`` / ``settings_view``. The
         # shelf chrome stays interactive underneath visually but the
-        # overlay swallows all input so the user can't reach it.
-        self._lock_overlay = HiddenSpaceLockOverlay(
+        # overlay swallows all input so the user can't reach it. A Library
+        # still on the earlier password asks for that, and has no recovery
+        # code yet.
+        overlay = HiddenSpaceLockOverlay(
             root,
-            verify=self._context.settings_viewmodel.verify_hidden_space_password,
+            field_label=t("hidden_space.password_header") if legacy else None,
+            recovery_available=not legacy,
         )
-        self._lock_overlay.verified.connect(self._unlock_hidden_space)
-        self._lock_overlay.dismissed.connect(self._dismiss_hidden_space)
+        self._lock_overlay = overlay
+        overlay.unlock_requested.connect(lambda passphrase, overlay=overlay: self._unlock_from_overlay(overlay, passphrase))
+        overlay.recovery_requested.connect(self._recover_from_overlay)
+        overlay.dismissed.connect(self._dismiss_hidden_space)
         self._position_lock_overlay()
-        self._lock_overlay.show()
-        self._lock_overlay.raise_()
-        self._lock_overlay.focus_password()
+        overlay.show()
+        overlay.raise_()
+        overlay.focus_password()
 
-    def _unlock_hidden_space(self) -> None:
-        # Password verified — make sure both VMs reflect the persisted
-        # state, refresh the sidebar, and remove the overlay.
-        self._handle_hidden_space_changed()
+    def _unlock_from_overlay(self, overlay: HiddenSpaceLockOverlay, passphrase: str) -> None:
+        settings_vm = self._context.settings_viewmodel
+        flows = self._hidden_space_flows
+
+        def current() -> bool:
+            return self._lock_overlay is overlay
+
+        def failed(text: str) -> None:
+            if current():
+                overlay.show_error(text)
+
+        overlay.set_busy(True)
+        if settings_vm.hidden_space_state is HiddenSpaceState.LEGACY:
+            def upgrade_ready(draft) -> None:  # noqa: ANN001 - VaultDraft.
+                if not current():
+                    return
+                # The earlier password is right; what remains is the recovery
+                # code, on the normal dialogs. Cancelling there leaves Hidden
+                # Space locked, exactly as before.
+                self._tear_down_lock_overlay()
+                if flows is not None:
+                    flows.continue_upgrade(draft)
+
+            settings_vm.prepare_hidden_space_upgrade(passphrase, on_success=upgrade_ready, on_failure=failed)
+            return
+
+        def unlocked(_result: object) -> None:
+            if current():
+                self._tear_down_lock_overlay()
+
+        settings_vm.unlock_hidden_space(passphrase, on_success=unlocked, on_failure=failed)
+
+    def _recover_from_overlay(self) -> None:
+        flows = self._hidden_space_flows
+        if flows is None:
+            return
         self._tear_down_lock_overlay()
+        # Cancelling the recovery returns to the prompt it came from.
+        flows.start_recovery(on_cancel=self._maybe_show_hidden_space_lock_overlay)
 
     def _dismiss_hidden_space(self) -> None:
-        # User pressed Hide on the lock screen. Flip the persisted toggle
-        # off so next launch boots straight to the normal shelf, then
-        # remove the overlay. Books stay marked hidden in storage.
+        # User pressed Hide on the lock screen. Turn Show Collections off so
+        # the next launch opens straight to the normal shelf; the books stay
+        # hidden and encrypted.
         self._context.settings_viewmodel.set_show_hidden_collection(False)
         self._tear_down_lock_overlay()
 

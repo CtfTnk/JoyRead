@@ -114,10 +114,13 @@ class AppSettings:
     archive_max_operation_data_gb: int = 4
     archive_max_image_megapixels: int = 400
     archive_external_command_timeout_seconds: int = 300
-    # Hidden Space (soft visibility layer for books + user collections).
-    # ``hidden_space_password_hash is None`` is the sentinel for the
-    # uninitiated state — the feature is only "armed" once the user
-    # completes the password-setup dialog.
+    # Hidden Space. The vault itself lives in each Library's database; these
+    # two settings are app-wide. The password hash and salt are the soft-
+    # hiding password from before the vault: present, they mark a Library
+    # still to be upgraded (``HiddenSpaceState.LEGACY``), and the upgrade or
+    # a reset clears them. Nothing writes a new one.
+    # ``show_hidden_collection`` is the user's choice to show Hidden Space;
+    # it is shown only while the vault is also unlocked.
     hidden_space_password_hash: str | None = None
     hidden_space_password_salt: str | None = None
     show_hidden_collection: bool = False

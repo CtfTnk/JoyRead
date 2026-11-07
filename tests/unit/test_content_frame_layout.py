@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 )
 from PIL import Image
 
+from joyread.core.models.cover_image import CoverImage
 from joyread.core.models.book import Book
 from joyread.core.models.tag import Tag
 from tests.support.in_memory_book_repository import InMemoryBookRepository
@@ -592,7 +593,7 @@ def test_book_card_cover_can_update_from_generated_path(qtbot, tmp_path) -> None
     assert cover is not None
     before = cover._pixmap.cacheKey()
 
-    card.set_cover_path(cover_path)
+    card.set_cover(CoverImage.from_path(cover_path))
 
     assert cover._pixmap.cacheKey() != before
 
@@ -656,7 +657,7 @@ def test_book_list_row_cover_can_update_from_generated_path(qtbot, tmp_path) -> 
     assert cover is not None
     before = cover._pixmap.cacheKey()
 
-    row.set_cover_path(cover_path)
+    row.set_cover(CoverImage.from_path(cover_path))
 
     assert cover._pixmap.cacheKey() != before
 
@@ -927,7 +928,7 @@ def test_book_detail_panel_cover_can_update_for_current_book(qtbot, tmp_path) ->
     assert cover is not None
     before = cover._pixmap.cacheKey()
 
-    panel.set_cover_path(book.uuid, cover_path)
+    panel.set_cover(book.uuid, CoverImage.from_path(cover_path))
 
     assert cover._pixmap.cacheKey() != before
 

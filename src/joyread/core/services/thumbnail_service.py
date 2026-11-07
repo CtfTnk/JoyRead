@@ -9,13 +9,15 @@ from pathlib import Path
 import re
 from threading import Event, RLock
 from time import perf_counter
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from joyread.core.archive import ArchiveError, ArchiveImageService, ArchiveOpenLimits
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS, EXPENSIVE_ARCHIVE_EXTENSIONS
 from joyread.core.diagnostics import cache_identity_kind
+from joyread.core.file_types import SEALED_EXTENSION
 from joyread.core.services.archive_extraction_pool import managed_document_cache_key
 from joyread.core.models.book import Book
+from joyread.core.models.cover_image import CoverImage
 from joyread.core.reader import ReaderImageSession, ReaderSessionService
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfError
 from joyread.core.services.cache_service import (
@@ -26,6 +28,11 @@ from joyread.core.services.cache_service import (
 )
 from joyread.infrastructure.filesystem.path_service import PathService
 from joyread.core.thumbnail_cancellation import check_thumbnail_cancelled
+from joyread.core.vault import VaultError, VaultLockedError
+
+if TYPE_CHECKING:
+    from joyread.core.services.sealed_cover_store import SealedCoverStore
+    from joyread.core.services.vault_service import VaultService
 
 
 # Image-paged formats only: EPUB lives in ``SUPPORTED_READER_EXTENSIONS``
@@ -81,6 +88,8 @@ class _ThumbnailSessionEntry:
     active_reads: int = 0
     retired: bool = False
     closed: bool = False
+    # Opened from a Hidden Space ``.jrl`` file: retired when the vault locks.
+    sealed: bool = False
 
 
 class ThumbnailSourceHandle:
@@ -189,7 +198,18 @@ class CoverCropState:
 
 
 class ThumbnailService:
-    """Generates cached cover files and transient detail-page thumbnails."""
+    """Generates cached cover files and transient detail-page thumbnails.
+
+    **Hidden Space books.** A sealed book (``.jrl``) never gets a cover file:
+    its cover is sealed in :class:`SealedCoverStore`, and its pages decrypt
+    only while the vault is unlocked. So for a sealed book
+    :meth:`existing_cover` answers from the store's in-memory cache alone, and
+    :meth:`load_cover` decrypts the sealed cover on a worker -- or, for a book
+    sealed without one, renders the first page in memory. Neither writes a
+    ``*-generated-*.png``. When the vault locks, every session opened from a
+    sealed file is retired and the shared rendered-thumbnail cache is emptied,
+    because both hold decrypted pages.
+    """
 
     _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 
@@ -204,8 +224,12 @@ class ThumbnailService:
         archive_global_file_max_depth: int = 100,
         archive_limits: ArchiveOpenLimits | None = None,
         thumbnail_renderer: ThumbnailRenderer,
+        vault: VaultService | None = None,
+        sealed_covers: SealedCoverStore | None = None,
     ) -> None:
         self._paths = paths
+        self._vault = vault
+        self._sealed_covers = sealed_covers
         self._archive_service = archive_service
         self._reader_session_service = reader_session_service or ReaderSessionService(archive_service)
         self._cache_service = cache_service
@@ -229,6 +253,9 @@ class ThumbnailService:
         self._session_registry_lock = RLock()
         self._session_generation = 0
         self._closed = False
+        self._remove_lock_listener = (
+            vault.keyring.add_lock_listener(self._forget_sealed_material) if vault is not None else None
+        )
 
     def set_archive_depth_limits(self, nested_max_depth: int, global_file_max_depth: int) -> None:
         self.set_archive_open_limits(
@@ -270,6 +297,9 @@ class ThumbnailService:
             self._closed = True
             self._session_generation += 1
             sessions = self._retire_all_sessions_locked()
+        if self._remove_lock_listener is not None:
+            self._remove_lock_listener()
+            self._remove_lock_listener = None
         _close_sessions(sessions)
         logger.info(
             "Thumbnail service closed",
@@ -352,15 +382,50 @@ class ThumbnailService:
             check_thumbnail_cancelled(cancelled)
             emit_item(DetailThumbnailItem(page_index, rendered))
 
+    @staticmethod
+    def is_sealed(book: Book) -> bool:
+        return Path(book.file_path).suffix.lower() == SEALED_EXTENSION
+
     def can_generate_from(self, book: Book) -> bool:
         source = Path(book.file_path)
+        if source.suffix.lower() == SEALED_EXTENSION:
+            # Pages of a sealed book exist only while its vault is unlocked.
+            return self._sealed_readable() and source.is_file()
         return (
             source.exists()
             and source.is_file()
             and source.suffix.lower() in _THUMBNAIL_GENERABLE_EXTENSIONS
         )
 
+    def existing_cover(self, book: Book, size: SizeTuple) -> CoverImage | None:
+        """A cover to show now. Safe on the UI thread: nothing is decrypted here.
+
+        A sealed book's cover is returned only when already in memory; a miss
+        means "ask :meth:`load_cover` on a worker".
+        """
+
+        if self.is_sealed(book):
+            if self._sealed_covers is None or not self._sealed_readable():
+                return None
+            data = self._sealed_covers.cached(book.uuid)
+            return CoverImage.from_bytes(data) if data is not None else None
+        path = self.existing_cover_path(book, size)
+        return CoverImage.from_path(path) if path is not None else None
+
+    def load_cover(self, book: Book, size: SizeTuple) -> CoverImage | None:
+        """Find or make the book's cover. Slow: call it on a worker."""
+
+        if not self.is_sealed(book):
+            path = self.generate_cover(book, size)
+            return CoverImage.from_path(path) if path is not None else None
+        data = self._load_sealed_cover(book, size)
+        return CoverImage.from_bytes(data) if data is not None else None
+
     def existing_cover_path(self, book: Book, size: SizeTuple) -> Path | None:
+        if self.is_sealed(book):
+            # A sealed cover's path is not an image, and its decrypted bytes
+            # must stay in memory: see ``existing_cover``.
+            return None
         explicit = self._explicit_cover_path(book, size)
         if explicit is not None:
             logger.debug("Cover path resolved from explicit DB value book=%s path=%s", book.uuid, explicit)
@@ -427,6 +492,8 @@ class ThumbnailService:
         size: SizeTuple,
     ) -> Path:
         rendered = self._thumbnail_renderer.render_cover_crop(source_bytes, crop_state, size)
+        if self.is_sealed(book):
+            return self._save_sealed_cover(book, rendered)
         cover_path = self._editable_cover_path(book, size)
         cover_path.parent.mkdir(parents=True, exist_ok=True)
         cover_path.write_bytes(rendered)
@@ -461,7 +528,15 @@ class ThumbnailService:
         self._cache_service.purge_thumbnail_source(document_cache_key)
 
     def generate_cover(self, book: Book, size: SizeTuple) -> Path | None:
+        """The cover file of a normal book, generated if missing.
+
+        Always ``None`` for a sealed book, which must never get a cover file;
+        :meth:`load_cover` serves both kinds.
+        """
+
         logger.debug("Generate cover requested book=%s size=%s", book.uuid, size)
+        if self.is_sealed(book):
+            return None
         existing = self.existing_cover_path(book, size)
         if existing is not None:
             return existing
@@ -469,23 +544,8 @@ class ThumbnailService:
             logger.debug("Generate cover skipped book=%s: unsupported or missing source", book.uuid)
             return None
 
-        try:
-            source = self.open_thumbnail_source(book)
-            if source is None:
-                return None
-            with source:
-                pages = source.read_thumbnail_pages((0,), size)
-                first_page = pages[0] if pages else None
-                if first_page is None:
-                    return None
-                rendered = self._render_thumbnail_page(first_page, size)
-        except (ArchiveError, PdfError, OSError, ThumbnailRenderError) as exc:
-            logger.warning(
-                "Cover generation failed for book=%s size=%s: %s",
-                book.uuid,
-                size,
-                exc,
-            )
+        rendered = self._render_first_page(book, size)
+        if rendered is None:
             return None
 
         cover_path = self._cover_path(book, size)
@@ -499,6 +559,94 @@ class ThumbnailService:
         self._cache_service.cover_index.put(self._cover_cache_key(book, size), str(cover_path))
         logger.debug("Generate cover complete book=%s path=%s", book.uuid, cover_path)
         return cover_path
+
+    def _render_first_page(self, book: Book, size: SizeTuple) -> bytes | None:
+        try:
+            source = self.open_thumbnail_source(book)
+            if source is None:
+                return None
+            with source:
+                pages = source.read_thumbnail_pages((0,), size)
+                first_page = pages[0] if pages else None
+                if first_page is None:
+                    return None
+                return self._render_thumbnail_page(first_page, size)
+        except (ArchiveError, PdfError, OSError, ThumbnailRenderError, VaultError) as exc:
+            logger.warning(
+                "Cover generation failed for book=%s size=%s: %s",
+                book.uuid,
+                size,
+                exc,
+            )
+            return None
+
+    # -- Hidden Space ---------------------------------------------------------
+
+    def _sealed_readable(self) -> bool:
+        return self._vault is not None and self._vault.is_unlocked
+
+    def _load_sealed_cover(self, book: Book, size: SizeTuple) -> bytes | None:
+        store = self._sealed_covers
+        if store is None or not self._sealed_readable():
+            return None
+        try:
+            data = store.read(book.uuid)
+        except VaultLockedError:
+            return None  # Locked while this request waited: nothing to show.
+        except (VaultError, OSError) as exc:
+            # Damaged, or locked meanwhile. Rendering below covers the first;
+            # for the second it finds the vault locked and gives up too.
+            logger.warning(
+                "A sealed cover could not be read",
+                extra={"event": "thumbnail.sealed_cover.failed", "category": "vault",
+                       "status": "failed", "book_id": book.uuid, "error_type": type(exc).__name__},
+            )
+            data = None
+        if data is not None:
+            return data
+        # Sealed without a cover (it never had one, or it could not be
+        # sealed): render one from the sealed pages, and keep it in memory.
+        rendered = self._render_first_page(book, size)
+        if rendered is not None:
+            store.remember(book.uuid, rendered)
+        return rendered
+
+    def _save_sealed_cover(self, book: Book, rendered: bytes) -> Path:
+        store = self._sealed_covers
+        public_key = self._vault.public_key if self._vault is not None else None
+        if store is None or public_key is None:
+            raise VaultError("Hidden Space encryption is unavailable in this runtime.", code="no_vault")
+        # Sealing needs only the public key; the edited cover is then shown
+        # from memory, because the sealed file cannot be loaded as an image.
+        path = store.write(book.uuid, rendered, public_key)
+        store.remember(book.uuid, rendered)
+        self.invalidate_cover_cache(book.uuid)
+        return path
+
+    def _forget_sealed_material(self) -> None:
+        """Lock listener: forget every decrypted page this service holds.
+
+        Runs on whichever thread locked the vault. A session still being read
+        is retired now and closed by its last reader, like any retired one.
+        """
+
+        with self._session_registry_lock:
+            if self._closed:
+                return
+            sessions: list[ReaderImageSession] = []
+            for key, entry in tuple(self._session_entries.items()):
+                if not entry.sealed:
+                    continue
+                self._session_entries.pop(key)
+                entry.retired = True
+                session = self._close_entry_if_idle_locked(entry)
+                if session is not None:
+                    sessions.append(session)
+        _close_sessions(sessions)
+        # Rendered thumbnails carry no record of where they came from that
+        # outlives their sessions, so the whole shared cache goes. It refills
+        # on demand, and locking is rare.
+        self._cache_service.thumbnail_cache.clear()
 
     def generate_page_thumbnail(
         self,
@@ -754,7 +902,7 @@ class ThumbnailService:
                 and limits == self._archive_limits
             )
             if accepted:
-                entry = _ThumbnailSessionEntry(session)
+                entry = _ThumbnailSessionEntry(session, sealed=self.is_sealed(book))
                 self._session_entries[registry_key] = entry
             self._opening_events.pop(registry_key, None)
             event.set()

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from joyread import __version__
 from joyread.core.archive.limits import GIB
 from joyread.core.reader.models import ReaderDirection, ReaderFitMode, ReaderTransitionMode
+from joyread.core.services.hidden_space_service import HiddenSpaceState
 from joyread.infrastructure.i18n.locale_service import (
     language_display_options,
     TranslatedText,
@@ -87,9 +88,11 @@ class SettingsPageWidget(QFrame):
     # Hidden Space user-actions that need a dialog overlay. SettingsView
     # forwards them so MainWindow (which owns the overlay) can drive the
     # dialog flow and call the relevant VM methods.
-    hidden_space_setup_requested = QtSignal()
-    hidden_space_verify_requested = QtSignal()
-    hidden_space_change_password_requested = QtSignal()
+    # Show Collections switched on: MainWindow sets up, upgrades or unlocks.
+    hidden_space_show_requested = QtSignal()
+    hidden_space_change_passphrase_requested = QtSignal()
+    hidden_space_new_recovery_code_requested = QtSignal()
+    hidden_space_retry_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
     # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
@@ -112,6 +115,7 @@ class SettingsPageWidget(QFrame):
         self._reading_dropdowns: dict[str, SettingsDropdownButton] = {}
         self._tag_page = None  # cached TagManagementPage, lazily created
         self._archive_pool_usage_item: SettingsCacheStatusItem | None = None
+        self._hidden_space_status_item: SettingsHiddenSpaceStatusItem | None = None
         self._library_ready = True
         self._disposed = False
         self._sidebar_items: dict[SettingsSectionKey, SettingsSidebarItem] = {}
@@ -143,6 +147,7 @@ class SettingsPageWidget(QFrame):
         self._viewmodel.state_changed.connect(self.render)
         self._viewmodel.language_changed.connect(self.refresh_labels)
         self._viewmodel.archive_pool_usage_changed.connect(self._refresh_archive_pool_usage)
+        self._viewmodel.hidden_space_status_changed.connect(self._refresh_hidden_space_status)
         self.destroyed.connect(self._handle_destroyed)
         self.render()
 
@@ -156,6 +161,7 @@ class SettingsPageWidget(QFrame):
         self._viewmodel.state_changed.disconnect(self.render)
         self._viewmodel.language_changed.disconnect(self.refresh_labels)
         self._viewmodel.archive_pool_usage_changed.disconnect(self._refresh_archive_pool_usage)
+        self._viewmodel.hidden_space_status_changed.disconnect(self._refresh_hidden_space_status)
         if self._tag_page is not None:
             self._tag_page.dispose()
             self._tag_page = None
@@ -178,6 +184,7 @@ class SettingsPageWidget(QFrame):
         # Only the cache section carries a usage row; elsewhere this is None
         # and the usage signal has nothing to update.
         self._archive_pool_usage_item = self._content.findChild(SettingsCacheStatusItem)
+        self._hidden_space_status_item = self._content.findChild(SettingsHiddenSpaceStatusItem)
 
     def set_library_ready(self, ready: bool) -> None:
         """Keep storage selection available while Library-owned actions wait."""
@@ -209,6 +216,16 @@ class SettingsPageWidget(QFrame):
         self._archive_pool_usage_item.set_usage(
             self._viewmodel.archive_pool_current_bytes,
             self._viewmodel.archive_extraction_pool_gb * GIB,
+        )
+
+    def _refresh_hidden_space_status(self) -> None:
+        """Update the encryption status line in place, as books finish sealing."""
+
+        if self._disposed or self._hidden_space_status_item is None:
+            return
+        self._hidden_space_status_item.set_status(
+            self._viewmodel.hidden_space_status_text,
+            show_retry=self._viewmodel.hidden_space_status.failed > 0,
         )
 
     def refresh_labels(self) -> None:
@@ -344,30 +361,45 @@ class SettingsPageWidget(QFrame):
         return [banner, self._tag_page]
 
     def _privacy_items(self) -> list[QWidget]:
-        # Hidden Space surface. The switch row drives the dialog flow via
-        # ``hidden_space_setup_requested`` / ``hidden_space_verify_requested``
-        # — the VM only flips the persisted toggle off; turning it on
-        # requires a password and is owned by MainWindow.
+        # Hidden Space. The switch shows whether Hidden Space is on screen
+        # now (unlocked and shown). Turning it on asks MainWindow to set up,
+        # upgrade or unlock; turning it off locks, here, through the VM.
+        vm = self._viewmodel
+        state = vm.hidden_space_state
+        has_vault = vm.hidden_space_has_vault
+        set_up = state is not HiddenSpaceState.NONE
         hidden_banner = SectionBanner(t("settings.banner_hidden_space"), self._resources)
 
-        show_switch = SettingsSwitchItem(
-            t("settings.show_collections"),
-            self._viewmodel.show_hidden_collection,
-        )
+        show_switch = SettingsSwitchItem(t("settings.show_collections"), vm.hidden_space_visible)
         show_switch.toggled.connect(self._handle_show_hidden_toggled)
 
-        change_password = SettingsButtonItem(t("settings.change_password"), t("settings.btn_change"))
-        change_password.clicked.connect(self.hidden_space_change_password_requested.emit)
-        # Hidden Space hasn't been set up yet → no password to change.
-        change_password.set_enabled(self._viewmodel.hidden_space_initialized)
+        hidden_items: list[QWidget] = [hidden_banner, show_switch]
+        if has_vault:
+            status = SettingsHiddenSpaceStatusItem(
+                t("settings.hidden_space_encryption"),
+                vm.hidden_space_status_text,
+                show_retry=vm.hidden_space_status.failed > 0,
+            )
+            status.retry_requested.connect(self.hidden_space_retry_requested.emit)
+            hidden_items.append(status)
+
+        # Both need the vault's slots, which an earlier-version password lacks.
+        change_passphrase = SettingsButtonItem(t("settings.change_passphrase"), t("settings.btn_change"))
+        change_passphrase.clicked.connect(self.hidden_space_change_passphrase_requested.emit)
+        change_passphrase.set_enabled(has_vault)
+
+        new_recovery_code = SettingsButtonItem(t("settings.new_recovery_code"), t("settings.btn_create_new"))
+        new_recovery_code.clicked.connect(self.hidden_space_new_recovery_code_requested.emit)
+        new_recovery_code.set_enabled(has_vault)
 
         revert = SettingsButtonItem(t("settings.revert_all"), t("settings.btn_proceed"))
         revert.clicked.connect(self.hidden_space_revert_requested.emit)
-        revert.set_enabled(self._viewmodel.hidden_space_initialized)
+        revert.set_enabled(set_up)
 
         reset = SettingsButtonItem(t("settings.reset_and_erase"), t("settings.btn_proceed"), destructive=True)
         reset.clicked.connect(self.hidden_space_reset_requested.emit)
-        reset.set_enabled(self._viewmodel.hidden_space_initialized)
+        reset.set_enabled(set_up)
+        hidden_items.extend((change_passphrase, new_recovery_code, revert, reset))
 
         # Storage management. The library location itself is not shown/edited
         # here: Move creates a fresh JoyRead-Library under a chosen parent and
@@ -391,7 +423,7 @@ class SettingsPageWidget(QFrame):
         reset_library.clicked.connect(self.storage_reset_requested.emit)
 
         if not self._library_ready:
-            for control in (show_switch, change_password, revert, reset, move_library, reset_library):
+            for control in (*hidden_items[1:], move_library, reset_library):
                 control.setEnabled(False)
 
         # Encrypted-archive cache. Extracted pages of a password-protected
@@ -404,11 +436,7 @@ class SettingsPageWidget(QFrame):
         purge_encrypted.toggled.connect(self._viewmodel.set_purge_encrypted_cache_on_close)
 
         return [
-            hidden_banner,
-            show_switch,
-            change_password,
-            revert,
-            reset,
+            *hidden_items,
             encrypted_banner,
             purge_encrypted,
             storage_banner,
@@ -419,22 +447,17 @@ class SettingsPageWidget(QFrame):
 
     def _handle_show_hidden_toggled(self, enabled: bool) -> None:
         if enabled:
-            # The switch flips visually before the dialog appears; we revert
-            # it on failure inside the dialog handlers. Setup vs. verify is
-            # decided by whether the feature has been initialised.
-            if self._viewmodel.hidden_space_initialized:
-                self.hidden_space_verify_requested.emit()
-            else:
-                self.hidden_space_setup_requested.emit()
+            # The switch flips visually before the dialog appears; a flow
+            # that ends without showing Hidden Space re-renders it back.
+            self.hidden_space_show_requested.emit()
         else:
-            # Turning off the toggle is unprivileged — books stay marked
-            # hidden in storage, just not displayed.
+            # Turning it off is unprivileged: it locks, and the books stay
+            # hidden and encrypted.
             self._viewmodel.set_show_hidden_collection(False)
 
     def revert_show_hidden_switch(self) -> None:
-        # Re-render the Privacy items so the switch reflects the persisted
-        # ``show_hidden_collection`` value again — used when the password
-        # dialog is cancelled or verification fails.
+        # Re-render the Privacy items so the switch reflects whether Hidden
+        # Space is shown -- used when a setup, upgrade or unlock is cancelled.
         self.render()
 
     def _general_items(self) -> list[QWidget]:
@@ -1123,9 +1146,10 @@ class SettingsSwitchItem(SettingsOptionItem):
 class SettingsButtonItem(SettingsOptionItem):
     """Label + right-aligned push button row (Figma node I231:1711;509:3236).
 
-    Used for the Hidden Space rows (Change Password, Revert all, Reset and
-    Erase). When ``destructive=True`` the ``destructive`` property is set
-    on both the row frame and the push button so the QSS rule under
+    Used for the Hidden Space rows (Change Passphrase, New Recovery Code,
+    Revert all, Reset and Erase). When ``destructive=True`` the
+    ``destructive`` property is set on both the row frame and the push
+    button so the QSS rule under
     ``QFrame[class="SettingsItem"][destructive="true"]`` tints the label
     and the caption red — no inline stylesheets.
     """
@@ -1620,16 +1644,18 @@ class SettingsSpinButtonSmall(QFrame):
         self.set_value(value)
 
 
-class SettingsCacheStatusItem(QFrame):
-    """Row that displays current pool usage alongside a small ``Clear`` action."""
+class _SettingsStatusRow(QFrame):
+    """Name, a right-aligned status text and an optional small action button."""
 
-    clear_requested = QtSignal()
+    action_requested = QtSignal()
 
     def __init__(
         self,
         name: str,
-        current_bytes: int,
-        budget_bytes: int,
+        status_text: str,
+        button_text: str | None,
+        *,
+        label_object_name: str,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -1656,19 +1682,78 @@ class SettingsCacheStatusItem(QFrame):
         option_layout.setContentsMargins(0, 0, Theme.settings_address_option_padding_right, 0)
         option_layout.setSpacing(Theme.settings_address_option_gap)
 
-        self._usage_label = LocalizedLabel(_format_usage_label(current_bytes, budget_bytes))
-        self._usage_label.setObjectName("SettingsCacheUsageLabel")
-        self._usage_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        option_layout.addWidget(self._usage_label, stretch=1)
+        self._status_label = LocalizedLabel(status_text)
+        self._status_label.setObjectName(label_object_name)
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        option_layout.addWidget(self._status_label, stretch=1)
 
-        clear_button = SettingsPushButton(t("settings.btn_clear"))
-        clear_button.clicked.connect(self.clear_requested.emit)
-        option_layout.addWidget(clear_button)
+        self._action_button: SettingsPushButton | None = None
+        if button_text is not None:
+            self._action_button = SettingsPushButton(button_text)
+            self._action_button.clicked.connect(self.action_requested.emit)
+            option_layout.addWidget(self._action_button)
 
         layout.addWidget(option)
 
+    def _set_status_text(self, text: str) -> None:
+        set_localized(self._status_label, "setText", text)
+
+    def _set_action_visible(self, visible: bool) -> None:
+        if self._action_button is not None:
+            self._action_button.setVisible(visible)
+
+
+class SettingsCacheStatusItem(_SettingsStatusRow):
+    """Row that displays current pool usage alongside a small ``Clear`` action."""
+
+    clear_requested = QtSignal()
+
+    def __init__(
+        self,
+        name: str,
+        current_bytes: int,
+        budget_bytes: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            _format_usage_label(current_bytes, budget_bytes),
+            t("settings.btn_clear"),
+            label_object_name="SettingsCacheUsageLabel",
+            parent=parent,
+        )
+        self.action_requested.connect(self.clear_requested.emit)
+
     def set_usage(self, current_bytes: int, budget_bytes: int) -> None:
-        set_localized(self._usage_label, "setText", _format_usage_label(current_bytes, budget_bytes))
+        self._set_status_text(_format_usage_label(current_bytes, budget_bytes))
+
+
+class SettingsHiddenSpaceStatusItem(_SettingsStatusRow):
+    """Hidden Space encryption status, with Retry while anything has failed."""
+
+    retry_requested = QtSignal()
+
+    def __init__(
+        self,
+        name: str,
+        status_text: str,
+        *,
+        show_retry: bool,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(
+            name,
+            status_text,
+            t("settings.btn_retry"),
+            label_object_name="SettingsHiddenSpaceStatusLabel",
+            parent=parent,
+        )
+        self.action_requested.connect(self.retry_requested.emit)
+        self._set_action_visible(show_retry)
+
+    def set_status(self, status_text: str, *, show_retry: bool) -> None:
+        self._set_status_text(status_text)
+        self._set_action_visible(show_retry)
 
 
 def _format_usage_label(current_bytes: int, budget_bytes: int) -> str:

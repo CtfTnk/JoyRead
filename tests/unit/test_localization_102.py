@@ -116,7 +116,7 @@ def test_live_widgets_keep_user_content_and_input(qtbot):
     translated = LocalizedLabel(locale.t("app.name"), parent)
     user_label = LocalizedLabel("JoyRead", parent)
     field = QLineEdit(parent)
-    set_localized(field, "setPlaceholderText", locale.t("dialog.password_header"))
+    set_localized(field, "setPlaceholderText", locale.t("hidden_space.passphrase_header"))
     field.setText("Secret123"); field.setSelection(1, 4)
     panel = ReaderSettingsPanel(ResourceLoader(), parent)
     for language, expected in [("Chinese", "欣阅"), ("Japanese", "ジョイヨミ")]:
@@ -124,7 +124,7 @@ def test_live_widgets_keep_user_content_and_input(qtbot):
         assert translated.text() == expected
         assert user_label.text() == "JoyRead"
         assert field.text() == "Secret123" and field.selectedText() == "ecre"
-        assert field.placeholderText() == locale.t("dialog.password_header")
+        assert field.placeholderText() == locale.t("hidden_space.passphrase_header")
         assert locale.t("reader.section_horizontal") in [label.text() for label in panel.findChildren(QLabel)]
     set_localized(translated, "setText", "User title")
     locale.load_language("English")
@@ -136,21 +136,23 @@ def test_live_widgets_keep_user_content_and_input(qtbot):
 
 def test_password_overlay_retranslates_without_dismissing(qtbot):
     root = QWidget(); qtbot.addWidget(root); root.resize(900, 700); root.show()
-    lock = HiddenSpaceLockOverlay(root, verify=lambda value: value == "Good123")
+    lock = HiddenSpaceLockOverlay(root)
+    requested, dismissed = [], []
+    lock.unlock_requested.connect(requested.append)
+    lock.dismissed.connect(lambda: dismissed.append(True))
     lock._password.setText("Wrong123"); lock._on_verify_clicked()
+    assert requested == ["Wrong123"]
+    # The window answers asynchronously; its error text is a translated one.
+    lock.show_error(locale.t("hidden_space_error.incorrect_passphrase"))
     locale.load_language("Chinese")
     assert lock._state_label.text() == "密码错误。"
     assert lock._password.text() == "Wrong123"
-    verified, dismissed = [], []
-    lock.verified.connect(lambda: verified.append(True))
-    lock.dismissed.connect(lambda: dismissed.append(True))
-    lock._password.setText("Good123"); lock._on_verify_clicked()
     lock._on_hide_clicked()
-    assert verified == [True] and dismissed == [True]
+    assert dismissed == [True]
 
     overlay = JoyReadDialogOverlay(root, ResourceLoader())
     accepted = []
-    overlay.show_password_input(locale.t("dialog.unlock_title"), locale.t("dialog.password_header"), on_confirm=accepted.append)
+    overlay.show_password_input(locale.t("dialog.unlock_title"), locale.t("hidden_space.passphrase_header"), on_confirm=accepted.append)
     edit = overlay.findChild(QLineEdit); edit.setText("Keep123"); edit.setFocus()
     locale.load_language("Japanese"); qtbot.wait(10)
     assert overlay.isVisible() and not accepted
@@ -245,13 +247,17 @@ def test_file_filter_translates_label_but_keeps_canonical_value(qtbot):
 
 
 def test_hidden_space_service_failures_are_localized_at_viewmodel_boundary(tmp_path):
-    from joyread.core.services.hidden_space_service import HiddenSpacePasswordError
+    from joyread.core.vault import UnlockFailedError
+
     class RejectingService:
-        def change_password(self, *args):
-            raise HiddenSpacePasswordError("Current password is incorrect.", code="incorrect_current")
+        def change_passphrase(self, *args):
+            raise UnlockFailedError("Incorrect passphrase.")
+
     vm = SettingsViewModel(hidden_space_service=RejectingService())
-    errors = []
-    vm.hidden_space_error.connect(errors.append)
+    errors, succeeded = [], []
     locale.load_language("Chinese")
-    assert vm.change_hidden_space_password("wrong", "New123", "New123") is False
-    assert errors == ["当前密码错误。"]
+    vm.change_hidden_space_passphrase(
+        "wrong", "New123", "New123", on_success=succeeded.append, on_failure=errors.append
+    )
+    # The developer message never reaches the screen; the code picks the text.
+    assert errors == ["当前密码错误。"] and succeeded == []

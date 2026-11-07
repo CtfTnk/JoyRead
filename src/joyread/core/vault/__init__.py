@@ -38,6 +38,7 @@ from joyread.core.vault.recovery import RecoveryCode
 from joyread.core.vault.slots import (
     DEFAULT_SCRYPT_COST,
     PASSPHRASE_MIN_LENGTH,
+    PASSPHRASE_RECOMMENDED_LENGTH,
     SLOT_TYPE_PASSPHRASE,
     SLOT_TYPE_RECOVERY,
     ScryptCost,
@@ -54,6 +55,7 @@ __all__ = [
     "ContentType",
     "DEFAULT_SCRYPT_COST",
     "PASSPHRASE_MIN_LENGTH",
+    "PASSPHRASE_RECOMMENDED_LENGTH",
     "PassphraseRuleError",
     "RecoveryCode",
     "RecoveryCodeFormatError",

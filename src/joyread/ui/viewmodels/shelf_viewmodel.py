@@ -13,9 +13,12 @@ from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from threading import Event
+from typing import TYPE_CHECKING
 
+from joyread.core.file_types import SEALED_EXTENSION
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.cover_image import CoverImage
 from joyread.core.models.language import Language
 from joyread.core.models.tag import Tag
 from joyread.core.search import (
@@ -26,15 +29,20 @@ from joyread.core.search import (
     parse_book_search_query,
 )
 from joyread.core.services.library_service import LibraryService
+from joyread.core.models.vault import BookSealState, book_seal_states
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.tag_service import TagService
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
 from joyread.core.services.thumbnail_service import ThumbnailService, ThumbnailSourceHandle
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.i18n.locale_service import t
+from joyread.ui.viewmodels.hidden_space_text import hidden_space_error_text
 from joyread.ui.viewmodels.signals import Signal
 from joyread.app.thumbnail_stream import ThumbnailStreamController, ThumbnailStreamItem
 from joyread.app.reader_page_scheduler import ReaderPageScheduler
+
+if TYPE_CHECKING:
+    from joyread.core.services.hidden_space_service import HiddenSpaceService
 
 
 logger = logging.getLogger(__name__)
@@ -99,6 +107,7 @@ class ShelfViewModel(ShelfSorting):
         archive_warmup_coordinator: ArchiveWarmupCoordinator | None = None,
         random_page_scheduler: ReaderPageScheduler | None = None,
         random_page_executor: TaskExecutor | None = None,
+        hidden_space_service: HiddenSpaceService | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.selection_changed: Signal[set[str]] = Signal()
@@ -112,7 +121,7 @@ class ShelfViewModel(ShelfSorting):
         # back to the Qt UI thread (Qt::AutoConnection is the default for
         # Qt signals; this in-process Signal class is used directly, so the
         # subscriber is responsible).
-        self.cover_ready: Signal[tuple[str, Path]] = Signal()
+        self.cover_ready: Signal[tuple[str, CoverImage]] = Signal()
         self.page_thumbnail_ready: Signal[tuple[str, int, bytes]] = Signal()
         self.detail_thumbnail_source_ready: Signal[tuple[str, int]] = Signal()
         self.books_deleted: Signal[tuple[str, ...]] = Signal()
@@ -126,8 +135,15 @@ class ShelfViewModel(ShelfSorting):
         self.books_added_to_collection: Signal[tuple[str, ...]] = Signal()
         self.remove_failed: Signal[str] = Signal()
         self.book_tags_failed: Signal[str] = Signal()
+        self.hidden_books_failed: Signal[str] = Signal()
+        # Emitted just before books are hidden or unhidden, so the window can
+        # close their Readers: encrypting deletes the plaintext file and
+        # decrypting deletes the sealed one, and Windows will not delete a
+        # file that is open.
+        self.book_readers_close_requested: Signal[tuple[str, ...]] = Signal()
 
         self._library_service = library_service
+        self._hidden_space_service = hidden_space_service
         self._thumbnail_service = thumbnail_service
         self._task_service = task_service
         self._tag_service = tag_service
@@ -157,17 +173,19 @@ class ShelfViewModel(ShelfSorting):
         self.file_filter = _coerce_file_filter(settings.shelf_file_filter if settings is not None else None)
         self.view_mode = _coerce_view_mode(settings.shelf_view_mode if settings is not None else None)
         self.current_shelf = ShelfKey.ALL.value
-        self.show_hidden_collection = bool(settings.show_hidden_collection) if settings is not None else False
-        self.hidden_space_initialized = bool(
-            settings is not None and settings.hidden_space_password_hash is not None
-        )
+        # Whether Hidden Space is on screen: its shelf, its hidable
+        # collections and the Hide action. The window sets it from the vault
+        # state -- unlocked, with Show Collections on -- so it starts False.
+        self.show_hidden_collection = False
+        # Outstanding Hidden Space work per book ("Encrypting...").
+        self.seal_states: dict[str, BookSealState] = {}
         self.selected_book_ids: set[str] = set()
         self.detail_book_uuid: str | None = None
         self.is_loading = False
         self.is_importing = False
         self.import_progress = 0
         self.error_message: str | None = None
-        self._cover_paths: dict[str, Path] = {}
+        self._covers: dict[str, CoverImage] = {}
         self._pending_cover_ids: set[str] = set()
         self._detail_load_token = 0
         self._detail_source_handle: ThumbnailSourceHandle | None = None
@@ -179,8 +197,8 @@ class ShelfViewModel(ShelfSorting):
         self._init_sorting()
 
     @property
-    def cover_paths(self) -> dict[str, Path]:
-        return dict(self._cover_paths)
+    def covers(self) -> dict[str, CoverImage]:
+        return dict(self._covers)
 
     @property
     def tag_filter_ids(self) -> tuple[str, ...]:
@@ -275,6 +293,7 @@ class ShelfViewModel(ShelfSorting):
                 self._restore_scope_sort()
             self._refresh_search_documents()
             self._refresh_book_tag_index()
+            self.seal_states = self._load_seal_states()
         except Exception as exc:  # pragma: no cover - repository failures are not in mock path.
             logger.warning("Shelf load_books failed: %s", exc, exc_info=True)
             self.error_message = str(exc)
@@ -284,6 +303,7 @@ class ShelfViewModel(ShelfSorting):
             self._search_documents_by_book_id = {}
             self.available_tags = []
             self._book_tag_ids_by_book = {}
+            self.seal_states = {}
         finally:
             self.is_loading = False
             logger.debug(
@@ -300,6 +320,7 @@ class ShelfViewModel(ShelfSorting):
         library_service: LibraryService,
         thumbnail_service: ThumbnailService | None = None,
         tag_service: TagService | None = None,
+        hidden_space_service: HiddenSpaceService | None = None,
     ) -> None:
         self._sort_epoch += 1
         self.sort_saving = False
@@ -310,7 +331,10 @@ class ShelfViewModel(ShelfSorting):
             self._thumbnail_service = thumbnail_service
         if tag_service is not None:
             self._tag_service = tag_service
-        self._cover_paths.clear()
+        if hidden_space_service is not None:
+            self._hidden_space_service = hidden_space_service
+        self.seal_states = {}
+        self._covers.clear()
         self._cover_request_epoch += 1
         self._pending_cover_ids.clear()
         self._refresh_book_tag_index()
@@ -318,14 +342,16 @@ class ShelfViewModel(ShelfSorting):
         self._rebuild_detail_stream()
 
     def set_show_hidden_collection(self, enabled: bool) -> None:
-        # Settings layer is the single source of truth; the VM mirrors it
-        # so the filtering rules don't need to touch SettingsStore on every
-        # render. Caller is responsible for persistence (HiddenSpaceService
-        # handles that as part of the password-protected toggle flow).
+        # Mirrors SettingsViewModel.hidden_space_visible -- Show Collections
+        # on *and* the vault unlocked -- which MainWindow pushes here, so the
+        # filtering rules never consult settings or the vault per render.
+        # Persisting the choice and locking belong to the settings side.
         normalized = bool(enabled)
         if normalized == self.show_hidden_collection:
             return
         self.show_hidden_collection = normalized
+        if not normalized:
+            self._forget_in_memory_covers()
         if not normalized and (
             self.current_shelf == ShelfKey.HIDDEN.value
             or self._is_hidable_collection_shelf(self.current_shelf)
@@ -338,9 +364,17 @@ class ShelfViewModel(ShelfSorting):
             self._set_detail_book_uuid(None)
         self._emit_state()
 
-    def set_hidden_space_initialized(self, initialized: bool) -> None:
-        self.hidden_space_initialized = bool(initialized)
-        self._emit_state()
+    def refresh_seal_states(self) -> None:
+        """Reload after Hidden Space work changed some books.
+
+        A seal or unseal that commits changes the book's file and cover, not
+        only its state, so this reloads the shelf rather than the states alone.
+        """
+
+        self.load_books()
+
+    def seal_state_for(self, book_uuid: str) -> BookSealState | None:
+        return self.seal_states.get(book_uuid)
 
     def set_current_shelf(self, shelf: str) -> None:
         if shelf == self.current_shelf:
@@ -810,37 +844,63 @@ class ShelfViewModel(ShelfSorting):
         self.collection_failed.emit(str(error))
 
     def hide_books(self, book_uuids: Iterable[str]) -> None:
-        self._set_books_hidden(book_uuids, hidden=True)
+        """Hide books; Hidden Space encrypts each one in the background."""
+
+        self._change_hidden(book_uuids, hidden=True)
 
     def unhide_books(self, book_uuids: Iterable[str]) -> None:
-        self._set_books_hidden(book_uuids, hidden=False)
+        """Unhide books. A sealed one stays in Hidden until it is decrypted."""
 
-    def _set_books_hidden(self, book_uuids: Iterable[str], *, hidden: bool) -> None:
+        self._change_hidden(book_uuids, hidden=False)
+
+    def _change_hidden(self, book_uuids: Iterable[str], *, hidden: bool) -> None:
         target_ids = tuple(dict.fromkeys(book_uuid for book_uuid in book_uuids if book_uuid))
         if not target_ids:
             return
+        service = self._hidden_space_service
+        if service is None:
+            logger.warning("Hidden Space change ignored: this runtime has no Hidden Space")
+            self.hidden_books_failed.emit(t("hidden_space_error.unavailable"))
+            return
+
+        def change() -> object:
+            # Unhiding can wait up to half a minute for a seal of the same
+            # book to finish deleting its plaintext, so never on the UI thread.
+            return service.hide_books(target_ids) if hidden else service.unhide_books(target_ids)
+
+        self.book_readers_close_requested.emit(target_ids)
 
         if self._task_service is None:
             try:
-                self._library_service.set_books_hidden(target_ids, hidden)
-            except Exception as exc:  # pragma: no cover - repository-specific failure path.
-                logger.warning(
-                    "set_books_hidden failed books=%s value=%s: %s",
-                    target_ids,
-                    hidden,
-                    exc,
-                    exc_info=True,
-                )
+                change()
+            except Exception as exc:
+                self._handle_hidden_change_failure(exc)
                 return
             self._handle_hidden_change()
             return
 
         self._task_service.submit(
-            "set-books-hidden",
-            lambda target_ids=target_ids: self._library_service.set_books_hidden(target_ids, hidden),
+            "hide-books" if hidden else "unhide-books",
+            change,
             on_success=lambda _result: self._handle_hidden_change(),
-            on_failure=lambda error: logger.warning("set_books_hidden task failed: %s", error),
+            on_failure=self._handle_hidden_change_failure,
         )
+
+    def _handle_hidden_change_failure(self, error: Exception) -> None:
+        logger.warning(
+            "Hidden Space change failed: %s",
+            type(error).__name__,
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        self.load_books()
+        self.hidden_books_failed.emit(hidden_space_error_text(error))
+
+    def _load_seal_states(self) -> dict[str, BookSealState]:
+        service = self._hidden_space_service
+        sealing = service.sealing if service is not None else None
+        if sealing is None:
+            return {}
+        return book_seal_states(sealing.jobs_by_book())
 
     def set_collection_hidable(self, collection_uuid: str, hidable: bool) -> None:
         if self._task_service is None:
@@ -956,6 +1016,8 @@ class ShelfViewModel(ShelfSorting):
         self.book_metadata_failed.emit(str(error))
 
     def _handle_book_cover_success(self, book_uuid: str, path: Path) -> None:
+        # ``path`` is what the database now records. A sealed book's cover
+        # file cannot be shown as an image; its edited cover is in memory.
         path_text = str(path)
         updated_book: Book | None = None
         next_books: list[Book] = []
@@ -968,9 +1030,22 @@ class ShelfViewModel(ShelfSorting):
         self.books = next_books
         if updated_book is not None:
             self._record_search_documents((updated_book,))
-        self._record_cover(book_uuid, path, force=True)
+        cover = self._saved_cover_image(updated_book, path)
+        if cover is not None:
+            self._record_cover(book_uuid, cover, force=True)
+        elif updated_book is not None:
+            self._covers.pop(book_uuid, None)
+            self.request_covers_for_books((book_uuid,))
         self._emit_state()
         self.book_cover_updated.emit(book_uuid, path)
+
+    def _saved_cover_image(self, book: Book | None, path: Path) -> CoverImage | None:
+        if book is None or not _is_sealed(book):
+            return CoverImage.from_path(path)
+        service = self._thumbnail_service
+        if service is None or self._cover_size is None:
+            return None
+        return service.existing_cover(book, self._cover_size)
 
     def _handle_book_cover_failure(self, error: Exception) -> None:
         # Reconstructed from the error object rather than exc_info=True: this
@@ -1074,7 +1149,7 @@ class ShelfViewModel(ShelfSorting):
             book = books_by_uuid.get(book_uuid)
             if book is None:
                 continue
-            existing = service.existing_cover_path(book, size)
+            existing = service.existing_cover(book, size)
             if existing is not None:
                 self._record_cover(book.uuid, existing)
                 continue
@@ -1082,27 +1157,27 @@ class ShelfViewModel(ShelfSorting):
                 continue
             self._pending_cover_ids.add(book.uuid)
             kwargs = {
-                "on_success": lambda path, source=book: self._finish_cover_request(source, epoch, path),
+                "on_success": lambda cover, source=book: self._finish_cover_request(source, epoch, cover),
                 "on_failure": lambda _error, source=book: self._finish_cover_request(source, epoch, None),
             }
             try:
                 self._task_service.submit(
                     f"cover-{book.uuid}",
-                    lambda book=book: service.generate_cover(book, size),
+                    lambda book=book: service.load_cover(book, size),
                     priority=TaskPriority.LOW, **kwargs,
                 )
             except TypeError:
                 self._task_service.submit(
-                    f"cover-{book.uuid}", lambda book=book: service.generate_cover(book, size), **kwargs,
+                    f"cover-{book.uuid}", lambda book=book: service.load_cover(book, size), **kwargs,
                 )
 
-    def _finish_cover_request(self, source: Book, epoch: int, path: Path | None) -> None:
+    def _finish_cover_request(self, source: Book, epoch: int, cover: CoverImage | None) -> None:
         if epoch == self._cover_request_epoch:
             current = self._book_by_uuid(source.uuid)
             if current is not None and current.cover_thumbnail_path != source.cover_thumbnail_path:
                 self._pending_cover_ids.discard(source.uuid)
                 return  # An edited cover superseded the automatic request.
-            self._handle_cover_result(source.uuid, path)
+            self._handle_cover_result(source.uuid, cover)
 
     def prepare_detail_thumbnail_source(self, book_uuid: str, size: tuple[int, int]) -> None:
         if (
@@ -1444,8 +1519,8 @@ class ShelfViewModel(ShelfSorting):
         self.selected_book_ids -= target_set
         if self.detail_book_uuid in target_set:
             self._set_detail_book_uuid(None)
-        self._cover_paths = {
-            book_uuid: path for book_uuid, path in self._cover_paths.items() if book_uuid not in target_set
+        self._covers = {
+            book_uuid: cover for book_uuid, cover in self._covers.items() if book_uuid not in target_set
         }
         self._pending_cover_ids -= target_set
         self.load_books()
@@ -1474,21 +1549,35 @@ class ShelfViewModel(ShelfSorting):
         self.selection_changed.emit(set(self.selected_book_ids))
         self.delete_failed.emit(str(error))
 
-    def _record_cover(self, book_uuid: str, path: Path, *, force: bool = False) -> None:
-        if not force and self._cover_paths.get(book_uuid) == path:
+    def _record_cover(self, book_uuid: str, cover: CoverImage, *, force: bool = False) -> None:
+        if cover.is_in_memory and not self.show_hidden_collection:
+            # A decrypt that finished after Hidden Space was put away: the
+            # store returns it to its caller, and this caller must drop it.
+            logger.debug("Decrypted cover dropped: Hidden Space is not shown book=%s", book_uuid)
             return
-        self._cover_paths[book_uuid] = path
-        self.cover_ready.emit(book_uuid, path)
+        if not force and self._covers.get(book_uuid) == cover:
+            return
+        self._covers[book_uuid] = cover
+        self.cover_ready.emit(book_uuid, cover)
 
-    def _handle_cover_result(self, book_uuid: str, path: Path | None) -> None:
+    def _forget_in_memory_covers(self) -> None:
+        """Forget every decrypted cover, once Hidden Space leaves the screen."""
+
+        dropped = [book_uuid for book_uuid, cover in self._covers.items() if cover.is_in_memory]
+        for book_uuid in dropped:
+            del self._covers[book_uuid]
+        if dropped:
+            logger.debug("Decrypted covers forgotten count=%d", len(dropped))
+
+    def _handle_cover_result(self, book_uuid: str, cover: CoverImage | None) -> None:
         self._pending_cover_ids.discard(book_uuid)
-        if path is None:
-            logger.debug("Cover generation returned no path book=%s", book_uuid)
+        if cover is None:
+            logger.debug("Cover generation returned no cover book=%s", book_uuid)
             return
         if not any(book.uuid == book_uuid for book in self.books):
-            logger.debug("Cover generation result dropped for stale book=%s path=%s", book_uuid, path)
+            logger.debug("Cover generation result dropped for stale book=%s", book_uuid)
             return
-        self._record_cover(book_uuid, path)
+        self._record_cover(book_uuid, cover)
 
     def _handle_detail_source_result(
         self,
@@ -1650,3 +1739,7 @@ def _coerce_view_mode(value: str | None) -> ViewMode:
         return ViewMode(value)
     except ValueError:
         return ViewMode.GRID
+
+
+def _is_sealed(book: Book) -> bool:
+    return Path(book.file_path).suffix.lower() == SEALED_EXTENSION

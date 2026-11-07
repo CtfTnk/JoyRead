@@ -4,7 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
-from PySide6.QtCore import Qt, Signal as QtSignal
+from PySide6.QtCore import QObject, Qt, Signal as QtSignal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QMainWindow
 
@@ -50,9 +50,11 @@ class _FakeReaderWindow(QMainWindow):
         super().closeEvent(event)
 
 
-def _manager() -> tuple[ApplicationWindowManager, list[_FakeMainWindow], list[_FakeReaderWindow], _ShelfViewModel]:
+def _manager(
+    **context_fields: object,
+) -> tuple[ApplicationWindowManager, list[_FakeMainWindow], list[_FakeReaderWindow], _ShelfViewModel]:
     shelf = _ShelfViewModel()
-    context = cast(AppContext, SimpleNamespace(shelf_viewmodel=shelf))
+    context = cast(AppContext, SimpleNamespace(shelf_viewmodel=shelf, **context_fields))
     mains: list[_FakeMainWindow] = []
     readers: list[_FakeReaderWindow] = []
 
@@ -332,5 +334,49 @@ def test_the_library_opens_a_sealed_book_only_as_its_own_hidden_book(qtbot, tmp_
         assert window is not None
         assert [reader.request.path for reader in readers] == [sealed.resolve()]
         assert window in manager.library_reader_windows
+    finally:
+        _close_windows(manager, qtbot)
+
+
+class _HiddenSpaceBridge(QObject):
+    locked = QtSignal()
+
+
+def _library_book(uuid: str, *, hidden: bool) -> SimpleNamespace:
+    return SimpleNamespace(uuid=uuid, is_hidden=hidden)
+
+
+def test_the_vault_locking_closes_only_readers_on_hidden_books(qtbot, tmp_path: Path) -> None:
+    bridge = _HiddenSpaceBridge()
+    manager, _mains, _readers, _shelf = _manager(hidden_space_bridge=bridge)
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        hidden = main.launcher(
+            StandaloneReaderRequest(tmp_path / "Books" / "ab" / "ab12.jrl", book=_library_book("h", hidden=True))  # type: ignore[arg-type]
+        )
+        shown = main.launcher(StandaloneReaderRequest(tmp_path / "shown.cbz", book=_library_book("s", hidden=False)))  # type: ignore[arg-type]
+        loose = manager.open_files((tmp_path / "loose.pdf",))[0]
+        assert hidden is not None and shown is not None
+
+        bridge.locked.emit()
+
+        qtbot.waitUntil(lambda: hidden not in manager.reader_windows)
+        assert set(manager.reader_windows) == {shown, loose}
+        assert manager.close_hidden_readers() == 0  # Nothing hidden is left open.
+    finally:
+        _close_windows(manager, qtbot)
+
+
+def test_hiding_a_book_first_closes_the_readers_showing_it(qtbot, tmp_path: Path) -> None:
+    manager, _mains, _readers, _shelf = _manager()
+    try:
+        main = cast(_FakeMainWindow, manager.show_library())
+        first = main.launcher(StandaloneReaderRequest(tmp_path / "first.cbz", book=_library_book("one", hidden=False)))  # type: ignore[arg-type]
+        second = main.launcher(StandaloneReaderRequest(tmp_path / "second.cbz", book=_library_book("two", hidden=False)))  # type: ignore[arg-type]
+
+        assert manager.close_readers_for_books(("one", "not-open")) == 1
+
+        qtbot.waitUntil(lambda: first not in manager.reader_windows)
+        assert manager.reader_windows == (second,)
     finally:
         _close_windows(manager, qtbot)

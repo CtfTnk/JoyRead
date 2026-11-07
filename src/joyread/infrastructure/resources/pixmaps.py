@@ -11,6 +11,23 @@ from PIL import Image, ImageFilter
 from PySide6.QtCore import QFile, QIODevice, Qt
 from PySide6.QtGui import QImage, QPixmap
 
+from joyread.core.models.cover_image import CoverImage
+
+
+def load_cover_pixmap(cover: CoverImage) -> QPixmap:
+    """A shelf cover from its file, or from the bytes of a Hidden Space cover.
+
+    In-memory bytes are a decrypted cover; they become a pixmap here and are
+    never written to a file.
+    """
+
+    if cover.data is not None:
+        pixmap = QPixmap()
+        pixmap.loadFromData(cover.data)
+        return pixmap
+    assert cover.path is not None
+    return load_thumbnail_pixmap(cover.path)
+
 
 def load_thumbnail_pixmap(path: Path) -> QPixmap:
     # Loading bytes bypasses Qt's implicit filename cache. A cover edit may

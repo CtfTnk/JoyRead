@@ -16,6 +16,7 @@ from joyread.core.services.library_service import LibraryService
 from joyread.core.vault import VaultError
 from joyread.infrastructure.config.settings_store import SettingsStore
 from joyread.infrastructure.database import DatabasePriority
+from tests.support.hidden_space_fakes import seed_legacy_password
 from tests.support.vault_library import VaultLibrary, build_vault_library, sample_pages, write_cbz
 
 
@@ -68,18 +69,18 @@ def test_the_state_follows_setup_and_locking(hidden_space: HiddenSpaceService) -
     assert hidden_space.state is HiddenSpaceState.UNLOCKED
 
 
-def test_without_a_vault_hiding_is_still_only_a_flag(
-    hidden_space: HiddenSpaceService, library: VaultLibrary, tmp_path: Path
+def test_a_legacy_library_cannot_hide_until_it_upgrades(
+    hidden_space: HiddenSpaceService, library: VaultLibrary, settings_store: SettingsStore, tmp_path: Path
 ) -> None:
     book, _other = _books(library, tmp_path)
-    hidden_space.initialize("abcd", "abcd")
+    seed_legacy_password(settings_store, "abcd")
 
     assert hidden_space.state is HiddenSpaceState.LEGACY
-    assert hidden_space.hide_books((book,)) == ()
+    with pytest.raises(VaultError):
+        hidden_space.hide_books((book,))
 
-    assert library.file_row(book)["is_hidden"] == 1
+    assert library.file_row(book)["is_hidden"] == 0
     assert library.sealing.jobs_by_book() == {}
-    assert library.file_row(book)["storage_kind"] == "verbatim"
 
 
 def test_the_upgrade_keeps_the_old_password_and_seals_what_was_hidden(
@@ -89,8 +90,8 @@ def test_the_upgrade_keeps_the_old_password_and_seals_what_was_hidden(
     tmp_path: Path,
 ) -> None:
     hidden, visible = _books(library, tmp_path)
-    hidden_space.initialize("abcd1234", "abcd1234")
-    hidden_space.hide_books((hidden,))
+    seed_legacy_password(settings_store, "abcd1234")
+    library.books.set_book_hidden(hidden, True)  # Soft-hidden by the earlier JoyRead.
     with pytest.raises(VaultError):
         hidden_space.prepare_vault("other", "other")  # Must upgrade, not start over.
 

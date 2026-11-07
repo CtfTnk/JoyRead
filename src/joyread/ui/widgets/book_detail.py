@@ -33,6 +33,7 @@ from joyread.infrastructure.i18n.locale_service import book_language_display_nam
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
+from joyread.core.models.cover_image import CoverImage
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.floating_panel_header import FloatingPanelHeader
@@ -257,7 +258,7 @@ class BookDetailPanel(QFrame):
     def set_book(
         self,
         book: Book,
-        cover_path: Path | None = None,
+        cover: CoverImage | None = None,
         tags: Iterable[Tag] = (),
     ) -> None:
         book_changed = self._book is None or self._book.uuid != book.uuid
@@ -279,8 +280,8 @@ class BookDetailPanel(QFrame):
             )
         )
         self.refresh_labels()
-        if cover_path is not None:
-            self._cover.set_pixmap_from_path(cover_path)
+        if cover is not None:
+            self._cover.set_cover_image(cover)
         elif book_changed:
             self._cover.set_pixmap(_placeholder_cover())
         if book_changed:
@@ -296,9 +297,9 @@ class BookDetailPanel(QFrame):
         self._author_field.set_display_prefix(t("detail.author_prefix"))
         self._refresh_metadata_labels()
 
-    def set_cover_path(self, book_uuid: str, path: Path) -> None:
+    def set_cover(self, book_uuid: str, cover: CoverImage) -> None:
         if self._book is not None and self._book.uuid == book_uuid:
-            self._cover.set_pixmap_from_path(path, force=True)
+            self._cover.set_cover_image(cover, force=True)
 
     def set_page_thumbnail(self, book_uuid: str, page_index: int, image_bytes: bytes) -> None:
         if self._book is not None and self._book.uuid == book_uuid:

@@ -12,6 +12,8 @@ from joyread.core.models.book import Book
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
+from joyread.core.models.cover_image import CoverImage
+from joyread.core.models.vault import BookSealState
 from joyread.ui.widgets.book_card import BookCardWidget
 
 
@@ -37,7 +39,7 @@ class BookGridWidget(QScrollArea):
         self._selected_ids: set[str] = set()
         self._cards: dict[str, BookCardWidget] = {}
         self._book_ids: tuple[str, ...] = ()
-        self._cover_paths: dict[str, Path] = {}
+        self._covers: dict[str, CoverImage] = {}
 
         self._content = QWidget()
         self._content.setObjectName("BookGridContent")
@@ -91,10 +93,12 @@ class BookGridWidget(QScrollArea):
         self,
         books: list[Book],
         selected_ids: set[str],
-        cover_paths: dict[str, Path] | None = None,
+        covers: dict[str, CoverImage] | None = None,
+        seal_states: dict[str, BookSealState] | None = None,
     ) -> None:
         self._books = list(books)
-        next_cover_paths = dict(cover_paths or {})
+        next_covers = dict(covers or {})
+        states = seal_states or {}
         book_ids = tuple(book.uuid for book in books)
         wanted = set(book_ids)
         order_changed = self._book_ids != book_ids
@@ -119,17 +123,18 @@ class BookGridWidget(QScrollArea):
                 card.set_selected(book.uuid in selected_ids)
             elif card.book != book:
                 card.set_book(book)
-            cover_path = next_cover_paths.get(book.uuid)
-            if cover_path is not None:
+            card.set_seal_state(states.get(book.uuid))
+            cover = next_covers.get(book.uuid)
+            if cover is not None:
                 # The cover widget ignores the already loaded source. Keeping
                 # this call on newly created cards also restores filtered books.
-                if cover_path != self._cover_paths.get(book.uuid) or not card.has_cover_path(cover_path):
-                    card.set_cover_path(cover_path)
-            elif book.uuid in self._cover_paths:
+                if cover != self._covers.get(book.uuid) or not card.has_cover(cover):
+                    card.set_cover(cover)
+            elif book.uuid in self._covers:
                 card.clear_cover()
 
         self.set_selected_ids(selected_ids)
-        self._cover_paths = next_cover_paths
+        self._covers = next_covers
         self._book_ids = book_ids
         if order_changed:
             self._layout.set_widget_order([self._cards[key] for key in book_ids])
@@ -142,12 +147,12 @@ class BookGridWidget(QScrollArea):
                 card.set_selected(book_uuid in selected_ids)
         self._selected_ids = set(selected_ids)
 
-    def set_cover_path(self, book_uuid: str, path: Path) -> None:
+    def set_cover(self, book_uuid: str, cover: CoverImage) -> None:
         """Apply an explicit cover-ready notification, including same-path edits."""
-        self._cover_paths[book_uuid] = path
+        self._covers[book_uuid] = cover
         card = self._cards.get(book_uuid)
         if card is not None:
-            card.set_cover_path(path, force=True)
+            card.set_cover(cover, force=True)
 
     def _calculate_columns(self) -> int:
         return self._calculate_columns_for_width(self._available_row_width())

@@ -26,9 +26,10 @@ class SettingsView(QWidget):
     storage_select_requested = QtSignal()
     storage_reset_requested = QtSignal()
     library_maintenance_requested = QtSignal()
-    hidden_space_setup_requested = QtSignal()
-    hidden_space_verify_requested = QtSignal()
-    hidden_space_change_password_requested = QtSignal()
+    hidden_space_show_requested = QtSignal()
+    hidden_space_change_passphrase_requested = QtSignal()
+    hidden_space_new_recovery_code_requested = QtSignal()
+    hidden_space_retry_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
     tag_operation_completed = QtSignal(bool, object, object)
@@ -54,11 +55,14 @@ class SettingsView(QWidget):
         self.page.storage_move_requested.connect(self.storage_move_requested.emit)
         self.page.storage_select_requested.connect(self.storage_select_requested.emit)
         self.page.storage_reset_requested.connect(self.storage_reset_requested.emit)
-        self.page.hidden_space_setup_requested.connect(self.hidden_space_setup_requested.emit)
-        self.page.hidden_space_verify_requested.connect(self.hidden_space_verify_requested.emit)
-        self.page.hidden_space_change_password_requested.connect(
-            self.hidden_space_change_password_requested.emit
+        self.page.hidden_space_show_requested.connect(self.hidden_space_show_requested.emit)
+        self.page.hidden_space_change_passphrase_requested.connect(
+            self.hidden_space_change_passphrase_requested.emit
         )
+        self.page.hidden_space_new_recovery_code_requested.connect(
+            self.hidden_space_new_recovery_code_requested.emit
+        )
+        self.page.hidden_space_retry_requested.connect(self.hidden_space_retry_requested.emit)
         self.page.hidden_space_revert_requested.connect(self.hidden_space_revert_requested.emit)
         self.page.hidden_space_reset_requested.connect(self.hidden_space_reset_requested.emit)
         self.page.tag_operation_completed.connect(self.tag_operation_completed.emit)
