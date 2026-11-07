@@ -29,7 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 from pathlib import Path, PurePosixPath
-from typing import Callable, Protocol
+from typing import BinaryIO, Callable, Protocol
 import zipfile
 
 from joyread.core.archive.inspection import ArchiveMetadataEntry
@@ -103,36 +103,83 @@ class CbzWriter:
         is_cancelled: Callable[[], bool] | None = None,
         on_page: Callable[[int, int], None] | None = None,
     ) -> CanonicalWriteResult:
-        total = len(placed_pages)
-        used: set[str] = set()
-        written: list[str] = []
-        sidecar_names: list[str] = []
-
         destination.parent.mkdir(parents=True, exist_ok=True)
         try:
             with zipfile.ZipFile(destination, "w", allowZip64=True) as archive:
-                for index, (prefix, page) in enumerate(placed_pages):
-                    if is_cancelled is not None and is_cancelled():
-                        raise CanonicalWriteCancelled()
-                    name = _unique(f"{prefix}{PurePosixPath(page.display_path).name}", used)
-                    # Stored, not deflated. Every page is already a compressed
-                    # image format, so deflating spends CPU on both write and
-                    # every later read for a gain measured in fractions of a
-                    # percent -- and this container exists to make reads cheap.
-                    _write_entry(archive, name, read_page(page), zipfile.ZIP_STORED)
-                    written.append(name)
-                    if on_page is not None:
-                        on_page(index + 1, total)
-
-                for sidecar in sidecars:
-                    name = _unique(sidecar.name, used)
-                    # Text, and small: deflate earns its keep here.
-                    _write_entry(archive, name, sidecar.data, zipfile.ZIP_DEFLATED)
-                    sidecar_names.append(name)
+                return self._write_entries(
+                    archive,
+                    placed_pages,
+                    sidecars,
+                    read_page=read_page,
+                    is_cancelled=is_cancelled,
+                    on_page=on_page,
+                )
         except BaseException:
             # A partial artifact must never survive to be hashed and recorded.
             destination.unlink(missing_ok=True)
             raise
+
+    def write_stream(
+        self,
+        sink: BinaryIO,
+        placed_pages: list[tuple[str, PageRecord]],
+        sidecars: tuple[ArchiveMetadataEntry, ...] = (),
+        *,
+        read_page: Callable[[PageRecord], bytes],
+        is_cancelled: Callable[[], bool] | None = None,
+        on_page: Callable[[int, int], None] | None = None,
+    ) -> CanonicalWriteResult:
+        """Write the same entries into an open stream the caller owns.
+
+        The Hidden Space sealer passes a stream that cannot seek, so ``zipfile``
+        writes data descriptors instead of patching local headers afterwards.
+        The bytes therefore differ from :meth:`write`'s, but they are just as
+        deterministic, and every zip reader accepts both. The caller deletes
+        whatever the stream reached if this raises.
+        """
+
+        with zipfile.ZipFile(sink, "w", allowZip64=True) as archive:
+            return self._write_entries(
+                archive,
+                placed_pages,
+                sidecars,
+                read_page=read_page,
+                is_cancelled=is_cancelled,
+                on_page=on_page,
+            )
+
+    def _write_entries(
+        self,
+        archive: zipfile.ZipFile,
+        placed_pages: list[tuple[str, PageRecord]],
+        sidecars: tuple[ArchiveMetadataEntry, ...],
+        *,
+        read_page: Callable[[PageRecord], bytes],
+        is_cancelled: Callable[[], bool] | None,
+        on_page: Callable[[int, int], None] | None,
+    ) -> CanonicalWriteResult:
+        total = len(placed_pages)
+        used: set[str] = set()
+        written: list[str] = []
+        sidecar_names: list[str] = []
+        for index, (prefix, page) in enumerate(placed_pages):
+            if is_cancelled is not None and is_cancelled():
+                raise CanonicalWriteCancelled()
+            name = _unique(f"{prefix}{PurePosixPath(page.display_path).name}", used)
+            # Stored, not deflated. Every page is already a compressed
+            # image format, so deflating spends CPU on both write and
+            # every later read for a gain measured in fractions of a
+            # percent -- and this container exists to make reads cheap.
+            _write_entry(archive, name, read_page(page), zipfile.ZIP_STORED)
+            written.append(name)
+            if on_page is not None:
+                on_page(index + 1, total)
+
+        for sidecar in sidecars:
+            name = _unique(sidecar.name, used)
+            # Text, and small: deflate earns its keep here.
+            _write_entry(archive, name, sidecar.data, zipfile.ZIP_DEFLATED)
+            sidecar_names.append(name)
 
         return CanonicalWriteResult(
             page_count=len(written),

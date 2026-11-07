@@ -46,6 +46,10 @@ class BookRepository(Protocol):
     def revert_hidden_state(self) -> None:
         ...
 
+    def clear_hidable_collections(self) -> None:
+        """Turn every hidable collection back into a normal one, keeping its books."""
+        ...
+
     def list_hidden_book_ids(self) -> list[str]:
         ...
 

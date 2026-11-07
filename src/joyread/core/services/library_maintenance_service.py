@@ -24,7 +24,7 @@ from typing import Any
 from uuid import uuid4
 
 from joyread.core.archive import ArchiveImageService, ArchiveOpenLimits, ArchiveValidationCode
-from joyread.core.file_types import ARCHIVE_EXTENSIONS
+from joyread.core.file_types import ARCHIVE_EXTENSIONS, SEALED_EXTENSION
 from joyread.core.operation_context import bind_operation, create_operation
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_extraction_pool import (
@@ -38,6 +38,7 @@ from joyread.core.models.storage_layout import (
     is_content_addressed,
     storage_target,
 )
+from joyread.core.vault import VaultError, VaultPublicKey, read_header
 from joyread.infrastructure.database.database_interpreter import DatabaseInterpreter, DatabasePriority
 from joyread.infrastructure.filesystem.path_service import PathService
 
@@ -187,6 +188,24 @@ class LibraryMaintenanceRecoveryReport:
     conflicts: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class _SealedState:
+    """What the audit must know about Hidden Space to leave it alone.
+
+    * ``key_ids`` -- the vaults a sealed file may belong to. Its plaintext
+      header names one, which is all a probe can check without the key.
+    * ``job_paths`` -- files a seal or unseal job wrote or still owes work on.
+      They are referenced by the job, not by ``book_files``, until it commits.
+    * ``cover_paths`` / ``job_book_ids`` -- which sealed covers a book uses,
+      or may be about to use.
+    """
+
+    key_ids: frozenset[bytes] = frozenset()
+    job_paths: frozenset[str] = frozenset()
+    cover_paths: frozenset[str] = frozenset()
+    job_book_ids: frozenset[str] = frozenset()
+
+
 class LibraryMaintenanceLease:
     """An exclusive maintenance permit that may cross a Qt worker/UI boundary.
 
@@ -225,6 +244,19 @@ class LibraryMaintenanceCoordinator:
 
         logger.debug("Library maintenance gate waiting operation=%s", operation)
         self._lock.acquire()
+        logger.debug("Library maintenance gate acquired operation=%s", operation)
+        return LibraryMaintenanceLease(self._lock, operation)
+
+    def try_acquire(self, operation: str, timeout: float) -> LibraryMaintenanceLease | None:
+        """Wait at most *timeout* seconds; ``None`` if the gate stayed busy.
+
+        For background work that must stay stoppable while it waits. A storage
+        change holds the gate and then closes the Library, so a sealing worker
+        blocked in :meth:`acquire` could neither notice the close nor be joined.
+        """
+
+        if not self._lock.acquire(timeout=max(0.0, timeout)):
+            return None
         logger.debug("Library maintenance gate acquired operation=%s", operation)
         return LibraryMaintenanceLease(self._lock, operation)
 
@@ -320,9 +352,10 @@ class LibraryMaintenanceService:
         with self._coordinator.hold("library-audit-scan"):
             limits = self._archive_limits
             rows = self._database.execute(_load_audit_rows, DatabasePriority.HIGH)
-            items = self._scan_items(rows, limits)
-            orphan_files = self._find_book_orphans(items)
-            orphan_cache_files = self._find_cache_orphans(items)
+            sealed = self._database.execute(_load_sealed_state, DatabasePriority.HIGH)
+            items = self._scan_items(rows, limits, sealed)
+            orphan_files = self._find_book_orphans(items, sealed)
+            orphan_cache_files = self._find_cache_orphans(items, sealed)
         reclaimable = sum(item.byte_size for item in orphan_files + orphan_cache_files)
         plan = LibraryAuditPlan(
             operation_id=operation_id,
@@ -396,9 +429,10 @@ class LibraryMaintenanceService:
         errors: list[str] = []
         with self._coordinator.hold("library-audit-apply"):
             limits = self._archive_limits
+            sealed = self._database.execute(_load_sealed_state, DatabasePriority.HIGH)
             for item in plan.items:
                 try:
-                    outcome = self._apply_item(item, limits)
+                    outcome = self._apply_item(item, limits, sealed)
                 except Exception as exc:  # Keep one bad file from aborting cleanup for the rest.
                     logger.exception(
                         "Library audit apply failed operation=%s file_id=%s",
@@ -420,14 +454,22 @@ class LibraryMaintenanceService:
                 elif outcome is None and item.needs_apply:
                     skipped.append(item.file_id)
 
-            referenced = self._referenced_storage_paths()
+            # Rechecked, not trusted from the plan: a seal may have run since
+            # the scan, and its files belong to it now.
+            sealed = self._database.execute(_load_sealed_state, DatabasePriority.HIGH)
+            referenced = self._referenced_storage_paths() | self._job_storage_paths(sealed)
             for orphan in plan.orphan_files:
                 if orphan.path in referenced:
                     continue
                 if self._unlink_regular_file(orphan.path, self._paths.paths.books):
                     cleaned_file += 1
                     reclaimed += orphan.byte_size
+            known_book_ids = self._database.execute(_load_book_ids, DatabasePriority.HIGH)
             for orphan in plan.orphan_cache_files:
+                if self._is_sealed_cover_candidate(orphan.path) and not self._is_orphan_sealed_cover(
+                    orphan.path, known_book_ids, sealed
+                ):
+                    continue
                 if self._unlink_cache_file(orphan.path):
                     cleaned_cache += 1
                     reclaimed += orphan.byte_size
@@ -544,6 +586,7 @@ class LibraryMaintenanceService:
         self,
         rows: tuple[dict[str, Any], ...],
         limits: ArchiveOpenLimits,
+        sealed: _SealedState,
     ) -> list[LibraryAuditItem]:
         # Merge candidates, and only candidates: a canonical row's bytes do not
         # identify its book, so nothing may ever merge *into* one. Excluding
@@ -602,7 +645,7 @@ class LibraryMaintenanceService:
                     )
                 )
                 continue
-            valid, probe_code, message = self._probe(path, limits)
+            valid, probe_code, message = self._probe(path, limits, sealed)
             if not valid:
                 items.append(
                     LibraryAuditItem(
@@ -652,6 +695,7 @@ class LibraryMaintenanceService:
         self,
         item: LibraryAuditItem,
         limits: ArchiveOpenLimits,
+        sealed: _SealedState,
     ) -> LibraryAuditAction | None:
         if item.action is LibraryAuditAction.HEALTHY:
             return None
@@ -686,7 +730,7 @@ class LibraryMaintenanceService:
             return LibraryAuditAction.UNAVAILABLE
         if observed_hash != item.observed_hash:
             return None
-        valid, probe_code, _message = self._probe(path, limits)
+        valid, probe_code, _message = self._probe(path, limits, sealed)
         if not valid:
             self._set_file_state(item.file_id, "unavailable", probe_code)
             self._invalidate_artifacts(item.file_id, item.book_ids)
@@ -783,9 +827,12 @@ class LibraryMaintenanceService:
         self,
         path: Path,
         limits: ArchiveOpenLimits,
+        sealed: _SealedState,
     ) -> tuple[bool, str | None, str | None]:
         try:
             suffix = path.suffix.lower()
+            if suffix == SEALED_EXTENSION:
+                return self._probe_sealed(path, sealed)
             if suffix in ARCHIVE_EXTENSIONS:
                 probe = self._archive_service.probe_archive(path, limits=limits)
                 return probe.is_valid, probe.code.value, probe.message
@@ -798,6 +845,23 @@ class LibraryMaintenanceService:
             logger.warning("Library audit probe failed path=%s error=%s", path, type(exc).__name__)
             return False, type(exc).__name__, "Managed file could not be probed."
         return False, "unsupported_format", "Managed file has an unsupported format."
+
+    def _probe_sealed(self, path: Path, sealed: _SealedState) -> tuple[bool, str | None, str | None]:
+        """Check a Hidden Space file without its key -- and so without its content.
+
+        The audit runs while the vault is locked, and decrypting every hidden
+        book to probe it would read the plaintext the vault exists to keep
+        out of reach. The ciphertext hash already catches damage; the header
+        says whether the file is sealed, and to which vault.
+        """
+
+        try:
+            header = read_header(path)
+        except VaultError:
+            return False, "sealed_format", "Managed file is not a readable sealed book."
+        if header.key_id not in sealed.key_ids:
+            return False, "sealed_key_unknown", "Managed file is sealed to a vault this Library does not have."
+        return True, None, None
 
     def _storage_target(
         self, item: "LibraryAuditItem", source: Path, stored_hash: str
@@ -880,15 +944,71 @@ class LibraryMaintenanceService:
             self._paths.paths.cache,
         )
 
-    def _find_book_orphans(self, items: list[LibraryAuditItem]) -> list[LibraryAuditOrphan]:
+    def _find_book_orphans(self, items: list[LibraryAuditItem], sealed: _SealedState) -> list[LibraryAuditOrphan]:
         root = self._paths.paths.books
         referenced = {item.storage_path for item in items if item.storage_path is not None}
+        referenced |= self._job_storage_paths(sealed)
         return self._find_orphans(root, referenced, kind="book")
 
-    def _find_cache_orphans(self, items: list[LibraryAuditItem]) -> list[LibraryAuditOrphan]:
+    def _job_storage_paths(self, sealed: _SealedState) -> set[Path]:
+        return {path for value in sealed.job_paths if (path := self._storage_path(value)) is not None}
+
+    def _find_cache_orphans(self, items: list[LibraryAuditItem], sealed: _SealedState) -> list[LibraryAuditOrphan]:
         covers = self._find_generated_cover_orphans(items)
+        sealed_covers = self._find_sealed_cover_orphans(items, sealed)
         extraction = self._find_extraction_cache_orphans(items)
-        return sorted(covers + extraction, key=lambda orphan: str(orphan.path))
+        return sorted(covers + sealed_covers + extraction, key=lambda orphan: str(orphan.path))
+
+    def _find_sealed_cover_orphans(
+        self, items: list[LibraryAuditItem], sealed: _SealedState
+    ) -> list[LibraryAuditOrphan]:
+        """Sealed covers nothing uses any more, and torn cover writes.
+
+        Ciphertext, so leaving one behind leaks nothing; it only wastes space.
+        A cover is kept while its book has a job, because a seal seals the
+        cover before the commit that records it.
+        """
+
+        root = self._paths.paths.thumbnails / "covers"
+        if not root.exists():
+            return []
+        known_book_ids = {book_id for item in items for book_id in item.book_ids}
+        try:
+            candidates = tuple(path for path in root.iterdir() if self._is_sealed_cover_candidate(path))
+        except OSError as exc:
+            logger.warning("Library audit could not enumerate sealed covers: %s", exc)
+            return []
+        orphans: list[LibraryAuditOrphan] = []
+        for path in candidates:
+            if not self._is_regular_file(path, self._paths.paths.thumbnails):
+                continue
+            if not self._is_orphan_sealed_cover(path, known_book_ids, sealed):
+                continue
+            orphan = _orphan_from_path(path, "cache")
+            if orphan is not None:
+                orphans.append(orphan)
+        return orphans
+
+    def _is_sealed_cover_candidate(self, path: Path) -> bool:
+        return path.parent == self._paths.paths.thumbnails / "covers" and (
+            path.suffix.lower() == SEALED_EXTENSION or path.name.endswith(".partial")
+        )
+
+    def _is_orphan_sealed_cover(self, path: Path, known_book_ids: set[str], sealed: _SealedState) -> bool:
+        if path.name.endswith(".partial"):
+            # Every cover write renames its partial file or deletes it, under
+            # the maintenance gate this audit holds. One still here was torn.
+            return True
+        book_id = path.stem
+        if book_id not in known_book_ids:
+            return True
+        if book_id in sealed.job_book_ids:
+            return False
+        try:
+            relative = self._paths.resolver.to_storage_relative(path)
+        except ValueError:
+            return False
+        return relative not in sealed.cover_paths
 
     def _find_generated_cover_orphans(self, items: list[LibraryAuditItem]) -> list[LibraryAuditOrphan]:
         root = self._paths.paths.thumbnails / "covers"
@@ -1150,6 +1270,16 @@ class LibraryMaintenanceService:
 
         return self._database.execute(write, DatabasePriority.NORMAL)
 
+    def invalidate_artifacts(self, file_id: str, book_ids: tuple[str, ...]) -> None:
+        """Drop everything derived from a file's old bytes.
+
+        Pool bundles, live thumbnail sessions and generated covers. Hidden
+        Space sealing calls this once a book's plaintext is gone, because each
+        of those is a plaintext copy of its pages.
+        """
+
+        self._invalidate_artifacts(file_id, book_ids)
+
     def _invalidate_artifacts(self, file_id: str, book_ids: tuple[str, ...]) -> None:
         cache = self._extraction_cache
         if cache is not None:
@@ -1199,6 +1329,32 @@ def _load_audit_rows(connection) -> tuple[dict[str, Any], ...]:  # noqa: ANN001 
         }
         for row in file_rows
     )
+
+
+def _load_sealed_state(connection) -> _SealedState:  # noqa: ANN001 - SQLite callback shape.
+    key_ids = frozenset(
+        VaultPublicKey(bytes(row["public_key"])).key_id
+        for row in connection.execute("SELECT public_key FROM vaults").fetchall()
+    )
+    jobs = connection.execute(
+        "SELECT book_id, partial_path, target_path, previous_path FROM vault_jobs"
+    ).fetchall()
+    covers = connection.execute("SELECT cover_path FROM books WHERE cover_path IS NOT NULL").fetchall()
+    return _SealedState(
+        key_ids=key_ids,
+        job_paths=frozenset(
+            str(value)
+            for row in jobs
+            for value in (row["partial_path"], row["target_path"], row["previous_path"])
+            if value
+        ),
+        cover_paths=frozenset(str(row["cover_path"]) for row in covers),
+        job_book_ids=frozenset(str(row["book_id"]) for row in jobs),
+    )
+
+
+def _load_book_ids(connection) -> set[str]:  # noqa: ANN001 - SQLite callback shape.
+    return {str(row["book_id"]) for row in connection.execute("SELECT book_id FROM books").fetchall()}
 
 
 def _load_storage_paths(connection) -> tuple[str, ...]:  # noqa: ANN001 - SQLite callback shape.

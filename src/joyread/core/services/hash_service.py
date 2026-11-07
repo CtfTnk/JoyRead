@@ -23,7 +23,7 @@ class HashService:
         check_cancelled: Callable[[], None] | None = None,
     ) -> str:
         logger.debug("Hashing %s (%s)", path, algorithm)
-        digest = self._new_digest(algorithm)
+        digest = self.new_digest(algorithm)
 
         start = time.perf_counter()
         with path.open("rb") as stream:
@@ -52,7 +52,7 @@ class HashService:
         is discovered after copying.
         """
 
-        digest = self._new_digest(algorithm)
+        digest = self.new_digest(algorithm)
         start = time.perf_counter()
         destination.parent.mkdir(parents=True, exist_ok=True)
         with source.open("rb") as input_stream, destination.open("xb") as output_stream:
@@ -68,7 +68,9 @@ class HashService:
         return digest.hexdigest()
 
     @staticmethod
-    def _new_digest(algorithm: str):
+    def new_digest(algorithm: str):
+        """A fresh incremental digest, for callers that hash bytes as they write them."""
+
         try:
             return hashlib.new(algorithm)
         except ValueError as exc:

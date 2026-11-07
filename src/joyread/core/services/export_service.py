@@ -1,16 +1,24 @@
-"""Export app-managed public book files to a user-selected folder."""
+"""Export app-managed book files to a user-selected folder.
+
+A Hidden Space book is stored sealed. Exporting it is the user asking for the
+book itself, so it is decrypted on the way out -- which needs the vault
+unlocked -- and named after its content (``.cbz``, ``.pdf``), never ``.jrl``.
+"""
 
 from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import shutil
 import re
 
 from joyread.core.models.export import BookExportRecord
+from joyread.core.models.storage_layout import STORAGE_KIND_SEALED
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.services.hash_service import HashService
+from joyread.core.vault import VaultError, VaultKeyring, VaultLockedError
 
 
 logger = logging.getLogger(__name__)
@@ -33,10 +41,21 @@ class ExportBatchResult:
     items: tuple[ExportItemResult, ...]
 
 
+#: The exported suffix of a sealed book, by its content format.
+_SEALED_EXPORT_SUFFIXES = {"CBZ": ".cbz", "PDF": ".pdf"}
+
+
 class ExportService:
-    def __init__(self, repository: BookRepository, hash_service: HashService) -> None:
+    def __init__(
+        self,
+        repository: BookRepository,
+        hash_service: HashService,
+        *,
+        vault_keyring: VaultKeyring | None = None,
+    ) -> None:
         self._repository = repository
         self._hash_service = hash_service
+        self._vault_keyring = vault_keyring
 
     def export_books(self, book_ids: tuple[str, ...], destination_dir: str | Path) -> ExportBatchResult:
         target_ids = tuple(dict.fromkeys(book_ids))
@@ -92,14 +111,38 @@ class ExportService:
         # repackaged the archive -- exporting a converted book as ``Vol01.cb7``
         # would name a CBZ after a format it is not. The suffix comes from the
         # artifact we actually hold, for the same reason.
+        sealed = record.storage_kind == STORAGE_KIND_SEALED
+        suffix = (
+            _SEALED_EXPORT_SUFFIXES.get(record.file_format.upper(), ".cbz")
+            if sealed
+            else source_path.suffix.lower()
+        )
         safe_name = _safe_export_file_name(
-            f"{record.title}{source_path.suffix.lower()}",
-            fallback=f"{record.book_uuid}{source_path.suffix.lower()}",
+            f"{record.title}{suffix}",
+            fallback=f"{record.book_uuid}{suffix}",
         )
         destination_path = _unique_destination_path(destination_dir, safe_name, reserved_names)
         reserved_names.add(destination_path.name.casefold())
         try:
-            shutil.copy2(source_path, destination_path)
+            if sealed:
+                self._export_sealed(source_path, destination_path)
+            else:
+                shutil.copy2(source_path, destination_path)
+        except VaultLockedError:
+            return ExportItemResult(
+                book_uuid=record.book_uuid,
+                original_file_name=record.original_file_name,
+                status="failed",
+                message="Hidden Space is locked.",
+            )
+        except VaultError as exc:
+            logger.warning("Export could not decrypt book=%s: %s", record.book_uuid, exc.code)
+            return ExportItemResult(
+                book_uuid=record.book_uuid,
+                original_file_name=record.original_file_name,
+                status="failed",
+                message="The sealed book could not be decrypted.",
+            )
         except OSError as exc:
             logger.warning(
                 "Export copy failed for book=%s to %s: %s",
@@ -121,6 +164,21 @@ class ExportService:
             status="exported",
             message="Exported.",
         )
+
+    def _export_sealed(self, source: Path, destination: Path) -> None:
+        """Decrypt a sealed book into *destination*, whole or not at all."""
+
+        if self._vault_keyring is None:
+            raise VaultLockedError("Hidden Space is locked.")
+        partial = destination.with_name(destination.name + ".partial")
+        try:
+            with self._vault_keyring.open_sealed(source) as sealed, partial.open("wb") as sink:
+                for block in sealed.iter_content():
+                    sink.write(block)
+            os.replace(partial, destination)
+        except BaseException:
+            partial.unlink(missing_ok=True)
+            raise
 
     def _validate_source(self, record: BookExportRecord, source_path: Path) -> str | None:
         if record.is_missing:

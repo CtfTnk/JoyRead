@@ -78,6 +78,9 @@ class LibraryService:
     def revert_hidden_state(self) -> None:
         self._book_repository.revert_hidden_state()
 
+    def clear_hidable_collections(self) -> None:
+        self._book_repository.clear_hidable_collections()
+
     def list_hidden_book_ids(self) -> list[str]:
         return self._book_repository.list_hidden_book_ids()
 

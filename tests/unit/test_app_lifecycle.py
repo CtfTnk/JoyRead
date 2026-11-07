@@ -118,6 +118,8 @@ def _close_test_context(calls: list[str], task_service=None) -> AppContext:  # n
         SimpleNamespace(
             thumbnail_service=None,
             database_interpreter=_RecordingDatabase(calls),
+            sealing_service=None,
+            vault_service=None,
         ),
     )
 
@@ -143,6 +145,16 @@ def test_app_context_closes_tasks_before_database() -> None:
     context.close()
 
     assert calls == ["random-pages", "task", "database"]
+
+
+def test_app_context_stops_hidden_space_sealing_before_the_database() -> None:
+    calls: list[str] = []
+    context = _close_test_context(calls)
+    context.library_runtime.sealing_service = SimpleNamespace(close=lambda: calls.append("sealing"))
+
+    context.close()
+
+    assert calls == ["random-pages", "task", "sealing", "database"]
 
 
 def test_app_context_logs_component_failure_and_finishes_remaining_shutdown(
@@ -626,6 +638,8 @@ def _quiesce_context(calls: list[str], pending: int = 0) -> AppContext:
         ),
         SimpleNamespace(
         thumbnail_service=_RecordingThumbnailService(calls),
+        sealing_service=None,
+        vault_service=None,
         ),
     )
     context.paths = SimpleNamespace(storage_root=Path("library"))

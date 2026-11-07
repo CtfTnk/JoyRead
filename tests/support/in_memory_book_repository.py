@@ -138,6 +138,12 @@ class InMemoryBookRepository:
             for collection in self._collections
         ]
 
+    def clear_hidable_collections(self) -> None:
+        self._collections = [
+            replace(collection, is_hidable=False, updated_at=datetime.now()) if collection.is_hidable else collection
+            for collection in self._collections
+        ]
+
     def list_hidden_book_ids(self) -> list[str]:
         return [book.uuid for book in self._books if book.is_hidden]
 

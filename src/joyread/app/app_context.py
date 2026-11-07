@@ -188,6 +188,10 @@ class AppContext(RuntimeAccess):
             close_component("path_issue_bridge", self.path_issue_bridge.detach)
         close_component("random_pages", self.reader_runtime.close_random_pages)
         close_component("task_service", self.reader_runtime.task_service.shutdown)
+        sealing = self._sealing_service()
+        if sealing is not None:
+            # Before the database closes: a running job aborts and stays queued.
+            close_component("sealing", sealing.close)
         if self.library_runtime is not None and self.library_runtime.thumbnail_service is not None:
             close_component("thumbnail_service", self.library_runtime.thumbnail_service.close)
         # Task shutdown stops accepting new work first. PDF shutdown then seals
@@ -407,13 +411,23 @@ class AppContext(RuntimeAccess):
             self.archive_warmup_coordinator.quiesce_library(self.paths.storage_root)
         self.task_service.quiesce()
         self.reader_runtime.quiesce_library_pages()
+        sealing = self._sealing_service()
+        if sealing is not None:
+            # A job in progress aborts at its next step and stays queued.
+            sealing.pause()
         return self.storage_transition_pending_tasks()
 
+    def _sealing_service(self):  # noqa: ANN202 - SealingService | None.
+        library = self.library_runtime
+        return library.sealing_service if library is not None else None
+
     def storage_transition_pending_tasks(self) -> int:
+        sealing = self._sealing_service()
         return (
             self.task_service.pending_task_count()
             + self.reader_runtime.library_random_page_tasks.pending_task_count()
             + self.archive_warmup_coordinator.pending_library_tasks(self.paths.storage_root)
+            + (sealing.pending_task_count() if sealing is not None else 0)
         )
 
     def commit_storage_transition(self) -> None:
@@ -429,6 +443,14 @@ class AppContext(RuntimeAccess):
         """
 
         self.storage_rebuild_required = True
+        library = self.library_runtime
+        if library is not None:
+            if library.sealing_service is not None:
+                library.sealing_service.close()
+            if library.vault_service is not None and library.vault_service.is_unlocked:
+                # Changing storage locks Hidden Space: the vault belongs to the
+                # Library being left.
+                library.vault_service.lock()
         if self.thumbnail_service is not None:
             self.thumbnail_service.close()
         # Library-owned Reader and thumbnail sessions have been retired above.
@@ -445,6 +467,9 @@ class AppContext(RuntimeAccess):
             self.archive_warmup_coordinator.resume_library()
         self.task_service.resume()
         self.reader_runtime.resume_library_pages()
+        sealing = self._sealing_service()
+        if sealing is not None:
+            sealing.resume()
         logger.warning("Storage transition abandoned before migrating")
 
     def resume_after_storage_transition(self) -> None:
@@ -619,6 +644,9 @@ class AppContext(RuntimeAccess):
             self.thumbnail_service.set_archive_open_limits(limits)
             self.import_service.set_archive_open_limits(limits)
             self.library_maintenance_service.set_archive_open_limits(limits)
+            sealing = self._sealing_service()
+            if sealing is not None:
+                sealing.set_archive_open_limits(limits)
             self.import_service.set_verify_imported_file_integrity(
                 self.settings.verify_imported_file_integrity
             )

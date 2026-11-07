@@ -168,7 +168,7 @@ class SqliteVaultRepository:
             ).fetchone(),
             DatabasePriority.NORMAL,
         )
-        return _job_from_row(row) if row is not None else None
+        return job_from_row(row) if row is not None else None
 
     def get_job_for_book(self, book_id: str) -> VaultJob | None:
         row = self._database.execute(
@@ -177,7 +177,7 @@ class SqliteVaultRepository:
             ).fetchone(),
             DatabasePriority.NORMAL,
         )
-        return _job_from_row(row) if row is not None else None
+        return job_from_row(row) if row is not None else None
 
     def list_jobs(
         self,
@@ -203,7 +203,7 @@ class SqliteVaultRepository:
             ).fetchall(),
             DatabasePriority.NORMAL,
         )
-        return [_job_from_row(row) for row in rows]
+        return [job_from_row(row) for row in rows]
 
     def update_job(
         self,
@@ -302,7 +302,7 @@ def _vault_from_row(row: sqlite3.Row) -> VaultRecord:
     )
 
 
-def _job_from_row(row: sqlite3.Row) -> VaultJob:
+def job_from_row(row: sqlite3.Row) -> VaultJob:
     return VaultJob(
         job_id=str(row["job_id"]),
         book_id=str(row["book_id"]),
@@ -324,4 +324,4 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="microseconds")
 
 
-__all__ = ["SqliteVaultRepository", "insert_vault_job"]
+__all__ = ["SqliteVaultRepository", "insert_vault_job", "job_from_row"]

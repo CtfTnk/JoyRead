@@ -92,11 +92,54 @@ def _relativize_managed(resolver: StoragePathResolver | None, value: object) -> 
         return text
 
 
+def apply_book_hidden_state(
+    connection: sqlite3.Connection, book_id: str, hidden: bool, now: str
+) -> None:
+    """Set one book's hidden flag with everything hiding implies.
+
+    Runs on the caller's connection and inside the caller's transaction, if
+    any: the Hidden Space vault hides a book and queues the seal that encrypts
+    it in one transaction, and this must be the same "hide" a plain
+    ``set_book_hidden`` performs.
+    """
+
+    if hidden:
+        # Hiding a book is a "move to Hidden" operation: clear the
+        # favourite flag, drop it from Recent, and detach from every
+        # non-hidable collection. Hidable collections are the one
+        # place where hidden + non-hidden books coexist, so we leave
+        # those memberships alone.
+        connection.execute(
+            "UPDATE books SET is_hidden = 1, is_favourite = 0, updated_at = ? WHERE book_id = ?",
+            (now, book_id),
+        )
+        connection.execute("DELETE FROM recent_books WHERE book_id = ?", (book_id,))
+        connection.execute(
+            """
+            DELETE FROM collection_books
+            WHERE book_id = ?
+              AND collection_id IN (
+                  SELECT collection_id FROM collections WHERE is_hidable = 0
+              )
+            """,
+            (book_id,),
+        )
+    else:
+        connection.execute(
+            "UPDATE books SET is_hidden = 0, updated_at = ? WHERE book_id = ?",
+            (now, book_id),
+        )
+
+
 @dataclass(frozen=True)
 class _BookDeletionCleanup:
     storage_path: Path | None
     cover_path: Path | None
     generated_cover_pattern: str | None
+    #: Files a Hidden Space seal or unseal job had written or still owed a
+    #: delete for. The job row goes with the book, so after this nothing else
+    #: knows they exist -- and an unseal's output is a decrypted copy.
+    job_artifacts: tuple[Path, ...] = ()
 
 
 class SqliteBookRepository(BookRepository):
@@ -176,7 +219,9 @@ class SqliteBookRepository(BookRepository):
                     book_files.original_file_name,
                     book_files.hash_algorithm,
                     book_files.stored_hash,
-                    book_files.state
+                    book_files.state,
+                    book_files.storage_kind,
+                    book_files.file_format
                 FROM books
                 JOIN book_files ON book_files.file_id = books.file_id
                 WHERE books.book_id IN ({placeholders})
@@ -272,36 +317,10 @@ class SqliteBookRepository(BookRepository):
     def set_book_hidden(self, book_id: str, hidden: bool) -> None:
         logger.debug("set_book_hidden book=%s value=%s", book_id, hidden)
         now = _now()
-
-        def write(connection: sqlite3.Connection) -> None:
-            if hidden:
-                # Hiding a book is a "move to Hidden" operation: clear the
-                # favourite flag, drop it from Recent, and detach from every
-                # non-hidable collection. Hidable collections are the one
-                # place where hidden + non-hidden books coexist, so we leave
-                # those memberships alone.
-                connection.execute(
-                    "UPDATE books SET is_hidden = 1, is_favourite = 0, updated_at = ? WHERE book_id = ?",
-                    (now, book_id),
-                )
-                connection.execute("DELETE FROM recent_books WHERE book_id = ?", (book_id,))
-                connection.execute(
-                    """
-                    DELETE FROM collection_books
-                    WHERE book_id = ?
-                      AND collection_id IN (
-                          SELECT collection_id FROM collections WHERE is_hidable = 0
-                      )
-                    """,
-                    (book_id,),
-                )
-            else:
-                connection.execute(
-                    "UPDATE books SET is_hidden = 0, updated_at = ? WHERE book_id = ?",
-                    (now, book_id),
-                )
-
-        self._database.execute(write, DatabasePriority.NORMAL)
+        self._database.execute(
+            lambda connection: apply_book_hidden_state(connection, book_id, hidden, now),
+            DatabasePriority.NORMAL,
+        )
 
     def set_collection_hidable(self, collection_id: str, hidable: bool) -> None:
         logger.debug("set_collection_hidable collection=%s value=%s", collection_id, hidable)
@@ -343,6 +362,20 @@ class SqliteBookRepository(BookRepository):
             )
 
         self._database.execute(write, DatabasePriority.NORMAL)
+
+    def clear_hidable_collections(self) -> None:
+        # Unlike ``set_collection_hidable(False)`` this keeps hidden members.
+        # Reverting a vault decrypts books one by one, and each must still be
+        # in its collection when it leaves Hidden. The shelf never shows a
+        # hidden book inside a normal collection meanwhile.
+        now = _now()
+        self._database.execute(
+            lambda connection: connection.execute(
+                "UPDATE collections SET is_hidable = 0, updated_at = ? WHERE is_hidable = 1",
+                (now,),
+            ),
+            DatabasePriority.NORMAL,
+        )
 
     def list_hidden_book_ids(self) -> list[str]:
         return self._database.execute(
@@ -417,6 +450,15 @@ class SqliteBookRepository(BookRepository):
         ).fetchone()
         if row is None:
             return _BookDeletionCleanup(storage_path=None, cover_path=None, generated_cover_pattern=None)
+        job_artifacts = tuple(
+            Path(resolved)
+            for job_row in connection.execute(
+                "SELECT partial_path, target_path, previous_path FROM vault_jobs WHERE book_id = ?",
+                (book_id,),
+            ).fetchall()
+            for value in (job_row["partial_path"], job_row["target_path"], job_row["previous_path"])
+            if value and (resolved := _resolve_managed(self._resolver, value))
+        )
 
         file_id = row["file_id"]
         # Stored paths are storage-relative; resolve to absolute before any
@@ -467,12 +509,17 @@ class SqliteBookRepository(BookRepository):
             storage_path=storage_path if should_delete_storage_file else None,
             cover_path=cover_path,
             generated_cover_pattern=f"{self._safe_book_uuid(book_id)}-*.png",
+            job_artifacts=job_artifacts if should_delete_storage_file else (),
         )
 
     def _delete_managed_artifacts(self, cleanup: _BookDeletionCleanup) -> None:
         errors: list[str] = []
         if cleanup.storage_path is not None:
             error = self._unlink_if_managed(cleanup.storage_path, self._managed_books_root)
+            if error is not None:
+                errors.append(error)
+        for artifact in cleanup.job_artifacts:
+            error = self._unlink_if_managed(artifact, self._managed_books_root)
             if error is not None:
                 errors.append(error)
         if cleanup.cover_path is not None:
@@ -484,6 +531,13 @@ class SqliteBookRepository(BookRepository):
             if covers_dir.exists():
                 for cover_path in covers_dir.glob(cleanup.generated_cover_pattern):
                     error = self._unlink_if_managed(cover_path, self._thumbnails_root)
+                    if error is not None:
+                        errors.append(error)
+                # A Hidden Space cover is sealed under a fixed name, and a seal
+                # that had not committed yet never recorded it in cover_path.
+                stem = cleanup.generated_cover_pattern.removesuffix("-*.png")
+                for sealed_cover in (covers_dir / f"{stem}.jrl", covers_dir / f"{stem}.jrl.partial"):
+                    error = self._unlink_if_managed(sealed_cover, self._thumbnails_root)
                     if error is not None:
                         errors.append(error)
 
@@ -1079,6 +1133,8 @@ def _export_record_from_row(
         hash_algorithm=row["hash_algorithm"],
         stored_hash=row["stored_hash"],
         is_missing=row["state"] != "healthy",
+        storage_kind=str(row["storage_kind"]),
+        file_format=str(row["file_format"] or ""),
     )
 
 

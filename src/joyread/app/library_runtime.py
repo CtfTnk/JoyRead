@@ -9,7 +9,9 @@ from joyread.app.reader_runtime import ReaderRuntime, archive_open_limits_from_s
 from joyread.core.models.import_policy import normalize_canonical_import_policy
 from joyread.core.repositories.book_repository import BookRepository
 from joyread.core.repositories.sqlite_book_repository import SqliteBookRepository
+from joyread.core.repositories.sqlite_sealing_repository import SqliteSealingRepository
 from joyread.core.repositories.sqlite_tag_repository import SqliteTagRepository
+from joyread.core.repositories.sqlite_vault_repository import SqliteVaultRepository
 from joyread.core.repositories.tag_repository import TagRepository
 from joyread.core.services.export_service import ExportService
 from joyread.core.services.cache_service import CacheService, LibraryCacheService
@@ -20,8 +22,11 @@ from joyread.core.services.library_maintenance_service import (
     LibraryMaintenanceService,
 )
 from joyread.core.services.library_service import LibraryService
+from joyread.core.services.sealed_cover_store import SealedCoverStore
+from joyread.core.services.sealing_service import SealingService
 from joyread.core.services.tag_service import TagService
 from joyread.core.services.thumbnail_service import ThumbnailService
+from joyread.core.services.vault_service import VaultService
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
 from joyread.infrastructure.database import DatabaseInterpreter, DatabasePriority, apply_migrations
@@ -79,8 +84,20 @@ class LibraryRuntime:
     settings_viewmodel: SettingsViewModel
     main_window_viewmodel: MainWindowViewModel
     maintenance_recovery_conflicts: bool = False
+    vault_service: VaultService | None = None
+    sealing_service: SealingService | None = None
+    sealed_cover_store: SealedCoverStore | None = None
 
     def close_frontend(self) -> None:
+        # Sealing first: a running job holds the maintenance gate and writes
+        # Library files, and must stop before the database closes.
+        if self.sealing_service is not None:
+            self.sealing_service.close()
+        if self.vault_service is not None and self.vault_service.is_unlocked:
+            # The keyring outlives this Library; its key must not.
+            self.vault_service.lock()
+        if self.sealed_cover_store is not None:
+            self.sealed_cover_store.close()
         self.thumbnail_service.close()
 
     def close_database(self) -> None:
@@ -108,6 +125,8 @@ def create_library_runtime(
     paths = reader.paths
     database: DatabaseInterpreter | None = None
     thumbnails: ThumbnailService | None = None
+    sealing: SealingService | None = None
+    sealed_covers: SealedCoverStore | None = None
     try:
         database = DatabaseInterpreter(paths.paths.database / "joyread.sqlite3")
         database.execute(apply_migrations, DatabasePriority.CRITICAL)
@@ -138,7 +157,7 @@ def create_library_runtime(
                 settings.canonical_import_policy
             ),
         )
-        export_service = ExportService(book_repository, reader.hash_service)
+        export_service = ExportService(book_repository, reader.hash_service, vault_keyring=reader.vault_keyring)
         library_caches = LibraryCacheService(config.cover_index_max_items)
         cache_service = CacheService(
             reader.archive_extraction_pool,
@@ -170,7 +189,26 @@ def create_library_runtime(
             pdf_service=reader.pdf_image_service,
         )
         recovery = maintenance.recover_pending_journal()
-        hidden_space = HiddenSpaceService(settings_store, library_service)
+        # The vault belongs to this Library's database; the keyring it unlocks
+        # into is process-wide, shared with the Reader engines.
+        vault = VaultService(SqliteVaultRepository(database), reader.vault_keyring)
+        sealed_covers = SealedCoverStore(paths, reader.vault_keyring)
+        sealing = SealingService(
+            paths,
+            vault,
+            SqliteSealingRepository(database),
+            reader.archive_image_service,
+            reader.hash_service,
+            sealed_covers,
+            coordinator=coordinator,
+            archive_limits=limits,
+            invalidate_artifacts=maintenance.invalidate_artifacts,
+            invalidate_cover=thumbnails.invalidate_cover_cache,
+        )
+        # Beside the journal recovery above: database bookkeeping only. The
+        # worker resumes each interrupted job from its phase once started.
+        sealing.recover()
+        hidden_space = HiddenSpaceService(settings_store, library_service, vault=vault, sealing=sealing)
         shelf = ShelfViewModel(
             library_service,
             thumbnails,
@@ -184,7 +222,7 @@ def create_library_runtime(
             random_page_executor=reader.library_random_page_tasks,
         )
         settings_viewmodel = settings_viewmodel or SettingsViewModel(settings, settings_store, hidden_space)
-        return LibraryRuntime(
+        runtime = LibraryRuntime(
             paths=paths,
             database_interpreter=database,
             book_repository=book_repository,
@@ -204,9 +242,19 @@ def create_library_runtime(
             settings_viewmodel=settings_viewmodel,
             main_window_viewmodel=MainWindowViewModel(),
             maintenance_recovery_conflicts=bool(recovery.conflicts),
+            vault_service=vault,
+            sealing_service=sealing,
+            sealed_cover_store=sealed_covers,
         )
+        sealing.start()
+        return runtime
     except BaseException:
-        for name, resource in (("thumbnails", thumbnails), ("database", database)):
+        for name, resource in (
+            ("sealing", sealing),
+            ("sealed covers", sealed_covers),
+            ("thumbnails", thumbnails),
+            ("database", database),
+        ):
             if resource is None:
                 continue
             try:

@@ -760,3 +760,34 @@ def test_the_reader_runtime_reads_sealed_books_and_locks_them_on_close(tmp_path:
             session.read_pages((0,))
     finally:
         session.close()
+
+
+def test_library_runtime_owns_its_vault_and_stops_sealing_with_the_library(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("JOYREAD_RUNTIME_DIR", str(tmp_path))
+    context = create_app_context()
+    library = context.library_runtime
+    keyring = context.reader_runtime.vault_keyring
+    sealing = library.sealing_service
+    try:
+        assert library.hidden_space_service.sealing is sealing
+        assert sealing._thread is not None and sealing._thread.is_alive()
+        draft = library.vault_service.prepare("1234", "1234")
+        library.vault_service.create(draft, draft.recovery_code.formatted())
+        assert keyring.is_unlocked
+
+        context.quiesce_for_storage_transition()
+        assert sealing._paused
+        context.abandon_storage_transition()
+        assert not sealing._paused
+
+        context.reload_storage_from_settings()
+
+        # The old Library took its key and its worker with it.
+        assert not keyring.is_unlocked
+        assert not sealing._thread.is_alive()
+        rebuilt = context.library_runtime
+        assert rebuilt.sealing_service is not sealing
+        assert rebuilt.vault_service.has_vault and not rebuilt.vault_service.is_unlocked
+    finally:
+        context.close()
+    assert not context.library_runtime.sealing_service._thread.is_alive()
