@@ -232,7 +232,9 @@ class ApplicationWindowManager(QObject):
 
         windows: list[QMainWindow] = []
         for path in normalize_launch_paths(paths):
-            window = self.open_reader(StandaloneReaderRequest(path=path, title=path.stem))
+            window = self.open_reader(
+                StandaloneReaderRequest(path=path, title=path.stem, check_archive_content=True)
+            )
             if window is not None:
                 windows.append(window)
         return tuple(windows)
@@ -285,6 +287,7 @@ class ApplicationWindowManager(QObject):
             book=request.book,
             title=request.title,
             start_page_index=request.start_page_index,
+            check_archive_content=request.check_archive_content,
         )
         window = self._reader_window_factory(normalized_request)
         self._reader_windows[key] = window
@@ -490,6 +493,7 @@ class ApplicationWindowManager(QObject):
             book=request.book,
             title=request.title,
             start_page_index=request.start_page_index,
+            check_archive_content=request.check_archive_content,
         )
 
     def _handle_reader_progress_changed(

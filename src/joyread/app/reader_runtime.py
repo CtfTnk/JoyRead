@@ -6,7 +6,7 @@ application services across Library loads and storage transitions.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
@@ -25,6 +25,7 @@ from joyread.core.models.reader_prefetch import (
     prefetch_count,
 )
 from joyread.core.reader import ReaderSessionService
+from joyread.core.reader.content_check import ContentWarningMemory
 from joyread.core.services.archive_extraction_pool import (
     ArchiveExtractionCache,
     ArchiveExtractionPool,
@@ -154,6 +155,10 @@ class ReaderRuntime:
     #: readers here are shared by every window, while a vault belongs to one
     #: Library, so the Library unlocks this and every reader asks it.
     vault_keyring: VaultKeyring
+    #: Files the user chose to read despite the "mostly unsupported files"
+    #: question, for the life of this process. Shared by every Reader window,
+    #: so reopening the same file does not ask again.
+    content_warning_memory: ContentWarningMemory = field(default_factory=ContentWarningMemory)
 
     def reload_settings(self) -> AppSettings:
         return self.preferences.refresh()

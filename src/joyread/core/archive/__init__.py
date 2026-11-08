@@ -20,6 +20,7 @@ from joyread.core.archive.canonical import (
     CanonicalWriter,
     CbzWriter,
 )
+from joyread.core.archive.content_profile import ArchiveContentProfile
 from joyread.core.archive.limits import ArchiveOpenLimits
 from joyread.core.archive.inspection import (
     ArchiveImportInspection,
@@ -55,6 +56,7 @@ __all__ = [
     "ArchiveCachePlan",
     "ArchiveCachePolicy",
     "ArchiveCorruptError",
+    "ArchiveContentProfile",
     "ArchiveContentsEntry",
     "ArchiveConversionResult",
     "ArchiveConversionStatus",

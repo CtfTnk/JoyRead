@@ -39,6 +39,7 @@ class ReaderWindow(QMainWindow):
         book: Book | None = None,
         title: str | None = None,
         start_page_index: int | None = None,
+        check_archive_content: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -68,6 +69,7 @@ class ReaderWindow(QMainWindow):
             title=title,
             show_back_button=False,
             start_page_index=start_page_index,
+            check_archive_content=check_archive_content,
         )
         self.shell.progress_changed.connect(self.progress_changed.emit)
         self.setCentralWidget(self.shell)

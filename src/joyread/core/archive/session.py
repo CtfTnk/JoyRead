@@ -18,6 +18,7 @@ from weakref import finalize
 
 from PIL import Image, UnidentifiedImageError
 
+from joyread.core.archive.content_profile import ArchiveContentProfile
 from joyread.core.archive.errors import (
     ArchiveBulkUnsupported,
     ArchiveCancelled,
@@ -141,7 +142,9 @@ class ArchiveImageSession:
         cache_signature: str = "",
         limits: ArchiveOpenLimits | None = None,
         spill_dir: Path | None = None,
+        content_profile: ArchiveContentProfile | None = None,
     ) -> None:
+        self._content_profile = content_profile
         # Nested archives spilled here have a path only for as long as this
         # session lives: every PageRecord that came out of one still points at
         # it. Removal therefore belongs in _finalize_close_locked, which runs
@@ -320,6 +323,12 @@ class ArchiveImageSession:
     @property
     def contents(self) -> tuple[ArchiveContentsEntry, ...]:
         return self._contents
+
+    @property
+    def content_profile(self) -> ArchiveContentProfile | None:
+        """What the opening scan counted, or ``None`` for a hand-built session."""
+
+        return self._content_profile
 
     @property
     def access_mode(self) -> ArchiveAccessMode:

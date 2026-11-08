@@ -1069,6 +1069,7 @@ class ArchiveImageService:
                 cache_signature=cache_signature,
                 limits=effective_limits,
                 spill_dir=spill_dir,
+                content_profile=context.content.snapshot(),
             )
         except BaseException:
             if spill_dir is not None:

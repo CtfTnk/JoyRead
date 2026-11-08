@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import nullcontext
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -66,6 +67,9 @@ from joyread.ui.viewmodels.reader_items import (
     ReaderContentsItem,
     ReaderPasswordPrompt,
 )
+from joyread.core.reader.content_check import ContentWarningMemory, assess_archive_content
+from joyread.ui.viewmodels.reader_content_prompt import build_content_prompt
+from joyread.ui.viewmodels.reader_items import ReaderContentPrompt
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.signals import Signal
 
@@ -122,6 +126,8 @@ class ReaderViewModel:
         thumbnail_renderer: ThumbnailRenderer | None = None,
         random_page_scheduler: ReaderPageScheduler | None = None,
         random_page_executor: TaskExecutor | None = None,
+        check_archive_content: bool = False,
+        content_warning_memory: ContentWarningMemory | None = None,
     ) -> None:
         self.state_changed: Signal[None] = Signal()
         self.layout_changed: Signal[ReaderLayoutResult] = Signal()
@@ -129,6 +135,7 @@ class ReaderViewModel:
         self.page_failed: Signal[int] = Signal()
         self.error_changed: Signal[str | None] = Signal()
         self.password_required: Signal[ReaderPasswordPrompt] = Signal()
+        self.content_warning_required: Signal[ReaderContentPrompt] = Signal()
         self.progress_changed: Signal[tuple[str, int, float]] = Signal()
         self.bookmarks_changed: Signal[tuple[ReaderBookmarkItem, ...]] = Signal()
         self.contents_changed: Signal[tuple[ReaderContentsItem, ...]] = Signal()
@@ -158,6 +165,15 @@ class ReaderViewModel:
         self._skipped_archives: set[str] = set()
         self._pending_password_archive: str | None = None
         self._book_uuid = book_uuid
+        # The "mostly unsupported files" question applies only to a file the
+        # user opened just to read; a Library book or an Open & Import was
+        # already chosen as a book. See ``core.reader.content_check``.
+        self._check_archive_content = bool(check_archive_content)
+        self._content_warning_memory = content_warning_memory or ContentWarningMemory()
+        # An opened document held back until the user answers that question.
+        # Nothing has been read from it beyond the listing: no page, no
+        # progress write, no warmup, no hash promotion.
+        self._pending_content_document: tuple[ReaderDocumentHandle, OperationContext | None] | None = None
         self._hash_handle: TaskHandle[str | None] | None = None
         self._save_handle: TaskHandle[None] | None = None
         self._settings_save_handle: TaskHandle[None] | None = None
@@ -392,6 +408,7 @@ class ReaderViewModel:
             reset_passwords,
         )
         self._task_generation += 1
+        self._discard_pending_content_document()
         if self._hash_handle is not None:
             self._hash_handle.cancel()
         if self._archive_warmup_coordinator is not None:
@@ -1033,6 +1050,101 @@ class ReaderViewModel:
         if generation != self._task_generation:
             document.close()
             return
+        if self._hold_for_content_warning(document, operation):
+            return
+        self._show_opened_document(document, operation)
+
+    def _hold_for_content_warning(
+        self,
+        document: ReaderDocumentHandle,
+        operation: OperationContext | None,
+    ) -> bool:
+        """Keep ``document`` back and ask, when it is mostly not pages.
+
+        Runs before anything reads a page, so declining leaves no trace: the
+        loading state stays up behind the dialog, and the pages, progress,
+        warmup and hash promotion all wait in ``_show_opened_document``.
+        """
+
+        if not self._check_archive_content:
+            return False
+        warning = assess_archive_content(getattr(document, "content_profile", None))
+        if warning is None:
+            return False
+        path = Path(getattr(document, "source_path", None) or self._source_path or "")
+        token = getattr(document, "source_change_token", None)
+        remembered = self._content_warning_memory.was_accepted(path, token)
+        self._log_content_warning(warning, operation, outcome="remembered" if remembered else "asked")
+        if remembered:
+            return False
+        self._pending_content_document = (document, operation)
+        self.content_warning_required.emit(build_content_prompt(warning, path.name))
+        return True
+
+    def proceed_after_content_warning(self) -> None:
+        """Read the held document after all, and stop asking about this file."""
+
+        pending = self._pending_content_document
+        if pending is None:
+            return
+        self._pending_content_document = None
+        document, operation = pending
+        self._content_warning_memory.remember(
+            Path(getattr(document, "source_path", None) or self._source_path or ""),
+            getattr(document, "source_change_token", None),
+        )
+        self._log_content_warning(None, operation, outcome="accepted")
+        self._show_opened_document(document, operation)
+
+    def decline_content_warning(self) -> None:
+        """Close the held document unread. The host closes its window."""
+
+        pending = self._pending_content_document
+        if pending is None:
+            return
+        _document, operation = pending
+        self._log_content_warning(None, operation, outcome="declined")
+        self._finish_open_operation(
+            "reader.document.open.cancelled",
+            status="cancelled",
+            level=logging.INFO,
+            operation=operation,
+            reason="content_declined",
+        )
+        self.cancel()
+
+    @property
+    def awaiting_content_decision(self) -> bool:
+        return self._pending_content_document is not None
+
+    def _discard_pending_content_document(self) -> None:
+        pending, self._pending_content_document = self._pending_content_document, None
+        if pending is not None:
+            pending[0].close()
+
+    def _log_content_warning(self, warning, operation: OperationContext | None, *, outcome: str) -> None:  # noqa: ANN001
+        # Counts only. The archive's name and its entries stay out of the log.
+        fields: dict[str, object] = {}
+        if warning is not None:
+            fields = {"count": warning.pages, "total": warning.countable, "percent": warning.shown_percent}
+        with bind_operation(operation) if operation is not None else nullcontext():
+            logger.info(
+                "Reader content warning",
+                extra={
+                    "event": "reader.document.content_warning",
+                    "category": "reader",
+                    "status": "input_required" if outcome == "asked" else "finished",
+                    "book_id": self._book_uuid,
+                    "outcome": outcome,
+                    **fields,
+                },
+            )
+
+    def _show_opened_document(
+        self,
+        document: ReaderDocumentHandle,
+        operation: OperationContext | None,
+    ) -> None:
         self._document = document
         self._page_count = document.page_count
         self._configure_topic_thumbnail_stream(

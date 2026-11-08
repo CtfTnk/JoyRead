@@ -38,3 +38,11 @@ class ReaderContentsItem:
     label: str
     page_index: int
     depth: int = 0
+
+
+@dataclass(frozen=True)
+class ReaderContentPrompt:
+    """Ask before reading an archive that is mostly not pages."""
+
+    title: str
+    message: str

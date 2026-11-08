@@ -60,6 +60,10 @@ class SessionReaderDocumentSource:
         return tuple(getattr(self._session, "contents", ()))
 
     @property
+    def content_profile(self):  # noqa: ANN201 - ArchiveContentProfile, or None for PDF.
+        return getattr(self._session, "content_profile", None)
+
+    @property
     def access_mode(self):  # noqa: ANN201 - archive enum or absent for PDF.
         return getattr(self._session, "access_mode", None)
 

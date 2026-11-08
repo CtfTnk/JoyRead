@@ -99,6 +99,16 @@ Your operating system's **Open With** menu can select JoyRead once its file
 associations are registered. It only reads the file, regardless of the drag
 preference. The *Actions → Open Book* command also remains read-only.
 
+When you open an archive just to read it (Open Book, Open With, or a Read drop
+that doesn't import) and fewer than half of its files are pages JoyRead can
+show, JoyRead asks before showing anything. This catches archives of phone
+photos (HEIC), PSD sources, videos or documents. The question says how many
+files are pages and what the rest are. Choose **Read Anyway** to read the pages
+JoyRead can show, or **Cancel** to close the Reader. Small archives with fewer
+than three other files are not asked about, and `ComicInfo.xml`, text files and
+checksums don't count. After Read Anyway, JoyRead doesn't ask about the same
+file again until you quit. Library books and Open & Import are never checked.
+
 Password-protected comics can be neither read nor imported; see
 [Encrypted archives](#encrypted-archives). Cancel an in-progress Open & Import
 from the Library progress dialog; any already completed import remains in the

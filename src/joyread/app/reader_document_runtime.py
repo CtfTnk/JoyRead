@@ -40,8 +40,10 @@ class ReaderDocumentHandle(ReaderDocumentSource):
         managed: bool,
         needs_extraction_pool: bool,
         hash_service: HashService | None,
+        source_change_token: tuple[int, int, int] | None = None,
     ) -> None:
         self._source = source
+        self._source_change_token = source_change_token
         self._source_path = Path(source_path)
         self._cache_key = cache_key
         self._managed = bool(managed)
@@ -67,6 +69,16 @@ class ReaderDocumentHandle(ReaderDocumentSource):
     @property
     def contents(self) -> tuple:
         return self._source.contents
+
+    @property
+    def source_change_token(self) -> tuple[int, int, int] | None:
+        """(size, mtime_ns, inode) of the file as it was opened, read off the GUI thread."""
+
+        return self._source_change_token
+
+    @property
+    def content_profile(self):  # noqa: ANN201 - ArchiveContentProfile, or None for PDF.
+        return getattr(self._source, "content_profile", None)
 
     @property
     def access_mode(self):  # noqa: ANN201 - archive enum or absent for PDF.
@@ -255,6 +267,7 @@ class ReaderDocumentRuntime:
         # pages never reach the pool anyway (the scanner strips their
         # `allow_persistent_cache`), so there is nothing there to protect.
         encrypted = str(path) in passwords
+        change_token = _file_change_token(path)
         lease = self._new_cache_lease(path, encrypted=encrypted)
         try:
             session = self._open_session(
@@ -278,6 +291,7 @@ class ReaderDocumentRuntime:
             managed=self._managed,
             needs_extraction_pool=lease is not None,
             hash_service=self._hash_service,
+            source_change_token=change_token,
         )
 
     def _open_session(

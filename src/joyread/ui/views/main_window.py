@@ -616,7 +616,9 @@ class MainWindow(QMainWindow):
             self._show_reader_window(source_path, title=source_path.stem)
             return
         if not import_mode:
-            self._show_reader_window(source_path, title=source_path.stem)
+            self._show_reader_window(
+                source_path, title=source_path.stem, check_archive_content=True
+            )
             return
 
         # Reader access is independent from managed-library import. Open the
@@ -904,6 +906,7 @@ class MainWindow(QMainWindow):
         book=None,
         title: str | None = None,
         start_page_index: int | None = None,
+        check_archive_content: bool = False,
     ) -> None:  # noqa: ANN001
         self._launch_standalone_reader(
             StandaloneReaderRequest(
@@ -911,6 +914,7 @@ class MainWindow(QMainWindow):
                 book=book,
                 title=title,
                 start_page_index=start_page_index,
+                check_archive_content=check_archive_content,
             )
         )
 

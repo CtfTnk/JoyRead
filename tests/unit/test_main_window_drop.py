@@ -242,6 +242,8 @@ def test_open_book_ignores_read_drop_preference(window, tmp_path, monkeypatch) -
     assert len(launches) == 1
     assert launches[0].path == source
     assert main._context.book_repository.list_books() == []
+    # Read-only, so the Reader asks first when the archive is mostly not pages.
+    assert launches[0].check_archive_content is True
 
 
 def test_explicit_open_and_import_adds_one_book(window, tmp_path, monkeypatch, qtbot) -> None:
@@ -259,6 +261,8 @@ def test_explicit_open_and_import_adds_one_book(window, tmp_path, monkeypatch, q
 
     assert len(launches) == 1
     assert launches[0].path == source
+    # Open & Import is import scope: the import's own inspection decides.
+    assert launches[0].check_archive_content is False
     qtbot.waitUntil(lambda: len(main._context.book_repository.list_books()) == 1)
     assert imported == [(source,)]
 

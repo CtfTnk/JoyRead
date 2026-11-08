@@ -380,3 +380,19 @@ def test_hiding_a_book_first_closes_the_readers_showing_it(qtbot, tmp_path: Path
         assert manager.reader_windows == (second,)
     finally:
         _close_windows(manager, qtbot)
+
+
+def test_only_a_file_opened_to_read_carries_the_content_check(qtbot, tmp_path: Path) -> None:
+    """The "mostly unsupported files" question is for read-only opens. The OS
+    asks for one; a Library request asks only when it says so."""
+
+    manager, mains, readers, _shelf = _manager()
+    try:
+        manager.open_files((tmp_path / "from-finder.zip",))
+        main = cast(_FakeMainWindow, manager.show_library())
+        main.launcher(StandaloneReaderRequest(tmp_path / "library-book.cbz"))
+        main.launcher(StandaloneReaderRequest(tmp_path / "opened.zip", check_archive_content=True))
+
+        assert [reader.request.check_archive_content for reader in readers] == [True, False, True]
+    finally:
+        _close_windows(manager, qtbot)

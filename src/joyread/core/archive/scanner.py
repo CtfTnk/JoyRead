@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import logging
 from itertools import count
 from pathlib import Path, PurePosixPath
 
+from joyread.core.archive.content_profile import ArchiveContentTally
 from joyread.core.archive.errors import (
     ArchiveError,
     ArchivePasswordRejected,
@@ -51,6 +52,9 @@ class ArchiveScanContext:
     # in-memory behaviour, which callers that never read pages (probes,
     # inspection) still want.
     spill_dir: Path | None = None
+    # What the scan saw, for the Reader's content check. Shared by every
+    # nested level, like the budget; see ``content_profile``.
+    content: ArchiveContentTally = field(default_factory=ArchiveContentTally)
 
 
 class ArchiveSourceSkipped(Exception):
@@ -150,6 +154,10 @@ class ArchiveScanner:
         try:
             listing = self._list_entries(source, context)
         except ArchiveSourceSkipped:
+            # Only an encrypted source is skipped at listing time. At the top
+            # level the open then fails as empty; nested, it is one item the
+            # reader will not see.
+            context.content.add_locked_archive()
             return ArchiveTreeNode("", "", "root")
         source = replace(
             source,
@@ -176,19 +184,23 @@ class ArchiveScanner:
             global_entry_depth = global_base_depth + folder_depth
             if suffix in IMAGE_EXTENSIONS:
                 if not _depth_is_allowed(global_entry_depth, context.limits.global_file_max_depth):
+                    context.content.add_out_of_reach_page()
                     continue
                 ensure_item_size(entry.size, context.limits.max_extracted_item_bytes, logical_name)
                 parent = ensure_folder_path(root, PurePosixPath(logical_name).parts[:-1])
                 parent.pages.append(self._page_record(source, safe_name, logical_name, entry))
+                context.content.add_page()
                 continue
 
+            if suffix not in ARCHIVE_EXTENSIONS:
+                context.content.add_file(logical_name, suffix)
+                continue
             next_nested_depth = nested_depth + 1
             nested_global_depth = global_entry_depth + 1
-            if (
-                suffix not in ARCHIVE_EXTENSIONS
-                or not _depth_is_allowed(next_nested_depth, context.limits.nested_archive_max_depth)
-                or not _depth_is_allowed(nested_global_depth, context.limits.global_file_max_depth)
-            ):
+            if not _depth_is_allowed(
+                next_nested_depth, context.limits.nested_archive_max_depth
+            ) or not _depth_is_allowed(nested_global_depth, context.limits.global_file_max_depth):
+                context.content.add_skipped_archive()
                 continue
             if source.confidential:
                 # A sealed book holds a canonical CBZ, which is flat by
@@ -206,6 +218,7 @@ class ArchiveScanner:
                         "reason": "confidential",
                     },
                 )
+                context.content.add_skipped_archive()
                 continue
             try:
                 ensure_item_size(entry.size, context.limits.max_extracted_item_bytes, logical_name)
@@ -249,6 +262,7 @@ class ArchiveScanner:
                         "reason": str(exc),
                     },
                 )
+                context.content.add_skipped_archive()
                 continue
             if tree_has_pages(nested_root):
                 logical_path = PurePosixPath(logical_name)

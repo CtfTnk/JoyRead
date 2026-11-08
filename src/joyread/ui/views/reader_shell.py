@@ -28,6 +28,7 @@ from joyread.core.reader import (
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.reader_image_decoder import QtPageFrameDecoder
 from joyread.ui.resources.styles.theme import Theme
+from joyread.ui.viewmodels.reader_items import ReaderContentPrompt
 from joyread.ui.viewmodels.reader_viewmodel import ReaderPasswordPrompt, ReaderViewModel
 from joyread.ui.views.floating_panel_scrim import FloatingPanelScrim
 from joyread.ui.views.reader_chrome import AutoHideController
@@ -61,6 +62,7 @@ class ReaderShellWidget(ReaderShellBase):
         title: str | None = None,
         show_back_button: bool = False,
         start_page_index: int | None = None,
+        check_archive_content: bool = False,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -151,6 +153,10 @@ class ReaderShellWidget(ReaderShellBase):
             random_page_executor=(
                 reader.library_random_page_tasks if self.depends_on_library else reader.random_page_tasks
             ),
+            # A Library book was chosen as a book; only a file opened to read
+            # it gets the "mostly unsupported files" question.
+            check_archive_content=check_archive_content and book is None,
+            content_warning_memory=reader.content_warning_memory,
         )
         self.header.set_bookmarks_enabled(self.viewmodel.can_use_bookmarks)
         self.header.set_contents_enabled(self.viewmodel.can_use_contents)
@@ -241,6 +247,7 @@ class ReaderShellWidget(ReaderShellBase):
         self.viewmodel.page_failed.connect(self.canvas.set_page_failed)
         self.viewmodel.error_changed.connect(self._show_reader_error)
         self.viewmodel.password_required.connect(self._show_password_dialog)
+        self.viewmodel.content_warning_required.connect(self._show_content_warning)
         self.viewmodel.progress_changed.connect(self._emit_progress_changed)
         self.viewmodel.bookmarks_changed.connect(self.topic_panel.set_bookmarks)
         self.viewmodel.contents_changed.connect(self._handle_contents_changed)
@@ -340,6 +347,25 @@ class ReaderShellWidget(ReaderShellBase):
             detail_text=prompt.archive_path,
             state_prompt=t("reader.password_retry") if prompt.is_retry else None,
         )
+
+    def _show_content_warning(self, prompt: ReaderContentPrompt) -> None:
+        self.dialog_overlay.show_confirm(
+            prompt.title,
+            prompt.message,
+            on_confirm=self.viewmodel.proceed_after_content_warning,
+            on_cancel=self._decline_content_warning,
+            confirm_text=t("reader.read_anyway"),
+            cancel_text=t("dialog.btn_cancel"),
+        )
+
+    def _decline_content_warning(self) -> None:
+        self.viewmodel.decline_content_warning()
+        # Declining means "don't read this", so the Reader goes away rather
+        # than sitting empty. Embedded readers are Library books and never ask.
+        if self._show_back_button:
+            self.back_requested.emit()
+        else:
+            self.window().close()
 
     def _toggle_settings_panel(self) -> None:
         if self.settings_panel.isVisible():
