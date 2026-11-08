@@ -440,6 +440,7 @@
     "loading_page": "{index} ページ目を読み込み中…",
     "encrypted_no_password": "アーカイブが暗号化されており、パスワードがないため画像を読み込めません。",
     "encrypted_skipped": "読み取れる画像がありません。暗号化されたアーカイブをスキップしました。",
+    "encrypted_unsupported": "パスワード付きアーカイブには対応していません。別のツールで展開してから、展開したファイルを開くか読み込んでください。",
     "open_failed": "リーダーを開けませんでした：{detail}",
     "password_for": "{name} のパスワードが必要です。",
     "password_incorrect_for": "{name} のパスワードが正しくありません。もう一度入力してください。",

@@ -440,6 +440,7 @@
     "loading_page": "正在加载第 {index} 页…",
     "encrypted_no_password": "压缩包已加密且未提供密码，无法加载图片。",
     "encrypted_skipped": "没有可读图片。已跳过加密压缩包。",
+    "encrypted_unsupported": "暂不支持带密码的压缩包。请先用其他工具解压，再打开或导入解压后的文件。",
     "open_failed": "无法打开阅读器：{detail}",
     "password_for": "{name} 需要密码。",
     "password_incorrect_for": "{name} 的密码错误，请重试。",

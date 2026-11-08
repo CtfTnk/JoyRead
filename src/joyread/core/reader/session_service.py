@@ -13,11 +13,12 @@ from joyread.core.archive.errors import ArchiveCancelled
 from joyread.core.archive.models import (
     ArchiveCachePolicy,
     ArchiveConversionStatus,
+    ArchivePasswordPolicy,
     ArchivePasswordRequest,
     ArchivePasswordResponse,
 )
 from joyread.core.archive.service import ARCHIVE_EXTENSIONS
-from joyread.core.file_types import SEALED_EXTENSION
+from joyread.core.file_types import ARCHIVE_PASSWORD_ACCESS_ENABLED, SEALED_EXTENSION
 from joyread.core.reader.models import ReaderPageImage
 from joyread.core.reader.pdf import PDF_EXTENSIONS, PdfImageServicePort
 from joyread.core.services.archive_cache_lease import ArchiveCacheLease
@@ -65,6 +66,10 @@ class ReaderSessionService:
     file name says nothing about what it holds, so the sealed content type
     decides: a CBZ goes to the archive engine, whose sealed backend reads it
     in place, and a PDF to the PDF engine through a decrypting device.
+
+    *archive_passwords_enabled* follows ``ARCHIVE_PASSWORD_ACCESS_ENABLED``.
+    While it is off, every archive opens under ``ArchivePasswordPolicy.SKIP``:
+    no password is ever requested, and passwords a caller passes are ignored.
     """
 
     def __init__(
@@ -74,11 +79,17 @@ class ReaderSessionService:
         *,
         path_issue_service: PathIssueService | None = None,
         vault_keyring: VaultKeyring | None = None,
+        archive_passwords_enabled: bool = ARCHIVE_PASSWORD_ACCESS_ENABLED,
     ) -> None:
         self._archive_image_service = archive_image_service
         self._pdf_image_service = pdf_image_service
         self._path_issue_service = path_issue_service
         self._vault_keyring = vault_keyring
+        self._archive_passwords_enabled = bool(archive_passwords_enabled)
+
+    @property
+    def archive_passwords_enabled(self) -> bool:
+        return self._archive_passwords_enabled
 
     def open_document(
         self,
@@ -177,24 +188,31 @@ class ReaderSessionService:
         cache_lease: ArchiveCacheLease | None = None,
     ) -> ArchiveImageSession:
         provider = None
-        password_map = dict(passwords or {})
-        skipped = set(skipped_archives or ())
-        if password is not None:
-            password_map.setdefault(str(Path(path)), password)
-        if password_map or skipped:
-            # Adapt the reader's simple "password dict + skipped set" inputs
-            # to the full ``PasswordProvider`` protocol the archive service
-            # expects. The reader VM never touches the protocol type
-            # directly — keeping that translation here so callers stay
-            # ignorant of the archive-service API shape.
-            provider = lambda request: (
-                ArchivePasswordResponse(skip=True)
-                if request.archive_path in skipped
-                else password_map.get(request.archive_path)
-            )
+        policy = ArchivePasswordPolicy.ALLOW
+        if not self._archive_passwords_enabled:
+            # Gate closed: encrypted sources are left out without a prompt,
+            # whatever the caller remembered for them.
+            policy = ArchivePasswordPolicy.SKIP
+        else:
+            password_map = dict(passwords or {})
+            skipped = set(skipped_archives or ())
+            if password is not None:
+                password_map.setdefault(str(Path(path)), password)
+            if password_map or skipped:
+                # Adapt the reader's simple "password dict + skipped set" inputs
+                # to the full ``PasswordProvider`` protocol the archive service
+                # expects. The reader VM never touches the protocol type
+                # directly — keeping that translation here so callers stay
+                # ignorant of the archive-service API shape.
+                provider = lambda request: (
+                    ArchivePasswordResponse(skip=True)
+                    if request.archive_path in skipped
+                    else password_map.get(request.archive_path)
+                )
         return self._archive_image_service.open(
             path,
             password_provider=provider,
+            password_policy=policy,
             max_nested_depth=nested_archive_max_depth,
             global_file_max_depth=archive_global_file_max_depth,
             limits=limits,

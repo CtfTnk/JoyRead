@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from joyread.core.archive import (
+    ArchiveEncryptionUnsupported,
     ArchiveImageService,
     ArchiveContentsEntry,
     ArchiveEmptyError,
@@ -32,6 +33,7 @@ from joyread.core.services.hash_service import HashService
 from joyread.app.reader_document_runtime import ReaderDocumentRuntime
 from joyread.app.reader_page_pipeline import PreparedReaderPage
 from joyread.app.tasking import TaskHandle, TaskStatus
+from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.thumbnail_renderer import PillowThumbnailRenderer
 from joyread.ui.viewmodels.reader_viewmodel import ReaderViewModel
 
@@ -1039,6 +1041,34 @@ def test_reader_viewmodel_localizes_resource_limit_error_without_member_details(
 
     assert viewmodel.error_message == "This archive exceeds the current resource limits."
     assert sensitive_member not in viewmodel.error_message
+
+
+class _EncryptionUnsupportedSessionService:
+    def open_document(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        raise ArchiveEncryptionUnsupported("No readable images. Password-protected archives are not supported.")
+
+    def load_pages(self, *_args, **_kwargs):  # noqa: ANN002, ANN003
+        return {}
+
+
+def test_reader_viewmodel_says_password_archives_are_unsupported(tmp_path: Path) -> None:
+    """With the password gate closed the open never prompts; the Reader names
+    the reason instead of a bare "No readable pages"."""
+
+    vm = ReaderViewModel(
+        ReaderDocumentRuntime(_EncryptionUnsupportedSessionService()),  # type: ignore[arg-type]
+        _SyncTaskService(),  # type: ignore[arg-type]
+        _cache_service(tmp_path).issue_reader_namespace(),
+        title="Book",
+    )
+    prompts = []
+    vm.password_required.connect(prompts.append)
+
+    vm.open_path(tmp_path / "secret.cbz")
+
+    assert prompts == []
+    assert vm.error_message == t("reader.encrypted_unsupported")
+    assert vm.error_message.startswith("Password-protected archives aren't supported.")
 
 
 def test_reader_viewmodel_reports_rejected_password_for_retry(tmp_path: Path) -> None:

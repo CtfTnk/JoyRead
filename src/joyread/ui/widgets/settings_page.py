@@ -428,17 +428,20 @@ class SettingsPageWidget(QFrame):
 
         # Encrypted-archive cache. Extracted pages of a password-protected
         # archive are plaintext in the pool, which is not itself encrypted yet.
-        encrypted_banner = SectionBanner(t("settings.banner_encrypted_cache"), self._resources)
-        purge_encrypted = SettingsSwitchItem(
-            t("settings.purge_encrypted_cache"),
-            self._viewmodel.purge_encrypted_cache_on_close,
-        )
-        purge_encrypted.toggled.connect(self._viewmodel.set_purge_encrypted_cache_on_close)
+        # Listed only while the Reader opens such archives at all.
+        encrypted_items: list[QWidget] = []
+        if self._viewmodel.shows_encrypted_archive_settings:
+            encrypted_banner = SectionBanner(t("settings.banner_encrypted_cache"), self._resources)
+            purge_encrypted = SettingsSwitchItem(
+                t("settings.purge_encrypted_cache"),
+                self._viewmodel.purge_encrypted_cache_on_close,
+            )
+            purge_encrypted.toggled.connect(self._viewmodel.set_purge_encrypted_cache_on_close)
+            encrypted_items = [encrypted_banner, purge_encrypted]
 
         return [
             *hidden_items,
-            encrypted_banner,
-            purge_encrypted,
+            *encrypted_items,
             storage_banner,
             move_library,
             select_library,

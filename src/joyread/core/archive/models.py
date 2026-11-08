@@ -51,8 +51,20 @@ class ArchiveValidationCode(StrEnum):
 
 
 class ArchivePasswordPolicy(StrEnum):
+    """How an open treats an encrypted archive source, root or nested.
+
+    ``ALLOW`` asks the password provider. ``FORBID`` fails the whole open with
+    :class:`ArchivePasswordRequired`: a caller that must never meet an
+    encrypted source (import conversion) treats one as a broken contract.
+    ``SKIP`` never asks either, but leaves every encrypted source out like a
+    user-skipped one, so an ordinary archive with an encrypted one inside still
+    opens; an open whose only pages were encrypted raises
+    :class:`ArchiveEncryptionUnsupported`.
+    """
+
     ALLOW = "allow"
     FORBID = "forbid"
+    SKIP = "skip"
 
 
 class ArchiveAccessMode(StrEnum):

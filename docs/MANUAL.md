@@ -99,10 +99,10 @@ Your operating system's **Open With** menu can select JoyRead once its file
 associations are registered. It only reads the file, regardless of the drag
 preference. The *Actions → Open Book* command also remains read-only.
 
-Encrypted comics can be read with a password, but cannot be imported. If an
-Open & Import or Read-zone import encounters one, the import reports a failure
-while the Reader stays open. Cancel an in-progress Open & Import from the
-Library progress dialog; any already completed import remains in the Library.
+Password-protected comics can be neither read nor imported; see
+[Encrypted archives](#encrypted-archives). Cancel an in-progress Open & Import
+from the Library progress dialog; any already completed import remains in the
+Library.
 
 ### Metadata and book details
 
@@ -123,7 +123,7 @@ Some archives, such as solid 7z and nested archives, are expensive to read one
 page at a time. During import, JoyRead can convert eligible unencrypted archives
 into a CBZ copy in the managed library. The original source remains unchanged.
 This import conversion is separate from the rebuildable page cache used while
-reading. Encrypted archives can be read directly but cannot be imported.
+reading. Password-protected archives can be neither read nor imported.
 
 **Convert archives on import** in Settings → General controls when this happens:
 
@@ -618,10 +618,6 @@ Code, Revert all, and Reset and Erase. See [Hidden Space settings](#hidden-space
 **Reset Library** permanently deletes every book, cover, and reading position in
 the current library. See [Where your files live](#where-your-files-live).
 
-**Encrypted Archives** — **Delete cached pages when closing** (on by default)
-erases the extracted pages of encrypted archives when the book closes. See
-[Encrypted archives](#encrypted-archives).
-
 ### About
 
 The About page introduces JoyRead, shows the installed version and credits
@@ -699,30 +695,21 @@ this operation, even if Open With previously activated their existing window.
 
 ## Encrypted archives
 
-JoyRead can read password-protected 7z, RAR, and ZIP. You are asked for the
-password when the book opens, and it is used for that session only — JoyRead
-never stores it.
+JoyRead does not open or import password-protected ZIP, 7z, or RAR archives.
+Opening one says that password-protected archives aren't supported, and JoyRead
+never asks for the password. An ordinary archive that contains a
+password-protected one still opens; only the pages inside the protected archive
+are left out.
 
-Two limitations are worth knowing about, because neither is fixable in JoyRead
-alone:
+To read such a book, extract it with another tool, such as 7-Zip, then open or
+import the extracted files. To keep it private, import it and hide it:
+[Hidden Space](#hidden-space) encrypts the book inside your library.
 
-**Cached pages are stored unencrypted.** Making an encrypted archive fast means
-extracting its pages to disk, and they land there as plaintext. Settings →
-Privacy → **Delete cached pages when closing** is on by default so they do not
-outlive the session, but while the book is open those pages are readable by
-anything that can read your cache directory.
-
-**Passwords are briefly visible to other local processes.** The bundled 7-Zip
-executable accepts a password only as a command-line argument, so during
-extraction it can be read via `ps` by another process running as you. This
-covers 7z, RAR, and ZIP files using the legacy ZipCrypto cipher, which uses
-the helper to avoid slow in-process decryption.
-
-ZIP files using AES encryption are decrypted in-process when you turn a page,
-without launching a helper. Their background conversion into the page cache
-does use the helper, so the password is briefly visible while it runs.
-
-Neither matters much on a machine only you use. Both matter on a shared one.
+JoyRead 1.3.1 and earlier asked for the password, but their page cache kept the
+decrypted pages unencrypted on disk, and some formats passed the password to the
+7-Zip helper on its command line, where other local processes could see it.
+Reading password-protected archives is switched off until that can be done
+without either.
 
 ## When something goes wrong
 
@@ -747,10 +734,8 @@ import. JoyRead will not open it, because a file that changed unexpectedly may
 be corrupt. Remove it from its More menu and re-import.
 
 **Page turns are slow.** The book may be a solid 7z, RAR, or another archive
-without prepared conversion/cache data. For importable, unencrypted files,
-set **Convert archives on import** to *Always* and re-import; also check that
-the extraction pool has room. Encrypted files can only be read directly and
-cannot use import conversion.
+without prepared conversion/cache data. Set **Convert archives on import** to
+*Always* and re-import; also check that the extraction pool has room.
 
 **A hidden book says Not encrypted or Not decrypted.** JoyRead could not
 finish encrypting or decrypting it, for example because the disk was full or

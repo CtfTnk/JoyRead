@@ -1100,13 +1100,38 @@ def test_privacy_tab_renders_show_collections_change_revert_and_reset_rows(qtbot
         assert by_name[hidden_label].button.isEnabled() is False
     for storage_label in ("Select Existing Library", "Reset Library"):
         assert by_name[storage_label].button.isEnabled() is True
-    # Two switches: Show Collections, and the encrypted-archive cache toggle.
-    # Identified by label rather than by count so adding a third row does not
-    # silently change which switch the tests below reach for.
-    assert [_row_name(item) for item in switch_items] == [
-        "Show Collections",
-        "Delete cached pages when closing",
+    # One switch: Show Collections. The encrypted-archive cache toggle is gone
+    # while the Reader does not open password-protected archives. Identified by
+    # label rather than by count so adding a row does not silently change which
+    # switch the tests below reach for.
+    assert [_row_name(item) for item in switch_items] == ["Show Collections"]
+    banners = [label.text() for label in page.findChildren(QLabel, "SidebarSectionLabel")]
+    assert "Encrypted Archives" not in banners
+
+
+def test_privacy_lists_the_encrypted_archive_cache_while_passwords_are_open(
+    qtbot, monkeypatch
+) -> None:
+    """Reopening ``ARCHIVE_PASSWORD_ACCESS_ENABLED`` brings the switch back,
+    still bound to the stored preference."""
+
+    apply_theme()
+    monkeypatch.setattr(SettingsViewModel, "shows_encrypted_archive_settings", property(lambda _self: True))
+    viewmodel = SettingsViewModel()
+    page = SettingsPageWidget(viewmodel, ResourceLoader())
+    qtbot.addWidget(page)
+    viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    QApplication.processEvents()
+
+    names = [
+        next(
+            child.text()
+            for child in item.findChildren(QLabel)
+            if child.property("class") == "SettingsItemNameText"
+        )
+        for item in page.findChildren(SettingsSwitchItem)
     ]
+    assert names == ["Show Collections", "Delete cached pages when closing"]
 
 
 def test_privacy_show_collections_toggle_asks_the_window_to_show_hidden_space(qtbot) -> None:

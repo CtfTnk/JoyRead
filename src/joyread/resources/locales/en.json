@@ -440,6 +440,7 @@
     "loading_page": "Loading page {index}…",
     "encrypted_no_password": "Could not load images because the archive is encrypted and no password was provided.",
     "encrypted_skipped": "No readable images. Encrypted archives were skipped.",
+    "encrypted_unsupported": "Password-protected archives aren't supported. Extract the archive with another tool, then open or import the extracted files.",
     "open_failed": "Could not open reader: {detail}",
     "password_for": "Password required for {name}.",
     "password_incorrect_for": "Incorrect password for {name}. Please try again.",

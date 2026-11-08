@@ -24,6 +24,7 @@ from joyread.core.models.import_policy import (
     normalize_canonical_import_policy,
 )
 from joyread.core.archive.limits import ArchiveOpenLimits, GIB, MEGAPIXEL
+from joyread.core.file_types import ARCHIVE_PASSWORD_ACCESS_ENABLED
 from joyread.core.reader.models import ReaderDirection, ReaderFitMode, ReaderSettings, ReaderTransitionMode
 from joyread.core.services.hidden_space_service import (
     HiddenSpaceService,
@@ -319,6 +320,17 @@ class SettingsViewModel:
         self.purge_encrypted_cache_on_close = bool(
             getattr(settings, "purge_encrypted_cache_on_close", True)
         )
+
+    @property
+    def shows_encrypted_archive_settings(self) -> bool:
+        """Whether Privacy lists the encrypted-archive cache switch.
+
+        The switch only governs pages of password-protected archives, which the
+        Reader no longer opens while ``ARCHIVE_PASSWORD_ACCESS_ENABLED`` is
+        closed. The stored preference is kept so reopening the gate restores it.
+        """
+
+        return ARCHIVE_PASSWORD_ACCESS_ENABLED
 
     @property
     def archive_cache_strategy_label(self) -> str:

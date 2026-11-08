@@ -30,6 +30,7 @@ from joyread.core.archive.errors import (
     ArchiveCorruptError,
     ArchiveDependencyMissing,
     ArchiveEmptyError,
+    ArchiveEncryptionUnsupported,
     ArchiveError,
     ArchiveOpenError,
     ArchivePasswordRejected,
@@ -1037,6 +1038,10 @@ class ArchiveImageService:
             _disambiguate_nested_archive_labels(root)
             pages, contents = _flatten_archive_tree(root)
             if not pages:
+                if context.skipped_archives and password_policy == ArchivePasswordPolicy.SKIP:
+                    raise ArchiveEncryptionUnsupported(
+                        "No readable images. Password-protected archives are not supported."
+                    )
                 if context.skipped_archives:
                     raise ArchiveEmptyError("No readable images. Encrypted archives were skipped.")
                 raise ArchiveEmptyError(
@@ -1199,6 +1204,22 @@ class ArchiveImageService:
                 f"Skipped encrypted archive: {source.display_name}",
                 archive_path=source.display_name,
             )
+        if context.password_policy == ArchivePasswordPolicy.SKIP:
+            # Left out exactly like a source the user chose to skip. The scan
+            # never reads a byte of it, so nothing decrypted reaches the pool
+            # or a staging directory. The name stays out of the log: it can be
+            # an entry inside the archive.
+            logger.info(
+                "Skipping encrypted archive source by policy",
+                extra={
+                    "event": "archive.encrypted.skipped",
+                    "category": "archive",
+                    "status": "skipped",
+                    "action": source.suffix.lstrip("."),
+                },
+            )
+            context.skipped_archives.add(source.display_name)
+            raise _ArchiveSourceSkipped()
         if context.password_provider is None:
             raise ArchivePasswordRequired(
                 f"Password required for archive: {source.display_name}",

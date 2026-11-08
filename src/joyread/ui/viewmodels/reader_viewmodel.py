@@ -23,6 +23,7 @@ from joyread.app.reader_page_pipeline import (
 from joyread.core.archive import (
     ArchiveError,
     ArchiveEmptyError,
+    ArchiveEncryptionUnsupported,
     ArchiveOpenLimits,
     ArchivePasswordRejected,
     ArchivePasswordRequired,
@@ -1110,7 +1111,11 @@ class ReaderViewModel:
         )
         self.is_loading = False
         self._set_contents(())
-        if isinstance(error, ArchiveError):
+        if isinstance(error, ArchiveEncryptionUnsupported):
+            # Archive passwords are gated off: the book's pages are all inside
+            # encrypted archives, so say that rather than "no readable pages".
+            self.error_message = t("reader.encrypted_unsupported")
+        elif isinstance(error, ArchiveError):
             self.error_message = (t("reader.encrypted_skipped") if isinstance(error, ArchiveEmptyError) and self._skipped_archives
                                   else t("reader.no_readable_pages") if isinstance(error, ArchiveEmptyError)
                                   else _archive_error_message(error))

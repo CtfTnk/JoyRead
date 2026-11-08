@@ -27,6 +27,17 @@ class ArchiveEmptyError(ArchiveError):
     """The archive opened but no supported image pages were found."""
 
 
+class ArchiveEncryptionUnsupported(ArchiveEmptyError):
+    """Every readable page sat inside an encrypted archive the open may not ask about.
+
+    Raised under ``ArchivePasswordPolicy.SKIP``. It stays an
+    :class:`ArchiveEmptyError` because that is what the open produced; the
+    subclass lets a reader say *why* instead of "no readable pages".
+    """
+
+    task_failure_kind = "expected"
+
+
 class ArchiveReadError(ArchiveError):
     """A listed archive entry could not be extracted or decoded as an image."""
 

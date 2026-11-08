@@ -297,6 +297,7 @@
     "maximize": "Maximize"
   },
   "reader": {
+    "encrypted_unsupported": "Password-protected archives aren't supported. Extract the archive with another tool, then open or import the extracted files.",
     "contents": "Contents",
     "bookmarks": "Bookmarks",
     "thumbnails": "Thumbnails",
