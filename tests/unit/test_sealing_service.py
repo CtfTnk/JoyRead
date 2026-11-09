@@ -182,7 +182,7 @@ def test_a_stored_file_that_changed_is_not_sealed_until_it_is_back(tmp_path: Pat
         job = library.sealing.jobs_by_book()[book]
         assert (job.phase, job.error_code) == (VaultJobPhase.FAILED, "source_changed")
         assert stored.read_bytes() == original + b"tampered"
-        assert _book_files(library) == [str(stored.relative_to(library.paths.paths.books))]
+        assert _book_files(library) == [stored.relative_to(library.paths.paths.books).as_posix()]
 
         # Retried on the next launch.
         stored.write_bytes(original)
