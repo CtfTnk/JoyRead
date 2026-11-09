@@ -371,6 +371,25 @@ uses, refuses a PATH fallback, and executes `7zz i` natively on both Ubuntu
 x86-64 and Ubuntu ARM64. Windows likewise executes the bundled `7z.exe` beside
 its `7z.dll`; macOS executes its bundled universal helper.
 
+### Checking the macOS minimum
+
+`LSMinimumSystemVersion` in `packaging/joyread.spec` is a promise about the
+whole bundle, not the Python code. It must be at least the highest deployment
+target (`minos`) of any Mach-O file in the app. Otherwise an older Mac fails to
+load the app instead of showing Finder's "needs a newer macOS" message. The
+PySide6 wheel tag is not a reliable guide: 6.12.0 wheels are tagged
+`macosx_14_0`, but its QtWidgets module, Shiboken and the vendored 7-Zip 26.02
+`7zz` are built for macOS 26.0. 1.3.1 shipped them under a 13.0 minimum, and
+1.4.0 corrects it to 26.0. After changing PySide6 or `7zz`, list the minimums
+in a built app:
+
+```bash
+find dist/JoyRead.app -type f | while read -r f; do
+  file -b "$f" | grep -q Mach-O || continue
+  otool -l "$f" | awk '/LC_BUILD_VERSION/{b=1} b&&/minos/{print $2; exit}'
+done | sort -V | uniq -c
+```
+
 Linux also needs system libraries that neither PySide6's wheels nor a
 PyInstaller bundle carry. Qt ships its own libraries but links against the
 distribution's C libraries, and a minimal image has almost none of them --

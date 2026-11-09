@@ -347,7 +347,12 @@ if sys.platform == "darwin":
             "CFBundleVersion": VERSION_INFO["mac_build"],
             "JoyReadVersion": VERSION,
             "CFBundleDocumentTypes": MACOS_DOCUMENT_TYPES,
-            "LSMinimumSystemVersion": "13.0",
+            # Must be at least the highest LC_BUILD_VERSION minos of any bundled
+            # Mach-O, or an older Mac fails to load the app instead of showing
+            # Finder's "needs a newer macOS" message. PySide6/Shiboken 6.12 and
+            # the vendored 7zz are built for macOS 26.0. Recheck after updating
+            # either: see "Checking the macOS minimum" in docs/PACKAGING.md.
+            "LSMinimumSystemVersion": "26.0",
             "LSSupportsOpeningDocumentsInPlace": True,
             "NSHighResolutionCapable": True,
             "NSHumanReadableCopyright": COPYRIGHT,
