@@ -36,7 +36,7 @@ jobs:
           python3 - <<'PY'
           import json, os
           targets = [
-              {'platform': 'macos', 'os': 'macos-14', 'label': 'macos-arm64'},
+              {'platform': 'macos', 'os': 'macos-15', 'label': 'macos-arm64'},
               {'platform': 'windows', 'os': 'windows-latest', 'label': 'windows-x86_64'},
               {'platform': 'ubuntu', 'os': 'ubuntu-22.04', 'label': 'linux-amd64'},
               {'platform': 'ubuntu', 'os': 'ubuntu-22.04-arm', 'label': 'linux-arm64'},

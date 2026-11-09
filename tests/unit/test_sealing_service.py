@@ -69,7 +69,7 @@ def _give_cover(lib: VaultLibrary, book: str) -> bytes:
 
 def _book_files(lib: VaultLibrary) -> list[str]:
     root = lib.paths.paths.books
-    return sorted(str(path.relative_to(root)) for path in root.rglob("*") if path.is_file())
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*") if path.is_file())
 
 
 def _seal(lib: VaultLibrary, book: str) -> None:

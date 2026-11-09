@@ -23,10 +23,10 @@ jobs:
           # Both halves of the novel-reader split stay on the shipping macOS
           # target. Linux and Windows add platform/runtime coverage without
           # tripling the optional EPUB leg.
-          - os: macos-14
+          - os: macos-15
             extras: dev,epub
             label: macOS (EPUB enabled)
-          - os: macos-14
+          - os: macos-15
             extras: dev
             label: macOS (shipping configuration)
           - os: ubuntu-24.04
