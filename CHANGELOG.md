@@ -3,7 +3,9 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] — Unreleased
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.4.0.md)
 
 ### Added
 
@@ -23,6 +25,25 @@ All notable changes to JoyRead are documented here. This project follows
 - A Library that used the earlier Hidden Space password upgrades at its next
   unlock: the password becomes the passphrase, a recovery code is saved, and
   the books already hidden are encrypted.
+- Opening an archive to read it without importing (Open Book, Open With, or
+  a Read drop) first asks whether to continue when fewer than half of its
+  files are pages JoyRead can show and at least 3 are not. The prompt names
+  what the rest are. Read Anyway is remembered for that file until JoyRead
+  quits. Library books and Open & Import are never asked about.
+
+### Changed
+
+- The Reader no longer opens password-protected archives. It used to ask for
+  the password on every open and left decrypted pages unencrypted in its
+  cache on disk. An archive with a password-protected archive inside still
+  opens with its other pages. Privacy settings no longer show "Delete cached
+  pages when closing", which only applied to these archives.
+- Hidden Space no longer has a password hint.
+- The library database moves to schema 15. JoyRead 1.3.1 and earlier cannot
+  open a library after 1.4.0 has opened it.
+- The stated macOS requirement is corrected to macOS 26 or later. The Qt and
+  7-Zip components in the app already needed it in 1.3.1, whose notes said
+  macOS 13+.
 
 ### Known limitations
 
