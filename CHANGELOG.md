@@ -3,6 +3,30 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Settings → About → Diagnostics opens the log folder, exports every log file
+  as one zip, deletes the logs, and turns on detailed logging until JoyRead
+  quits. Before exporting, JoyRead says that the logs contain file paths and
+  book names. Detailed logging used to need `JOYREAD_LOG_LEVEL=DEBUG`, which an
+  app launched from Finder, Start or a desktop launcher cannot set.
+
+### Changed
+
+- Logs record real file paths instead of a per-run hashed token, so a log can
+  name the file that failed. Logs stay on your computer unless you send them.
+  Passwords are still never written, in messages, fields, tracebacks or
+  archive-tool command lines. `JOYREAD_LOG_SENSITIVE` is removed.
+- A hidden book's title no longer reaches the log when its details are shown
+  or when exporting it fails.
+
+### Fixed
+
+- A log line no longer loses the fields after a path, and a file name with a
+  comma no longer shows its title after the hashed part.
+
 ## [1.4.0] — Unreleased
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.4.0.md)

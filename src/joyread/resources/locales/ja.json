@@ -572,5 +572,32 @@
     "seal_decrypting": "復号中…",
     "seal_encrypt_failed": "未暗号化",
     "seal_decrypt_failed": "未復号"
+  },
+  "diagnostics": {
+    "banner": "診断",
+    "hint": "JoyRead は動作ログを記録します。ログには、インポート・閲覧・エクスポートした本のファイルパスと名前が含まれます。ログはこのコンピュータにのみ保存され、あなたが誰かに送らない限り共有されません。",
+    "log_folder": "ログフォルダ",
+    "btn_open": "開く",
+    "export_logs": "ログをエクスポート",
+    "btn_export": "エクスポート",
+    "delete_logs": "ログを削除",
+    "btn_delete": "削除",
+    "detailed_logging": "詳細ログ（JoyRead を終了するまで）",
+    "export_title": "ログをエクスポート",
+    "export_message": "エクスポートしたログには、インポート・閲覧・エクスポートした本のファイルパスと名前が含まれます。後で非表示にした本も含まれます。問題の調査を手伝ってくれる信頼できる相手にだけ送ってください。",
+    "export_confirm": "保存先を選択…",
+    "save_title": "ログを保存",
+    "file_filter": "Zip アーカイブ (*.zip)",
+    "export_done_title": "ログをエクスポートしました",
+    "export_done_message": "{count} 個のログファイルを保存しました：\n{path}",
+    "export_failed_title": "エクスポート失敗",
+    "delete_title": "ログを削除",
+    "delete_message": "JoyRead のログファイルをすべて削除しますか？すでに起きた問題をログから調べることはできなくなります。",
+    "delete_done_title": "ログを削除しました",
+    "delete_done_message": "{count} 個のログファイルを削除しました。",
+    "delete_partial_message": "{count} 個のログファイルを削除しました。{failed} 個は削除できませんでした。",
+    "delete_failed_title": "削除失敗",
+    "unavailable": "このセッションでは JoyRead はログファイルを書き込んでいません。",
+    "open_failed": "ログフォルダを開けませんでした：\n{path}"
   }
 }

@@ -144,12 +144,24 @@ class ExportService:
                 message="The sealed book could not be decrypted.",
             )
         except OSError as exc:
-            logger.warning(
-                "Export copy failed for book=%s to %s: %s",
-                record.book_uuid,
-                destination_path,
-                exc,
-            )
+            if sealed:
+                # The destination name is the hidden book's title, and so is
+                # the file name inside the OSError text. Name the folder and
+                # the error instead, so the log does not undo the hiding.
+                logger.warning(
+                    "Export copy failed for book=%s to %s: %s errno=%s",
+                    record.book_uuid,
+                    destination_dir,
+                    type(exc).__name__,
+                    exc.errno,
+                )
+            else:
+                logger.warning(
+                    "Export copy failed for book=%s to %s: %s",
+                    record.book_uuid,
+                    destination_path,
+                    exc,
+                )
             return ExportItemResult(
                 book_uuid=record.book_uuid,
                 original_file_name=record.original_file_name,

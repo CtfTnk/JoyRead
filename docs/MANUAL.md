@@ -544,6 +544,11 @@ JoyRead never writes a decrypted page or cover to disk.
 
   Hiding some RAR and 7z books also unpacks their pages briefly into a
   temporary folder while JoyRead converts them.
+- **JoyRead's logs.** The log records the file paths and names of books you
+  import, open and export, so entries written before you hid a book still name
+  it. After hiding, JoyRead refers to the book by an internal ID. To remove the
+  older entries, use **Delete Logs** in
+  [Settings → About → Diagnostics](#about).
 - **Memory while unlocked.** Decrypted pages and the key are in memory while
   Hidden Space is unlocked. Your operating system may write memory to disk,
   for example when it swaps or hibernates.
@@ -638,6 +643,20 @@ The About page introduces JoyRead, shows the installed version and credits
 CtfTnk. Select the project GitHub link there to open its repository in your
 browser.
 
+**Diagnostics** helps when something goes wrong:
+
+- **Log Folder → Open** shows the folder that holds JoyRead's log files.
+- **Export Logs** saves every log file into one zip that you can attach to a
+  report.
+- **Delete Logs** deletes the log files. JoyRead starts a new log straight away.
+- **Detailed Logging Until JoyRead Quits** records much more detail while you
+  reproduce a problem. It is off again the next time JoyRead starts.
+
+The logs record what JoyRead did, including the real file paths and names of
+the books you import, open and export — also books you hid later. They stay on
+your computer unless you send them to someone, so read them or think about
+those names before you share them. Passwords are never written to the logs.
+
 ## Where your files live
 
 These are the installed application's default locations. If you have moved or
@@ -687,7 +706,8 @@ for records, `Thumbnails/` for covers and thumbnails, and `Backups/` for backups
 Hidden books and their covers are stored encrypted as `.jrl` files in `Books/`
 and `Thumbnails/covers/`. They open only from the Library, and moving the
 Library takes Hidden Space with it.
-The logs directory contains `joyread.log` and rotated log files. Custom
+The logs directory contains `joyread.log` and rotated log files; they record
+real file paths and book names (see [About](#about)). Custom
 translations live in `Config/locales/` beside `settings.json`.
 
 Source-checkout runs and profiles using `JOYREAD_RUNTIME_DIR` use
@@ -773,7 +793,10 @@ finished. See the Known limitations section of the
 Open an issue at
 [github.com/CtfTnk/JoyRead/issues](https://github.com/CtfTnk/JoyRead/issues).
 Your operating system and version, the JoyRead version from Settings → About, and the format of
-the book involved make a report much easier to act on.
+the book involved make a report much easier to act on. For a problem that is
+hard to describe, turn on **Detailed Logging Until JoyRead Quits**, make the
+problem happen again, and attach the zip from **Export Logs** (Settings → About
+→ Diagnostics). Check what the logs contain first: see [About](#about).
 
 
 ## Application language

@@ -7,7 +7,6 @@ metadata, privacy filtering, rotation, exception hooks, and bounded shutdown.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import logging.handlers
@@ -18,6 +17,8 @@ import sys
 import threading
 import time
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,11 +43,11 @@ from joyread.core.operation_logging import (
 
 
 LOG_FILE_NAME = "joyread.log"
+EMERGENCY_LOG_GLOB = "joyread-emergency-*.jsonl"
 LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
 LOG_FILE_BACKUP_COUNT = 5
 LOG_QUEUE_CAPACITY = 8192
 LOG_ENV_VAR = "JOYREAD_LOG_LEVEL"
-LOG_SENSITIVE_ENV_VAR = "JOYREAD_LOG_SENSITIVE"
 LOG_BUILD_ENV_VAR = "JOYREAD_BUILD_ID"
 
 _TEXT_FORMAT = (
@@ -61,27 +62,6 @@ _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 _QUIET_LIBRARIES = ("PIL", "urllib3", "asyncio", "matplotlib")
 _SENSITIVE_KEY_PARTS = ("password", "passwd", "secret", "token", "credential")
 
-# Real path/word delimiters this app's own log messages use around a path
-# (see e.g. `f"Could not open PDF: {path} ({error.name})"`,
-# `f"...at {path}: {exc}"`): a path is always followed by end-of-string, ": ",
-# or " (" -- never by bare prose with no punctuation. None of these
-# characters are legal within a path segment, so excluding them lets a
-# segment safely contain spaces (real book/library folder names do) while
-# still stopping at the point a message continues in free text. The bounded
-# repeat on the final segment caps how many stray words a missing-delimiter
-# edge case could pull in, instead of consuming to end-of-string like the
-# unbounded form used to.
-_PATH_DELIMS = r",:;()\[\]{}<>\"'"
-_WINDOWS_PATH_RE = re.compile(
-    r"(?<![\w])(?:[A-Za-z]:\\|\\\\)"
-    rf"(?:[^\\{_PATH_DELIMS}]+\\)*"
-    rf"[^{_PATH_DELIMS}\s]+(?:[ \t][^{_PATH_DELIMS}\s]+){{0,4}}"
-)
-_POSIX_PATH_RE = re.compile(
-    r"(?<![\w])/"
-    rf"(?:[^/{_PATH_DELIMS}]+/)*"
-    rf"[^{_PATH_DELIMS}\s]+(?:[ \t][^{_PATH_DELIMS}\s]+){{0,4}}"
-)
 _PASSWORD_ASSIGNMENT_RE = re.compile(
     r"(?i)(password|passwd|pwd|secret|token)\s*([=:])\s*([^\s,;]+)"
 )
@@ -105,6 +85,9 @@ _PASSWORD_ARGUMENT_SEPARATED_RE = re.compile(
 # `subprocess.TimeoutExpired`), and false for unrelated diagnostic text.
 _ARCHIVE_TOOL_HINT_RE = re.compile(r"(?i)\b(?:7z|7zz|unar|bsdtar)\b")
 _PASSWORD_ARGUMENT_GLUED_RE = re.compile(r"(?<![\w])-p(?!assword)[^\s'\",=<\]]+")
+# An argv kept as a structured list field splits `-password` and its value
+# into separate items, so the text patterns above never see them together.
+_PASSWORD_FLAG_TOKENS = frozenset({"-p", "-password", "--password"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,50 +112,46 @@ class LoggingShutdownResult:
     dropped_records: int
 
 
-class _PrivacyRedactor:
-    def __init__(self, run_id: str, *, sensitive_enabled: bool) -> None:
-        self._salt = run_id.encode("utf-8")
-        self._sensitive_enabled = sensitive_enabled
+class _CredentialRedactor:
+    """Remove credentials from log output; leave everything else as written.
+
+    The log stays on the user's machine and the user decides whether to share
+    it, so filesystem paths and book names are recorded as they are: a
+    support log that cannot name the file that failed is not worth sending.
+    Credentials are different -- no troubleshooting needs a password, so they
+    are removed from every message, field, traceback and argv unconditionally.
+    """
 
     def redact_text(self, value: object) -> str:
         text = str(value)
-        # Credentials are never diagnostic output. The opt-in below only
-        # permits raw filesystem paths for a local debugging session.
         text = _PASSWORD_ASSIGNMENT_RE.sub(r"\1\2<redacted>", text)
         text = _PASSWORD_ARGUMENT_SEPARATED_RE.sub("-p<redacted>", text)
         if _ARCHIVE_TOOL_HINT_RE.search(text):
             text = _PASSWORD_ARGUMENT_GLUED_RE.sub("-p<redacted>", text)
-        if self._sensitive_enabled:
-            return text
-        text = _WINDOWS_PATH_RE.sub(self._path_token, text)
-        return _POSIX_PATH_RE.sub(self._path_token, text)
+        return text
 
     def safe_field(self, key: str, value: object) -> object:
         if any(part in key.casefold() for part in _SENSITIVE_KEY_PARTS):
             return "<redacted>"
         if value is None or isinstance(value, (bool, int, float)):
             return value
-        if isinstance(value, str):
-            return self.redact_text(value)
         if isinstance(value, Path):
-            # A structured Path field holds nothing but the path -- redact
-            # the whole value directly instead of pattern-matching for one
-            # inside a larger string. That sidesteps the inherent ambiguity
-            # regex-based path detection has around embedded spaces.
-            return self._redact_path(str(value))
+            return str(value)
         if isinstance(value, (tuple, list)):
-            return [self.safe_field(key, item) for item in value]
+            return self._safe_sequence(key, value)
         return self.redact_text(value)
 
-    def _redact_path(self, raw: str) -> str:
-        suffix = Path(raw.rstrip(".\"")).suffix.lower()
-        # A per-run keyed digest keeps repeated paths correlatable in one log
-        # without creating a stable identifier that survives log sharing.
-        digest = hashlib.blake2s(raw.encode("utf-8"), key=self._salt, digest_size=4).hexdigest()
-        return f"<path:{digest}{suffix}>"
-
-    def _path_token(self, match: re.Match[str]) -> str:
-        return self._redact_path(match.group(0))
+    def _safe_sequence(self, key: str, items: tuple[object, ...] | list[object]) -> list[object]:
+        safe: list[object] = []
+        redact_next = False
+        for item in items:
+            if redact_next:
+                safe.append("<redacted>")
+                redact_next = False
+                continue
+            redact_next = isinstance(item, str) and item.casefold() in _PASSWORD_FLAG_TOKENS
+            safe.append(self.safe_field(key, item))
+        return safe
 
 
 class _ContextFilter(logging.Filter):
@@ -208,7 +187,7 @@ class _ContextFilter(logging.Filter):
 class _UtcTextFormatter(logging.Formatter):
     converter = time.gmtime
 
-    def __init__(self, redactor: _PrivacyRedactor) -> None:
+    def __init__(self, redactor: _CredentialRedactor) -> None:
         super().__init__(_TEXT_FORMAT, datefmt=_TEXT_DATEFMT)
         self._redactor = redactor
 
@@ -217,7 +196,7 @@ class _UtcTextFormatter(logging.Formatter):
 
 
 class _JsonFormatter(logging.Formatter):
-    def __init__(self, redactor: _PrivacyRedactor) -> None:
+    def __init__(self, redactor: _CredentialRedactor) -> None:
         super().__init__()
         self._redactor = redactor
 
@@ -452,6 +431,12 @@ _metadata: LoggingMetadata | None = None
 _runtime: _AsyncLogRuntime | None = None
 _early_buffer: _EarlyBufferHandler | None = None
 _runtime_lock = threading.RLock()
+# The configured log directory and the level the process started at. The
+# Diagnostics switch raises the level to DEBUG for this run only; turning it
+# off returns to ``_base_level`` (INFO, or what ``JOYREAD_LOG_LEVEL`` chose).
+_logs_dir: Path | None = None
+_base_level = logging.INFO
+_detailed_logging = False
 _hooks_installed = False
 _qt_handler_installed = False
 _previous_qt_message_handler = None
@@ -467,7 +452,7 @@ def configure_early_logging() -> LoggingMetadata:
     with _runtime_lock:
         _stop_runtime_without_log()
         _metadata = _new_metadata()
-        redactor = _PrivacyRedactor(_metadata.run_id, sensitive_enabled=_sensitive_logging_enabled())
+        redactor = _CredentialRedactor()
         context_filter = _ContextFilter(_metadata)
         formatter = _UtcTextFormatter(redactor)
         level = _resolve_level()[0]
@@ -497,7 +482,7 @@ def configure_logging(
 ) -> LoggingConfigurationResult:
     """Start the asynchronous production logger and replay early records."""
 
-    global _early_buffer, _metadata, _runtime
+    global _base_level, _detailed_logging, _early_buffer, _logs_dir, _metadata, _runtime
     with _runtime_lock:
         early_records, early_dropped = _early_buffer.take() if _early_buffer is not None else ([], 0)
         _stop_runtime_without_log()
@@ -509,7 +494,10 @@ def configure_logging(
             started_at_utc=current.started_at_utc,
         )
         level, unknown_value = _resolve_level()
-        redactor = _PrivacyRedactor(_metadata.run_id, sensitive_enabled=_sensitive_logging_enabled())
+        _base_level = level
+        _detailed_logging = False
+        _logs_dir = logs_dir
+        redactor = _CredentialRedactor()
         handlers: list[logging.Handler] = []
         log_file: Path | None = None
         setup_error: str | None = None
@@ -581,8 +569,9 @@ def shutdown_logging(
 ) -> LoggingShutdownResult:
     """Seal producers, drain queued records, and close handlers once."""
 
-    global _early_buffer, _runtime
+    global _detailed_logging, _early_buffer, _runtime
     with _runtime_lock:
+        _detailed_logging = False
         runtime = _runtime
         if runtime is None:
             _reset_root_handlers()
@@ -607,6 +596,95 @@ def shutdown_logging(
         return result
 
 
+def log_directory() -> Path | None:
+    """The directory the primary process writes logs to, once configured."""
+
+    return _logs_dir
+
+
+def detailed_logging_enabled() -> bool:
+    return _detailed_logging
+
+
+def set_detailed_logging(enabled: bool) -> bool:
+    """Switch DEBUG output on or off for the rest of this run.
+
+    This is the in-app replacement for ``JOYREAD_LOG_LEVEL=DEBUG``, which a
+    user who launches from Finder, Start or a desktop launcher cannot set. It
+    is never persisted: the next launch starts at the base level again, so a
+    forgotten switch cannot leave the log permanently verbose. Returns whether
+    detailed logging is now on.
+    """
+
+    global _detailed_logging
+    with _runtime_lock:
+        if enabled == _detailed_logging:
+            return _detailed_logging
+        level = logging.DEBUG if enabled else _base_level
+        if not enabled:
+            # Record the change before the level drops, so it is not filtered.
+            _log_level_change(enabled)
+        # The level is enforced where records are admitted: the root logger and
+        # the dispatch handler in front of the queue. The writer's own handlers
+        # only ever widen, because they filter again at write time and would
+        # otherwise drop DEBUG records still queued when the switch goes off.
+        root = logging.getLogger()
+        root.setLevel(level)
+        for handler in root.handlers:
+            handler.setLevel(level)
+        if enabled and _runtime is not None:
+            for handler in _runtime.handlers:
+                handler.setLevel(min(handler.level, level))
+        _detailed_logging = enabled
+        if enabled:
+            _log_level_change(enabled)
+        return _detailed_logging
+
+
+def _log_level_change(enabled: bool) -> None:
+    log_event(
+        logging.getLogger(__name__),
+        logging.INFO,
+        "logging.level.changed",
+        "Detailed logging turned on" if enabled else "Detailed logging turned off",
+        category="settings",
+        level_name="DEBUG" if enabled else logging.getLevelName(_base_level),
+        outcome="enabled" if enabled else "disabled",
+    )
+
+
+@contextmanager
+def hold_log_files(timeout_seconds: float = 1.0) -> Iterator[logging.FileHandler | None]:
+    """Keep the log files still while a caller reads or clears them.
+
+    Queued records are written first, then the rotating handler's lock is held:
+    the writer thread cannot append or rotate until the block exits, so the
+    set of files and their contents stay consistent. Producers are unaffected
+    -- they only enqueue -- and records queued meanwhile are written after.
+    Yields the active file handler, or ``None`` when no file is attached.
+    """
+
+    with _runtime_lock:
+        flush_logging(timeout_seconds)
+        runtime = _runtime
+        handler = None
+        if runtime is not None:
+            handler = next(
+                (item for item in runtime.handlers if isinstance(item, logging.FileHandler)),
+                None,
+            )
+        if handler is None:
+            yield None
+            return
+        handler.acquire()
+        try:
+            if handler.stream is not None:
+                handler.stream.flush()
+            yield handler
+        finally:
+            handler.release()
+
+
 def write_emergency_log(
     logs_dir: Path,
     event: str,
@@ -622,7 +700,7 @@ def write_emergency_log(
     """
 
     metadata = _metadata or _new_metadata()
-    redactor = _PrivacyRedactor(metadata.run_id, sensitive_enabled=_sensitive_logging_enabled())
+    redactor = _CredentialRedactor()
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     path = logs_dir / f"joyread-emergency-{timestamp}-{os.getpid()}-{uuid4().hex[:8]}.jsonl"
     payload: dict[str, object] = {
@@ -686,10 +764,6 @@ def _resolve_level() -> tuple[int, str | None]:
     if isinstance(resolved, int):
         return resolved, None
     return logging.INFO, raw
-
-
-def _sensitive_logging_enabled() -> bool:
-    return os.environ.get(LOG_SENSITIVE_ENV_VAR, "").strip().casefold() in {"1", "true", "yes", "on"}
 
 
 def _configure_library_levels() -> None:
@@ -873,18 +947,22 @@ __all__ = [
     "LOG_FILE_MAX_BYTES",
     "LOG_FILE_NAME",
     "LOG_QUEUE_CAPACITY",
-    "LOG_SENSITIVE_ENV_VAR",
     "LoggingConfigurationResult",
     "LoggingMetadata",
     "LoggingShutdownResult",
+    "EMERGENCY_LOG_GLOB",
     "configure_early_logging",
     "configure_logging",
     "describe_callback",
+    "detailed_logging_enabled",
     "flush_logging",
     "get_logger",
+    "hold_log_files",
+    "log_directory",
     "log_event",
     "log_timed_block",
     "operation_scope",
+    "set_detailed_logging",
     "shutdown_logging",
     "write_emergency_log",
 ]

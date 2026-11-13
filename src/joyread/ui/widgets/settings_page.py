@@ -95,6 +95,11 @@ class SettingsPageWidget(QFrame):
     hidden_space_retry_requested = QtSignal()
     hidden_space_revert_requested = QtSignal()
     hidden_space_reset_requested = QtSignal()
+    # About > Diagnostics. MainWindow owns the overlay, the file picker and the
+    # task that touches the log files.
+    logs_open_folder_requested = QtSignal()
+    logs_export_requested = QtSignal()
+    logs_delete_requested = QtSignal()
     # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
     tag_operation_completed = QtSignal(bool, object, object)
     tag_delete_requested = QtSignal(object, object)
@@ -337,7 +342,30 @@ class SettingsPageWidget(QFrame):
             credit=t("about.credit"),
         )
         version = SettingsVersionLabel(t("about.version", version=__version__))
-        return [banner, intro, version]
+        return [banner, intro, version, *self._diagnostics_items()]
+
+    def _diagnostics_items(self) -> list[QWidget]:
+        """Get the logs out, or away, without a terminal.
+
+        The hint says up front what the log holds -- real file paths and book
+        names -- because that is what the user weighs before sending it.
+        """
+
+        banner = SectionBanner(t("diagnostics.banner"), self._resources)
+        hint = SettingsAboutText(t("diagnostics.hint"))
+        open_folder = SettingsButtonItem(t("diagnostics.log_folder"), t("diagnostics.btn_open"))
+        open_folder.clicked.connect(self.logs_open_folder_requested.emit)
+        export = SettingsButtonItem(t("diagnostics.export_logs"), t("diagnostics.btn_export"))
+        export.clicked.connect(self.logs_export_requested.emit)
+        delete = SettingsButtonItem(
+            t("diagnostics.delete_logs"),
+            t("diagnostics.btn_delete"),
+            destructive=True,
+        )
+        delete.clicked.connect(self.logs_delete_requested.emit)
+        detailed = SettingsSwitchItem(t("diagnostics.detailed_logging"), self._viewmodel.detailed_logging)
+        detailed.toggled.connect(self._viewmodel.set_detailed_logging)
+        return [banner, hint, open_folder, export, delete, detailed]
 
     def _tags_items(self) -> list[QWidget]:
         # Lazy import to avoid a circular dependency between the settings

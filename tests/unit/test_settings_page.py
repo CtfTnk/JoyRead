@@ -1613,3 +1613,42 @@ def test_the_about_copy_follows_the_selected_language(qtbot) -> None:
     assert chinese != english
     assert "个人项目" in chinese
     assert "版本" in version_zh
+
+
+def test_about_diagnostics_rows_request_their_flows(qtbot) -> None:
+    page = _about_page()
+    qtbot.addWidget(page)
+    seen: list[str] = []
+    page.logs_open_folder_requested.connect(lambda: seen.append("open"))
+    page.logs_export_requested.connect(lambda: seen.append("export"))
+    page.logs_delete_requested.connect(lambda: seen.append("delete"))
+
+    for key in ("diagnostics.log_folder", "diagnostics.export_logs", "diagnostics.delete_logs"):
+        _setting_row(page, key).button.click()
+
+    assert seen == ["open", "export", "delete"]
+    assert _setting_row(page, "diagnostics.delete_logs").property("destructive") == "true"
+    hints = [item.text() for item in page.findChildren(SettingsAboutText)]
+    assert locale_service.t("diagnostics.hint") in hints
+
+
+def test_about_detailed_logging_switch_drives_the_logging_runtime(qtbot, monkeypatch) -> None:
+    from joyread.infrastructure.logging import logging_service
+
+    state = {"enabled": False}
+    monkeypatch.setattr(logging_service, "detailed_logging_enabled", lambda: state["enabled"])
+    monkeypatch.setattr(
+        logging_service,
+        "set_detailed_logging",
+        lambda enabled: state.update(enabled=enabled) or enabled,
+    )
+    page = _about_page()
+    qtbot.addWidget(page)
+    row = _setting_row(page, "diagnostics.detailed_logging")
+    assert isinstance(row, SettingsSwitchItem)
+    assert row.switch.checked is False
+
+    row.toggled.emit(True)
+
+    assert state["enabled"] is True
+    assert page._viewmodel.detailed_logging is True

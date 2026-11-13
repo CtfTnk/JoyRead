@@ -38,6 +38,7 @@ from joyread.infrastructure.config.settings_store import (
 )
 from joyread.app.open_policy import LibraryState, OpenDisposition, OpenOrigin, decide_open
 from joyread.infrastructure.i18n import locale_service
+from joyread.infrastructure.logging import logging_service
 from joyread.app.tasking import TaskExecutor, TaskPriority
 from joyread.core.repositories.sqlite_sealing_repository import UnhideOutcome
 from joyread.core.models.vault import BookSealState, book_seal_states
@@ -659,6 +660,22 @@ class SettingsViewModel:
 
     def request_library_maintenance(self) -> None:
         self.library_maintenance_requested.emit()
+
+    # -- diagnostics ----------------------------------------------------------------
+    # The log level is process state owned by the logging runtime, not a saved
+    # preference: the switch reads it back instead of keeping its own copy, and
+    # a new launch always starts with detailed logging off.
+
+    @property
+    def detailed_logging(self) -> bool:
+        return logging_service.detailed_logging_enabled()
+
+    def set_detailed_logging(self, enabled: bool) -> None:
+        logging_service.set_detailed_logging(bool(enabled))
+
+    @staticmethod
+    def log_directory() -> Path | None:
+        return logging_service.log_directory()
 
     def set_archive_pool_bytes_provider(self, provider: Callable[[], int] | None) -> None:
         """Inject a callable that reports the disk pool's live byte usage.

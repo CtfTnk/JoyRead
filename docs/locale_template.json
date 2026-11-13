@@ -464,5 +464,32 @@
     "seal_decrypting": "Decrypting…",
     "seal_encrypt_failed": "Not encrypted",
     "seal_decrypt_failed": "Not decrypted"
+  },
+  "diagnostics": {
+    "banner": "Diagnostics",
+    "hint": "JoyRead keeps a log of what it does, including the file paths and names of books you import, open and export. The log stays on this computer and is shared only if you send it to someone.",
+    "log_folder": "Log Folder",
+    "btn_open": "Open",
+    "export_logs": "Export Logs",
+    "btn_export": "Export",
+    "delete_logs": "Delete Logs",
+    "btn_delete": "Delete",
+    "detailed_logging": "Detailed Logging Until JoyRead Quits",
+    "export_title": "Export Logs",
+    "export_message": "The exported logs contain the file paths and names of books you imported, opened or exported, including books you hid later. Send them only to someone you trust to help with a problem.",
+    "export_confirm": "Choose Location…",
+    "save_title": "Save Logs",
+    "file_filter": "Zip archives (*.zip)",
+    "export_done_title": "Logs Exported",
+    "export_done_message": "Saved {count} log files to:\n{path}",
+    "export_failed_title": "Export Failed",
+    "delete_title": "Delete Logs",
+    "delete_message": "Delete all JoyRead log files? Problems that have already happened can no longer be diagnosed from them.",
+    "delete_done_title": "Logs Deleted",
+    "delete_done_message": "Deleted {count} log files.",
+    "delete_partial_message": "Deleted {count} log files. {failed} could not be deleted.",
+    "delete_failed_title": "Delete Failed",
+    "unavailable": "JoyRead is not writing a log file in this session.",
+    "open_failed": "The log folder could not be opened:\n{path}"
   }
 }

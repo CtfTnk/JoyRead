@@ -263,7 +263,9 @@ class BookDetailPanel(QFrame):
     ) -> None:
         book_changed = self._book is None or self._book.uuid != book.uuid
         if book_changed:
-            logger.debug("BookDetailPanel set_book book=%s title=%r", book.uuid, book.title)
+            # The uuid identifies the book; its title would follow a hidden
+            # book into the log every time its details are shown.
+            logger.debug("BookDetailPanel set_book book=%s", book.uuid)
         self._book = book
         self._title_field.set_value(book.title)
         self._author_field.set_value(book.author or "None", display_value=book.author or t("detail.none"))

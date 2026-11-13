@@ -139,6 +139,34 @@ def test_export_decrypts_a_sealed_book_only_while_unlocked(library: VaultLibrary
     assert sorted(path.name for path in destination.iterdir()) == ["Night Notes.cbz"]
 
 
+def test_a_failed_sealed_export_logs_the_folder_not_the_title(
+    library: VaultLibrary,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The export file is named after the hidden book, and so is the OSError
+    text; the log names the folder instead so it does not undo the hiding."""
+
+    book, _pages = _sealed_book(library, tmp_path)
+    exporter = ExportService(library.books, library.hash_service, vault_keyring=library.keyring)
+    destination = tmp_path / "exported"
+    destination.mkdir()
+
+    def refuse(_source: Path, target: Path) -> None:
+        raise PermissionError(13, "Permission denied", str(target))
+
+    monkeypatch.setattr(exporter, "_export_sealed", refuse)
+    with caplog.at_level("WARNING", logger="joyread.core.services.export_service"):
+        result = exporter.export_books((book,), destination)
+
+    assert result.items[0].status == "failed"
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "Export copy failed" in logged
+    assert str(destination) in logged
+    assert "Night Notes" not in logged
+
+
 def test_deleting_a_sealed_book_removes_its_file_and_cover(library: VaultLibrary, tmp_path: Path) -> None:
     book, _pages = _sealed_book(library, tmp_path)
     sealed = library.stored_path(book)

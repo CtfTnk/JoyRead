@@ -56,6 +56,7 @@ from joyread.app.tasking import TaskHandle, TaskPriority, TaskStatus
 from joyread.core.models.collection import Collection
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.cover_editor_viewmodel import CoverEditorThumbnailViewModel
+from joyread.ui.views.diagnostics_flows import DiagnosticsFlows
 from joyread.ui.views.hidden_space_flows import HiddenSpaceFlows
 from joyread.ui.views.reader_shell import ReaderShellWidget
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
@@ -314,6 +315,16 @@ class MainWindow(QMainWindow):
             on_cancelled=self.settings_view.page.revert_show_hidden_switch,
         )
         self._hidden_space_flows = flows
+        diagnostics = DiagnosticsFlows(
+            self.dialog_overlay,
+            context.settings_viewmodel,
+            context.task_service,
+            self,
+        )
+        self._diagnostics_flows = diagnostics
+        self.settings_view.logs_open_folder_requested.connect(diagnostics.open_log_folder)
+        self.settings_view.logs_export_requested.connect(diagnostics.start_export)
+        self.settings_view.logs_delete_requested.connect(diagnostics.start_delete)
         self.settings_view.hidden_space_show_requested.connect(flows.request_show)
         self.settings_view.hidden_space_change_passphrase_requested.connect(flows.start_change_passphrase)
         self.settings_view.hidden_space_new_recovery_code_requested.connect(flows.start_new_recovery_code)

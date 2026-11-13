@@ -230,7 +230,7 @@ def test_early_records_are_replayed_to_production_file(tmp_path: Path) -> None:
     assert early["run_id"] == metadata.run_id
 
 
-def test_paths_and_passwords_are_redacted_by_default(tmp_path: Path) -> None:
+def test_paths_are_recorded_and_passwords_redacted(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     logging.getLogger("joyread.privacy").error(
         "unar failed to open /Users/alice/Private/secret.cbz password=hunter2 -pleaked"
@@ -238,10 +238,10 @@ def test_paths_and_passwords_are_redacted_by_default(tmp_path: Path) -> None:
     assert flush_logging()
 
     contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
-    assert "/Users/alice" not in contents
+    assert "/Users/alice/Private/secret.cbz" in contents
     assert "hunter2" not in contents
     assert "leaked" not in contents
-    assert "<path:" in contents
+    assert "<path:" not in contents
     assert "<redacted>" in contents
 
 
@@ -283,17 +283,26 @@ def test_glued_password_flag_is_redacted_with_archive_tool_context(tmp_path: Pat
     assert "<redacted>" in contents
 
 
-def test_multi_word_path_segments_are_fully_redacted(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/Users/alice/My Books/Vol 1.cbz",
+        "/Users/alice/Books/Spy x Family, Vol. 1 (Tatsuya Endo).pdf",
+        r"C:\Users\alice\Books\Spy x Family, Vol. 1 (Tatsuya Endo).pdf",
+    ],
+)
+def test_message_paths_are_written_verbatim(tmp_path: Path, path: str) -> None:
+    """A message keeps the path exactly as given and the fields after it --
+    the old hashing regex swallowed trailing fields and split names at commas."""
+
     configure_logging(tmp_path)
-    logging.getLogger("joyread.privacy").error(
-        "Unable to open /Users/alice/My Books/Vol 1.cbz"
+    logging.getLogger("joyread.reader").info(
+        "ReaderShellWidget init: path=%s book=%s embedded=%s", path, "none", False
     )
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
-    assert "My Books" not in contents
-    assert "Vol 1" not in contents
-    assert "<path:" in contents
+    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    assert record["message"] == f"ReaderShellWidget init: path={path} book=none embedded=False"
 
 
 def test_password_after_separated_cli_flag_is_redacted(tmp_path: Path) -> None:
@@ -308,43 +317,85 @@ def test_password_after_separated_cli_flag_is_redacted(tmp_path: Path) -> None:
     assert "<redacted>" in contents
 
 
-def test_path_field_with_space_is_fully_redacted(tmp_path: Path) -> None:
+def test_path_field_is_written_as_its_string(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     log_event(
         logging.getLogger("joyread.privacy"),
         logging.ERROR,
         "privacy.path_field",
         "Archive read failed",
-        archive_path=Path("/Users/alice/My Books/secret.cbz"),
+        archive_path=Path("/Users/alice/My Books/secret, vol 2.cbz"),
     )
     assert flush_logging()
 
+    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    assert record["archive_path"] == str(Path("/Users/alice/My Books/secret, vol 2.cbz"))
+
+
+def test_credentials_are_redacted_in_fields_exceptions_and_argv(tmp_path: Path) -> None:
+    configure_logging(tmp_path)
+    logger = logging.getLogger("joyread.privacy")
+    log_event(
+        logger,
+        logging.ERROR,
+        "privacy.fields",
+        "Archive tool failed",
+        password="field-secret",
+        archive_token="token-secret",
+        command=["unar", "-quiet", "-password", "argv-secret", "/tmp/a.rar"],
+        command_7z=("7zz", "x", "-p", "short-secret", "/tmp/a.7z"),
+    )
+    try:
+        raise RuntimeError("Command '['7zz', 'x', '-pglued-secret', '/tmp/a.7z']' timed out")
+    except RuntimeError:
+        logger.exception("Archive tool timed out")
+    assert flush_logging()
+
     contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
-    assert "My Books" not in contents
-    assert "secret.cbz" not in contents
-    assert "<path:" in contents
+    for secret in ("field-secret", "token-secret", "argv-secret", "short-secret", "glued-secret"):
+        assert secret not in contents
+    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    fields = next(item for item in records if item["event"] == "privacy.fields")
+    assert fields["command"] == ["unar", "-quiet", "-password", "<redacted>", "/tmp/a.rar"]
+    assert fields["command_7z"] == ["7zz", "x", "-p", "<redacted>", "/tmp/a.7z"]
 
 
-def test_sensitive_path_opt_in_never_exposes_credentials(
+def test_sensitive_env_var_is_gone() -> None:
+    assert not hasattr(logging_service, "LOG_SENSITIVE_ENV_VAR")
+
+
+def test_detailed_logging_switch_raises_and_restores_level(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv(logging_service.LOG_SENSITIVE_ENV_VAR, "1")
+    monkeypatch.delenv(LOG_ENV_VAR, raising=False)
     configure_logging(tmp_path)
-    log_event(
-        logging.getLogger("joyread.privacy"),
-        logging.ERROR,
-        "privacy.test",
-        "unar failed to open /Users/alice/Private/secret.cbz password=hunter2 -pleaked",
-        password="field-secret",
-    )
+    logger = logging.getLogger("joyread.diagnostics")
+
+    logger.debug("hidden before")
+    assert logging_service.set_detailed_logging(True) is True
+    assert logging_service.detailed_logging_enabled()
+    logger.debug("visible while detailed")
+    assert logging_service.set_detailed_logging(False) is False
+    logger.debug("hidden after")
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
-    assert "/Users/alice/Private/secret.cbz" in contents
-    assert "hunter2" not in contents
-    assert "leaked" not in contents
-    assert "field-secret" not in contents
+    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    messages = [item["message"] for item in records]
+    assert "visible while detailed" in messages
+    assert "hidden before" not in messages
+    assert "hidden after" not in messages
+    changes = [item for item in records if item["event"] == "logging.level.changed"]
+    assert [item["outcome"] for item in changes] == ["enabled", "disabled"]
+    assert logging.getLogger().level == logging.INFO
+
+
+def test_reconfiguring_logging_turns_detailed_logging_off(tmp_path: Path) -> None:
+    configure_logging(tmp_path)
+    logging_service.set_detailed_logging(True)
+    configure_logging(tmp_path)
+    assert not logging_service.detailed_logging_enabled()
+    assert logging.getLogger().level == logging.INFO
 
 
 def test_operation_scope_emits_correlated_terminal_events(tmp_path: Path) -> None:
@@ -483,7 +534,7 @@ def test_shutdown_restores_the_previous_qt_message_handler(tmp_path: Path) -> No
         QtCore.qInstallMessageHandler(original)
 
 
-def test_emergency_log_is_unique_private_and_redacted(tmp_path: Path) -> None:
+def test_emergency_log_is_unique_private_and_credential_free(tmp_path: Path) -> None:
     configure_early_logging()
     try:
         raise RuntimeError("failed at /Users/alice/private.cbz password=hunter2")
@@ -495,7 +546,7 @@ def test_emergency_log_is_unique_private_and_redacted(tmp_path: Path) -> None:
     payload = _read_json_records(first)[0]
     assert payload["event"] == "launch.failed"
     assert payload["error_type"] == "RuntimeError"
-    assert "/Users/alice" not in payload["exception"]
+    assert "/Users/alice/private.cbz" in payload["exception"]
     assert "hunter2" not in payload["exception"]
     if os.name == "posix":
         assert stat.S_IMODE(first.stat().st_mode) == 0o600

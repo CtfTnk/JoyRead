@@ -572,5 +572,32 @@
     "seal_decrypting": "正在解密…",
     "seal_encrypt_failed": "未加密",
     "seal_decrypt_failed": "未解密"
+  },
+  "diagnostics": {
+    "banner": "诊断",
+    "hint": "JoyRead 会记录运行日志，其中包括你导入、打开和导出的书籍的文件路径与名称。日志只保存在这台电脑上，只有你把它发给别人时才会被分享。",
+    "log_folder": "日志文件夹",
+    "btn_open": "打开",
+    "export_logs": "导出日志",
+    "btn_export": "导出",
+    "delete_logs": "删除日志",
+    "btn_delete": "删除",
+    "detailed_logging": "详细日志（直到退出 JoyRead）",
+    "export_title": "导出日志",
+    "export_message": "导出的日志包含你导入、打开或导出过的书籍的文件路径和名称，也包括之后被隐藏的书籍。请只发给你信任、正在帮你排查问题的人。",
+    "export_confirm": "选择位置…",
+    "save_title": "保存日志",
+    "file_filter": "Zip 压缩包 (*.zip)",
+    "export_done_title": "日志已导出",
+    "export_done_message": "已将 {count} 个日志文件保存到：\n{path}",
+    "export_failed_title": "导出失败",
+    "delete_title": "删除日志",
+    "delete_message": "删除 JoyRead 的全部日志文件？之后将无法再用它们排查已经发生的问题。",
+    "delete_done_title": "日志已删除",
+    "delete_done_message": "已删除 {count} 个日志文件。",
+    "delete_partial_message": "已删除 {count} 个日志文件，另有 {failed} 个无法删除。",
+    "delete_failed_title": "删除失败",
+    "unavailable": "本次运行中 JoyRead 没有写入日志文件。",
+    "open_failed": "无法打开日志文件夹：\n{path}"
   }
 }
