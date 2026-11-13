@@ -649,7 +649,8 @@ browser.
 - **Log Folder → Open** shows the folder that holds JoyRead's logs. Each
   launch writes its own file, named by when it started, for example
   `joyread-20261113-093005-4242.log`. JoyRead keeps the logs of its last 5
-  launches and deletes older ones when it starts.
+  launches and deletes older ones when it starts. The logs are plain text that
+  any text editor opens, with times in your local time.
 - **Crash Report → Save to Desktop** saves a zip with the logs of the launches
   that ended unexpectedly. If none of the kept launches did, JoyRead says so
   and saves nothing.

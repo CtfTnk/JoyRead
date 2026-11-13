@@ -28,13 +28,24 @@ def log_event(
     *,
     category: str | None = None,
     exc_info: bool | tuple[type[BaseException], BaseException, TracebackType] | None = None,
+    stacklevel: int = 1,
     **fields: object,
 ) -> None:
-    """Emit one structured event through the standard logging API."""
+    """Emit one structured event through the standard logging API.
+
+    The record names the caller's line. A helper that logs on someone else's
+    behalf passes ``stacklevel`` as in :meth:`logging.Logger.log`, counted from
+    its own call to this function.
+    """
 
     extra = {"event": event, "category": category or event.partition(".")[0]}
     extra.update(fields)
-    logger.log(level, message, extra=extra, exc_info=exc_info)
+    logger.log(level, message, extra=extra, exc_info=exc_info, stacklevel=stacklevel + 1)
+
+
+#: From a ``@contextmanager`` body to the ``with`` statement that entered it:
+#: the generator, contextlib's ``__enter__``/``__exit__``, then the caller.
+_SCOPE_CALLER = 3
 
 
 @contextmanager
@@ -60,6 +71,7 @@ def operation_scope(
             f"{event} started",
             category=resolved_category,
             status="started",
+            stacklevel=_SCOPE_CALLER,
             **dict(fields or {}),
         )
         try:
@@ -80,6 +92,7 @@ def operation_scope(
                 error_type=type(exc).__name__,
                 reason=str(exc),
                 exc_info=not (cancelled or controlled),
+                stacklevel=_SCOPE_CALLER,
                 **dict(fields or {}),
             )
             raise
@@ -93,6 +106,7 @@ def operation_scope(
                 category=resolved_category,
                 status="finished",
                 duration_ms=round(elapsed_ms, 3),
+                stacklevel=_SCOPE_CALLER,
                 **dict(fields or {}),
             )
 
@@ -135,16 +149,17 @@ def log_timed_block(
     """Bracket a diagnostic block with truthful success/failure terminal logs."""
 
     start = time.perf_counter()
-    logger.log(level, "%s start", label)
+    logger.log(level, "%s start", label, stacklevel=_SCOPE_CALLER)
     try:
         yield
     except Exception:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        logger.log(level, "%s failed in %.0f ms", label, elapsed_ms, exc_info=True)
+        logger.log(level, "%s failed in %.0f ms", label, elapsed_ms, exc_info=True,
+                   stacklevel=_SCOPE_CALLER)
         raise
     else:
         elapsed_ms = (time.perf_counter() - start) * 1000.0
-        logger.log(level, "%s done in %.0f ms", label, elapsed_ms)
+        logger.log(level, "%s done in %.0f ms", label, elapsed_ms, stacklevel=_SCOPE_CALLER)
 
 
 __all__ = [

@@ -29,6 +29,7 @@ from joyread.infrastructure.logging.logging_service import (
     shutdown_logging,
     write_emergency_log,
 )
+from joyread.infrastructure.logging.log_format import read_log_records
 from joyread.infrastructure.logging.run_files import (
     RUN_LOG_BACKUP_COUNT,
     RUN_LOG_MAX_BYTES,
@@ -123,11 +124,12 @@ def test_configure_logging_writes_to_file(tmp_path: Path) -> None:
     assert log_path.exists()
     records = _read_json_records(log_path)
     record = next(item for item in records if item["message"] == "hello from joyread")
-    assert record["logger"] == "joyread.test"
-    assert record["run_id"]
-    assert record["run_started_at_utc"].endswith("Z")
-    assert record["timestamp_utc"].endswith("Z")
-    assert record["pid"] == os.getpid()
+    assert record["logger"] == "test"
+    assert record["date"] and re.fullmatch(r"\d{2}:\d{2}:\d{2}\.\d{3}", record["time"])
+    header = log_path.read_text(encoding="utf-8").splitlines()[0]
+    assert header.startswith("# JoyRead ")
+    assert f"pid {os.getpid()}" in header
+    assert re.search(r"run [0-9a-f]{32} ", header)
 
 
 def test_json_formatter_preserves_new_structured_fields_without_a_whitelist(
@@ -226,7 +228,7 @@ def test_qt_message_handler_forwards_to_joyread_qt_logger(tmp_path: Path) -> Non
     assert flush_logging()
     records = _read_json_records(_log_file(tmp_path))
     record = next(item for item in records if item["message"] == "simulated qt warning")
-    assert record["logger"] == "joyread.qt"
+    assert record["logger"] == "qt"
     assert record["level"] == "WARNING"
     assert record["event"] == "qt.message"
 
@@ -239,8 +241,9 @@ def test_early_records_are_replayed_to_production_file(tmp_path: Path) -> None:
     assert flush_logging()
 
     records = _read_json_records(_log_file(tmp_path))
-    early = next(item for item in records if item["message"] == "startup before paths")
-    assert early["run_id"] == metadata.run_id
+    assert any(item["message"] == "startup before paths" for item in records)
+    header = _log_file(tmp_path).read_text(encoding="utf-8").splitlines()[0]
+    assert f"run {metadata.run_id} " in header
 
 
 def test_paths_are_recorded_and_passwords_redacted(tmp_path: Path) -> None:
@@ -418,13 +421,13 @@ def test_operation_scope_emits_correlated_terminal_events(tmp_path: Path) -> Non
     assert flush_logging()
 
     records = _read_json_records(_log_file(tmp_path))
-    related = [record for record in records if record["operation_id"] == operation.operation_id]
+    op = f"reader.document.open#{operation.operation_id[:8]}"
+    related = [record for record in records if record.get("op") == op]
     assert [record["event"] for record in related] == [
         "reader.document.open.started",
         "log.message",
         "reader.document.open.finished",
     ]
-    assert all(record["operation_name"] == "reader.document.open" for record in related)
     assert related[-1]["status"] == "finished"
     assert related[-1]["duration_ms"] >= 0
 
@@ -442,7 +445,7 @@ def test_operation_scope_classifies_cancelled_exceptions_without_error_traceback
     assert record["event"] == "storage.recovery.cancelled"
     assert record["level"] == "INFO"
     assert record["status"] == "cancelled"
-    assert "exception" not in record
+    assert "detail" not in record
 
 
 def test_bound_child_operation_records_parent_id(tmp_path: Path) -> None:
@@ -460,8 +463,8 @@ def test_bound_child_operation_records_parent_id(tmp_path: Path) -> None:
     assert flush_logging()
 
     record = _read_json_records(_log_file(tmp_path))[-1]
-    assert record["operation_id"] == child.operation_id
-    assert record["parent_operation_id"] == parent.operation_id
+    assert record["op"] == f"archive.scan#{child.operation_id[:8]}"
+    assert record["parent"] == parent.operation_id[:8]
 
 
 def test_file_logging_failure_degrades_to_stderr(tmp_path: Path) -> None:
@@ -522,7 +525,7 @@ def test_process_exception_hook_persists_traceback_and_chains_previous_hook(
     assert record["event"] == "process.unhandled_exception"
     assert record["level"] == "CRITICAL"
     assert record["error_type"] == "RuntimeError"
-    assert "hook boom" in record["exception"]
+    assert "hook boom" in record["detail"]
     assert forwarded and forwarded[0][0] is RuntimeError
 
     shutdown_logging()
@@ -556,7 +559,7 @@ def test_emergency_log_is_unique_private_and_credential_free(tmp_path: Path) -> 
         second = write_emergency_log(tmp_path, "launch.failed", "startup failed", error=error)
 
     assert first is not None and second is not None and first != second
-    payload = _read_json_records(first)[0]
+    payload = json.loads(first.read_text(encoding="utf-8").splitlines()[0])
     assert payload["event"] == "launch.failed"
     assert payload["error_type"] == "RuntimeError"
     assert "/Users/alice/private.cbz" in payload["exception"]
@@ -621,4 +624,4 @@ def test_logging_shutdown_reports_timeout_instead_of_claiming_success() -> None:
 
 
 def _read_json_records(path: Path) -> list[dict[str, object]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return read_log_records(path)

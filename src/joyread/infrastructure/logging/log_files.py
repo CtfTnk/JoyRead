@@ -155,8 +155,12 @@ def clear_logs() -> LogClearResult:
         for path in files:
             try:
                 if path == active and handler is not None and handler.stream is not None:
-                    handler.stream.seek(0)
-                    handler.stream.truncate()
+                    restart = getattr(handler, "restart", None)
+                    if callable(restart):
+                        restart()
+                    else:
+                        handler.stream.seek(0)
+                        handler.stream.truncate()
                 else:
                     path.unlink()
                 removed += 1

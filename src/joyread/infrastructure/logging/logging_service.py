@@ -41,6 +41,11 @@ from joyread.core.operation_logging import (
     log_timed_block,
     operation_scope,
 )
+from joyread.infrastructure.logging.log_format import (
+    date_line,
+    format_record,
+    header_lines,
+)
 from joyread.infrastructure.logging.run_files import (
     EMERGENCY_LOG_GLOB,
     RUN_LOG_BACKUP_COUNT,
@@ -58,11 +63,6 @@ LOG_QUEUE_CAPACITY = 8192
 LOG_ENV_VAR = "JOYREAD_LOG_LEVEL"
 LOG_BUILD_ENV_VAR = "JOYREAD_BUILD_ID"
 
-_TEXT_FORMAT = (
-    "%(asctime)s.%(msecs)03dZ %(levelname)-7s [%(process)d:%(threadName)s] "
-    "%(name)s:%(lineno)d %(message)s"
-)
-_TEXT_DATEFMT = "%Y-%m-%dT%H:%M:%S"
 _EARLY_RECORD_CAPACITY = 2048
 _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS = 2.0
 
@@ -194,52 +194,81 @@ class _ContextFilter(logging.Filter):
         return True
 
 
-class _UtcTextFormatter(logging.Formatter):
-    converter = time.gmtime
+class _ReadableFormatter(logging.Formatter):
+    """Lay records out as ``log_format`` describes, credentials removed.
 
-    def __init__(self, redactor: _CredentialRedactor) -> None:
-        super().__init__(_TEXT_FORMAT, datefmt=_TEXT_DATEFMT)
-        self._redactor = redactor
+    Fields JoyRead attaches to every record of a launch (run id, pid, version)
+    are left out: the file header says them once. With ``mark_days`` a
+    ``# YYYY-MM-DD`` line precedes the first record of each new local day, so
+    the time-only lines of a launch that runs past midnight stay unambiguous.
+    """
 
-    def format(self, record: logging.LogRecord) -> str:
-        return self._redactor.redact_text(super().format(record))
-
-
-class _JsonFormatter(logging.Formatter):
-    def __init__(self, redactor: _CredentialRedactor) -> None:
+    def __init__(self, redactor: _CredentialRedactor, *, started_at: datetime | None = None,
+                 mark_days: bool = False) -> None:
         super().__init__()
         self._redactor = redactor
+        self._mark_days = mark_days
+        self._started_day = (started_at or datetime.now(timezone.utc)).astimezone().date()
+        self._last_day = self._started_day
+        # RotatingFileHandler formats each record twice (size check, then
+        # write); the day mark must survive into the second, written, copy.
+        # One tuple, swapped whole, so concurrent stderr producers never pair
+        # one record with another's text.
+        self._last: tuple[logging.LogRecord | None, str] = (None, "")
+
+    def restart_day_marks(self) -> None:
+        """A new file begins with a header naming the start day; count from there."""
+
+        self._last_day = self._started_day
 
     def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {
-            "timestamp_utc": _utc_timestamp(record.created),
-            "level": record.levelname,
-            "category": getattr(record, "category", _category_from_logger(record.name)),
-            "event": getattr(record, "event", "log.message"),
-            "message": self._redactor.redact_text(record.getMessage()),
-            "run_id": getattr(record, "run_id", None),
-            "run_started_at_utc": getattr(record, "run_started_at_utc", None),
-            "operation_id": getattr(record, "operation_id", None),
-            "parent_operation_id": getattr(record, "parent_operation_id", None),
-            "operation_name": getattr(record, "operation_name", None),
-            "pid": record.process,
-            "thread": record.threadName,
-            "logger": record.name,
-            "source": f"{Path(record.pathname).name}:{record.lineno}",
-            "app_version": getattr(record, "app_version", None),
-            "build_id": getattr(record, "build_id", None),
-            "status": getattr(record, "status", None),
-        }
+        last_record, last_text = self._last
+        if record is last_record:
+            return last_text
+        text = self._format(record)
+        self._last = (record, text)
+        return text
+
+    def _format(self, record: logging.LogRecord) -> str:
+        moment = datetime.fromtimestamp(record.created).astimezone()
+        fields: list[tuple[str, object]] = []
+        status = getattr(record, "status", None)
+        if status is not None:
+            fields.append(("status", status))
+        operation_name = getattr(record, "operation_name", None)
+        operation_id = getattr(record, "operation_id", None)
+        if operation_name is not None or operation_id is not None:
+            short_id = (operation_id or "")[:8]
+            fields.append(("op", f"{operation_name or '?'}#{short_id}" if short_id else operation_name))
+        parent_id = getattr(record, "parent_operation_id", None)
+        if parent_id:
+            fields.append(("parent", parent_id[:8]))
         for key, value in record.__dict__.items():
-            if key in _LOG_RECORD_RESERVED_FIELDS or key in payload or key.startswith("_"):
+            if key in _LOG_RECORD_RESERVED_FIELDS or key.startswith("_") or value is None:
                 continue
-            payload[key] = self._redactor.safe_field(key, value)
+            fields.append((key, self._redactor.safe_field(key, value)))
+        detail_parts: list[str] = []
         if record.exc_info:
-            payload["exception"] = self._redactor.redact_text(self.formatException(record.exc_info))
-            payload.setdefault("error_type", record.exc_info[0].__name__)
+            if getattr(record, "error_type", None) is None:
+                fields.append(("error_type", record.exc_info[0].__name__))
+            detail_parts.append(self.formatException(record.exc_info))
         if record.stack_info:
-            payload["stack"] = self._redactor.redact_text(self.formatStack(record.stack_info))
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+            detail_parts.append(self.formatStack(record.stack_info))
+        line = format_record(
+            moment=moment,
+            level=record.levelname,
+            category=str(getattr(record, "category", None) or _category_from_logger(record.name)),
+            message=self._redactor.redact_text(record.getMessage()),
+            event=getattr(record, "event", None),
+            fields=fields,
+            location=f"{record.name.removeprefix('joyread.')}:{record.lineno}",
+            thread=None if record.threadName == "MainThread" else record.threadName,
+            detail=self._redactor.redact_text("\n".join(detail_parts)) if detail_parts else None,
+        )
+        if self._mark_days and moment.date() != self._last_day:
+            self._last_day = moment.date()
+            line = f"{date_line(moment.date())}\n{line}"
+        return line
 
 
 _LOG_RECORD_RESERVED_FIELDS = frozenset(
@@ -269,6 +298,12 @@ _LOG_RECORD_RESERVED_FIELDS = frozenset(
 
 
 class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """The launch's file: private, and every new or emptied file gets the header."""
+
+    def __init__(self, *args, header: list[str] | None = None, **kwargs) -> None:  # noqa: ANN002, ANN003
+        self._header = list(header or [])
+        super().__init__(*args, **kwargs)
+
     def _open(self):  # noqa: ANN202 - stdlib override.
         stream = super()._open()
         if os.name == "posix":
@@ -276,7 +311,29 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
                 os.chmod(self.baseFilename, 0o600)
             except OSError as exc:
                 _emergency_write(f"Unable to restrict log-file permissions: {exc}")
+        try:
+            if stream.tell() == 0:
+                self._write_header(stream)
+        except OSError as exc:
+            _emergency_write(f"Unable to write the log-file header: {exc}")
         return stream
+
+    def restart(self) -> None:
+        """Empty the open file and start it again with the header. Hold the lock."""
+
+        if self.stream is None:
+            return
+        self.stream.seek(0)
+        self.stream.truncate()
+        self._write_header(self.stream)
+
+    def _write_header(self, stream) -> None:  # noqa: ANN001 - text stream.
+        if self._header:
+            stream.write("\n".join(self._header) + "\n")
+            stream.flush()
+        formatter = getattr(self, "formatter", None)
+        if isinstance(formatter, _ReadableFormatter):
+            formatter.restart_day_marks()
 
 
 class _EarlyBufferHandler(logging.Handler):
@@ -469,7 +526,7 @@ def configure_early_logging() -> LoggingMetadata:
         _metadata = _new_metadata()
         redactor = _CredentialRedactor()
         context_filter = _ContextFilter(_metadata)
-        formatter = _UtcTextFormatter(redactor)
+        formatter = _ReadableFormatter(redactor)
         level = _resolve_level()[0]
         buffer_handler = _EarlyBufferHandler(_EARLY_RECORD_CAPACITY)
         buffer_handler.addFilter(context_filter)
@@ -527,14 +584,24 @@ def configure_logging(
             crashed = recover_interrupted_runs(logs_dir, stem)
             pruned = prune_runs(logs_dir, stem)
             log_file = run_log_path(logs_dir, stem)
+            started_at = _started_at(_metadata)
             file_handler = _SecureRotatingFileHandler(
                 log_file,
                 maxBytes=RUN_LOG_MAX_BYTES,
                 backupCount=RUN_LOG_BACKUP_COUNT,
                 encoding="utf-8",
+                header=header_lines(
+                    app_version=_metadata.app_version,
+                    build_id=_metadata.build_id,
+                    run_id=_metadata.run_id,
+                    pid=os.getpid(),
+                    started_at=started_at,
+                ),
             )
             file_handler.setLevel(level)
-            file_handler.setFormatter(_JsonFormatter(redactor))
+            file_handler.setFormatter(
+                _ReadableFormatter(redactor, started_at=started_at, mark_days=True)
+            )
             handlers.append(file_handler)
         except Exception as exc:
             log_file = None
@@ -550,7 +617,7 @@ def configure_logging(
 
         stream_handler = logging.StreamHandler()
         stream_handler.setLevel(level)
-        stream_handler.setFormatter(_UtcTextFormatter(redactor))
+        stream_handler.setFormatter(_ReadableFormatter(redactor))
         handlers.append(stream_handler)
 
         runtime = _AsyncLogRuntime(tuple(handlers), capacity=LOG_QUEUE_CAPACITY)

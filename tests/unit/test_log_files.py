@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import faulthandler
-import json
 import logging
 from pathlib import Path
 import zipfile
@@ -30,6 +29,7 @@ from joyread.infrastructure.logging.logging_service import (
     take_unreported_crashes,
     write_emergency_log,
 )
+from joyread.infrastructure.logging.log_format import read_log_records
 from joyread.infrastructure.logging.run_files import (
     KEPT_RUN_COUNT,
     RunningMarker,
@@ -69,7 +69,9 @@ def _fake_run(logs_dir: Path, stamp: str, pid: int = 100, *, crashed: bool = Fal
     stem = f"joyread-{stamp}-{pid}"
     logs_dir.mkdir(parents=True, exist_ok=True)
     run_log_path(logs_dir, stem).write_text(
-        json.dumps({"event": "earlier", "message": f"run {stem}"}) + "\n", encoding="utf-8"
+        f"# JoyRead 1.4.0 · run {'0' * 32} · pid {pid} · started 2026-01-01 09:00:00 +0000\n"
+        f"09:00:00.000 INFO    process  run {stem} · earlier  (app.bootstrap:1)\n",
+        encoding="utf-8",
     )
     if crashed:
         crash_file_path(logs_dir, stem).write_text("crashed\n", encoding="utf-8")
@@ -85,7 +87,7 @@ def _crashed_launch(logs_dir: Path, stamp: str, trace: str = "") -> str:
 
 
 def _records(path: Path) -> list[dict[str, object]]:
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
+    return read_log_records(path)
 
 
 # -- naming and listing ---------------------------------------------------------------

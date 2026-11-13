@@ -22,6 +22,11 @@ All notable changes to JoyRead are documented here. This project follows
 - Each launch writes its own log file, named by its start time, and JoyRead
   keeps the last 5 launches. The single rotating `joyread.log` is removed on
   the first launch.
+- Logs are plain readable text instead of JSON: a header line states the
+  version, run and start time once, then each line shows local time, level,
+  category and message, followed by the event and its fields, and the code
+  location. Tracebacks are indented under their entry. The terminal shows the
+  same layout.
 
 - Logs record real file paths instead of a per-run hashed token, so a log can
   name the file that failed. Logs stay on your computer unless you send them.
