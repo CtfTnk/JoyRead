@@ -8,7 +8,13 @@ import pytest
 from PySide6.QtWidgets import QWidget
 
 from joyread.infrastructure.i18n.locale_service import t
-from joyread.infrastructure.logging.log_files import LogClearResult, LogExportResult, LogFilesUnavailable
+from joyread.infrastructure.logging.log_files import (
+    CrashReportResult,
+    LogClearResult,
+    LogFilesUnavailable,
+    NoCrashRecorded,
+)
+from joyread.infrastructure.logging.run_files import KEPT_RUN_COUNT
 from joyread.ui.views import diagnostics_flows
 from joyread.ui.views.diagnostics_flows import DiagnosticsFlows
 
@@ -17,13 +23,23 @@ class _Dialogs:
     def __init__(self) -> None:
         self.infos: list[tuple[str, str]] = []
         self.confirms: list[dict[str, object]] = []
+        self.visible = False
+
+    def isVisible(self) -> bool:  # noqa: N802 - Qt name.
+        return self.visible
 
     def show_info(self, title: str, message: str, button_text: str | None = None) -> None:
         self.infos.append((str(title), str(message)))
 
     def show_confirm(self, title, message, on_confirm, on_cancel=None, confirm_text=None, cancel_text=None, *, destructive=False, rich_text=False) -> None:  # noqa: ANN001
         self.confirms.append(
-            {"title": str(title), "message": str(message), "on_confirm": on_confirm, "destructive": destructive}
+            {
+                "title": str(title),
+                "message": str(message),
+                "on_confirm": on_confirm,
+                "cancel_text": None if cancel_text is None else str(cancel_text),
+                "destructive": destructive,
+            }
         )
 
 
@@ -45,62 +61,136 @@ class _Tasks:
 
 
 class _ViewModel:
-    def __init__(self, directory: Path | None) -> None:
+    def __init__(self, directory: Path | None, crashes: tuple[str, ...] = ()) -> None:
         self._directory = directory
+        self._crashes = crashes
 
     def log_directory(self) -> Path | None:
         return self._directory
 
+    def has_unreported_crashes(self) -> bool:
+        return bool(self._crashes)
 
-def _flows(qtbot, directory: Path | None) -> tuple[DiagnosticsFlows, _Dialogs, _Tasks]:
+    def take_unreported_crashes(self) -> tuple[str, ...]:
+        crashes, self._crashes = self._crashes, ()
+        return crashes
+
+
+def _flows(
+    qtbot, directory: Path | None, *, crashes: tuple[str, ...] = ()
+) -> tuple[DiagnosticsFlows, _Dialogs, _Tasks]:
     host = QWidget()
     qtbot.addWidget(host)
     dialogs = _Dialogs()
     tasks = _Tasks()
-    return DiagnosticsFlows(dialogs, _ViewModel(directory), tasks, host), dialogs, tasks
+    return DiagnosticsFlows(dialogs, _ViewModel(directory, crashes), tasks, host), dialogs, tasks
 
 
-def test_export_warns_about_paths_then_saves_a_zip(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_save_crash_report_warns_then_saves_to_the_desktop(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     flows, dialogs, tasks = _flows(qtbot, tmp_path)
-    chosen = tmp_path / "support-logs"
-    monkeypatch.setattr(
-        diagnostics_flows.QFileDialog,
-        "getSaveFileName",
-        staticmethod(lambda *_args: (str(chosen), "")),
-    )
-    exported: list[Path] = []
+    desktop = tmp_path / "Desktop"
+    saved_to: list[Path] = []
+    monkeypatch.setattr(diagnostics_flows, "recorded_crashes", lambda: ["a crash"])
+    monkeypatch.setattr(diagnostics_flows, "desktop_directory", lambda: desktop)
 
-    def fake_export(destination: Path) -> LogExportResult:
-        exported.append(destination)
-        return LogExportResult(destination, 4, 1024)
+    def fake_save(directory: Path) -> CrashReportResult:
+        saved_to.append(directory)
+        return CrashReportResult(directory / "JoyRead-crash-report.zip", 1, 2)
 
-    monkeypatch.setattr(diagnostics_flows, "export_logs", fake_export)
+    monkeypatch.setattr(diagnostics_flows, "save_crash_report", fake_save)
 
-    flows.start_export()
+    flows.start_crash_report()
 
-    assert dialogs.confirms[0]["message"] == str(t("diagnostics.export_message"))
+    assert dialogs.confirms[0]["message"] == str(t("diagnostics.crash_save_message"))
+    assert tasks.names == []
     dialogs.confirms[0]["on_confirm"]()
-    assert exported == [tmp_path / "support-logs.zip"]
-    assert tasks.names == ["export-logs"]
+    assert saved_to == [desktop]
+    assert tasks.names == ["save-crash-report"]
     assert dialogs.infos == [
         (
-            str(t("diagnostics.export_done_title")),
-            str(t("diagnostics.export_done_message", count="4", path=str(tmp_path / "support-logs.zip"))),
+            str(t("diagnostics.crash_saved_title")),
+            str(t("diagnostics.crash_saved_message", path=str(desktop / "JoyRead-crash-report.zip"))),
         )
     ]
 
 
-def test_cancelled_save_dialog_exports_nothing(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_without_a_crash_settings_says_so_and_saves_nothing(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     flows, dialogs, tasks = _flows(qtbot, tmp_path)
+    monkeypatch.setattr(diagnostics_flows, "recorded_crashes", lambda: [])
+
+    flows.start_crash_report()
+
+    assert dialogs.confirms == []
+    assert tasks.names == []
+    assert dialogs.infos == [
+        (
+            str(t("diagnostics.no_crash_title")),
+            str(t("diagnostics.no_crash_message", count=str(KEPT_RUN_COUNT))),
+        )
+    ]
+
+
+def test_a_detected_crash_is_offered_once(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    flows, dialogs, tasks = _flows(qtbot, tmp_path, crashes=("joyread-20260101-090000-1",))
     monkeypatch.setattr(
-        diagnostics_flows.QFileDialog, "getSaveFileName", staticmethod(lambda *_args: ("", ""))
+        diagnostics_flows,
+        "save_crash_report",
+        lambda directory: CrashReportResult(directory / "report.zip", 1, 2),
     )
 
-    flows.start_export()
+    flows.offer_crash_report()
+    flows.offer_crash_report()
+
+    assert len(dialogs.confirms) == 1
+    assert dialogs.confirms[0]["title"] == str(t("diagnostics.crashed_title"))
+    assert dialogs.confirms[0]["cancel_text"] == str(t("diagnostics.btn_not_now"))
+    dialogs.confirms[0]["on_confirm"]()
+    assert tasks.names == ["save-crash-report"]
+
+
+def test_no_offer_without_a_detected_crash(qtbot, tmp_path: Path) -> None:
+    flows, dialogs, _tasks = _flows(qtbot, tmp_path)
+
+    flows.offer_crash_report()
+
+    assert dialogs.confirms == []
+    assert dialogs.infos == []
+
+
+def test_the_offer_waits_for_another_open_dialog(qtbot, tmp_path: Path) -> None:
+    flows, dialogs, _tasks = _flows(qtbot, tmp_path, crashes=("joyread-20260101-090000-1",))
+    dialogs.visible = True
+
+    flows.offer_crash_report()
+    assert dialogs.confirms == []
+
+    dialogs.visible = False
+    qtbot.waitUntil(lambda: len(dialogs.confirms) == 1, timeout=3000)
+    assert dialogs.confirms[0]["title"] == str(t("diagnostics.crashed_title"))
+
+
+def test_a_crash_deleted_before_saving_is_explained(
+    qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    flows, dialogs, _tasks = _flows(qtbot, tmp_path)
+    monkeypatch.setattr(diagnostics_flows, "recorded_crashes", lambda: ["a crash"])
+
+    def gone(_directory: Path) -> CrashReportResult:
+        raise NoCrashRecorded("deleted meanwhile")
+
+    monkeypatch.setattr(diagnostics_flows, "save_crash_report", gone)
+
+    flows.start_crash_report()
     dialogs.confirms[0]["on_confirm"]()
 
-    assert tasks.names == []
-    assert dialogs.infos == []
+    assert dialogs.infos[-1] == (
+        str(t("diagnostics.crash_failed_title")),
+        str(t("diagnostics.no_crash_message", count=str(KEPT_RUN_COUNT))),
+    )
 
 
 def test_delete_is_destructive_and_reports_partial_failure(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -117,7 +207,7 @@ def test_delete_is_destructive_and_reports_partial_failure(qtbot, tmp_path: Path
 
 def test_failures_and_missing_log_directory_are_explained(qtbot, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     flows, dialogs, _tasks = _flows(qtbot, None)
-    flows.start_export()
+    flows.start_crash_report()
     flows.start_delete()
     flows.open_log_folder()
     assert dialogs.confirms == []

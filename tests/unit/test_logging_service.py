@@ -6,6 +6,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 from threading import Event
@@ -16,11 +17,9 @@ from joyread.core.operation_context import bind_operation, create_operation
 from joyread.infrastructure.logging import logging_service
 from joyread.infrastructure.logging.logging_service import (
     LOG_ENV_VAR,
-    LOG_FILE_BACKUP_COUNT,
-    LOG_FILE_MAX_BYTES,
-    LOG_FILE_NAME,
     configure_early_logging,
     configure_logging,
+    current_run_stem,
     describe_callback,
     flush_logging,
     get_logger,
@@ -30,7 +29,20 @@ from joyread.infrastructure.logging.logging_service import (
     shutdown_logging,
     write_emergency_log,
 )
+from joyread.infrastructure.logging.run_files import (
+    RUN_LOG_BACKUP_COUNT,
+    RUN_LOG_MAX_BYTES,
+    run_log_path,
+)
 from joyread.core.services.storage_recovery_service import StorageRecoveryCancelled
+
+
+def _log_file(logs_dir: Path) -> Path:
+    """This launch's log file in ``logs_dir``."""
+
+    stem = current_run_stem()
+    assert stem is not None
+    return run_log_path(logs_dir, stem)
 
 
 @pytest.fixture(autouse=True)
@@ -61,11 +73,12 @@ def test_configure_logging_installs_async_runtime_with_rotating_file(tmp_path: P
     root = logging.getLogger()
 
     assert result.file_logging_enabled is True
-    assert result.log_file == tmp_path / LOG_FILE_NAME
+    assert result.log_file == _log_file(tmp_path)
+    assert re.fullmatch(rf"joyread-\d{{8}}-\d{{6}}-{os.getpid()}\.log", result.log_file.name)
     assert len(root.handlers) == 1
     assert root.handlers[0].__class__.__name__ == "_AsyncDispatchHandler"
-    assert LOG_FILE_MAX_BYTES == 5 * 1024 * 1024
-    assert LOG_FILE_BACKUP_COUNT == 5
+    assert RUN_LOG_MAX_BYTES == 5 * 1024 * 1024
+    assert RUN_LOG_BACKUP_COUNT == 1
 
 
 def test_configure_logging_default_level_is_info(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -89,7 +102,7 @@ def test_configure_logging_unknown_env_value_falls_back_with_warning(
     monkeypatch.setenv(LOG_ENV_VAR, "loud")
     configure_logging(tmp_path)
     assert flush_logging()
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     assert logging.getLogger().level == logging.INFO
     assert any(record["event"] == "logging.level.invalid" for record in records)
 
@@ -106,7 +119,7 @@ def test_configure_logging_writes_to_file(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     logging.getLogger("joyread.test").info("hello from joyread")
     assert flush_logging()
-    log_path = tmp_path / LOG_FILE_NAME
+    log_path = _log_file(tmp_path)
     assert log_path.exists()
     records = _read_json_records(log_path)
     record = next(item for item in records if item["message"] == "hello from joyread")
@@ -133,7 +146,7 @@ def test_json_formatter_preserves_new_structured_fields_without_a_whitelist(
     )
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["current_bytes"] == 123
     assert record["budget_bytes"] == 456
     assert record["strategy"] == "zip_bundle"
@@ -211,7 +224,7 @@ def test_qt_message_handler_forwards_to_joyread_qt_logger(tmp_path: Path) -> Non
     configure_logging(tmp_path)
     QtCore.qWarning("simulated qt warning")
     assert flush_logging()
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     record = next(item for item in records if item["message"] == "simulated qt warning")
     assert record["logger"] == "joyread.qt"
     assert record["level"] == "WARNING"
@@ -225,7 +238,7 @@ def test_early_records_are_replayed_to_production_file(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     assert flush_logging()
 
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     early = next(item for item in records if item["message"] == "startup before paths")
     assert early["run_id"] == metadata.run_id
 
@@ -237,7 +250,7 @@ def test_paths_are_recorded_and_passwords_redacted(tmp_path: Path) -> None:
     )
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
+    contents = (_log_file(tmp_path)).read_text(encoding="utf-8")
     assert "/Users/alice/Private/secret.cbz" in contents
     assert "hunter2" not in contents
     assert "leaked" not in contents
@@ -260,7 +273,7 @@ def test_glued_password_flag_is_preserved_without_archive_tool_context(tmp_path:
     )
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
+    contents = (_log_file(tmp_path)).read_text(encoding="utf-8")
     assert "-pages" in contents
     assert "-profile" in contents
     assert "-port" in contents
@@ -278,7 +291,7 @@ def test_glued_password_flag_is_redacted_with_archive_tool_context(tmp_path: Pat
     )
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
+    contents = (_log_file(tmp_path)).read_text(encoding="utf-8")
     assert "hunter2" not in contents
     assert "<redacted>" in contents
 
@@ -301,7 +314,7 @@ def test_message_paths_are_written_verbatim(tmp_path: Path, path: str) -> None:
     )
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["message"] == f"ReaderShellWidget init: path={path} book=none embedded=False"
 
 
@@ -312,7 +325,7 @@ def test_password_after_separated_cli_flag_is_redacted(tmp_path: Path) -> None:
     )
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
+    contents = (_log_file(tmp_path)).read_text(encoding="utf-8")
     assert "hunter2" not in contents
     assert "<redacted>" in contents
 
@@ -328,7 +341,7 @@ def test_path_field_is_written_as_its_string(tmp_path: Path) -> None:
     )
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["archive_path"] == str(Path("/Users/alice/My Books/secret, vol 2.cbz"))
 
 
@@ -351,10 +364,10 @@ def test_credentials_are_redacted_in_fields_exceptions_and_argv(tmp_path: Path) 
         logger.exception("Archive tool timed out")
     assert flush_logging()
 
-    contents = (tmp_path / LOG_FILE_NAME).read_text(encoding="utf-8")
+    contents = (_log_file(tmp_path)).read_text(encoding="utf-8")
     for secret in ("field-secret", "token-secret", "argv-secret", "short-secret", "glued-secret"):
         assert secret not in contents
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     fields = next(item for item in records if item["event"] == "privacy.fields")
     assert fields["command"] == ["unar", "-quiet", "-password", "<redacted>", "/tmp/a.rar"]
     assert fields["command_7z"] == ["7zz", "x", "-p", "<redacted>", "/tmp/a.7z"]
@@ -380,7 +393,7 @@ def test_detailed_logging_switch_raises_and_restores_level(
     logger.debug("hidden after")
     assert flush_logging()
 
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     messages = [item["message"] for item in records]
     assert "visible while detailed" in messages
     assert "hidden before" not in messages
@@ -404,7 +417,7 @@ def test_operation_scope_emits_correlated_terminal_events(tmp_path: Path) -> Non
         logging.getLogger("joyread.archive").info("archive scan")
     assert flush_logging()
 
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     related = [record for record in records if record["operation_id"] == operation.operation_id]
     assert [record["event"] for record in related] == [
         "reader.document.open.started",
@@ -425,7 +438,7 @@ def test_operation_scope_classifies_cancelled_exceptions_without_error_traceback
             raise StorageRecoveryCancelled
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["event"] == "storage.recovery.cancelled"
     assert record["level"] == "INFO"
     assert record["status"] == "cancelled"
@@ -446,7 +459,7 @@ def test_bound_child_operation_records_parent_id(tmp_path: Path) -> None:
         )
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["operation_id"] == child.operation_id
     assert record["parent_operation_id"] == parent.operation_id
 
@@ -473,7 +486,7 @@ def test_shutdown_drains_and_removes_runtime_handler(tmp_path: Path) -> None:
     assert result.drained is True
     assert result.pending_records == 0
     assert logging.getLogger().handlers == []
-    records = _read_json_records(tmp_path / LOG_FILE_NAME)
+    records = _read_json_records(_log_file(tmp_path))
     assert any(record["message"] == "before shutdown" for record in records)
     assert any(record["event"] == "logging.runtime.stopping" for record in records)
 
@@ -483,7 +496,7 @@ def test_log_file_is_private_on_posix(tmp_path: Path) -> None:
     configure_logging(tmp_path)
     assert flush_logging()
 
-    mode = stat.S_IMODE((tmp_path / LOG_FILE_NAME).stat().st_mode)
+    mode = stat.S_IMODE((_log_file(tmp_path)).stat().st_mode)
     assert mode == 0o600
 
 
@@ -505,7 +518,7 @@ def test_process_exception_hook_persists_traceback_and_chains_previous_hook(
     sys.excepthook(*exc_info)
     assert flush_logging()
 
-    record = _read_json_records(tmp_path / LOG_FILE_NAME)[-1]
+    record = _read_json_records(_log_file(tmp_path))[-1]
     assert record["event"] == "process.unhandled_exception"
     assert record["level"] == "CRITICAL"
     assert record["error_type"] == "RuntimeError"

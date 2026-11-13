@@ -544,10 +544,11 @@ JoyRead never writes a decrypted page or cover to disk.
 
   Hiding some RAR and 7z books also unpacks their pages briefly into a
   temporary folder while JoyRead converts them.
-- **JoyRead's logs.** The log records the file paths and names of books you
+- **JoyRead's logs.** The logs record the file paths and names of books you
   import, open and export, so entries written before you hid a book still name
-  it. After hiding, JoyRead refers to the book by an internal ID. To remove the
-  older entries, use **Delete Logs** in
+  it, until that launch's log is deleted with older launches. After hiding,
+  JoyRead refers to the book by an internal ID. To remove the older entries
+  now, use **Delete Logs** in
   [Settings → About → Diagnostics](#about).
 - **Memory while unlocked.** Decrypted pages and the key are in memory while
   Hidden Space is unlocked. Your operating system may write memory to disk,
@@ -645,12 +646,24 @@ browser.
 
 **Diagnostics** helps when something goes wrong:
 
-- **Log Folder → Open** shows the folder that holds JoyRead's log files.
-- **Export Logs** saves every log file into one zip that you can attach to a
-  report.
-- **Delete Logs** deletes the log files. JoyRead starts a new log straight away.
+- **Log Folder → Open** shows the folder that holds JoyRead's logs. Each
+  launch writes its own file, named by when it started, for example
+  `joyread-20261113-093005-4242.log`. JoyRead keeps the logs of its last 5
+  launches and deletes older ones when it starts.
+- **Crash Report → Save to Desktop** saves a zip with the logs of the launches
+  that ended unexpectedly. If none of the kept launches did, JoyRead says so
+  and saves nothing.
+- **Delete Logs** deletes the log files, crash records included. JoyRead starts
+  a new log straight away.
 - **Detailed Logging Until JoyRead Quits** records much more detail while you
   reproduce a problem. It is off again the next time JoyRead starts.
+
+If JoyRead finds that it did not quit normally last time — it crashed, was
+force quit, or the computer lost power — it says so when the Library window
+opens and offers to save a crash report to your Desktop. Choose **Not Now** to
+skip it; the report stays available in Diagnostics while that launch's log is
+kept. A launch that ended this way has a `.crash.txt` file next to its log,
+which includes the crash trace when JoyRead could record one.
 
 The logs record what JoyRead did, including the real file paths and names of
 the books you import, open and export — also books you hid later. They stay on
@@ -706,8 +719,10 @@ for records, `Thumbnails/` for covers and thumbnails, and `Backups/` for backups
 Hidden books and their covers are stored encrypted as `.jrl` files in `Books/`
 and `Thumbnails/covers/`. They open only from the Library, and moving the
 Library takes Hidden Space with it.
-The logs directory contains `joyread.log` and rotated log files; they record
-real file paths and book names (see [About](#about)). Custom
+The logs directory holds one `joyread-<start time>-<process>.log` per launch
+for the last 5 launches, plus a `.crash.txt` for each launch that ended
+unexpectedly; they record real file paths and book names (see
+[About](#about)). Custom
 translations live in `Config/locales/` beside `settings.json`.
 
 Source-checkout runs and profiles using `JOYREAD_RUNTIME_DIR` use
@@ -795,8 +810,10 @@ Open an issue at
 Your operating system and version, the JoyRead version from Settings → About, and the format of
 the book involved make a report much easier to act on. For a problem that is
 hard to describe, turn on **Detailed Logging Until JoyRead Quits**, make the
-problem happen again, and attach the zip from **Export Logs** (Settings → About
-→ Diagnostics). Check what the logs contain first: see [About](#about).
+problem happen again, then open **Log Folder** (Settings → About →
+Diagnostics) and attach the newest log, which is this launch's. After a crash,
+attach the zip from **Crash Report → Save to Desktop** instead. Check what the
+logs contain first: see [About](#about).
 
 
 ## Application language

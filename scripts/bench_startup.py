@@ -45,7 +45,10 @@ import time
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LOG_RELATIVE = Path(".joyread_support") / "Logs" / "joyread.log"
+LOGS_RELATIVE = Path(".joyread_support") / "Logs"
+# Each launch writes its own `joyread-<local start>-<pid>.log`; the newest is
+# the primary under measurement.
+_RUN_LOG_RE = re.compile(r"^joyread-\d{8}-\d{6}-\d+\.log$")
 
 # `startup <name> at <elapsed> ms (+<stage> ms)` -- emitted by
 # joyread.app.startup_trace.flush_to_log through the standard text formatter.
@@ -144,16 +147,24 @@ def _parse_origin_epoch(text: str) -> float | None:
     return float(match.group("epoch")) if match is not None else None
 
 
+def _primary_log_file(runtime_dir: Path) -> Path | None:
+    logs_dir = runtime_dir / LOGS_RELATIVE
+    if not logs_dir.is_dir():
+        return None
+    runs = [path for path in logs_dir.iterdir() if _RUN_LOG_RE.match(path.name)]
+    return max(runs, key=lambda path: path.stat().st_mtime, default=None)
+
+
 def _read_log(runtime_dir: Path) -> str:
-    log_file = runtime_dir / LOG_RELATIVE
-    if not log_file.is_file():
+    log_file = _primary_log_file(runtime_dir)
+    if log_file is None:
         return ""
     return log_file.read_text(encoding="utf-8", errors="replace")
 
 
 def _log_size(runtime_dir: Path) -> int:
-    log_file = runtime_dir / LOG_RELATIVE
-    return log_file.stat().st_size if log_file.is_file() else 0
+    log_file = _primary_log_file(runtime_dir)
+    return log_file.stat().st_size if log_file is not None else 0
 
 
 def _read_log_since(runtime_dir: Path, offset: int) -> str:
@@ -165,8 +176,8 @@ def _read_log_since(runtime_dir: Path, offset: int) -> str:
     correctness assertion belong to that launch only.
     """
 
-    log_file = runtime_dir / LOG_RELATIVE
-    if not log_file.is_file():
+    log_file = _primary_log_file(runtime_dir)
+    if log_file is None:
         return ""
     with log_file.open("rb") as stream:
         stream.seek(offset)

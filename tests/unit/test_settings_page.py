@@ -1620,13 +1620,13 @@ def test_about_diagnostics_rows_request_their_flows(qtbot) -> None:
     qtbot.addWidget(page)
     seen: list[str] = []
     page.logs_open_folder_requested.connect(lambda: seen.append("open"))
-    page.logs_export_requested.connect(lambda: seen.append("export"))
+    page.logs_crash_report_requested.connect(lambda: seen.append("crash"))
     page.logs_delete_requested.connect(lambda: seen.append("delete"))
 
-    for key in ("diagnostics.log_folder", "diagnostics.export_logs", "diagnostics.delete_logs"):
+    for key in ("diagnostics.log_folder", "diagnostics.crash_report", "diagnostics.delete_logs"):
         _setting_row(page, key).button.click()
 
-    assert seen == ["open", "export", "delete"]
+    assert seen == ["open", "crash", "delete"]
     assert _setting_row(page, "diagnostics.delete_logs").property("destructive") == "true"
     hints = [item.text() for item in page.findChildren(SettingsAboutText)]
     assert locale_service.t("diagnostics.hint") in hints

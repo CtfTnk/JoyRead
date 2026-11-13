@@ -2,7 +2,8 @@
 
 Callers keep using the standard :mod:`logging` API. This module owns the
 cross-cutting concerns around those calls: asynchronous file I/O, correlation
-metadata, privacy filtering, rotation, exception hooks, and bounded shutdown.
+metadata, privacy filtering, one file per launch with crash detection (see
+``run_files``), exception hooks, and bounded shutdown.
 """
 
 from __future__ import annotations
@@ -40,12 +41,19 @@ from joyread.core.operation_logging import (
     log_timed_block,
     operation_scope,
 )
+from joyread.infrastructure.logging.run_files import (
+    EMERGENCY_LOG_GLOB,
+    RUN_LOG_BACKUP_COUNT,
+    RUN_LOG_MAX_BYTES,
+    RunningMarker,
+    prune_runs,
+    recover_interrupted_runs,
+    run_log_path,
+    run_stem,
+    running_marker_path,
+)
 
 
-LOG_FILE_NAME = "joyread.log"
-EMERGENCY_LOG_GLOB = "joyread-emergency-*.jsonl"
-LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
-LOG_FILE_BACKUP_COUNT = 5
 LOG_QUEUE_CAPACITY = 8192
 LOG_ENV_VAR = "JOYREAD_LOG_LEVEL"
 LOG_BUILD_ENV_VAR = "JOYREAD_BUILD_ID"
@@ -103,6 +111,8 @@ class LoggingConfigurationResult:
     file_logging_enabled: bool
     log_file: Path | None
     error: str | None = None
+    #: Earlier launches found to have ended without a clean quit.
+    crashed_runs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -437,6 +447,11 @@ _runtime_lock = threading.RLock()
 _logs_dir: Path | None = None
 _base_level = logging.INFO
 _detailed_logging = False
+# This launch's file stem, its running marker, and earlier launches found to
+# have crashed that the UI has not offered to report yet.
+_run_stem: str | None = None
+_running_marker: RunningMarker | None = None
+_unreported_crashes: tuple[str, ...] = ()
 _hooks_installed = False
 _qt_handler_installed = False
 _previous_qt_message_handler = None
@@ -483,6 +498,7 @@ def configure_logging(
     """Start the asynchronous production logger and replay early records."""
 
     global _base_level, _detailed_logging, _early_buffer, _logs_dir, _metadata, _runtime
+    global _run_stem, _running_marker, _unreported_crashes
     with _runtime_lock:
         early_records, early_dropped = _early_buffer.take() if _early_buffer is not None else ([], 0)
         _stop_runtime_without_log()
@@ -501,21 +517,36 @@ def configure_logging(
         handlers: list[logging.Handler] = []
         log_file: Path | None = None
         setup_error: str | None = None
+        crashed: tuple[str, ...] = ()
+        pruned = 0
+        # Reconfiguring within one launch keeps writing the same file.
+        stem = run_stem(_started_at(_metadata), os.getpid())
+        _run_stem = stem
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
-            log_file = logs_dir / LOG_FILE_NAME
+            crashed = recover_interrupted_runs(logs_dir, stem)
+            pruned = prune_runs(logs_dir, stem)
+            log_file = run_log_path(logs_dir, stem)
             file_handler = _SecureRotatingFileHandler(
                 log_file,
-                maxBytes=LOG_FILE_MAX_BYTES,
-                backupCount=LOG_FILE_BACKUP_COUNT,
+                maxBytes=RUN_LOG_MAX_BYTES,
+                backupCount=RUN_LOG_BACKUP_COUNT,
                 encoding="utf-8",
             )
             file_handler.setLevel(level)
             file_handler.setFormatter(_JsonFormatter(redactor))
             handlers.append(file_handler)
         except Exception as exc:
+            log_file = None
             setup_error = f"{type(exc).__name__}: {exc}"
             _emergency_write(f"Unable to initialize JoyRead file logging: {setup_error}")
+        if log_file is not None:
+            try:
+                _running_marker = RunningMarker(running_marker_path(logs_dir, stem))
+            except OSError as exc:
+                _emergency_write(f"Unable to create the crash marker: {exc}")
+        if crashed:
+            _unreported_crashes = (*_unreported_crashes, *crashed)
 
         stream_handler = logging.StreamHandler()
         stream_handler.setLevel(level)
@@ -554,7 +585,26 @@ def configure_logging(
                 category="settings",
                 outcome="fallback",
             )
-        return LoggingConfigurationResult(log_file is not None, log_file, setup_error)
+        if crashed:
+            log_event(
+                logging.getLogger(__name__),
+                logging.WARNING,
+                "logging.runs.crash_detected",
+                "Earlier launches ended without a clean quit",
+                category="process",
+                outcome="crash_detected",
+                crashed_runs=list(crashed),
+            )
+        if pruned:
+            log_event(
+                logging.getLogger(__name__),
+                logging.INFO,
+                "logging.runs.pruned",
+                "Logs of older launches deleted",
+                category="process",
+                removed_count=pruned,
+            )
+        return LoggingConfigurationResult(log_file is not None, log_file, setup_error, crashed)
 
 
 def flush_logging(timeout_seconds: float = 1.0) -> bool:
@@ -566,8 +616,16 @@ def flush_logging(timeout_seconds: float = 1.0) -> bool:
 
 def shutdown_logging(
     timeout_seconds: float = _DEFAULT_SHUTDOWN_TIMEOUT_SECONDS,
+    *,
+    unexpected: str | None = None,
 ) -> LoggingShutdownResult:
-    """Seal producers, drain queued records, and close handlers once."""
+    """Seal producers, drain queued records, and close handlers once.
+
+    A normal quit also removes this launch's running marker. Pass
+    ``unexpected`` -- a short description -- when the process is exiting
+    because something failed: the marker is kept with that note, and the next
+    launch reports this one as a crash.
+    """
 
     global _detailed_logging, _early_buffer, _runtime
     with _runtime_lock:
@@ -577,6 +635,7 @@ def shutdown_logging(
             _reset_root_handlers()
             _early_buffer = None
             _restore_exception_hooks()
+            _close_running_marker(unexpected)
             return LoggingShutdownResult(True, 0, 0)
         log_event(
             logging.getLogger(__name__),
@@ -593,6 +652,7 @@ def shutdown_logging(
                 f"Logging shutdown timed out with {result.pending_records} queued record(s)"
             )
         _restore_exception_hooks()
+        _close_running_marker(unexpected)
         return result
 
 
@@ -600,6 +660,26 @@ def log_directory() -> Path | None:
     """The directory the primary process writes logs to, once configured."""
 
     return _logs_dir
+
+
+def current_run_stem() -> str | None:
+    """The name this launch's log files share, once file logging is configured."""
+
+    return _run_stem
+
+
+def has_unreported_crashes() -> bool:
+    return bool(_unreported_crashes)
+
+
+def take_unreported_crashes() -> tuple[str, ...]:
+    """Crashed launches found at startup, handed out once to offer a report."""
+
+    global _unreported_crashes
+    with _runtime_lock:
+        crashes = _unreported_crashes
+        _unreported_crashes = ()
+        return crashes
 
 
 def detailed_logging_enabled() -> bool:
@@ -803,6 +883,22 @@ def _stop_runtime_without_log() -> None:
     if not result.drained:
         _emergency_write("Previous logging runtime did not drain during reconfiguration")
     _runtime = None
+    _close_running_marker(None)
+
+
+def _close_running_marker(unexpected: str | None) -> None:
+    global _running_marker
+    marker = _running_marker
+    _running_marker = None
+    if marker is not None:
+        marker.close(unexpected=unexpected)
+
+
+def _started_at(metadata: LoggingMetadata) -> datetime:
+    try:
+        return datetime.fromisoformat(metadata.started_at_utc.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
 
 
 def _install_qt_message_handler() -> None:
@@ -943,9 +1039,6 @@ def _emergency_write(message: str) -> None:
 __all__ = [
     "LOG_BUILD_ENV_VAR",
     "LOG_ENV_VAR",
-    "LOG_FILE_BACKUP_COUNT",
-    "LOG_FILE_MAX_BYTES",
-    "LOG_FILE_NAME",
     "LOG_QUEUE_CAPACITY",
     "LoggingConfigurationResult",
     "LoggingMetadata",
@@ -953,10 +1046,12 @@ __all__ = [
     "EMERGENCY_LOG_GLOB",
     "configure_early_logging",
     "configure_logging",
+    "current_run_stem",
     "describe_callback",
     "detailed_logging_enabled",
     "flush_logging",
     "get_logger",
+    "has_unreported_crashes",
     "hold_log_files",
     "log_directory",
     "log_event",
@@ -964,5 +1059,6 @@ __all__ = [
     "operation_scope",
     "set_detailed_logging",
     "shutdown_logging",
+    "take_unreported_crashes",
     "write_emergency_log",
 ]

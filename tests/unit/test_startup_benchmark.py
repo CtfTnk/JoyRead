@@ -24,7 +24,7 @@ def _load_benchmark():
 
 def test_openwith_waits_for_the_primary_delivery_belonging_to_this_run(tmp_path: Path) -> None:
     benchmark = _load_benchmark()
-    log_file = tmp_path / benchmark.LOG_RELATIVE
+    log_file = tmp_path / benchmark.LOGS_RELATIVE / "joyread-20261113-093005-4242.log"
     log_file.parent.mkdir(parents=True)
     log_file.write_text("Reader window created\nLaunch intent delivered\n", encoding="utf-8")
     offset = log_file.stat().st_size

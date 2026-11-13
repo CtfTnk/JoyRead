@@ -677,6 +677,14 @@ class SettingsViewModel:
     def log_directory() -> Path | None:
         return logging_service.log_directory()
 
+    @staticmethod
+    def has_unreported_crashes() -> bool:
+        return logging_service.has_unreported_crashes()
+
+    @staticmethod
+    def take_unreported_crashes() -> tuple[str, ...]:
+        return logging_service.take_unreported_crashes()
+
     def set_archive_pool_bytes_provider(self, provider: Callable[[], int] | None) -> None:
         """Inject a callable that reports the disk pool's live byte usage.
 

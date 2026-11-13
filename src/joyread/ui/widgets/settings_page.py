@@ -98,7 +98,7 @@ class SettingsPageWidget(QFrame):
     # About > Diagnostics. MainWindow owns the overlay, the file picker and the
     # task that touches the log files.
     logs_open_folder_requested = QtSignal()
-    logs_export_requested = QtSignal()
+    logs_crash_report_requested = QtSignal()
     logs_delete_requested = QtSignal()
     # Tag CRUD outcomes. MainWindow routes these into ``JoyReadDialogOverlay.show_info``.
     tag_operation_completed = QtSignal(bool, object, object)
@@ -345,18 +345,20 @@ class SettingsPageWidget(QFrame):
         return [banner, intro, version, *self._diagnostics_items()]
 
     def _diagnostics_items(self) -> list[QWidget]:
-        """Get the logs out, or away, without a terminal.
+        """Read the logs, report a crash, or delete them, without a terminal.
 
-        The hint says up front what the log holds -- real file paths and book
-        names -- because that is what the user weighs before sending it.
+        The hint says up front what the logs hold -- real file paths and book
+        names -- because that is what the user weighs before sending a report.
         """
 
         banner = SectionBanner(t("diagnostics.banner"), self._resources)
         hint = SettingsAboutText(t("diagnostics.hint"))
         open_folder = SettingsButtonItem(t("diagnostics.log_folder"), t("diagnostics.btn_open"))
         open_folder.clicked.connect(self.logs_open_folder_requested.emit)
-        export = SettingsButtonItem(t("diagnostics.export_logs"), t("diagnostics.btn_export"))
-        export.clicked.connect(self.logs_export_requested.emit)
+        crash_report = SettingsButtonItem(
+            t("diagnostics.crash_report"), t("diagnostics.btn_save_crash")
+        )
+        crash_report.clicked.connect(self.logs_crash_report_requested.emit)
         delete = SettingsButtonItem(
             t("diagnostics.delete_logs"),
             t("diagnostics.btn_delete"),
@@ -365,7 +367,7 @@ class SettingsPageWidget(QFrame):
         delete.clicked.connect(self.logs_delete_requested.emit)
         detailed = SettingsSwitchItem(t("diagnostics.detailed_logging"), self._viewmodel.detailed_logging)
         detailed.toggled.connect(self._viewmodel.set_detailed_logging)
-        return [banner, hint, open_folder, export, delete, detailed]
+        return [banner, hint, open_folder, crash_report, delete, detailed]
 
     def _tags_items(self) -> list[QWidget]:
         # Lazy import to avoid a circular dependency between the settings

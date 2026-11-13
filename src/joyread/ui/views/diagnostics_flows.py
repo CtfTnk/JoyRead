@@ -1,10 +1,16 @@
-"""Settings > About > Diagnostics: open, export and delete the log files.
+"""Settings > About > Diagnostics, and the offer after a crash.
 
-Export says what the logs contain before the save dialog opens: they record
-real file paths and book names, including books that were hidden later, and
-the user decides whether that is acceptable to send. There is deliberately no
-"hide paths" variant -- a support log that cannot name the failing file does
-not help, and a partial scrub would promise more privacy than it delivers.
+The user can open the log folder and read the per-launch logs themselves, or
+save a crash report to the Desktop. A crash report holds only the launches
+that ended without a clean quit, so it exists only when JoyRead has actually
+seen one: Settings says so when there is none, and a launch that finds a new
+crash offers the report once, as soon as the library window is free to show
+a dialog.
+
+Every way of saving says first what the report contains -- real file paths
+and book names, including books that were hidden later -- because that is
+what the user weighs before sending it. There is deliberately no "hide paths"
+variant: a crash log that cannot name the failing file does not help.
 
 File work runs on the process-wide task service, not the Library's scope: the
 logs belong to the application support root and must stay reachable while the
@@ -14,29 +20,32 @@ Library is loading, moving or unavailable.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 
-from PySide6.QtCore import QObject, QUrl
+from PySide6.QtCore import QObject, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QFileDialog, QWidget
+from PySide6.QtWidgets import QWidget
 
 from joyread.app.tasking import TaskExecutor
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.logging.log_files import (
+    CrashReportResult,
     LogClearResult,
-    LogExportResult,
     LogFilesUnavailable,
+    NoCrashRecorded,
     clear_logs,
-    default_export_file_name,
-    export_logs,
+    desktop_directory,
+    recorded_crashes,
+    save_crash_report,
 )
+from joyread.infrastructure.logging.run_files import KEPT_RUN_COUNT
 from joyread.ui.viewmodels.settings_viewmodel import SettingsViewModel
 from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 
 
 logger = logging.getLogger(__name__)
 
-_ZIP_SUFFIX = ".zip"
+#: How long to wait before trying again when another dialog is open.
+_OFFER_RETRY_MS = 1000
 
 
 class DiagnosticsFlows(QObject):
@@ -65,15 +74,39 @@ class DiagnosticsFlows(QObject):
                 t("diagnostics.open_failed", path=str(directory)),
             )
 
-    def start_export(self) -> None:
+    def start_crash_report(self) -> None:
         if self._vm.log_directory() is None:
             self._show_unavailable()
             return
+        if not recorded_crashes():
+            self._show_no_crash()
+            return
         self._dialogs.show_confirm(
-            t("diagnostics.export_title"),
-            t("diagnostics.export_message"),
-            self._choose_export_destination,
-            confirm_text=t("diagnostics.export_confirm"),
+            t("diagnostics.crash_save_title"),
+            t("diagnostics.crash_save_message"),
+            self._save_crash_report,
+            confirm_text=t("diagnostics.btn_save_crash"),
+        )
+
+    def offer_crash_report(self) -> None:
+        """Offer the report once if this launch found that the last one crashed.
+
+        Another dialog may be up at startup (a storage notice, a recovery
+        prompt); the offer waits for it instead of replacing it.
+        """
+
+        if not self._vm.has_unreported_crashes():
+            return
+        if self._dialogs.isVisible():
+            QTimer.singleShot(_OFFER_RETRY_MS, self.offer_crash_report)
+            return
+        self._vm.take_unreported_crashes()
+        self._dialogs.show_confirm(
+            t("diagnostics.crashed_title"),
+            t("diagnostics.crashed_message"),
+            self._save_crash_report,
+            confirm_text=t("diagnostics.btn_save_crash"),
+            cancel_text=t("diagnostics.btn_not_now"),
         )
 
     def start_delete(self) -> None:
@@ -90,23 +123,12 @@ class DiagnosticsFlows(QObject):
 
     # -- steps ----------------------------------------------------------------------
 
-    def _choose_export_destination(self) -> None:
-        chosen, _filter = QFileDialog.getSaveFileName(
-            self._host,
-            t("diagnostics.save_title"),
-            str(Path.home() / default_export_file_name()),
-            t("diagnostics.file_filter"),
-        )
-        if not chosen:
-            return
-        destination = Path(chosen)
-        if destination.suffix.lower() != _ZIP_SUFFIX:
-            destination = destination.with_name(destination.name + _ZIP_SUFFIX)
+    def _save_crash_report(self) -> None:
         self._tasks.submit(
-            "export-logs",
-            lambda: export_logs(destination),
-            on_success=self._show_exported,
-            on_failure=lambda error: self._show_failure("diagnostics.export_failed_title", error),
+            "save-crash-report",
+            lambda: save_crash_report(desktop_directory()),
+            on_success=self._show_crash_saved,
+            on_failure=lambda error: self._show_failure("diagnostics.crash_failed_title", error),
         )
 
     def _delete(self) -> None:
@@ -117,14 +139,10 @@ class DiagnosticsFlows(QObject):
             on_failure=lambda error: self._show_failure("diagnostics.delete_failed_title", error),
         )
 
-    def _show_exported(self, result: LogExportResult) -> None:
+    def _show_crash_saved(self, result: CrashReportResult) -> None:
         self._dialogs.show_info(
-            t("diagnostics.export_done_title"),
-            t(
-                "diagnostics.export_done_message",
-                count=str(result.file_count),
-                path=str(result.destination),
-            ),
+            t("diagnostics.crash_saved_title"),
+            t("diagnostics.crash_saved_message", path=str(result.destination)),
         )
 
     def _show_deleted(self, result: LogClearResult) -> None:
@@ -142,9 +160,17 @@ class DiagnosticsFlows(QObject):
         # The task service has already logged the failure at its boundary.
         if isinstance(error, LogFilesUnavailable):
             message = t("diagnostics.unavailable")
+        elif isinstance(error, NoCrashRecorded):
+            message = t("diagnostics.no_crash_message", count=str(KEPT_RUN_COUNT))
         else:
             message = t("error.operation_failed", detail=str(error))
         self._dialogs.show_info(t(title_key), message)
+
+    def _show_no_crash(self) -> None:
+        self._dialogs.show_info(
+            t("diagnostics.no_crash_title"),
+            t("diagnostics.no_crash_message", count=str(KEPT_RUN_COUNT)),
+        )
 
     def _show_unavailable(self) -> None:
         self._dialogs.show_info(t("diagnostics.banner"), t("diagnostics.unavailable"))

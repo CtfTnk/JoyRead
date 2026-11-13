@@ -323,7 +323,7 @@ class MainWindow(QMainWindow):
         )
         self._diagnostics_flows = diagnostics
         self.settings_view.logs_open_folder_requested.connect(diagnostics.open_log_folder)
-        self.settings_view.logs_export_requested.connect(diagnostics.start_export)
+        self.settings_view.logs_crash_report_requested.connect(diagnostics.start_crash_report)
         self.settings_view.logs_delete_requested.connect(diagnostics.start_delete)
         self.settings_view.hidden_space_show_requested.connect(flows.request_show)
         self.settings_view.hidden_space_change_passphrase_requested.connect(flows.start_change_passphrase)
@@ -398,6 +398,8 @@ class MainWindow(QMainWindow):
                     t("dialog.library_maintenance_recovery_msg"),
                 ),
             )
+        # After the notices above, so it waits for them rather than replacing them.
+        QTimer.singleShot(0, self._diagnostics_flows.offer_crash_report)
 
     def _initialize_pending_ui(self) -> None:
         """Paint the existing Library chrome before any database work begins."""

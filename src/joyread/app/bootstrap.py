@@ -597,7 +597,8 @@ def run(argv: list[str] | None = None) -> int:
         )
         _dispose_file_open_router(environment.app)
         broker.dispose()
-        shutdown_logging()
+        # Keep the crash marker: the next launch offers to report this one.
+        shutdown_logging(unexpected=f"JoyRead failed to start: {type(exc).__name__}")
         raise
 
     manager, _coordinator = _configure_window_management(

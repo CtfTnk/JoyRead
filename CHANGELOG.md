@@ -7,13 +7,21 @@ All notable changes to JoyRead are documented here. This project follows
 
 ### Added
 
-- Settings → About → Diagnostics opens the log folder, exports every log file
-  as one zip, deletes the logs, and turns on detailed logging until JoyRead
-  quits. Before exporting, JoyRead says that the logs contain file paths and
-  book names. Detailed logging used to need `JOYREAD_LOG_LEVEL=DEBUG`, which an
-  app launched from Finder, Start or a desktop launcher cannot set.
+- Settings → About → Diagnostics opens the log folder, saves a crash report to
+  the Desktop, deletes the logs, and turns on detailed logging until JoyRead
+  quits. Before saving a report, JoyRead says that the logs contain file paths
+  and book names. Detailed logging used to need `JOYREAD_LOG_LEVEL=DEBUG`,
+  which an app launched from Finder, Start or a desktop launcher cannot set.
+- When the previous launch ended without a normal quit — a crash, a force quit
+  or a power loss — JoyRead says so when the Library window opens and offers
+  to save a crash report to the Desktop. The report holds only the launches
+  that ended that way, with the native crash trace when one was recorded.
 
 ### Changed
+
+- Each launch writes its own log file, named by its start time, and JoyRead
+  keeps the last 5 launches. The single rotating `joyread.log` is removed on
+  the first launch.
 
 - Logs record real file paths instead of a per-run hashed token, so a log can
   name the file that failed. Logs stay on your computer unless you send them.
