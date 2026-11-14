@@ -236,5 +236,6 @@ def test_open_log_folder_reports_when_the_desktop_cannot_open_it(qtbot, tmp_path
 
     flows.open_log_folder()
 
-    assert opened == [str(tmp_path)]
+    # QUrl.toLocalFile() uses forward slashes on Windows; compare paths, not text.
+    assert [Path(path) for path in opened] == [tmp_path]
     assert dialogs.infos[-1][1] == str(t("diagnostics.open_failed", path=str(tmp_path)))

@@ -53,13 +53,18 @@ def verify_glibc(app_dir: Path) -> None:
 def reader_frame_reached(console: str) -> bool:
     """Require an actual frame callback, not merely a ready Reader shell."""
 
+    decoder = json.JSONDecoder()
     for line in console.splitlines():
         _, marker, payload = line.partition('reader_perf ')
         if not marker:
             continue
         try:
-            event = json.loads(payload)
+            # The text log appends " · op=... (logger:line)" after the JSON
+            # object, so decode only the object and ignore what follows it.
+            event, _end = decoder.raw_decode(payload)
         except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
             continue
         if event.get('event') == 'gui.pixmap' and event.get('action') == 'converted':
             return True

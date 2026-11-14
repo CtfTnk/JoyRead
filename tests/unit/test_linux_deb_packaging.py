@@ -214,6 +214,13 @@ def test_glibc_requirements_distinguish_versions_and_ignore_glibcxx() -> None:
     ('reader_perf {"event":"gui.pixmap","action":"duplicate_skipped"}', False),
     ('reader_perf incomplete\nreader_perf {"event":"archive.decode"}', False),
     ('INFO reader_perf {"event":"gui.pixmap","page":0,"action":"converted"}', True),
+    # The plain-text log line format: fields and the code location follow the JSON.
+    (
+        '07:38:58.441 INFO    task     reader_perf {"action":"converted","event":"gui.pixmap","page":0}'
+        ' · op=task.reader-random-page#4ff49021 parent=9a038d53  (performance.reader:45)',
+        True,
+    ),
+    ('07:38:58.442 INFO    reader   reader_perf {"event":"gui.paint","pages":1}  (performance.reader:45)', False),
 ])
 def test_frozen_reader_probe_requires_a_real_frame_callback(console, expected) -> None:
     spec = importlib.util.spec_from_file_location('verify_linux_package', REPO_ROOT / 'scripts/verify_linux_package.py')
