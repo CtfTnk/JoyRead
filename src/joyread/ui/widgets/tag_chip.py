@@ -32,6 +32,7 @@ class TagChipWidget(QFrame):
         *,
         is_add_chip: bool = False,
         remove_pixmap: QPixmap | None = None,
+        show_count: bool = False,
     ) -> None:
         super().__init__(parent)
         self._tag_id = tag_id
@@ -87,6 +88,14 @@ class TagChipWidget(QFrame):
         self._label.setFont(font)
         layout.addWidget(self._label, stretch=1)
 
+        self._count_label: LocalizedLabel | None = None
+        if show_count:
+            layout.setSpacing(Theme.tag_chip_count_gap)
+            self._count_label = LocalizedLabel("0")
+            self._count_label.setProperty("class", "TagChipCount")
+            self._count_label.setFont(font)
+            layout.addWidget(self._count_label)
+
         if self._remove_pixmap is not None:
             layout.setSpacing(Theme.tag_browser_tray_gap)
             glyph = LocalizedLabel()
@@ -132,6 +141,18 @@ class TagChipWidget(QFrame):
         self.style().polish(self)
         self.update()
 
+    def set_count(self, count: int) -> None:
+        """Show how many books this chip would match; zero dims the chip."""
+
+        if self._count_label is None:
+            return
+        self._count_label.setText(str(count))
+        self.setProperty("empty", "true" if count == 0 else "false")
+        for widget in (self, self._label, self._count_label):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        self.updateGeometry()
+
     def set_name(self, name: str) -> None:
         self._name = name
         if isinstance(self._label, ElidedLabel):
@@ -151,6 +172,8 @@ class TagChipWidget(QFrame):
         desired = text_width + padding + border
         if self._remove_pixmap is not None:
             desired += Theme.tag_browser_remove_icon_size + Theme.tag_browser_tray_gap
+        if self._count_label is not None:
+            desired += metrics.horizontalAdvance(self._count_label.text()) + Theme.tag_chip_count_gap
         clamped = max(Theme.tag_chip_min_width, min(Theme.tag_chip_max_width, desired))
         return QSize(clamped, Theme.tag_chip_height)
 

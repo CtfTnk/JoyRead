@@ -410,20 +410,10 @@ class SqliteBookRepository(BookRepository):
     def mark_recent(self, book_id: str) -> None:
         logger.debug("mark_recent book=%s", book_id)
         now = _now()
-
-        def write(connection: sqlite3.Connection) -> None:
-            connection.execute(
-                """
-                INSERT INTO recent_books(book_id, last_read_at)
-                SELECT book_id, ? FROM books WHERE book_id = ?
-                ON CONFLICT(book_id) DO UPDATE SET
-                    last_read_at = excluded.last_read_at
-                """,
-                (now, book_id),
-            )
-            _trim_recent_books(connection)
-
-        self._database.execute(write, DatabasePriority.NORMAL)
+        self._database.execute(
+            lambda connection: _record_recent_book(connection, book_id, now),
+            DatabasePriority.NORMAL,
+        )
 
     def remove_book_from_recent(self, book_id: str) -> None:
         logger.debug("remove_book_from_recent book=%s", book_id)
@@ -651,16 +641,7 @@ class SqliteBookRepository(BookRepository):
                 """,
                 (book_id, page_index, progress_percent, now),
             )
-            connection.execute(
-                """
-                INSERT INTO recent_books(book_id, last_read_at)
-                SELECT book_id, ? FROM books WHERE book_id = ?
-                ON CONFLICT(book_id) DO UPDATE SET
-                    last_read_at = excluded.last_read_at
-                """,
-                (now, book_id),
-            )
-            _trim_recent_books(connection)
+            _record_recent_book(connection, book_id, now)
 
         self._database.execute(write, DatabasePriority.NORMAL)
 
@@ -1164,6 +1145,22 @@ def _language_exists(connection: sqlite3.Connection, language_tag: str) -> bool:
 
 def _now() -> str:
     return datetime.now().isoformat(timespec="microseconds")
+
+
+def _record_recent_book(connection: sqlite3.Connection, book_id: str, now: str) -> None:
+    # Hiding removes a book from Recent for good (apply_book_hidden_state), so
+    # reading it while hidden must not put it back: the row would surface on
+    # the public Recent shelf the moment the book is unhidden.
+    connection.execute(
+        """
+        INSERT INTO recent_books(book_id, last_read_at)
+        SELECT book_id, ? FROM books WHERE book_id = ? AND is_hidden = 0
+        ON CONFLICT(book_id) DO UPDATE SET
+            last_read_at = excluded.last_read_at
+        """,
+        (now, book_id),
+    )
+    _trim_recent_books(connection)
 
 
 def _trim_recent_books(connection: sqlite3.Connection) -> None:

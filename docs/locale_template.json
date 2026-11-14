@@ -111,7 +111,11 @@
     "delete_tag_title": "Delete Tag",
     "delete_tags_title": "Delete Tags",
     "delete_tag_msg": "Delete tag '{name}'?\n\nThis removes the tag from every linked book. Books are not deleted. This cannot be undone.",
-    "delete_tags_msg": "Delete {count} tags?\n\nThis removes these tags from every linked book. Books are not deleted. This cannot be undone."
+    "delete_tags_msg": "Delete {count} tags?\n\nThis removes these tags from every linked book. Books are not deleted. This cannot be undone.",
+    "filter_language_header": "LANGUAGE",
+    "filter_tray_header": "SELECTED",
+    "filter_selected_count": "{count} selected",
+    "filter_show_results": "Show {count}"
   },
   "state": {
     "no_books_title": "No books yet",
@@ -201,10 +205,10 @@
     "replace_cover_title": "Replace Cover",
     "replace_cover_msg": "Replace this book cover with the edited image?",
     "no_tags_hint": "No tags yet. Add or edit tags in Settings > Tags.",
-    "tag_filter_title": "Tag Filter",
+    "tag_filter_title": "Filter",
     "assign_tags_title": "Assign Tags",
     "tag_filter_failed": "Could not load tags.",
-    "tag_filter_apply_failed": "Could not apply tag filter.",
+    "tag_filter_apply_failed": "Could not apply the filter.",
     "book_tags_title": "Book Tags",
     "storage_title": "Storage",
     "read_title": "Read",
@@ -284,7 +288,7 @@
   },
   "toolbar": {
     "filter_tooltip": "Filter by file type",
-    "tag_filter_tooltip": "Filter by tag",
+    "tag_filter_tooltip": "Filter by language or tag",
     "search_placeholder": "Search books...",
     "search_collapse": "Collapse search",
     "search_expand": "Expand search",

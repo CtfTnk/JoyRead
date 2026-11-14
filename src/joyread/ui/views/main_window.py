@@ -592,7 +592,9 @@ class MainWindow(QMainWindow):
         if target_shelf is not None:
             self._context.shelf_viewmodel.set_current_shelf(target_shelf)
         tag_ids = tuple(dict.fromkeys(tag.tag_id for tag in tags if tag.tag_id))
-        self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
+        # "Show this tag" replaces the whole filter, so a language chosen
+        # earlier cannot silently hide books that carry the tag.
+        self._context.shelf_viewmodel.set_book_filter(tag_ids, ())
         self.shelf_view.render()
 
     @Slot(object)
@@ -1672,19 +1674,23 @@ class MainWindow(QMainWindow):
         # repository call blocks on the database actor's queue, so opening this
         # dialog while an import or audit is running froze the window until
         # that work drained. The ViewModel keeps the list current off-thread.
-        tags = list(self._context.shelf_viewmodel.available_tags)
+        shelf_viewmodel = self._context.shelf_viewmodel
+        tags = list(shelf_viewmodel.available_tags)
 
-        def apply_filter(tag_ids: tuple[str, ...]) -> None:
+        def apply_filter(tag_ids: tuple[str, ...], language_codes: tuple[str, ...]) -> None:
             try:
-                self._context.shelf_viewmodel.set_tag_filter_ids(tag_ids)
+                shelf_viewmodel.set_book_filter(tag_ids, language_codes)
             except Exception as exc:  # pragma: no cover - defensive UI boundary.
                 logger.exception("Applying tag filter failed: %s", exc)
                 self.dialog_overlay.show_info(t("dialog.tag_filter_title"), t("dialog.tag_filter_apply_failed"))
 
-        self.dialog_overlay.show_tag_filter(
+        self.dialog_overlay.show_book_filter(
             t("dialog.tag_filter_title"),
             tags,
-            self._context.shelf_viewmodel.tag_filter_ids,
+            shelf_viewmodel.languages,
+            shelf_viewmodel.tag_filter_ids,
+            shelf_viewmodel.language_filter_codes,
+            shelf_viewmodel.preview_book_filter,
             apply_filter,
         )
 

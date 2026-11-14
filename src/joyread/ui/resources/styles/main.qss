@@ -1687,6 +1687,14 @@ QFrame[class="TagChip"] QLabel[class="TagChipLabel"] {
     background: transparent;
 }
 
+QFrame[class="TagChip"] QLabel[class="TagChipCount"],
+QFrame[class="TagChip"][empty="true"] QLabel[class="TagChipLabel"] {
+    color: __TEXT_MUTED_COLOR__;
+    font-size: __TAG_CHIP_FONT_SIZE__;
+    font-weight: 500;
+    background: transparent;
+}
+
 QLineEdit[class="TagInputField"] {
     background: __WINDOW_COLOR__;
     border: 1px solid __BUTTON_INNER_EDGE__;

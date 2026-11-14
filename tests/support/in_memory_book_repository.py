@@ -252,7 +252,9 @@ class InMemoryBookRepository:
             replace(
                 book,
                 progress=max(0.0, min(100.0, progress_percent)) / 100.0,
-                last_read_at=now,
+                # Mirrors SqliteBookRepository: reading a hidden book never
+                # adds it to Recent.
+                last_read_at=book.last_read_at if book.is_hidden else now,
                 updated_at=now,
             )
             if book.uuid == book_id

@@ -63,7 +63,7 @@ class ShelfSorting:
         from joyread.ui.viewmodels.shelf_viewmodel import FileFilter, SortField
         return (self.sort_field == SortField.CUSTOM and self.current_shelf != "recent"
                 and not self.search_query.strip() and self.file_filter == FileFilter.ALL
-                and not self.tag_filter_active and not self.sort_saving
+                and not self.book_filter_active and not self.sort_saving
                 and not self.is_loading and not self.is_importing)
 
     def set_selection(self, selected_ids: set[str]) -> None:

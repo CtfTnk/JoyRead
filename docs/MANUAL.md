@@ -169,8 +169,12 @@ record of the book.
 on Add Time, Title, or Author, ascending or descending, or uses **Custom** order.
 The **filter** button
 narrows the shelf to one file type (CBZ, CBR, ZIP, RAR, 7Z, PDF), and the tag
-button filters by tag. Your sort, filter, and search choices persist between
-launches.
+button filters by language and tag. Click a chip to select it, or Shift-click
+to select several. Several languages show books in any of them, while several
+tags require every one of them, and language and tags apply together. The
+confirm button shows how many books on the current shelf match. Change a
+book's language in **Details**. Your sort, file-type, and search choices persist
+between launches; the language and tag filter lasts until you quit.
 
 ### Custom order and selection
 
@@ -190,7 +194,7 @@ starts a rectangle even on a book and adds intersecting books to the selection
 you had when you started; it never starts reordering. You can use
 the wheel while drawing; Esc restores the selection from before the gesture.
 
-In Custom order, clear search, format, and tag filters to enable reordering.
+In Custom order, clear search, format, language, and tag filters to enable reordering.
 Drag a selected card or list row to move the whole selection in its displayed
 order. Drag an unselected book to move it alone. Release Shift before dragging
 books to reorder them. One dashed placeholder shows where the group will land. The pointer

@@ -204,7 +204,7 @@ class ShelfView(QWidget):
         self.gestures.synchronize()
         self.toolbar.set_title(_localized_page_title(self._viewmodel))
         self.toolbar.set_filter(self._viewmodel.file_filter.value)
-        self.toolbar.set_tag_filter_active(self._viewmodel.tag_filter_active)
+        self.toolbar.set_tag_filter_active(self._viewmodel.book_filter_active)
 
         if self._viewmodel.is_loading:
             self._sync_cover_requests([], {})
@@ -325,7 +325,7 @@ class ShelfView(QWidget):
         if (
             self._viewmodel.search_query
             or self._viewmodel.file_filter.value != "ALL"
-            or self._viewmodel.tag_filter_active
+            or self._viewmodel.book_filter_active
         ):
             self.empty_state.set_text(t("state.no_matching_title"), t("state.no_matching_msg"))
             return

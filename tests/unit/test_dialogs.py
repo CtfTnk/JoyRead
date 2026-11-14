@@ -10,12 +10,14 @@ from PIL import Image
 from joyread.app.app_context import create_app_context
 from joyread.core.models.book import Book
 from joyread.core.models.collection import Collection
+from joyread.core.models.language import Language
 from joyread.core.models.tag import Tag
 from joyread.core.services.library_service import LibraryService
 from joyread.infrastructure.i18n import locale_service
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
+from joyread.ui.viewmodels.shelf_filter import BookFilterPreview
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.views.main_window import MainWindow
 from joyread.ui.widgets.dialogs import (
@@ -23,14 +25,28 @@ from joyread.ui.widgets.dialogs import (
     DialogInputContent,
     DialogInputFieldWithHeader,
     DialogPasswordContent,
+    DialogBookFilterContent,
     DialogTagFilterContent,
     DialogTextButton,
     JoyReadDialogOverlay,
     JoyReadDialogPanel,
 )
+from joyread.ui.widgets.language_filter_row import LanguageFilterRow
 from joyread.ui.widgets.tag_chip import TagChipWidget
 from joyread.ui.widgets.tag_management_page import TagManagementPage
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+
+
+FILTER_LANGUAGES = (
+    Language("English", "en"),
+    Language("Chinese", "zh"),
+    Language("Japanese", "ja"),
+    Language("Unknown", "und"),
+)
+
+
+def _no_books_preview(_tag_ids, _language_codes) -> BookFilterPreview:
+    return BookFilterPreview(0, {})
 
 
 def apply_theme() -> None:
@@ -134,7 +150,7 @@ def test_tag_dialog_widens_to_the_ceiling(qtbot) -> None:
     overlay = JoyReadDialogOverlay()
     qtbot.addWidget(overlay)
     overlay.resize(Theme.window_width, Theme.window_height)
-    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    overlay.show_book_filter("Tag Filter", [Tag("t1", "Fiction")], FILTER_LANGUAGES, (), (), _no_books_preview, lambda *_: None)
     QApplication.processEvents()
 
     assert overlay.panel.width() == Theme.dialog_max_width
@@ -151,7 +167,7 @@ def test_wide_dialog_fits_a_minimum_width_window(qtbot) -> None:
     overlay = JoyReadDialogOverlay(root)
     overlay.setGeometry(0, 0, root.width(), root.height())
     root.show()
-    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    overlay.show_book_filter("Tag Filter", [Tag("t1", "Fiction")], FILTER_LANGUAGES, (), (), _no_books_preview, lambda *_: None)
     QApplication.processEvents()
 
     assert overlay.panel.width() <= overlay.width()
@@ -173,7 +189,7 @@ def test_wide_dialog_shrinks_rather_than_overflowing_a_narrow_host(qtbot) -> Non
     overlay = JoyReadDialogOverlay(root)
     overlay.setGeometry(0, 0, root.width(), root.height())
     root.show()
-    overlay.show_tag_filter("Tag Filter", [Tag("t1", "Fiction")], (), lambda _ids: None)
+    overlay.show_book_filter("Tag Filter", [Tag("t1", "Fiction")], FILTER_LANGUAGES, (), (), _no_books_preview, lambda *_: None)
     QApplication.processEvents()
 
     assert overlay.panel.width() < Theme.dialog_max_width
@@ -404,7 +420,10 @@ def test_tag_filter_dialog_allows_empty_tag_panel_and_confirm_off_state(qtbot) -
     overlay.resize(Theme.window_width, Theme.window_height)
     confirmed: list[tuple[str, ...]] = []
 
-    overlay.show_tag_filter("Tag Filter", [], (), confirmed.append)
+    overlay.show_book_filter(
+        "Tag Filter", [], FILTER_LANGUAGES, (), (), _no_books_preview,
+        lambda tag_ids, _languages: confirmed.append(tag_ids),
+    )
     QApplication.processEvents()
 
     content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
@@ -414,8 +433,8 @@ def test_tag_filter_dialog_allows_empty_tag_panel_and_confirm_off_state(qtbot) -
     assert content is not None
     assert pool is not None
     # The pool is a fixed height so the panel never resizes as the tray fills.
-    assert pool.height() == Theme.tag_browser_pool_height
-    assert [button.text for button in buttons] == ["Reset", "Confirm"]
+    assert pool.height() == Theme.book_filter_pool_height
+    assert [button.text for button in buttons] == ["Reset", "Show 0"]
 
     qtbot.mouseClick(buttons[1], Qt.MouseButton.LeftButton)
     QApplication.processEvents()
@@ -432,7 +451,10 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
     confirmed: list[tuple[str, ...]] = []
 
-    overlay.show_tag_filter("Tag Filter", tags, ("tag-action",), confirmed.append)
+    overlay.show_book_filter(
+        "Tag Filter", tags, FILTER_LANGUAGES, ("tag-action",), (), _no_books_preview,
+        lambda tag_ids, _languages: confirmed.append(tag_ids),
+    )
     QApplication.processEvents()
 
     content = overlay.panel.findChild(DialogTagFilterContent, "DialogTagFilterContent")
@@ -441,7 +463,7 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     chips = [
         chip
         for chip in overlay.panel.findChildren(TagChipWidget)
-        if not chip.is_add_chip and not chip.is_removable
+        if chip.tag_id.startswith("tag-") and not chip.is_removable
     ]
     buttons = overlay.panel.findChildren(DialogTextButton)
 
@@ -462,6 +484,97 @@ def test_tag_filter_dialog_uses_chip_selection_and_reset_stays_open(qtbot) -> No
     assert confirmed == [()]
 
 
+def _show_book_filter(qtbot, preview, *, selected_languages=()):
+    apply_theme()
+    overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(overlay)
+    overlay.resize(Theme.window_width, Theme.window_height)
+    confirmed: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    overlay.show_book_filter(
+        "Filter",
+        [Tag("tag-action", "Action")],
+        FILTER_LANGUAGES,
+        (),
+        selected_languages,
+        preview,
+        lambda tag_ids, language_codes: confirmed.append((tag_ids, language_codes)),
+    )
+    QApplication.processEvents()
+    content = overlay.panel.findChild(DialogBookFilterContent, "DialogTagFilterContent")
+    assert content is not None
+    return overlay, content, confirmed
+
+
+def test_book_filter_confirms_languages_and_shows_a_live_result_count(qtbot) -> None:
+    requested: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+
+    def preview(tag_ids, language_codes):
+        requested.append((tag_ids, language_codes))
+        return BookFilterPreview(len(language_codes) * 7, {"ja": 7, "zh": 3})
+
+    overlay, content, confirmed = _show_book_filter(qtbot, preview)
+    row = content.findChild(LanguageFilterRow, "LanguageFilterRow")
+    confirm = overlay.panel.findChildren(DialogTextButton)[-1]
+    assert row is not None
+    assert confirm.text == "Show 0"
+    assert row.chips["en"].property("empty") == "true"
+    assert row.chips["ja"].property("empty") == "false"
+
+    qtbot.mouseClick(row.chips["ja"], Qt.MouseButton.LeftButton)
+    qtbot.mouseClick(row.chips["zh"], Qt.MouseButton.LeftButton, Qt.KeyboardModifier.ShiftModifier)
+    QApplication.processEvents()
+
+    assert content.selected_language_codes == ("zh", "ja")
+    assert requested[-1] == ((), ("zh", "ja"))
+    assert confirm.text == "Show 14"
+    assert content.selection_label == "2 selected"
+
+    qtbot.mouseClick(confirm, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+    assert confirmed == [((), ("zh", "ja"))]
+
+
+def test_book_filter_plain_click_replaces_the_language_selection(qtbot) -> None:
+    _overlay, content, _confirmed = _show_book_filter(
+        qtbot, _no_books_preview, selected_languages=("zh", "ja")
+    )
+    row = content.findChild(LanguageFilterRow, "LanguageFilterRow")
+    assert row is not None
+
+    qtbot.mouseClick(row.chips["en"], Qt.MouseButton.LeftButton)
+
+    assert content.selected_language_codes == ("en",)
+    assert row.chips["en"].selected and not row.chips["ja"].selected
+
+
+def test_book_filter_reset_clears_languages_and_stays_open(qtbot) -> None:
+    overlay, content, confirmed = _show_book_filter(
+        qtbot, _no_books_preview, selected_languages=("ja",)
+    )
+    reset = overlay.panel.findChildren(DialogTextButton)[0]
+
+    qtbot.mouseClick(reset, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+    assert overlay.isVisible()
+    assert confirmed == []
+    assert content.selected_language_codes == ()
+    assert content.selection_label == "None selected"
+
+
+def test_book_filter_keeps_the_tag_dialog_outer_height(qtbot) -> None:
+    filter_overlay, _content, _confirmed = _show_book_filter(qtbot, _no_books_preview)
+    allocation_overlay = JoyReadDialogOverlay()
+    qtbot.addWidget(allocation_overlay)
+    allocation_overlay.resize(Theme.window_width, Theme.window_height)
+    allocation_overlay.show_tag_allocation("Tags", [Tag("tag-action", "Action")], (), lambda _ids: None)
+    QApplication.processEvents()
+
+    assert filter_overlay.panel.height() == allocation_overlay.panel.height()
+    pool = filter_overlay.panel.findChild(QWidget, "TagBrowserPool")
+    assert pool is not None and pool.height() == Theme.book_filter_pool_height
+
+
 def test_tag_filter_tray_remove_preserves_the_other_selected_tags(qtbot) -> None:
     apply_theme()
     overlay = JoyReadDialogOverlay()
@@ -469,11 +582,14 @@ def test_tag_filter_tray_remove_preserves_the_other_selected_tags(qtbot) -> None
     overlay.resize(Theme.window_width, Theme.window_height)
     tags = [Tag("tag-action", "Action"), Tag("tag-comedy", "Comedy")]
 
-    overlay.show_tag_filter(
+    overlay.show_book_filter(
         "Tag Filter",
         tags,
+        FILTER_LANGUAGES,
         ("tag-action", "tag-comedy"),
-        lambda _ids: None,
+        (),
+        _no_books_preview,
+        lambda *_: None,
     )
     QApplication.processEvents()
 
@@ -712,7 +828,7 @@ def test_escape_rejects_a_confirm_dialog_without_confirming(qtbot) -> None:
 
 
 def test_escape_closes_the_tag_filter_dialog(qtbot) -> None:
-    """The tag window: show_tag_filter has no Cancel button today, so
+    """The tag window: show_book_filter has no Cancel button today, so
     Escape must still hide it (with no confirm side effect) rather than
     leaving the user stuck with only the confirm/reset actions."""
 
@@ -726,7 +842,10 @@ def test_escape_closes_the_tag_filter_dialog(qtbot) -> None:
 
     tag = Tag("t1", "Fiction")
     confirmed: list[tuple[str, ...]] = []
-    overlay.show_tag_filter("Tags", [tag], (), lambda ids: confirmed.append(ids))
+    overlay.show_book_filter(
+        "Tags", [tag], FILTER_LANGUAGES, (), (), _no_books_preview,
+        lambda tag_ids, _languages: confirmed.append(tag_ids),
+    )
     QApplication.processEvents()
     assert overlay.isVisible()
 

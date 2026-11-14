@@ -5,7 +5,7 @@ from __future__ import annotations
 from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 
 from PySide6.QtCore import QSize, Qt, Signal as QtSignal
 from PySide6.QtGui import QColor, QIcon, QKeyEvent, QMouseEvent, QResizeEvent, QShowEvent
@@ -23,18 +23,24 @@ from PySide6.QtWidgets import (
 )
 
 from joyread.core.models.collection import Collection
+from joyread.core.models.language import Language
 from joyread.core.models.tag import Tag
 from joyread.infrastructure.i18n.locale_service import t
 from joyread.infrastructure.i18n.qt_locale import language_events
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.selection import toggle_selection
+from joyread.ui.viewmodels.shelf_filter import BookFilterPreview
 from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.elided_label import ElidedLabel
+from joyread.ui.widgets.language_filter_row import LanguageFilterRow
 from joyread.ui.widgets.tag_browser import TagBrowserWidget
 
 
 logger = logging.getLogger(__name__)
+
+
+BookFilterPreviewProvider = Callable[[tuple[str, ...], tuple[str, ...]], BookFilterPreview]
 
 
 class DialogTextButton(QFrame):
@@ -78,6 +84,9 @@ class DialogTextButton(QFrame):
     @property
     def text(self) -> str:
         return self._label.text()
+
+    def set_text(self, text: str) -> None:
+        set_localized(self._label, "setText", text)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -678,6 +687,8 @@ class DialogTagFilterContent(QWidget):
         empty_hint: str | None = None,
         resources: ResourceLoader | None = None,
         han_language: str | None = None,
+        tray_header_key: str = "tags.tray_header",
+        pool_height: int = Theme.tag_browser_pool_height,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("DialogTagFilterContent")
@@ -700,6 +711,8 @@ class DialogTagFilterContent(QWidget):
             resources,
             show_tray=True,
             han_language=han_language,
+            tray_header_key=tray_header_key,
+            pool_height=pool_height,
         )
         self._browser.tag_clicked.connect(self._handle_tag_clicked)
         self._browser.tag_remove_clicked.connect(self._handle_tag_remove_clicked)
@@ -730,10 +743,17 @@ class DialogTagFilterContent(QWidget):
             return t("tags.selection_one")
         return t("tags.selection_many", count=str(count))
 
+    @property
+    def confirm_label(self) -> str:
+        return t("dialog.btn_confirm")
+
     def clear_selection(self) -> None:
         self._selected_tag_ids = set()
         self._browser.set_selected_tag_ids(())
-        self.selection_changed.emit(0)
+        self._notify_selection_changed()
+
+    def _notify_selection_changed(self) -> None:
+        self.selection_changed.emit(len(self._selected_tag_ids))
 
     def set_available_width(self, width: int) -> None:
         self.setFixedWidth(width)
@@ -749,18 +769,101 @@ class DialogTagFilterContent(QWidget):
         else:
             self._selected_tag_ids = toggle_selection(self._selected_tag_ids, tag_id, additive=additive)
         self._browser.set_selected_tag_ids(self._selected_tag_ids)
-        self.selection_changed.emit(len(self._selected_tag_ids))
+        self._notify_selection_changed()
 
     def _handle_tag_remove_clicked(self, tag_id: str) -> None:
         # A tray chip is an explicit remove affordance. It must never inherit
         # the pool's single-select/Shift-select rules.
         self._selected_tag_ids.discard(tag_id)
         self._browser.set_selected_tag_ids(self._selected_tag_ids)
-        self.selection_changed.emit(len(self._selected_tag_ids))
+        self._notify_selection_changed()
 
     def _handle_blank_clicked(self, additive: bool) -> None:
         if self._allocation_mode and additive:
             self.clear_selection()
+
+
+class DialogBookFilterContent(DialogTagFilterContent):
+    """Library filter body: a language row above the shared tag browser.
+
+    Languages follow the same click / Shift-click rules as the tag chips. The
+    preview comes from the ViewModel, so this widget only renders counts it is
+    handed and never decides which books match.
+    """
+
+    def __init__(
+        self,
+        tags: list[Tag],
+        languages: Iterable[Language],
+        selected_tag_ids: tuple[str, ...],
+        selected_language_codes: tuple[str, ...],
+        preview: BookFilterPreviewProvider,
+        parent: QWidget | None = None,
+        *,
+        resources: ResourceLoader | None = None,
+    ) -> None:
+        super().__init__(
+            tags,
+            selected_tag_ids,
+            parent,
+            resources=resources,
+            tray_header_key="tags.filter_tray_header",
+            pool_height=Theme.book_filter_pool_height,
+        )
+        self._languages = tuple(languages)
+        offered_codes = {language.iso_code for language in self._languages}
+        self._selected_language_codes = set(selected_language_codes) & offered_codes
+        self._preview_provider = preview
+
+        self._language_row = LanguageFilterRow(self._languages)
+        self._language_row.language_clicked.connect(self._handle_language_clicked)
+        self._language_row.setVisible(bool(self._languages))
+        layout = self.layout()
+        layout.setSpacing(Theme.book_filter_section_gap)
+        layout.insertWidget(0, self._language_row)
+        self._refresh_preview()
+
+    @property
+    def selected_language_codes(self) -> tuple[str, ...]:
+        return tuple(
+            language.iso_code
+            for language in self._languages
+            if language.iso_code in self._selected_language_codes
+        )
+
+    @property
+    def selection_label(self) -> str:
+        count = len(self._selected_tag_ids) + len(self._selected_language_codes)
+        if count == 0:
+            return t("tags.selection_none")
+        return t("tags.filter_selected_count", count=str(count))
+
+    @property
+    def confirm_label(self) -> str:
+        return t("tags.filter_show_results", count=str(self._preview.matching_books))
+
+    def clear_selection(self) -> None:
+        self._selected_language_codes = set()
+        super().clear_selection()
+
+    def _handle_language_clicked(self, language_code: str, additive: bool) -> None:
+        self._selected_language_codes = toggle_selection(
+            self._selected_language_codes,
+            language_code,
+            additive=additive,
+        )
+        self._notify_selection_changed()
+
+    def _notify_selection_changed(self) -> None:
+        self._refresh_preview()
+        super()._notify_selection_changed()
+
+    def _refresh_preview(self) -> None:
+        self._preview = self._preview_provider(self.selected_tag_ids, self.selected_language_codes)
+        self._language_row.set_state(
+            self._selected_language_codes,
+            self._preview.books_by_language,
+        )
 
 
 class JoyReadDialogPanel(QFrame):
@@ -953,7 +1056,6 @@ class JoyReadDialogPanel(QFrame):
         include_cancel: bool = False,
     ) -> None:
         self._set_title(title, count=content.selection_label)
-        content.selection_changed.connect(lambda _count: self.set_title_count(content.selection_label))
         self._set_content_widget(content)
         buttons: list[tuple[str, Callable[[], None]]] = []
         if include_cancel:
@@ -961,10 +1063,16 @@ class JoyReadDialogPanel(QFrame):
         buttons.extend(
             (
                 (t("dialog.btn_reset"), content.clear_selection),
-                (t("dialog.btn_confirm"), self.accepted.emit),
+                (content.confirm_label, self.accepted.emit),
             )
         )
-        self._set_buttons(tuple(buttons))
+        confirm_button = self._set_buttons(tuple(buttons))[-1]
+
+        def sync_selection_labels(_count: int) -> None:
+            self.set_title_count(content.selection_label)
+            confirm_button.set_text(content.confirm_label)
+
+        content.selection_changed.connect(sync_selection_labels)
 
     def refresh_size(self) -> None:
         self._refresh_size()
@@ -995,7 +1103,10 @@ class JoyReadDialogPanel(QFrame):
         self._title_label.style().unpolish(self._title_label)
         self._title_label.style().polish(self._title_label)
 
-    def _set_buttons(self, buttons: tuple[tuple[str, Callable[[], None]], ...]) -> None:
+    def _set_buttons(
+        self,
+        buttons: tuple[tuple[str, Callable[[], None]], ...],
+    ) -> tuple[DialogTextButton, ...]:
         while self._option_layout.count():
             item = self._option_layout.takeAt(0)
             widget = item.widget()
@@ -1004,12 +1115,15 @@ class JoyReadDialogPanel(QFrame):
                 widget.deleteLater()
 
         self._option_layout.addStretch(1)
+        created: list[DialogTextButton] = []
         for label, callback in buttons:
             button = DialogTextButton(label, self)
             button.clicked.connect(callback)
             self._option_layout.addWidget(button)
+            created.append(button)
         self._option_layout.addStretch(1)
         self._refresh_size()
+        return tuple(created)
 
     def _set_content_widget(self, widget: QWidget) -> None:
         if self._content_widget is not None:
@@ -1394,16 +1508,26 @@ class JoyReadDialogOverlay(QWidget):
         )
         self._show_centered()
 
-    def show_tag_filter(
+    def show_book_filter(
         self,
         title: str,
         tags: list[Tag],
+        languages: Iterable[Language],
         selected_tag_ids: tuple[str, ...],
-        on_confirm: Callable[[tuple[str, ...]], None],
+        selected_language_codes: tuple[str, ...],
+        preview: BookFilterPreviewProvider,
+        on_confirm: Callable[[tuple[str, ...], tuple[str, ...]], None],
     ) -> None:
-        content = DialogTagFilterContent(tags, selected_tag_ids, resources=self._resources)
+        content = DialogBookFilterContent(
+            tags,
+            languages,
+            selected_tag_ids,
+            selected_language_codes,
+            preview,
+            resources=self._resources,
+        )
         self._before_accept = None
-        self._on_accept = lambda: on_confirm(content.selected_tag_ids)
+        self._on_accept = lambda: on_confirm(content.selected_tag_ids, content.selected_language_codes)
         self._on_reject = None
         self._on_skip = None
         self._panel.set_tag_filter_content(title, content)

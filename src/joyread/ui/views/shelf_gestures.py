@@ -62,7 +62,8 @@ class ShelfGestureController(QObject):
         vm = self._vm
         return (vm.current_shelf, vm.view_mode, vm.sort_field, vm.sort_ascending,
                 vm.search_query, vm.file_filter, vm.tag_filter_ids,
-                tuple(book.uuid for book in vm.visible_books), vm.is_loading, vm.is_importing)
+                tuple(book.uuid for book in vm.visible_books), vm.is_loading, vm.is_importing,
+                vm.language_filter_codes)
 
     def synchronize(self):
         if self.active and (self._signature != self._current_signature()

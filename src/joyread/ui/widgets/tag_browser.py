@@ -39,7 +39,7 @@ from joyread.ui.widgets.icon_paint import faded_pixmap as _faded_pixmap
 from joyread.ui.widgets.tag_chip import TagChipWidget
 
 
-class _SectionHeader(QWidget):
+class TagBrowserSectionHeader(QWidget):
     """A caption followed by a hairline that eats the remaining width."""
 
     def __init__(self, text: str, parent: QWidget | None = None) -> None:
@@ -112,9 +112,13 @@ class TagBrowserWidget(QWidget):
         show_tray: bool = False,
         include_add_chip: bool = False,
         han_language: str | None = None,
+        tray_header_key: str = "tags.tray_header",
+        pool_height: int = Theme.tag_browser_pool_height,
     ) -> None:
         super().__init__(parent)
         self.setObjectName("TagBrowser")
+        self._tray_header_key = tray_header_key
+        self._pool_height = pool_height
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._resources = resources or ResourceLoader()
         self._show_tray = show_tray
@@ -204,7 +208,7 @@ class TagBrowserWidget(QWidget):
         pool = QFrame()
         pool.setObjectName("TagBrowserPool")
         pool.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        pool.setFixedHeight(Theme.tag_browser_pool_height)
+        pool.setFixedHeight(self._pool_height)
         layout = QVBoxLayout(pool)
         margin = Theme.tag_browser_pool_padding - Theme.tag_browser_pool_border_width
         layout.setContentsMargins(margin, margin, margin, margin)
@@ -255,7 +259,7 @@ class TagBrowserWidget(QWidget):
         layout = QVBoxLayout(tray)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(Theme.tag_browser_tray_gap)
-        self._tray_header = _SectionHeader(t("tags.tray_header"))
+        self._tray_header = TagBrowserSectionHeader(t(self._tray_header_key))
         layout.addWidget(self._tray_header)
 
         self._tray_scroll = QScrollArea()
@@ -340,7 +344,7 @@ class TagBrowserWidget(QWidget):
 
     def refresh_labels(self) -> None:
         set_localized(self._search_field, "setPlaceholderText", t("tags.search_placeholder"))
-        self._tray_header.set_text(t("tags.tray_header"))
+        self._tray_header.set_text(t(self._tray_header_key))
         language_changed = False
         if self._follows_active_locale:
             han_language = self._active_han_language()
@@ -415,7 +419,7 @@ class TagBrowserWidget(QWidget):
             group_layout = QVBoxLayout(group)
             group_layout.setContentsMargins(0, 0, 0, Theme.tag_browser_group_bottom_padding)
             group_layout.setSpacing(Theme.tag_browser_group_gap)
-            group_layout.addWidget(_SectionHeader(letter))
+            group_layout.addWidget(TagBrowserSectionHeader(letter))
 
             chips_host = QWidget()
             flow = FlowLayout(
@@ -566,4 +570,4 @@ class TagBrowserWidget(QWidget):
         super().mouseReleaseEvent(event)
 
 
-__all__ = ["TagBrowserWidget"]
+__all__ = ["TagBrowserSectionHeader", "TagBrowserWidget"]

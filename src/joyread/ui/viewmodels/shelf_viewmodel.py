@@ -32,6 +32,12 @@ from joyread.core.services.library_service import LibraryService
 from joyread.core.models.vault import BookSealState, book_seal_states
 from joyread.app.archive_warmup_coordinator import ArchiveWarmupCoordinator
 from joyread.core.services.tag_service import TagService
+from joyread.ui.viewmodels.shelf_filter import (
+    BookFilter,
+    BookFilterPreview,
+    filterable_language_code,
+    summarize_book_filter,
+)
 from joyread.app.tasking import TaskExecutor, TaskHandle, TaskPriority
 from joyread.core.services.thumbnail_service import ThumbnailService, ThumbnailSourceHandle
 from joyread.infrastructure.config.settings_store import AppSettings, SettingsStore
@@ -166,7 +172,7 @@ class ShelfViewModel(ShelfSorting):
         self._book_tag_ids_by_book: dict[str, tuple[str, ...]] = {}
         # Guards against an older async tag read publishing after a newer one.
         self._tag_refresh_token = 0
-        self._tag_filter_ids: tuple[str, ...] = ()
+        self._book_filter = BookFilter()
         self.search_query = ""
         self.sort_field = _coerce_sort_field(settings.shelf_sort_field if settings is not None else None)
         self.sort_ascending = bool(settings.shelf_sort_ascending) if settings is not None else False
@@ -202,11 +208,15 @@ class ShelfViewModel(ShelfSorting):
 
     @property
     def tag_filter_ids(self) -> tuple[str, ...]:
-        return self._tag_filter_ids
+        return self._book_filter.tag_ids
 
     @property
-    def tag_filter_active(self) -> bool:
-        return bool(self._tag_filter_ids)
+    def language_filter_codes(self) -> tuple[str, ...]:
+        return self._book_filter.language_codes
+
+    @property
+    def book_filter_active(self) -> bool:
+        return self._book_filter.is_active
 
     @property
     def page_title(self) -> str:
@@ -226,12 +236,17 @@ class ShelfViewModel(ShelfSorting):
 
     @property
     def visible_books(self) -> list[Book]:
-        books = [book for book in self.books if self._book_in_current_shelf(book)]
-        search_query = parse_book_search_query(self.search_query)
-        if not search_query.is_empty:
-            books = [book for book in books if self._book_matches_search(book, search_query)]
-        books = [book for book in books if self._book_matches_filter(book)]
-        books = [book for book in books if self._book_matches_tag_filter(book)]
+        books = self._books_before_book_filter()
+        if self._book_filter.is_active:
+            known_codes = self._known_language_codes()
+            books = [
+                book
+                for book in books
+                if self._book_filter.matches(
+                    filterable_language_code(book.language_tag, known_codes),
+                    self.tag_ids_for_book(book.uuid),
+                )
+            ]
         if self.current_shelf == ShelfKey.RECENT:
             return sorted(
                 books,
@@ -403,15 +418,48 @@ class ShelfViewModel(ShelfSorting):
         self._save_shelf_preferences()
         self._emit_state()
 
-    def set_tag_filter_ids(self, tag_ids: Iterable[str]) -> None:
-        normalized_ids = tuple(dict.fromkeys(tag_id for tag_id in tag_ids if tag_id))
-        if normalized_ids == self._tag_filter_ids:
+    def set_book_filter(self, tag_ids: Iterable[str], language_codes: Iterable[str]) -> None:
+        next_filter = BookFilter.of(tag_ids, language_codes)
+        if next_filter == self._book_filter:
             return
-        self._tag_filter_ids = normalized_ids
-        logger.debug("Shelf tag filter changed count=%d", len(normalized_ids))
+        tags_changed = next_filter.tag_ids != self._book_filter.tag_ids
+        self._book_filter = next_filter
+        logger.debug(
+            "Shelf book filter changed tags=%d languages=%d",
+            len(next_filter.tag_ids),
+            len(next_filter.language_codes),
+        )
         self.clear_selection(emit_state=False)
-        self._refresh_book_tag_index()
+        if tags_changed:
+            self._refresh_book_tag_index()
         self._emit_state()
+
+    def set_tag_filter_ids(self, tag_ids: Iterable[str]) -> None:
+        self.set_book_filter(tag_ids, self._book_filter.language_codes)
+
+    def preview_book_filter(
+        self,
+        tag_ids: Iterable[str],
+        language_codes: Iterable[str],
+    ) -> BookFilterPreview:
+        """Count what the filter dialog's pending selection would show.
+
+        Scoped to the current shelf, search and format, so the number matches
+        the shelf after confirming and Hidden Space books are only counted
+        while the Hidden shelf is the one being filtered.
+        """
+
+        known_codes = self._known_language_codes()
+        return summarize_book_filter(
+            (
+                (
+                    filterable_language_code(book.language_tag, known_codes),
+                    self.tag_ids_for_book(book.uuid),
+                )
+                for book in self._books_before_book_filter()
+            ),
+            BookFilter.of(tag_ids, language_codes),
+        )
 
     def clear_tag_filter(self) -> None:
         self.set_tag_filter_ids(())
@@ -542,7 +590,9 @@ class ShelfViewModel(ShelfSorting):
                 updated = replace(
                     book,
                     progress=normalized_progress,
-                    last_read_at=now,
+                    # The repository keeps hidden books out of Recent; match
+                    # it so the optimistic row never disagrees with disk.
+                    last_read_at=book.last_read_at if book.is_hidden else now,
                     updated_at=now,
                 )
                 next_books.append(updated)
@@ -1340,16 +1390,20 @@ class ShelfViewModel(ShelfSorting):
     def _build_search_document(self, book: Book) -> BookSearchDocument:
         return build_book_search_document(book.uuid, book.title, book.author)
 
-    def _book_matches_tag_filter(self, book: Book) -> bool:
-        if not self._tag_filter_ids:
-            return True
-        book_tag_ids = set(self._book_tag_ids_by_book.get(book.uuid, ()))
-        return set(self._tag_filter_ids).issubset(book_tag_ids)
+    def _books_before_book_filter(self) -> list[Book]:
+        books = [book for book in self.books if self._book_in_current_shelf(book)]
+        search_query = parse_book_search_query(self.search_query)
+        if not search_query.is_empty:
+            books = [book for book in books if self._book_matches_search(book, search_query)]
+        return [book for book in books if self._book_matches_filter(book)]
+
+    def _known_language_codes(self) -> frozenset[str]:
+        return frozenset(language.iso_code for language in self.languages)
 
     def _refresh_book_tag_index(self) -> None:
         """Refresh the book → tag-ids lookup used by the tag filter.
 
-        ``self._book_tag_ids_by_book`` powers :meth:`_book_matches_tag_filter`
+        ``self._book_tag_ids_by_book`` powers the language and tag filter
         — keeping it in memory avoids hitting the tag repository per book on
         every filter pass. Repository failure is degraded (empty index) so
         the shelf can still render rows, just without tag-based filtering.

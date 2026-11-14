@@ -145,7 +145,7 @@ def test_tag_filter_requires_all_selected_tags() -> None:
 
     vm.set_tag_filter_ids(("tag-action", "tag-comedy"))
 
-    assert vm.tag_filter_active is True
+    assert vm.book_filter_active is True
     assert {book.uuid for book in vm.visible_books} == {"mock-book-01"}
 
 
@@ -164,6 +164,113 @@ def test_tag_filter_composes_with_current_collection() -> None:
     vm.set_tag_filter_ids(("tag-comedy",))
 
     assert {book.uuid for book in vm.visible_books} == {"mock-book-01", "mock-book-09"}
+
+
+def _set_languages(vm: ShelfViewModel, languages: dict[str, str]) -> None:
+    for book_uuid, language_tag in languages.items():
+        vm.update_book_language(book_uuid, language_tag)
+
+
+def test_selected_languages_are_alternatives() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    _set_languages(vm, {"mock-book-01": "ja", "mock-book-03": "zh", "mock-book-09": "ja"})
+
+    vm.set_book_filter((), ("ja", "zh"))
+
+    assert vm.book_filter_active is True
+    assert {book.uuid for book in vm.visible_books} == {
+        "mock-book-01",
+        "mock-book-03",
+        "mock-book-09",
+    }
+
+
+def test_language_filter_intersects_with_every_selected_tag() -> None:
+    vm = make_viewmodel_with_tag_links(
+        {
+            "mock-book-01": ("tag-action", "tag-comedy"),
+            "mock-book-03": ("tag-action", "tag-comedy"),
+            "mock-book-09": ("tag-action",),
+        }
+    )
+    vm.load_books()
+    _set_languages(vm, {"mock-book-01": "ja", "mock-book-03": "zh", "mock-book-09": "ja"})
+
+    vm.set_book_filter(("tag-action", "tag-comedy"), ("ja",))
+
+    assert {book.uuid for book in vm.visible_books} == {"mock-book-01"}
+
+
+def test_changing_tags_keeps_the_selected_languages() -> None:
+    vm = make_viewmodel_with_tag_links({"mock-book-01": ("tag-action",)})
+    vm.load_books()
+    vm.set_book_filter((), ("en",))
+
+    vm.set_tag_filter_ids(("tag-action",))
+
+    assert vm.language_filter_codes == ("en",)
+    assert vm.tag_filter_ids == ("tag-action",)
+
+
+def test_language_filter_disables_custom_reordering() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.set_sort(SortField.CUSTOM.value)
+    assert vm.can_reorder is True
+
+    vm.set_book_filter((), ("en",))
+
+    assert vm.can_reorder is False
+
+
+def test_preview_counts_each_language_under_the_selected_tags_only() -> None:
+    vm = make_viewmodel_with_tag_links(
+        {
+            "mock-book-01": ("tag-action",),
+            "mock-book-03": ("tag-action",),
+            "mock-book-09": ("tag-comedy",),
+        }
+    )
+    vm.load_books()
+    _set_languages(vm, {"mock-book-01": "ja", "mock-book-03": "zh", "mock-book-09": "ja"})
+
+    preview = vm.preview_book_filter(("tag-action",), ("ja",))
+
+    assert preview.matching_books == 1
+    assert preview.books_by_language == {"ja": 1, "zh": 1}
+    assert vm.tag_filter_ids == ()  # Previewing must not apply anything.
+
+
+def test_preview_matches_the_shelf_that_confirming_would_show() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    _set_languages(vm, {"mock-book-01": "ja"})
+    vm.set_search_query(vm.books[0].title)
+
+    preview = vm.preview_book_filter((), ("ja",))
+    vm.set_book_filter((), ("ja",))
+
+    assert preview.matching_books == len(vm.visible_books)
+
+
+def test_preview_does_not_count_hidden_books_outside_the_hidden_shelf() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    _set_languages(vm, {"mock-book-01": "ja"})
+    vm.hide_books(("mock-book-01",))
+
+    assert vm.preview_book_filter((), ()).books_by_language.get("ja", 0) == 0
+
+
+def test_a_stored_language_outside_the_table_filters_as_unknown() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.books = [replace(vm.books[0], language_tag="ko"), *vm.books[1:]]
+
+    vm.set_book_filter((), ("und",))
+
+    assert [book.uuid for book in vm.visible_books] == [vm.books[0].uuid]
 
 
 def test_tag_filter_composes_with_hidden_shelf() -> None:
@@ -252,8 +359,8 @@ def test_tag_filter_is_not_persisted_in_shelf_preferences(tmp_path: Path) -> Non
         tag_service=_FakeShelfTagService({"mock-book-01": ("tag-action",)}),  # type: ignore[arg-type]
     )
 
-    assert vm.tag_filter_active is True
-    assert fresh.tag_filter_active is False
+    assert vm.book_filter_active is True
+    assert fresh.book_filter_active is False
 
 
 def test_shelf_filters_recent_favourites_and_collection() -> None:
@@ -971,6 +1078,20 @@ def test_unhide_books_restores_visibility_on_all_shelf() -> None:
 
     vm.unhide_books(["mock-book-03"])
     assert "mock-book-03" in {book.uuid for book in vm.visible_books}
+
+
+def test_reading_a_hidden_book_does_not_return_it_to_recent_on_unhide() -> None:
+    vm = make_viewmodel()
+    vm.load_books()
+    vm.hide_books(["mock-book-03"])
+
+    vm.apply_reader_progress("mock-book-03", page_index=2, progress_percent=30.0)
+    hidden = next(book for book in vm.books if book.uuid == "mock-book-03")
+    assert hidden.last_read_at is None
+
+    vm.unhide_books(["mock-book-03"])
+    vm.set_current_shelf(ShelfKey.RECENT.value)
+    assert all(book.uuid != "mock-book-03" for book in vm.visible_books)
 
 
 def test_hidden_books_cannot_be_favourited() -> None:

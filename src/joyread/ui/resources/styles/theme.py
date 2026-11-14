@@ -507,6 +507,17 @@ class Theme:
     tag_browser_scroll_padding = 6
     tag_browser_empty_height = 200
     tag_browser_height = tag_browser_search_height + tag_browser_gap + tag_browser_pool_height
+    # The Library filter keeps the tag dialog's outer size: the language row
+    # is paid for out of the tag pool so the panel still fits the same windows.
+    book_filter_language_header_height = 18
+    book_filter_language_row_height = (
+        book_filter_language_header_height + tag_browser_group_gap + tag_chip_height
+    )
+    book_filter_section_gap = 10
+    book_filter_pool_height = (
+        tag_browser_pool_height - book_filter_language_row_height - book_filter_section_gap
+    )
+    tag_chip_count_gap = 6
 
     # Derived so the Settings frame cannot drift out of step with the browser
     # it now holds: padding + browser + gap + the rename/delete control bar.

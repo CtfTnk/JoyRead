@@ -1398,6 +1398,32 @@ def test_set_book_hidden_clears_favourite_recent_and_normal_collection(tmp_path:
     database.close()
 
 
+def test_reading_a_hidden_book_keeps_it_out_of_recent_after_unhide(tmp_path: Path) -> None:
+    source = tmp_path / "read-while-hidden.cbz"
+    _write_cbz(source)
+    service, database, paths = _import_service(tmp_path)
+    service.import_files([source])
+    repository = SqliteBookRepository(database, managed_books_root=paths.paths.books)
+    book = repository.list_books()[0]
+    repository.set_progress(book.uuid, page_index=1, progress_percent=10.0)
+    repository.set_book_hidden(book.uuid, True)
+
+    repository.set_progress(book.uuid, page_index=4, progress_percent=40.0)
+    repository.mark_recent(book.uuid)
+    repository.set_book_hidden(book.uuid, False)
+    unhidden = repository.get_book(book.uuid)
+
+    assert unhidden is not None
+    assert unhidden.last_read_at is None
+    # The reading position from the hidden session is still kept.
+    assert repository.get_progress(book.uuid).page_index == 4
+
+    repository.set_progress(book.uuid, page_index=5, progress_percent=50.0)
+    reread = repository.get_book(book.uuid)
+    assert reread is not None and reread.last_read_at is not None
+    database.close()
+
+
 def test_set_collection_hidable_demotion_drops_hidden_members(tmp_path: Path) -> None:
     source = tmp_path / "demote.cbz"
     _write_cbz(source)
