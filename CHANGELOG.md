@@ -3,43 +3,6 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Added
-
-- Settings → About → Diagnostics opens the log folder, saves a crash report to
-  the Desktop, deletes the logs, and turns on detailed logging until JoyRead
-  quits. Before saving a report, JoyRead says that the logs contain file paths
-  and book names. Detailed logging used to need `JOYREAD_LOG_LEVEL=DEBUG`,
-  which an app launched from Finder, Start or a desktop launcher cannot set.
-- When the previous launch ended without a normal quit — a crash, a force quit
-  or a power loss — JoyRead says so when the Library window opens and offers
-  to save a crash report to the Desktop. The report holds only the launches
-  that ended that way, with the native crash trace when one was recorded.
-
-### Changed
-
-- Each launch writes its own log file, named by its start time, and JoyRead
-  keeps the last 5 launches. The single rotating `joyread.log` is removed on
-  the first launch.
-- Logs are plain readable text instead of JSON: a header line states the
-  version, run and start time once, then each line shows local time, level,
-  category and message, followed by the event and its fields, and the code
-  location. Tracebacks are indented under their entry. The terminal shows the
-  same layout.
-
-- Logs record real file paths instead of a per-run hashed token, so a log can
-  name the file that failed. Logs stay on your computer unless you send them.
-  Passwords are still never written, in messages, fields, tracebacks or
-  archive-tool command lines. `JOYREAD_LOG_SENSITIVE` is removed.
-- A hidden book's title no longer reaches the log when its details are shown
-  or when exporting it fails.
-
-### Fixed
-
-- A log line no longer loses the fields after a path, and a file name with a
-  comma no longer shows its title after the hashed part.
-
 ## [1.4.0] — Unreleased
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.4.0.md)
@@ -67,6 +30,20 @@ All notable changes to JoyRead are documented here. This project follows
   files are pages JoyRead can show and at least 3 are not. The prompt names
   what the rest are. Read Anyway is remembered for that file until JoyRead
   quits. Library books and Open & Import are never asked about.
+- The Filter dialog has a row of languages above the tags. Click a language to
+  select it, or Shift-click to select several. A book matches when it is in any
+  selected language, while selected tags still all have to match. Languages and
+  tags apply together, the confirm button shows how many books on the current
+  shelf match, and the filter lasts until JoyRead quits.
+- Settings → About → Diagnostics opens the log folder, saves a crash report to
+  the Desktop, deletes the logs, and turns on detailed logging until JoyRead
+  quits. Before saving a report, JoyRead says that the logs contain file paths
+  and book names. Detailed logging used to need `JOYREAD_LOG_LEVEL=DEBUG`,
+  which an app launched from Finder, Start or a desktop launcher cannot set.
+- When the previous launch ended without a normal quit — a crash, a force quit
+  or a power loss — JoyRead says so when the Library window opens and offers
+  to save a crash report to the Desktop. The report holds only the launches
+  that ended that way, with the native crash trace when one was recorded.
 
 ### Changed
 
@@ -81,6 +58,25 @@ All notable changes to JoyRead are documented here. This project follows
 - The stated macOS requirement is corrected to macOS 26 or later. The Qt and
   7-Zip components in the app already needed it in 1.3.1, whose notes said
   macOS 13+.
+- Each launch writes its own log file, named by its start time, and JoyRead
+  keeps the last 5 launches. The single rotating `joyread.log` is removed on
+  the first launch.
+- Logs are plain readable text instead of JSON: a header line states the
+  version, run and start time once, then each line shows local time, level,
+  category and message, followed by the event and its fields, and the code
+  location. Tracebacks are indented under their entry. The terminal shows the
+  same layout.
+- Logs record real file paths instead of a per-run hashed token, so a log can
+  name the file that failed. Logs stay on your computer unless you send them.
+  Passwords are still never written, in messages, fields, tracebacks or
+  archive-tool command lines. `JOYREAD_LOG_SENSITIVE` is removed.
+- A hidden book's title no longer reaches the log when its details are shown
+  or when exporting it fails.
+
+### Fixed
+
+- A log line no longer loses the fields after a path, and a file name with a
+  comma no longer shows part of its name next to the hashed path.
 
 ### Known limitations
 
@@ -90,6 +86,9 @@ All notable changes to JoyRead are documented here. This project follows
   [what Hidden Space protects](docs/MANUAL.md#what-hidden-space-protects-and-what-it-does-not).
 - Password-protected archives cannot be encrypted; they stay hidden and are
   marked Not encrypted.
+- Logs record the file paths and names of books you import, open or export,
+  including books you hide later. Check a log or crash report before sending
+  it; Diagnostics can delete the logs.
 
 ## [1.3.1] — 2026-10-20
 
