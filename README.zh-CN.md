@@ -4,13 +4,13 @@
 <h1 align="center">欣阅 · JoyRead</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/release-1.3.1-39846a" alt="Release 1.3.1"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>让本地书籍管理更加便捷，也是随时打开、即时阅读的选择。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.zh-CN.md">使用手册</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1">1.3.1 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.zh-CN.md">使用手册</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">1.4.0 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
 
 欣阅是一款面向 **macOS、Windows 和 Ubuntu/Linux** 的本地漫画与 PDF 阅读器，也是一座属于你的桌面书库。把喜爱的书籍导入后慢慢整理，或者直接打开文件开始阅读，无需账户或云端服务。
 
@@ -18,23 +18,25 @@
 
 ## 下载与安装
 
-| 系统 | 1.3.1 安装包 | 安装方式 |
+| 系统 | 1.4.0 安装包 | 安装方式 |
 | --- | --- | --- |
-| macOS 13+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-macos-arm64.dmg) | 打开磁盘映像，将 JoyRead 拖入 Applications。 |
-| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-windows-x86_64-setup.exe) | 运行安装程序，按提示安装。 |
-| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.3.1-linux-amd64.deb`。 |
-| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.3.1-linux-arm64.deb`。 |
+| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | 打开磁盘映像，将 JoyRead 拖入 Applications。 |
+| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | 运行安装程序，按提示安装。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb`。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb`。 |
 
 **Ubuntu 请仅通过命令行安装。** 图形安装器会卡在 **“Preparing”**，此问题尚未修复。请在下载目录打开终端，运行上表中对应安装包的命令。
 
-安装包与校验值见 [Release 页面](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1)。macOS 包未经 Apple 公证，Windows 包无受信任的代码签名，首次运行可能出现系统提示；首次启动说明见发布说明。暂不提供 Intel Mac 安装包。
+安装包与校验值见 [Release 页面](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0)。macOS 包未经 Apple 公证，Windows 包无受信任的代码签名，首次运行可能出现系统提示；首次启动说明见发布说明。暂不提供 Intel Mac 安装包。
+
+**从 1.3.1 或更早版本升级：** 请先备份书库。欣阅 1.4.0 打开书库后，旧版本将无法再打开该书库。
 
 ## 从阅读到整理
 
 - **常见漫画格式与 PDF：** ZIP / CBZ、7z / CB7、RAR / CBR、PDF。EPUB / 轻小说阅读尚未启用。
-- **卡片与列表自由切换：** 用封面浏览藏书，或切换到紧凑列表；配合搜索、排序、格式与标签筛选快速定位。
+- **卡片与列表自由切换：** 用封面浏览藏书，或切换到紧凑列表；配合搜索、排序，以及格式、语言与标签筛选快速定位。
 - **标签与书单管理：** 按题材、系列或阅读计划整理，结合收藏、最近阅读和进度继续上次的旅程。
-- **隐藏空间与隐藏书单：** 将不想在普通书架展示的书籍和书单隐藏，并通过应用内密码入口访问。
+- **隐藏空间与隐藏书单：** 将不想在普通书架展示的书籍和书单隐藏。隐藏书籍及其封面在磁盘上加密保存，用密码解锁，并有恢复码作为备用。
 - **即时阅读：** 支持拖入文件阅读，也可在系统的“打开方式”中选择 JoyRead，无需先导入书库。系统关联取决于安装与桌面环境。
 - **专注阅读：** 单页 / 双页、从右向左或纵向阅读、缩放与适应模式、书签、缩略图导航和阅读进度。
 - **三语界面：** 英文、简体中文、日文；新配置默认跟随系统，不支持的语言回退到英文。
@@ -45,7 +47,7 @@
 
 ![拖放文件时选择直接阅读或导入书库](docs/assets/readme/drag-drop-zh-CN.png)
 
-**直接阅读**适合临时查看文件；默认不复制文件，也不添加书库记录。**导入**会创建由 JoyRead 管理的副本，保留原文件，方便长期管理。若启用了“打开书籍时导入”，打开文件也会尝试导入；加密漫画仍不可导入。
+**直接阅读**适合临时查看文件；默认不复制文件，也不添加书库记录。**导入**会创建由 JoyRead 管理的副本，保留原文件，方便长期管理。若启用了“打开书籍时导入”，打开文件也会尝试导入。不支持带密码的压缩包。
 
 ## 使用示例：补全书籍资料
 
@@ -76,11 +78,11 @@
 
 ![JoyRead 双页阅读器与进度条悬停页面预览](docs/assets/readme/reader.png)
 
-## 加密漫画与隐藏功能的边界
+## 隐藏空间与带密码的压缩包
 
-- **加密漫画可以阅读，但不能导入。** 支持的密码保护 ZIP/CBZ、7z/CB7、RAR/CBR 会在打开时请求密码，密码仅用于当前会话。
-- **隐藏只作用于 GUI，不是文件加密。** 隐藏书籍、书单和应用内访问密码不会加密磁盘上的文件。
-- 加密漫画解出的页面缓存以明文保存；**设置 → 隐私 → 关闭时删除页面缓存**默认开启。部分格式使用 7-Zip 辅助程序解压时，密码可能短暂出现在同用户进程可读取的命令行中；AES ZIP 使用进程内解密。详见[加密漫画说明](docs/MANUAL.zh-CN.md#加密压缩包)。
+- **隐藏空间会加密隐藏的书籍。** 隐藏书籍及其封面在书库中加密保存，用至少 4 个字符的密码解锁。设置时请保存恢复码：密码和恢复码都丢失后，任何人都无法恢复隐藏的书籍。
+- **书库数据库本身不加密。** 隐藏书籍的书名、标签、书单名和阅读进度仍可读取，日志也会记录你打开的书籍名称。详见[隐藏空间](docs/MANUAL.zh-CN.md#隐藏空间)。
+- **不支持带密码的压缩包。** 欣阅不会打开或导入带密码的 ZIP、7z、RAR 压缩包，也不会询问密码；请先用其他工具解压。内部嵌套了带密码压缩包的普通压缩包仍可打开，其余页面照常显示。详见[加密压缩包](docs/MANUAL.zh-CN.md#加密压缩包)。
 
 ## 开源与开发
 

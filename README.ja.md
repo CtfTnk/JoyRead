@@ -4,13 +4,13 @@
 <h1 align="center">ジョイヨミ · JoyRead</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/release-1.3.1-39846a" alt="Release 1.3.1"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>ローカルの蔵書管理をもっと手軽に。読みたいときに、すぐ読める。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.ja.md">使い方</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1">1.3.1 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.ja.md">使い方</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">1.4.0 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
 
 JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF リーダー兼ライブラリ管理アプリです。お気に入りの本をインポートして整理することも、ファイルをそのまま開いて読み始めることもできます。アカウントやクラウドサービスは必要ありません。
 
@@ -18,23 +18,25 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 ## ダウンロードとインストール
 
-| OS | 1.3.1 パッケージ | インストール方法 |
+| OS | 1.4.0 パッケージ | インストール方法 |
 | --- | --- | --- |
-| macOS 13+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-macos-arm64.dmg) | ディスクイメージを開き、JoyRead を Applications にドラッグします。 |
-| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-windows-x86_64-setup.exe) | インストーラーの案内に従います。 |
-| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.3.1-linux-amd64.deb` を使います。 |
-| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.3.1-linux-arm64.deb` を使います。 |
+| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | ディスクイメージを開き、JoyRead を Applications にドラッグします。 |
+| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | インストーラーの案内に従います。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb` を使います。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb` を使います。 |
 
 **Ubuntu ではターミナルからインストールしてください。** GUI インストーラーは **「Preparing」** で停止するため使用できません。この問題は未修正です。ダウンロード先のフォルダーでターミナルを開き、上の表にあるパッケージに対応するコマンドを実行してください。
 
-パッケージとチェックサムは[リリースページ](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1)にあります。macOS 版は Apple の公証を受けておらず、Windows 版にも信頼されたコード署名はありません。初回起動時の案内はリリースノートをご確認ください。Intel Mac 用のパッケージはありません。
+パッケージとチェックサムは[リリースページ](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0)にあります。macOS 版は Apple の公証を受けておらず、Windows 版にも信頼されたコード署名はありません。初回起動時の案内はリリースノートをご確認ください。Intel Mac 用のパッケージはありません。
+
+**1.3.1 以前からの更新：** 先にライブラリをバックアップしてください。ジョイヨミ 1.4.0 で一度開いたライブラリは、以前のバージョンでは開けなくなります。
 
 ## 読むことも、整理することも
 
 - **漫画アーカイブと PDF：** ZIP / CBZ、7z / CB7、RAR / CBR、PDF に対応。EPUB・ライトノベル機能は未有効化です。
-- **カード / リスト切り替え：** 表紙で探す表示とコンパクトな一覧を選択。検索、並べ替え、形式・タグでの絞り込みにも対応します。
+- **カード / リスト切り替え：** 表紙で探す表示とコンパクトな一覧を選択。検索、並べ替え、形式・言語・タグでの絞り込みにも対応します。
 - **タグとコレクション：** ジャンル、シリーズ、読書予定などで整理。お気に入り、最近読んだ本、読書進捗も管理できます。
-- **非表示スペース：** 通常の本棚に表示したくない本やコレクションを隠し、アプリ内のパスワード画面からアクセスできます。
+- **非表示スペース：** 通常の本棚に表示したくない本やコレクションを隠します。非表示の本と表紙はディスク上で暗号化され、パスフレーズでロックを解除し、リカバリーコードで復旧できます。
 - **すぐに読める：** ファイルのドラッグ＆ドロップや OS の「このアプリケーションで開く」に対応。先にインポートする必要はありません。ファイル関連付けはインストール方法とデスクトップ環境に依存します。
 - **読みやすい表示：** 単ページ・見開き、右から左・縦方向の読み進め、ズーム、表示サイズ調整、しおり、サムネイル、読書進捗。
 - **3 言語の UI：** 英語、簡体字中国語、日本語。新規設定ではシステムに従い、未対応言語では英語を使用します。
@@ -45,7 +47,7 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 ![ドラッグ＆ドロップで読むかインポートするかを選択](docs/assets/readme/drag-drop-ja.png)
 
-**直接開く**場合、初期設定ではファイルをコピーせず、本棚にも追加しません。**インポート**では元ファイルを残して管理用コピーを作成します。「開くときにインポート」を有効にすると、開いたファイルの取り込みも試みます。ただし、暗号化された漫画はインポートできません。
+**直接開く**場合、初期設定ではファイルをコピーせず、本棚にも追加しません。**インポート**では元ファイルを残して管理用コピーを作成します。「開くときにインポート」を有効にすると、開いたファイルの取り込みも試みます。パスワード付き圧縮ファイルには対応していません。
 
 ## 使い方：本の情報を整える
 
@@ -76,11 +78,11 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 ![JoyRead の見開きリーダーと進捗バーのページプレビュー](docs/assets/readme/reader.png)
 
-## 暗号化アーカイブと非表示機能について
+## 非表示スペースとパスワード付き圧縮ファイル
 
-- **暗号化された漫画は読めますが、インポートできません。** 対応するパスワード付き ZIP/CBZ、7z/CB7、RAR/CBR を開く際にパスワードを求めます。パスワードはそのセッションだけで使います。
-- **非表示は GUI 上の機能であり、ファイルの暗号化ではありません。** 本やコレクションを隠しても、ディスク上のファイルは暗号化されません。
-- 復号したページキャッシュは平文で保存されます。**設定 → プライバシー → 閉じるときにページキャッシュを削除**は初期設定で有効です。一部の形式では 7-Zip 補助プログラムのコマンドラインにパスワードが一時的に現れ、同じユーザーのプロセスから見える場合があります。AES ZIP はアプリ内で復号します。[詳しい説明](docs/MANUAL.ja.md#暗号化アーカイブ)をご覧ください。
+- **非表示スペースは本を暗号化します。** 非表示の本と表紙はライブラリ内で暗号化して保存され、4 文字以上のパスフレーズでロックを解除します。設定時にリカバリーコードを保存してください。両方を失うと、非表示の本は誰にも復元できません。
+- **ライブラリのデータベースは暗号化されません。** 非表示の本のタイトル、タグ、コレクション名、読書位置は読める状態のままで、ログにも開いた本の名前が記録されます。詳しくは[非表示スペース](docs/MANUAL.ja.md#非表示スペース)をご覧ください。
+- **パスワード付き圧縮ファイルには対応していません。** ジョイヨミはパスワード付きの ZIP、7z、RAR を開いたりインポートしたりせず、パスワードも求めません。先に別のツールで展開してください。パスワード付き圧縮ファイルを含む通常の圧縮ファイルは開け、その他のページを表示します。詳しくは[暗号化アーカイブ](docs/MANUAL.ja.md#暗号化アーカイブ)をご覧ください。
 
 ## オープンソースと開発
 

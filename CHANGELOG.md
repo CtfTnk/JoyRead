@@ -3,7 +3,7 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.4.0] — Unreleased
+## [1.4.0] — 2026-11-16
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.4.0.md)
 

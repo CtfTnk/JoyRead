@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1"><img src="https://img.shields.io/badge/release-1.3.1-39846a" alt="Release 1.3.1"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
   <a href="#download"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
   <a href="#download"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
   <a href="#download"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
@@ -18,7 +18,7 @@
   <a href="#getting-started">Get started</a> ·
   <a href="#a-closer-look">Screenshots</a> ·
   <a href="docs/MANUAL.md">User manual</a> ·
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1">What's new</a> ·
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">What's new</a> ·
   <a href="https://github.com/CtfTnk/JoyRead/issues">Feedback</a>
 </p>
 
@@ -28,26 +28,28 @@ JoyRead is a local manga, comic, and PDF reader with a desktop library for **mac
 
 ## Download
 
-| Platform | JoyRead 1.3.1 | Installation |
+| Platform | JoyRead 1.4.0 | Installation |
 | --- | --- | --- |
-| macOS 13+ · Apple Silicon | [Download DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-macos-arm64.dmg) | Open the disk image and drag JoyRead into Applications. |
-| Windows · x64 | [Download EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-windows-x86_64-setup.exe) | Run the installer and follow the setup prompts. |
-| Ubuntu 22.04+ / Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.3.1-linux-amd64.deb`. |
-| Ubuntu 22.04+ / Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.3.1/JoyRead-1.3.1-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.3.1-linux-arm64.deb`. |
+| macOS 26+ · Apple Silicon | [Download DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | Open the disk image and drag JoyRead into Applications. |
+| Windows · x64 | [Download EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | Run the installer and follow the setup prompts. |
+| Ubuntu 22.04+ / Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb`. |
+| Ubuntu 22.04+ / Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb`. |
 
 **Ubuntu: install from the terminal only.** The graphical installer gets stuck at **“Preparing”**; this issue has not been fixed. Open a terminal in the download folder and run the command for your package above.
 
-Find all packages and checksums on the [release page](https://github.com/CtfTnk/JoyRead/releases/tag/v1.3.1), or browse [previous releases](https://github.com/CtfTnk/JoyRead/releases). There is no Intel Mac package. macOS builds are not Apple-notarized, and Windows installers do not carry a trusted code signature; see the release notes for first-launch guidance.
+Find all packages and checksums on the [release page](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0), or browse [previous releases](https://github.com/CtfTnk/JoyRead/releases). There is no Intel Mac package. macOS builds are not Apple-notarized, and Windows installers do not carry a trusted code signature; see the release notes for first-launch guidance.
+
+**Upgrading from 1.3.1 or earlier:** back up your library first. Once JoyRead 1.4.0 has opened a library, earlier versions can no longer open it.
 
 ## Made for your local books
 
 | Capability | What you can do |
 | --- | --- |
 | **Manga and PDF** | Read ZIP / CBZ, 7z / CB7, RAR / CBR, and PDF. EPUB / light novel reading is not enabled. |
-| **Cards or lists** | Browse by cover or switch to a compact list. Search, sort, and filter by format or tag. |
+| **Cards or lists** | Browse by cover or switch to a compact list. Search, sort, and filter by format, language, or tag. |
 | **Tags and collections** | Organise by genre, series, or reading plans, with favourites, recent books, and progress. |
 | **Editable book details** | Correct titles, authors, and languages, adjust covers, and reuse embedded archive metadata. |
-| **Hidden Space** | Keep books and collections out of the ordinary shelf behind an in-app password entry. This is GUI hiding, not encryption. |
+| **Hidden Space** | Keep books and collections off the ordinary shelf. Hidden books and their covers are encrypted on disk, unlocked with a passphrase and backed by a recovery code. |
 | **Open and read** | Drag in a file or choose JoyRead through your operating system's **Open With** menu. Importing first is optional. |
 | **A flexible reader** | Single pages or spreads, right-to-left and vertical reading, fit and zoom controls, bookmarks, thumbnails, and saved progress. |
 | **Three interface languages** | English, Simplified Chinese, and Japanese. New profiles follow the system language, with English fallback. |
@@ -59,7 +61,7 @@ Find all packages and checksums on the [release page](https://github.com/CtfTnk/
 3. **Make the shelf yours.** Switch between cards and lists, create collections, add tags, and mark favourites.
 4. **Start reading.** Open a book from the shelf, or use **Open With → JoyRead** in your file manager. File associations depend on installation and desktop integration.
 
-**Read** opens one file in place without adding it to the library. **Import** makes a managed copy while preserving the original. The Settings option **Import when dropped on Library Read** makes that specific Read-zone drop also import; Open Book and the operating system's Open With remain read-only. **Open & Import** explicitly reads while importing in the background. Encrypted comics can be read with a password but cannot be imported.
+**Read** opens one file in place without adding it to the library. **Import** makes a managed copy while preserving the original. The Settings option **Import when dropped on Library Read** makes that specific Read-zone drop also import; Open Book and the operating system's Open With remain read-only. **Open & Import** explicitly reads while importing in the background. Password-protected archives are not supported.
 
 ## A closer look
 
@@ -98,11 +100,11 @@ Hover over the progress bar to preview a page before jumping to it.
 
 ![JoyRead two-page reader with a page preview above the progress bar](docs/assets/readme/reader.png)
 
-## Encrypted comics and Hidden Space
+## Hidden Space and password-protected archives
 
-- **Encrypted comics can be read, but cannot be imported.** Supported password-protected ZIP/CBZ, 7z/CB7, and RAR/CBR archives request a password when opened. Passwords are used for the current session only.
-- **Hidden Space is GUI hiding only.** Hidden books, hidden collections, and the in-app password do not encrypt files on disk.
-- Decrypted page caches are stored **unencrypted**. **Settings → Privacy → Delete cached pages when closing** is enabled by default. Some archive formats pass the password to the 7-Zip helper's command line, briefly exposing it to same-user processes; AES ZIP is decrypted in-process. Read the [encrypted archive notes](docs/MANUAL.md#encrypted-archives) for details.
+- **Hidden Space encrypts hidden books.** Hidden books and their covers are stored encrypted inside your library and unlocked with a passphrase of at least 4 characters. Save the recovery code when you set it up: if both are lost, nobody can recover the hidden books.
+- **The library database is not encrypted.** Hidden books' titles, tags, collection names, and reading progress stay readable, and logs record the names of books you open. See [what Hidden Space protects](docs/MANUAL.md#what-hidden-space-protects-and-what-it-does-not).
+- **Password-protected archives are not supported.** JoyRead does not open or import password-protected ZIP, 7z, or RAR archives and never asks for their password; extract them with another tool first. An ordinary archive that contains one still opens with its other pages. See [encrypted archives](docs/MANUAL.md#encrypted-archives).
 
 ## Development
 
