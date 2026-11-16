@@ -71,6 +71,20 @@ def reader_frame_reached(console: str) -> bool:
     return False
 
 
+def child_environment_restored(console: str) -> bool:
+    """Require the frozen app to drop the bootloader's library path for children.
+
+    `/proc/<pid>/environ` only shows the environment the process was exec'd
+    with, so the app's own startup event is the observable signal. Without
+    it, `xdg-open` binds the bundled GLib and opens folders in a web browser.
+    """
+
+    return any(
+        'process.child_environment_restored' in line and 'LD_LIBRARY_PATH' in line
+        for line in console.splitlines()
+    )
+
+
 def verify_startup(app_dir: Path, *, webp_reader: bool = False) -> None:
     with tempfile.TemporaryDirectory(prefix='joyread-package-smoke-') as temporary:
         runtime = Path(temporary)
@@ -99,6 +113,11 @@ def verify_startup(app_dir: Path, *, webp_reader: bool = False) -> None:
                     output = (runtime / 'console.log').read_text(errors='replace')
                     ready = reader_frame_reached(output) if webp_reader else 'JoyRead primary runtime is ready' in output
                     if ready:
+                        if not webp_reader and not child_environment_restored(output):
+                            raise SystemExit(
+                                'Installed executable left the bundle LD_LIBRARY_PATH for child processes:\n'
+                                + output
+                            )
                         result = 'prepared a WebP Reader frame for the GUI' if webp_reader else 'reached process.ready'
                         print(f'Installed executable {result} with an isolated library.', flush=True)
                         return

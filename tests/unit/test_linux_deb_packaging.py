@@ -227,3 +227,26 @@ def test_frozen_reader_probe_requires_a_real_frame_callback(console, expected) -
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     assert module.reader_frame_reached(console) is expected
+
+
+@pytest.mark.parametrize('console,expected', [
+    (
+        '10:00:00.001 INFO    process  Bundle search paths removed from the child-process environment'
+        ' · process.child_environment_restored status=finished count=3'
+        ' outcome=LD_LIBRARY_PATH,QT_PLUGIN_PATH,QML2_IMPORT_PATH  (app.bootstrap:300)\n',
+        True,
+    ),
+    # The app ran but found nothing to undo: the bootloader path would still
+    # reach xdg-open, which is the failure this check exists for.
+    (
+        '10:00:00.001 INFO    process  Bundle search paths removed from the child-process environment'
+        ' · process.child_environment_restored status=finished count=0 outcome=none  (app.bootstrap:300)\n',
+        False,
+    ),
+    ('10:00:00.001 INFO    process  JoyRead primary runtime is ready · process.ready\n', False),
+])
+def test_frozen_startup_check_requires_the_child_environment_restore(console, expected) -> None:
+    spec = importlib.util.spec_from_file_location('verify_linux_package', REPO_ROOT / 'scripts/verify_linux_package.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.child_environment_restored(console) is expected

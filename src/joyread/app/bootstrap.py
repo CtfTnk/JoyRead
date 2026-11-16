@@ -67,6 +67,10 @@ from joyread.app.launch.single_instance_broker import (
 # (435 ms) -- to obtain a frozenset of seven suffixes, on every launch,
 # secondary processes included.
 from joyread.core.file_types import EPUB_ACCESS_ENABLED, SUPPORTED_READER_EXTENSIONS
+from joyread.infrastructure.child_process_environment import (
+    bundle_environment_applies,
+    restore_child_process_environment,
+)
 from joyread.infrastructure.config.app_config import AppConfig
 from joyread.infrastructure.config.settings_store import (
     SettingsStore,
@@ -234,6 +238,21 @@ def _prepare_startup_environment(
     resolved_gate = gate if gate is not None else create_launch_gate()
     app = _create_qt_application(resolved_argv)
     startup_trace.mark("qt_app_created")
+    # Only after QApplication: Qt caches its plugin paths during construction,
+    # so from here on the bundle's search-path variables reach nothing but the
+    # programs JoyRead starts (xdg-open and the file manager behind it).
+    if bundle_environment_applies():
+        restored = restore_child_process_environment()
+        log_event(
+            logger,
+            logging.INFO,
+            "process.child_environment_restored",
+            "Bundle search paths removed from the child-process environment",
+            category="process",
+            status="finished",
+            count=len(restored),
+            outcome=",".join(restored) or "none",
+        )
     config = AppConfig()
     settings_store = create_environment_settings_store(config.app_name, config.app_author)
     app.setApplicationName(config.app_name)

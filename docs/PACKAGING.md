@@ -689,6 +689,18 @@ The spec explicitly bundles Conda's `libstdc++.so.6` and `libgcc_s.so.1`.
 The installed-package smoke check removes this environment override and must
 resolve the bundled runtime on its own.
 
+The frozen app's own environment points inside the bundle: the PyInstaller
+bootloader sets `LD_LIBRARY_PATH` to `_internal` (keeping any original value in
+`LD_LIBRARY_PATH_ORIG`), and the PySide6 runtime hook sets `QT_PLUGIN_PATH` and
+`QML2_IMPORT_PATH`. Children inherit them, so `xdg-open` once ran GNOME's
+`gio` against the bundled GLib, which aborted on a missing symbol, and the log
+folder opened in the web browser. Right after `QApplication` is created, the
+frozen Linux app restores `LD_LIBRARY_PATH` and drops the two Qt variables
+(`infrastructure/child_process_environment.py`) and logs
+`process.child_environment_restored`. Its own loading is unaffected: the loader
+read the path at exec time and Qt has already cached its plugin paths. The
+bundled `7zz` is statically linked.
+
 The Debian package revision is `1` (for example, package version `1.0.2-1`),
 while the app version and download filenames remain `1.0.2`. This lets APT
 upgrade the original package without a new cross-platform app release.
@@ -698,7 +710,8 @@ not by itself preserve that baseline.
 After packaging, CI installs the DEB with APT and runs
 `python scripts/verify_linux_package.py /opt/joyread`. The verifier rejects ELF
 libraries requiring glibc newer than 2.35 and launches the installed executable
-with an isolated temporary library until it logs `process.ready`. It removes
+with an isolated temporary library until it logs `process.ready`, and requires
+the `process.child_environment_restored` event to name `LD_LIBRARY_PATH`. It removes
 build-environment library overrides, so the check cannot accidentally use
 Conda's Python or Shiboken. This validates the frozen package's loader/startup,
 not interactive reading or desktop integration. Build metadata includes the
