@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from joyread.ui.widgets.localized_text import LocalizedLabel
+from joyread.ui.widgets.layout_cleanup import clear_widget_layout
 
 from enum import StrEnum
 from math import ceil
@@ -134,7 +135,7 @@ class ReaderTopicPanel(QFrame):
 
     def set_contents(self, items: tuple[ReaderContentsItem, ...]) -> None:
         """Populate CONTENTS mode with a TOC list. Empty tuple = placeholder."""
-        _clear_layout(self._contents_layout)
+        clear_widget_layout(self._contents_layout)
         if not items:
             placeholder = LocalizedLabel(t("reader.toc_unavailable"))
             placeholder.setObjectName("ReaderTopicEmptyText")
@@ -152,7 +153,7 @@ class ReaderTopicPanel(QFrame):
         # Kept so an open context menu can read the current name when its
         # action fires, rather than the one the row was built with.
         self._bookmarks = bookmarks
-        _clear_layout(self._bookmark_layout)
+        clear_widget_layout(self._bookmark_layout)
         for bookmark in bookmarks:
             row = _TopicBookmarkRow(bookmark)
             row.clicked.connect(self.bookmark_selected.emit)
@@ -493,12 +494,3 @@ class _NewBookmarkRow(MaterialItemFrame):
             return
         self._pressed_inside = False
         super().mouseReleaseEvent(event)
-
-
-def _clear_layout(layout: QVBoxLayout) -> None:
-    while layout.count():
-        item = layout.takeAt(0)
-        widget = item.widget()
-        if widget is not None:
-            widget.setParent(None)
-            widget.deleteLater()

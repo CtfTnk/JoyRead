@@ -15,6 +15,7 @@ from joyread.ui.viewmodels.shelf_viewmodel import ShelfViewModel
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.shelf_drag_visuals import DragCardPreview, card_snapshots
 from tests.support.in_memory_book_repository import InMemoryBookRepository
+from tests.support.window_events import record_top_level_shows
 from tests.unit.test_custom_sorting import sample_books
 
 
@@ -76,6 +77,17 @@ def test_outside_return_then_escape_and_outside_release_restore(shelf):
     assert not controller.active
     assert tuple(book.uuid for book in vm.visible_books) == original
     assert vm.selected_book_ids == {"1", "3"}
+
+
+def test_reordering_books_keeps_drag_preview_inside_the_shelf(shelf):
+    _, _, surface = shelf
+    with record_top_level_shows() as shown:
+        controller = start_drag(shelf)
+        target = surface.book_controls["4"].mapToGlobal(QPoint(1, 20))
+        controller.move(target)
+        controller.release(target)
+        QApplication.processEvents()
+        assert not shown
 
 
 def test_escape_and_right_button_cancel_without_menu(shelf, qtbot):

@@ -33,6 +33,8 @@ _SCAN_DUTY_FACTOR = 10.0
 #: grandchild can inherit the pipe and hold it open; the threads are daemons,
 #: so one that never finishes cannot keep the process alive.
 _PIPE_DRAIN_SECONDS = 5.0
+# The Windows GUI build has no console for command-line extractors to inherit.
+_ARCHIVE_CREATION_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
 def looks_like_password_error(exc: Exception) -> bool:
@@ -116,7 +118,12 @@ def run_archive_stdout_command(
     exceeded = [False]
 
     try:
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=_ARCHIVE_CREATION_FLAGS,
+        )
     except OSError as exc:
         raise ArchiveDependencyMissing(f"Could not start archive backend: {command[0]}") from exc
 
@@ -235,7 +242,12 @@ def run_archive_file_command(
             subject=entry_name,
         )
     try:
-        process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            creationflags=_ARCHIVE_CREATION_FLAGS,
+        )
     except OSError as exc:
         raise ArchiveDependencyMissing(f"Could not start archive backend: {command[0]}") from exc
 

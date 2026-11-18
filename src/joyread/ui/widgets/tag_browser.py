@@ -35,6 +35,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
 from joyread.ui.widgets.flow_layout import FlowLayout
+from joyread.ui.widgets.layout_cleanup import clear_widget_layout
 from joyread.ui.widgets.icon_paint import faded_pixmap as _faded_pixmap
 from joyread.ui.widgets.tag_chip import TagChipWidget
 
@@ -386,16 +387,8 @@ class TagBrowserWidget(QWidget):
     # Rendering
     # ------------------------------------------------------------------
 
-    def _clear_layout(self, layout) -> None:  # noqa: ANN001 - any QLayout.
-        while layout.count():
-            item = layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
-
     def _render_groups(self) -> None:
-        self._clear_layout(self._groups_layout)
+        clear_widget_layout(self._groups_layout)
         self._group_anchors = {}
         self._chips = []
 
@@ -462,7 +455,7 @@ class TagBrowserWidget(QWidget):
         self._groups_layout.addWidget(host)
 
     def _render_rail(self) -> None:
-        self._clear_layout(self._rail_layout)
+        clear_widget_layout(self._rail_layout)
         # Built from every tag, not the filtered set, so the rail does not
         # reshuffle under the cursor while the user is typing.
         present: list[str] = []
@@ -481,7 +474,7 @@ class TagBrowserWidget(QWidget):
     def _render_tray(self) -> None:
         if not self._show_tray:
             return
-        self._clear_layout(self._tray_flow)
+        clear_widget_layout(self._tray_flow)
         selected = [tag for tag in self._tags if tag.tag_id in self._selected_tag_ids]
         self._tray_header.set_trailing(
             t("tags.tray_count", count=str(len(selected)), total=str(len(self._tags)))

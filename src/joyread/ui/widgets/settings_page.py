@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from joyread.ui.widgets.localized_text import LocalizedLabel, set_localized
+from joyread.ui.widgets.layout_cleanup import detach_and_hide
 from joyread.ui.widgets.elided_label import ElidedLabel
 
 from collections.abc import Iterable
@@ -1020,7 +1021,7 @@ class SettingsContentPanel(QScrollArea):
             item = self._layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
-                widget.setParent(None)
+                detach_and_hide(widget)
                 # Persistent widgets (currently: TagManagementPage) keep
                 # a viewmodel subscription and re-render on demand, so we
                 # cannot deleteLater them on every section nav — their
@@ -1030,6 +1031,7 @@ class SettingsContentPanel(QScrollArea):
                     widget.deleteLater()
         for item in items:
             self._layout.addWidget(item)
+            item.show()
         self._layout.addStretch(1)
 
 

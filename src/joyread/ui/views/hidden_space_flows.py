@@ -2,13 +2,13 @@
 
 Each flow is a short chain of dialogs on the window's dialog overlay. A slow
 step (scrypt, or waiting on the sealing worker) runs on the SettingsViewModel's
-task service while the overlay shows a progress panel; its result arrives on
-the UI thread and opens the next dialog -- or the same one again with the
-error in it, so a typo never costs the user what they already typed elsewhere.
+task service while the submitted dialog shows its busy state. The result
+arrives on the UI thread and opens the next dialog or redisplays the current
+step with an error.
 
-Secrets stay inside one flow's closures: a passphrase until its task runs, and
-a ``VaultDraft`` (the private key of a vault being set up) only until its
-recovery code is confirmed or the flow is abandoned. Nothing here logs them.
+The disabled form stays in place while its task runs. On completion it is
+replaced or closed and cleared. A ``VaultDraft`` stays in the flow's closures
+until its recovery code is confirmed or the flow is abandoned.
 """
 
 from __future__ import annotations
@@ -105,11 +105,12 @@ class HiddenSpaceFlows(QObject):
             on_cancel=self._on_cancelled,
             detail_text=t("hidden_space.setup_detail"),
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     def _prepare_setup(self, passphrase: str, confirm: str) -> None:
         title = t("hidden_space.setup_title")
-        self._dialogs.show_progress(title, t("hidden_space.preparing"))
+        self._dialogs.show_inline_progress(t("hidden_space.preparing"))
         self._vm.prepare_hidden_space_setup(
             passphrase,
             confirm,
@@ -123,7 +124,7 @@ class HiddenSpaceFlows(QObject):
         title = t("hidden_space.upgrade_title")
 
         def accepted(password: str) -> None:
-            self._dialogs.show_progress(title, t("hidden_space.checking"))
+            self._dialogs.show_inline_progress(t("hidden_space.checking"))
             self._vm.prepare_hidden_space_upgrade(
                 password,
                 on_success=self._guarded(self.continue_upgrade),
@@ -140,6 +141,7 @@ class HiddenSpaceFlows(QObject):
             on_cancel=self._on_cancelled,
             detail_text=t("hidden_space.upgrade_detail"),
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     def continue_upgrade(self, draft: VaultDraft) -> None:
@@ -157,7 +159,7 @@ class HiddenSpaceFlows(QObject):
         )
 
     def _finish_setup(self, draft: VaultDraft, typed_code: str, title: str) -> None:
-        self._dialogs.show_progress(title, t("hidden_space.finishing"))
+        self._dialogs.show_inline_progress(t("hidden_space.finishing"))
 
         def finished(queued: int) -> None:
             message = t("hidden_space.ready_encrypting_msg") if queued else t("hidden_space.ready_msg")
@@ -195,12 +197,13 @@ class HiddenSpaceFlows(QObject):
             )
 
         def unlocked(_result: object) -> None:
-            self._dialogs.close_progress()
-            if then is not None:
+            if then is None:
+                self._dialogs.close_progress(inline=True)
+            else:
                 then()
 
         def accepted(passphrase: str) -> None:
-            self._dialogs.show_progress(dialog_title, t("hidden_space.unlocking"))
+            self._dialogs.show_inline_progress(t("hidden_space.unlocking"))
             self._vm.unlock_hidden_space(
                 passphrase, on_success=self._guarded(unlocked), on_failure=self._guarded(again)
             )
@@ -217,6 +220,7 @@ class HiddenSpaceFlows(QObject):
             skip_text=t("hidden_space.btn_recovery_code"),
             detail_text=detail_text,
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     def start_recovery(
@@ -240,11 +244,12 @@ class HiddenSpaceFlows(QObject):
             )
 
         def recover(typed_code: str, passphrase: str, confirm: str) -> None:
-            self._dialogs.show_progress(title, t("hidden_space.unlocking"))
+            self._dialogs.show_inline_progress(t("hidden_space.unlocking"))
 
             def recovered(_result: object) -> None:
-                self._dialogs.show_info(title, t("hidden_space.recovered_msg"))
-                if then is not None:
+                if then is None:
+                    self._dialogs.show_info(title, t("hidden_space.recovered_msg"))
+                else:
                     then()
 
             self._vm.recover_hidden_space(
@@ -277,7 +282,7 @@ class HiddenSpaceFlows(QObject):
             return self._required(current) or self._vm.passphrase_rule_error(new, confirm)
 
         def change(current: str, new: str, confirm: str) -> None:
-            self._dialogs.show_progress(title, t("hidden_space.changing_passphrase"))
+            self._dialogs.show_inline_progress(t("hidden_space.changing_passphrase"))
             self._vm.change_hidden_space_passphrase(
                 current,
                 new,
@@ -306,13 +311,14 @@ class HiddenSpaceFlows(QObject):
             confirm_text=t("dialog.btn_update"),
             validator=validator,
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     def start_new_recovery_code(self, *, state_prompt: str | None = None) -> None:
         title = t("hidden_space.new_code_title")
 
         def replace(draft: RecoveryCodeDraft, typed_code: str) -> None:
-            self._dialogs.show_progress(title, t("hidden_space.finishing"))
+            self._dialogs.show_inline_progress(t("hidden_space.finishing"))
             self._vm.replace_hidden_space_recovery_code(
                 draft,
                 typed_code,
@@ -330,7 +336,7 @@ class HiddenSpaceFlows(QObject):
             )
 
         def accepted(passphrase: str) -> None:
-            self._dialogs.show_progress(title, t("hidden_space.checking"))
+            self._dialogs.show_inline_progress(t("hidden_space.checking"))
             self._vm.prepare_hidden_space_recovery_code(
                 passphrase,
                 on_success=self._guarded(prepared),
@@ -346,6 +352,7 @@ class HiddenSpaceFlows(QObject):
             validator=self._required,
             detail_text=t("hidden_space.new_code_detail"),
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     # -- leaving: revert, erase --------------------------------------------------------------
@@ -363,6 +370,7 @@ class HiddenSpaceFlows(QObject):
                 confirm_text=t("dialog.btn_revert"),
                 validator=self._required,
                 detail_text=t("hidden_space.revert_legacy_detail"),
+                keep_open_on_confirm=True,
             )
             return
         # Decrypting needs the key, and asking for the passphrase is how the
@@ -377,7 +385,7 @@ class HiddenSpaceFlows(QObject):
 
     def _revert(self, legacy_password: str | None = None) -> None:
         title = t("dialog.revert_hidden_title")
-        self._dialogs.show_progress(title, t("hidden_space.reverting"))
+        self._dialogs.show_inline_progress(t("hidden_space.reverting"))
 
         def reverted(pending: int) -> None:
             message = t("hidden_space.reverted_pending_msg") if pending else t("dialog.hidden_reverted_msg")
@@ -396,7 +404,7 @@ class HiddenSpaceFlows(QObject):
         title = t("dialog.reset_hidden_title")
 
         def erase() -> None:
-            self._dialogs.show_progress(title, t("hidden_space.erasing"))
+            self._dialogs.show_inline_progress(t("hidden_space.erasing"))
             self._vm.reset_hidden_space(
                 on_success=self._guarded(lambda _result: self._dialogs.show_info(title, t("hidden_space.erased_msg"))),
                 on_failure=self._guarded(lambda text: self._dialogs.show_info(title, text)),
@@ -409,6 +417,7 @@ class HiddenSpaceFlows(QObject):
             confirm_text=t("dialog.btn_erase"),
             cancel_text=t("dialog.btn_cancel"),
             destructive=True,
+            keep_open_on_confirm=True,
         )
 
     # -- shared steps -------------------------------------------------------------------------
@@ -439,6 +448,7 @@ class HiddenSpaceFlows(QObject):
             on_cancel=on_cancel,
             detail_text=detail_text,
             state_prompt=state_prompt,
+            keep_open_on_confirm=True,
         )
 
     def _confirm_if_short(
@@ -456,6 +466,7 @@ class HiddenSpaceFlows(QObject):
             on_cancel=retry,
             confirm_text=t("hidden_space.btn_use_anyway"),
             cancel_text=t("hidden_space.btn_choose_another"),
+            keep_open_on_confirm=True,
         )
 
     def _present_code(
@@ -508,6 +519,7 @@ class HiddenSpaceFlows(QObject):
                 on_skip=show_code,
                 skip_text=t("hidden_space.btn_show_code_again"),
                 detail_text=t("hidden_space.confirm_code_detail"),
+                keep_open_on_confirm=True,
             )
 
         show_code()

@@ -23,6 +23,7 @@ from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey, collection_shelf_key
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
+from joyread.ui.widgets.layout_cleanup import clear_widget_layout
 from joyread.ui.widgets.section_banner import SectionBanner, SidebarSectionBanner
 from joyread.ui.widgets.sidebar_section import SidebarSection
 
@@ -106,12 +107,7 @@ class SidebarWidget(QWidget):
         for key in tuple(self._buttons):
             if key.startswith("collection:"):
                 self._buttons.pop(key)
-        while self._collections_layout.count():
-            item = self._collections_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        clear_widget_layout(self._collections_layout)
 
         for collection in collections:
             key = collection_shelf_key(collection.uuid)

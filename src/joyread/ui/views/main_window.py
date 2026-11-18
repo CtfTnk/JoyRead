@@ -67,6 +67,7 @@ from joyread.ui.widgets.dialogs import JoyReadDialogOverlay
 from joyread.ui.widgets.dialogs import DialogTextButton
 from joyread.ui.widgets.drop_zone_overlay import DropZoneOverlay, payload_from_mime_urls
 from joyread.ui.widgets.hidden_space_lock import HiddenSpaceLockOverlay
+from joyread.ui.widgets.layout_cleanup import detach_and_hide
 from joyread.ui.widgets.menus import FigmaMenu, build_collection_context_menu
 from joyread.ui.widgets.state_views import StateView
 from joyread.ui.widgets.top_toolbar import TopToolbarWidget
@@ -155,14 +156,13 @@ class MainWindow(QMainWindow):
             assert pending_shelf is not None
             pending_toolbar = self._pending_toolbar
             pending_shelf.layout().removeWidget(pending_toolbar)
-            pending_toolbar.setParent(None)
+            pending_toolbar.setParent(root)
             pending_shelf.removeEventFilter(self)
             # Dialog and drop overlays outlive the placeholder they covered.
             self.dialog_overlay.hide()
             self.dialog_overlay.setParent(root)
             layout.removeWidget(pending_shelf)
-            pending_shelf.hide()
-            pending_shelf.setParent(None)
+            detach_and_hide(pending_shelf)
             pending_shelf.deleteLater()
             self._pending_shelf = None
             self.chrome.set_shelf_controls_visible(True)
@@ -1965,7 +1965,7 @@ class MainWindow(QMainWindow):
             self._close_hidden_surfaces()
         shelf_vm.set_show_hidden_collection(visible)
         # State-flip can imply DB side effects (revert/reset), so reload.
-        shelf_vm.load_books()
+        shelf_vm.refresh_hidden_space()
         self._refresh_sidebar_collections()
 
     def _handle_hidden_space_locked(self) -> None:
@@ -1984,7 +1984,7 @@ class MainWindow(QMainWindow):
     def _handle_hidden_books_changed(self, _book_ids: tuple[str, ...]) -> None:
         if self._closing or self._context.library_runtime is None:
             return
-        self._context.shelf_viewmodel.refresh_seal_states()
+        self._context.shelf_viewmodel.refresh_hidden_space()
         self._context.settings_viewmodel.refresh_hidden_space_status()
 
     def _close_hidden_surfaces(self) -> None:

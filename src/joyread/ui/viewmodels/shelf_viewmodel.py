@@ -285,20 +285,21 @@ class ShelfViewModel(ShelfSorting):
         self.sidebar_collapsed_sections = frozenset(collapsed)
         self.sidebar_sections_changed.emit()
 
-    def load_books(self) -> None:
+    def load_books(self, *, show_loading: bool = True) -> None:
         """Refresh every shelf-backing list from the library service.
 
         Reloads books, collections, languages, search documents, and the
         book → tag-ids index in one shot. Called on app start, after an
         import, after a tag rename/delete, and after any operation that
-        changes the underlying database. The view flashes through
-        ``is_loading=True`` so the spinner state shows for slow refreshes.
+        changes the underlying database. In-place refreshes keep the previous
+        snapshot visible until the new state is available.
         """
 
         logger.debug("Shelf load_books")
-        self.is_loading = True
         self.error_message = None
-        self._emit_state()
+        if show_loading:
+            self.is_loading = True
+            self._emit_state()
         try:
             self.books = self._library_service.list_books()
             self.collections = self._library_service.list_collections()
@@ -379,14 +380,14 @@ class ShelfViewModel(ShelfSorting):
             self._set_detail_book_uuid(None)
         self._emit_state()
 
-    def refresh_seal_states(self) -> None:
-        """Reload after Hidden Space work changed some books.
+    def refresh_hidden_space(self) -> None:
+        """Refresh the shelf in place after Hidden Space changes.
 
         A seal or unseal that commits changes the book's file and cover, not
         only its state, so this reloads the shelf rather than the states alone.
         """
 
-        self.load_books()
+        self.load_books(show_loading=False)
 
     def seal_state_for(self, book_uuid: str) -> BookSealState | None:
         return self.seal_states.get(book_uuid)
@@ -942,7 +943,7 @@ class ShelfViewModel(ShelfSorting):
             type(error).__name__,
             exc_info=(type(error), error, error.__traceback__),
         )
-        self.load_books()
+        self.refresh_hidden_space()
         self.hidden_books_failed.emit(hidden_space_error_text(error))
 
     def _load_seal_states(self) -> dict[str, BookSealState]:
@@ -981,7 +982,7 @@ class ShelfViewModel(ShelfSorting):
         # recent_books, collection memberships) so the simplest correct
         # refresh is a full reload — matches the favourites/collection
         # mutation pattern above.
-        self.load_books()
+        self.refresh_hidden_space()
         self.collections_changed.emit(self.current_shelf)
 
     def remove_books_from_current_shelf(self, book_uuids: Iterable[str]) -> None:
