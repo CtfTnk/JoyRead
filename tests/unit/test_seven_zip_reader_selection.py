@@ -52,6 +52,43 @@ def _read(backend: SevenZipArchiveBackend, source: ArchiveSource):  # noqa: ANN2
     )
 
 
+def test_archive_commands_launch_without_a_windows_console(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    from joyread.core.archive.formats.common import run_archive_file_command, run_archive_stdout_command
+
+    flags = []
+    real_popen = subprocess.Popen
+
+    def record_flags(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        flags.append(kwargs["creationflags"])
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", record_flags)
+    stdout_command = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(b'page')"]
+    output = tmp_path / "page.png"
+    file_command = [
+        sys.executable,
+        "-c",
+        "import sys; from pathlib import Path; Path(sys.argv[1]).write_bytes(b'page')",
+        str(output),
+    ]
+    budget = ArchiveOperationBudget(maximum=None)
+    assert run_archive_stdout_command(
+        stdout_command, "page.png", max_item_bytes=None, budget=budget, timeout_seconds=10,
+    ) == b"page"
+    assert run_archive_file_command(
+        file_command,
+        "page.png",
+        password=None,
+        output_directory=tmp_path,
+        max_output_bytes=None,
+        budget=budget,
+        timeout_seconds=10,
+    ) == len(b"page")
+    assert output.read_bytes() == b"page"
+    expected = subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
+    assert flags == [expected, expected]
+
+
 def test_py7zr_serves_the_read_when_no_executable_resolves(tmp_path: Path) -> None:
     """The bundled binary is the fast path, not a hard requirement."""
 

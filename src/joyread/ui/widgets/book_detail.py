@@ -33,6 +33,7 @@ from joyread.infrastructure.i18n.locale_service import book_language_display_nam
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.auto_hide_scrollbar import AutoHideScrollHandle
+from joyread.ui.widgets.layout_cleanup import detach_and_hide
 from joyread.core.models.cover_image import CoverImage
 from joyread.ui.widgets.book_card import BookCoverWidget, _placeholder_cover
 from joyread.ui.widgets.elided_label import ElidedLabel
@@ -1146,8 +1147,7 @@ class DetailThumbnailGrid(QWidget):
             if index in keep:
                 continue
             widget = self._thumbnails.pop(index)
-            widget.hide()
-            widget.setParent(None)
+            detach_and_hide(widget)
             widget.deleteLater()
 
 

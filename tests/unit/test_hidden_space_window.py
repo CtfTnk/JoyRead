@@ -12,6 +12,7 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from PIL import Image
+from PySide6.QtCore import QEvent, QObject, Qt
 from PySide6.QtWidgets import QApplication, QLabel, QLineEdit
 import pytest
 from shiboken6 import isValid
@@ -20,10 +21,13 @@ from joyread.app.app_context import create_app_context
 from joyread.core.services.hidden_space_service import HiddenSpaceState
 from joyread.infrastructure.resources.resource_loader import ResourceLoader
 from joyread.ui.views.main_window import MainWindow
+from joyread.ui.viewmodels.settings_viewmodel import SettingsSectionKey
 from joyread.ui.viewmodels.shelf_viewmodel import ShelfKey
 from joyread.ui.widgets.dialogs import DialogRecoveryCodeContent
+from joyread.ui.widgets.settings_page import SettingsSwitchItem
 from tests.support.hidden_space_fakes import seed_legacy_password
 from tests.support.vault_library import FAST_SCRYPT
+from tests.support.window_events import record_top_level_shows
 
 PASSPHRASE = "Pass1234"
 
@@ -96,9 +100,9 @@ def _window(qtbot, context) -> MainWindow:  # noqa: ANN001
 
 
 def _settle(qtbot, window: MainWindow) -> None:
-    """Wait for a progress panel to give way to whatever comes next."""
+    """Wait for a running dialog step to complete."""
 
-    qtbot.waitUntil(lambda: not window.dialog_overlay.panel.is_showing_progress(), timeout=10_000)
+    qtbot.waitUntil(lambda: not window.dialog_overlay.is_progress_active(), timeout=10_000)
     QApplication.processEvents()
 
 
@@ -188,6 +192,98 @@ def test_a_legacy_library_upgrades_from_the_prompt_with_its_old_password(qtbot, 
 
 
 # -- the dialogs ------------------------------------------------------------------
+
+
+def test_privacy_switch_never_shows_transient_top_level_widgets(qtbot, context) -> None:  # noqa: ANN001
+    context.library_service.create_collection("A shelf")
+    window = _window(qtbot, context)
+    window._show_settings_page()
+    context.settings_viewmodel.set_section(SettingsSectionKey.PRIVACY)
+    page = window.settings_view.page
+
+    def click_switch() -> None:
+        row = page.findChild(SettingsSwitchItem)
+        assert row.isVisible()
+        qtbot.mouseClick(row.switch, Qt.MouseButton.LeftButton)
+
+    with record_top_level_shows() as shown:
+        click_switch()
+        window.dialog_overlay._reject()
+        _set_up_vault(context, shown=True, locked=False)
+        click_switch()
+        QApplication.processEvents()
+        assert context.settings_viewmodel.hidden_space_state is HiddenSpaceState.LOCKED
+        click_switch()
+        _fields(window)[0].setText(PASSPHRASE)
+        _accept(window)
+        _settle(qtbot, window)
+        assert context.settings_viewmodel.hidden_space_visible
+        assert not shown, shown
+
+
+def test_settings_unlock_keeps_the_passphrase_dialog_in_place(qtbot, context) -> None:  # noqa: ANN001
+    _set_up_vault(context, shown=False, locked=True)
+    window = _window(qtbot, context)
+    window._show_settings_page()
+    window.settings_view.hidden_space_show_requested.emit()
+    overlay = window.dialog_overlay
+    hidden = []
+
+    class HideObserver(QObject):
+        def eventFilter(self, watched, event):  # noqa: ANN001
+            if event.type() == QEvent.Type.Hide:
+                hidden.append(True)
+            return False
+
+    observer = HideObserver(overlay)
+    overlay.installEventFilter(observer)
+
+    field, = _fields(window)
+    field.setText("incorrect")
+    qtbot.keyClick(field, Qt.Key.Key_Return)
+    assert overlay.is_progress_active()
+    assert _fields(window) == [field]
+    assert not field.isEnabled()
+    # The user can dismiss an import and start unlocking before its worker
+    # acknowledges cancellation. Its completion must leave this form alone.
+    window._handle_open_and_import_finished(None, cancelled=True)
+    assert overlay.is_progress_active()
+    qtbot.keyClick(overlay, Qt.Key.Key_Escape)
+    assert overlay.isVisible()
+    _settle(qtbot, window)
+    assert not hidden
+    assert context.settings_viewmodel.hidden_space_state is HiddenSpaceState.LOCKED
+    assert overlay.isVisible()
+
+    field, = _fields(window)
+    assert field.isEnabled()
+    field.setText(PASSPHRASE)
+    qtbot.keyClick(field, Qt.Key.Key_Return)
+    assert overlay.is_progress_active()
+    assert not hidden
+    _settle(qtbot, window)
+    assert hidden == [True]
+    assert field.text() == ""
+    assert context.settings_viewmodel.hidden_space_visible
+    window.close()
+
+
+def test_hiding_and_sealing_refresh_the_shelf_without_a_loading_page(qtbot, context) -> None:  # noqa: ANN001
+    _set_up_vault(context, shown=True, locked=False)
+    book = _book_id(context)
+    window = _window(qtbot, context)
+    shelf = window.shelf_view
+    assert shelf.stack.currentWidget() is shelf.grid
+    shown = []
+    shelf.stack.currentChanged.connect(lambda _index: shown.append(shelf.stack.currentWidget()))
+
+    with qtbot.waitSignal(context.hidden_space_bridge.books_changed, timeout=10_000):
+        context.shelf_viewmodel.hide_books([book])
+    _wait_sealed(qtbot, context, book)
+    qtbot.waitUntil(lambda: shelf.stack.currentWidget() is shelf.empty_state, timeout=10_000)
+
+    assert shelf.loading_state not in shown
+    window.close()
 
 
 def test_setting_up_from_the_switch_cautions_a_short_passphrase_and_confirms_the_code(qtbot, context) -> None:  # noqa: ANN001

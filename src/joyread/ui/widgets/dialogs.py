@@ -34,6 +34,7 @@ from joyread.ui.viewmodels.shelf_filter import BookFilterPreview
 from joyread.ui.views.window_drag import start_window_drag_if_on_drag_handle
 from joyread.ui.widgets.elided_label import ElidedLabel
 from joyread.ui.widgets.language_filter_row import LanguageFilterRow
+from joyread.ui.widgets.layout_cleanup import clear_widget_layout
 from joyread.ui.widgets.tag_browser import TagBrowserWidget
 
 
@@ -272,7 +273,7 @@ class DialogInputContent(QWidget):
         input_layout.addWidget(self.field, alignment=Qt.AlignmentFlag.AlignHCenter)
         layout.addWidget(input_area)
 
-        self._detail_label = LocalizedLabel(detail_text or "")
+        self._detail_label = LocalizedLabel(detail_text or "", self)
         self._detail_label.setObjectName("DialogDetailPrompt")
         self._detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._detail_label.setWordWrap(True)
@@ -363,7 +364,7 @@ class DialogPasswordContent(QWidget):
             self.fields[-1].line_edit.returnPressed.connect(self.submitted.emit)
         layout.addWidget(input_area)
 
-        self._detail_label = LocalizedLabel(detail_text or "")
+        self._detail_label = LocalizedLabel(detail_text or "", self)
         self._detail_label.setObjectName("DialogDetailPrompt")
         self._detail_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._detail_label.setWordWrap(True)
@@ -815,7 +816,7 @@ class DialogBookFilterContent(DialogTagFilterContent):
         self._selected_language_codes = set(selected_language_codes) & offered_codes
         self._preview_provider = preview
 
-        self._language_row = LanguageFilterRow(self._languages)
+        self._language_row = LanguageFilterRow(self._languages, self)
         self._language_row.language_clicked.connect(self._handle_language_clicked)
         self._language_row.setVisible(bool(self._languages))
         layout = self.layout()
@@ -986,6 +987,9 @@ class JoyReadDialogPanel(QFrame):
         self._set_content_widget(DialogProgressContent(message))
         self._set_buttons(((t("dialog.btn_cancel"), self.rejected.emit),) if cancellable else ())
 
+    def set_progress_title(self, message: str) -> None:
+        set_localized(self._title_label, "setText", message)
+
     def is_showing_progress(self) -> bool:
         """Whether the current content belongs to a running task."""
 
@@ -1107,12 +1111,7 @@ class JoyReadDialogPanel(QFrame):
         self,
         buttons: tuple[tuple[str, Callable[[], None]], ...],
     ) -> tuple[DialogTextButton, ...]:
-        while self._option_layout.count():
-            item = self._option_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        clear_widget_layout(self._option_layout)
 
         self._option_layout.addStretch(1)
         created: list[DialogTextButton] = []
@@ -1129,7 +1128,7 @@ class JoyReadDialogPanel(QFrame):
         if self._content_widget is not None:
             old_widget = self._content_scroll.takeWidget()
             if old_widget is not None:
-                old_widget.setParent(None)
+                old_widget.hide()  # takeWidget() has already detached it.
                 old_widget.deleteLater()
         self._content_widget = widget
         self._content_scroll.setWidget(widget)
@@ -1218,6 +1217,8 @@ class JoyReadDialogOverlay(QWidget):
         self._on_reject: Callable[[], None] | None = None
         self._on_skip: Callable[[], None] | None = None
         self._before_accept: Callable[[], bool] | None = None
+        self._keep_open_on_confirm = False
+        self._inline_progress = False
 
         self._panel = JoyReadDialogPanel(self)
         events = language_events()
@@ -1258,11 +1259,28 @@ class JoyReadDialogOverlay(QWidget):
         self._panel.set_progress(title, message, cancellable=on_cancel is not None)
         self._show_centered()
 
-    def close_progress(self) -> None:
-        """Dismiss the current progress panel without closing another dialog."""
+    def close_progress(self, *, inline: bool = False) -> None:
+        """Dismiss only the progress presentation the caller opened.
 
-        if self.isVisible() and self._panel.is_showing_progress():
+        A cancelled import can finish after the user submits a passphrase.
+        Both tasks share this overlay and receive their callbacks independently.
+        """
+
+        if self.is_progress_active() and self._inline_progress == inline:
             self._clear_and_hide()
+
+    def show_inline_progress(self, message: str) -> None:
+        """Show a busy title after confirmation with ``keep_open_on_confirm``."""
+
+        self._inline_progress = True
+        self._panel.setEnabled(False)
+        self._panel.set_progress_title(message)
+        self.setFocus(Qt.FocusReason.PopupFocusReason)
+
+    def is_progress_active(self) -> bool:
+        """Whether the visible overlay is reporting a running task."""
+
+        return self.isVisible() and (self._inline_progress or self._panel.is_showing_progress())
 
     def update_progress(self, message: str) -> None:
         """Update the visible progress text, if a progress dialog is showing.
@@ -1286,6 +1304,7 @@ class JoyReadDialogOverlay(QWidget):
         *,
         destructive: bool = False,
         rich_text: bool = False,
+        keep_open_on_confirm: bool = False,
     ) -> None:
         self._on_accept = on_confirm
         self._on_reject = on_cancel
@@ -1299,7 +1318,7 @@ class JoyReadDialogOverlay(QWidget):
             destructive=destructive,
             rich_text=rich_text,
         )
-        self._show_centered()
+        self._show_centered(keep_open_on_confirm=keep_open_on_confirm)
 
     def show_input(
         self,
@@ -1361,6 +1380,7 @@ class JoyReadDialogOverlay(QWidget):
         detail_text: str | None = None,
         state_prompt: str | None = None,
         echo_mode: QLineEdit.EchoMode = QLineEdit.EchoMode.Normal,
+        keep_open_on_confirm: bool = False,
     ) -> None:
         # Normal echo by default: an archive password is read off a label or
         # a forum post and is easier to get right when visible. A passphrase
@@ -1396,7 +1416,9 @@ class JoyReadDialogOverlay(QWidget):
             skip_text,
         )
         content.submitted.connect(self._panel.accepted.emit)
-        self._show_centered(focus_target=content.field.line_edit)
+        self._show_centered(
+            focus_target=content.field.line_edit, keep_open_on_confirm=keep_open_on_confirm
+        )
 
     def show_multi_password_input(
         self,
@@ -1411,6 +1433,7 @@ class JoyReadDialogOverlay(QWidget):
         on_cancel: Callable[[], None] | None = None,
         detail_text: str | None = None,
         state_prompt: str | None = None,
+        keep_open_on_confirm: bool = False,
     ) -> None:
         # Multi-field password panel used by Hidden Space setup (Passphrase /
         # Confirm) and Change Passphrase (Current / New / Confirm). The
@@ -1444,7 +1467,7 @@ class JoyReadDialogOverlay(QWidget):
         )
         content.submitted.connect(self._panel.accepted.emit)
         focus_target = content.fields[0].line_edit if content.fields else None
-        self._show_centered(focus_target=focus_target)
+        self._show_centered(focus_target=focus_target, keep_open_on_confirm=keep_open_on_confirm)
 
     def show_recovery_code(
         self,
@@ -1581,7 +1604,10 @@ class JoyReadDialogOverlay(QWidget):
         *,
         focus_target: QLineEdit | None = None,
         select_all_text: str | None = None,
+        keep_open_on_confirm: bool = False,
     ) -> None:
+        self._reset_inline_progress()
+        self._keep_open_on_confirm = keep_open_on_confirm
         self._panel.refresh_size()
         self._position_panel()
         self.show()
@@ -1604,16 +1630,21 @@ class JoyReadDialogOverlay(QWidget):
         self._panel.move(max(0, x), max(0, y))
 
     def _accept(self) -> None:
+        if self._inline_progress:
+            return
         if self._before_accept is not None and not self._before_accept():
             return
         callback = self._on_accept
         logger.info("Dialog accepted title=%r", self._panel.title_text)
-        self._clear_and_hide()
+        if callback is not None and self._keep_open_on_confirm:
+            self._clear_actions()
+        else:
+            self._clear_and_hide()
         if callback is not None:
             callback()
 
     def _reject(self) -> None:
-        if self._panel.is_showing_progress() and self._on_reject is None:
+        if self.is_progress_active() and self._on_reject is None:
             # Escape has nothing to dismiss here. Clearing ``_on_reject`` stops
             # the callback but not the hide, so Escape used to make the dialog
             # vanish while the import carried on -- leaving the user with no
@@ -1628,14 +1659,29 @@ class JoyReadDialogOverlay(QWidget):
             callback()
 
     def _skip(self) -> None:
+        if self._inline_progress:
+            return
         callback = self._on_skip
         self._clear_and_hide()
         if callback is not None:
             callback()
 
-    def _clear_and_hide(self) -> None:
+    def _clear_actions(self) -> None:
         self._on_accept = None
         self._on_reject = None
         self._on_skip = None
         self._before_accept = None
+        self._keep_open_on_confirm = False
+
+    def _clear_and_hide(self) -> None:
+        self._clear_actions()
         self.hide()
+        if self._inline_progress:
+            for input_field in self._panel.findChildren(QLineEdit):
+                input_field.clear()
+            self._reset_inline_progress()
+
+    def _reset_inline_progress(self) -> None:
+        if self._inline_progress:
+            self._inline_progress = False
+            self._panel.setEnabled(True)

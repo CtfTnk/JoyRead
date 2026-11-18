@@ -11,6 +11,7 @@ from PySide6.QtWidgets import QWidget
 from joyread.core.models.tag import Tag
 from joyread.ui.resources.styles.theme import Theme
 from joyread.ui.widgets.flow_layout import FlowLayout
+from joyread.ui.widgets.layout_cleanup import clear_widget_layout
 from joyread.ui.widgets.tag_chip import TagChipWidget
 
 
@@ -59,12 +60,7 @@ class TagChipFlowWidget(QWidget):
         valid_ids = {tag.tag_id for tag in self._tags}
         self._selected_tag_ids = {tag_id for tag_id in selected_tag_ids if tag_id in valid_ids}
 
-        while self._flow_layout.count():
-            item = self._flow_layout.takeAt(0)
-            widget = item.widget() if item is not None else None
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        clear_widget_layout(self._flow_layout)
 
         for tag in self._tags:
             chip = TagChipWidget(tag.tag_id, tag.name)

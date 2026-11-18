@@ -814,7 +814,7 @@ def test_external_file_extraction_output_is_bounded(tmp_path: Path, monkeypatch:
     monkeypatch.setattr(
         archive_common.subprocess,
         "Popen",
-        lambda _command, stdout=None, stderr=None: _FakePopen(
+        lambda _command, stdout=None, stderr=None, creationflags=0: _FakePopen(
             stdout_target=stdout,
             stderr_target=stderr,
         ),
@@ -1369,7 +1369,7 @@ def test_rar_read_falls_back_to_external_bsdtar(tmp_path: Path, monkeypatch: pyt
     def fake_which(name: str) -> str | None:
         return "/usr/bin/bsdtar" if name == "bsdtar" else None
 
-    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None, creationflags=0):  # noqa: ANN001
         assert command[:2] == ["/usr/bin/bsdtar", "-xOf"]
         return _FakePopen(
             stdout_target=stdout,
@@ -1453,7 +1453,7 @@ def test_encrypted_rar_read_prefers_7zip_backend(tmp_path: Path, monkeypatch: py
     def fake_which(name: str) -> str | None:
         return { "7zz": "/opt/joyread/7zz", "bsdtar": "/usr/bin/bsdtar" }.get(name)
 
-    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None, creationflags=0):  # noqa: ANN001
         assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
         assert "-psecret" in command
         assert "/usr/bin/bsdtar" not in command
@@ -1538,7 +1538,7 @@ def test_encrypted_rar_page_read_rejects_wrong_7zip_password(
     def fake_which(name: str) -> str | None:
         return "/opt/joyread/7zz" if name == "7zz" else None
 
-    def fake_popen(command, stdout=None, stderr=None):  # noqa: ANN001
+    def fake_popen(command, stdout=None, stderr=None, creationflags=0):  # noqa: ANN001
         assert command[:4] == ["/opt/joyread/7zz", "x", "-so", "-y"]
         assert "-pwrong" in command
         return _FakePopen(

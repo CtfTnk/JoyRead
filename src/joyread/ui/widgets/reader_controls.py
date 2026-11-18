@@ -209,10 +209,11 @@ class ReaderHeader(QWidget):
             t("reader.custom"),
             self.custom_requested.emit,
         )
-        self.custom_button.setVisible(show_custom_button)
         if show_custom_button:
             layout.addWidget(self.custom_button)
         else:
+            self.custom_button.setParent(self)
+            self.custom_button.hide()
             self._custom_placeholder = QWidget()
             self._custom_placeholder.setFixedSize(0, 0)
             layout.addWidget(self._custom_placeholder, stretch=0)

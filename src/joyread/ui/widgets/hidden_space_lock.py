@@ -135,7 +135,7 @@ class HiddenSpaceLockOverlay(QWidget):
         panel_layout.addWidget(button_row)
 
         self._recovery_link = _HiddenSpaceLockButton(
-            t("hidden_space.use_recovery_code"), text_class="HiddenSpaceLockLinkText", link=True
+            t("hidden_space.use_recovery_code"), self._panel, text_class="HiddenSpaceLockLinkText", link=True
         )
         self._recovery_link.clicked.connect(self._on_recovery_clicked)
         self._recovery_link.setVisible(recovery_available)
