@@ -39,6 +39,8 @@ JoyRead is a local manga, comic, and PDF reader with a desktop library for **mac
 
 Find all packages and checksums on the [release page](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0), or browse [previous releases](https://github.com/CtfTnk/JoyRead/releases). There is no Intel Mac package. macOS builds are not Apple-notarized, and Windows installers do not carry a trusted code signature; see the release notes for first-launch guidance.
 
+**Updating on macOS:** quit JoyRead first, drag the new copy into Applications, and choose **Replace** when Finder asks. **Keep Both** leaves a second copy named “JoyRead 2”.
+
 **Upgrading from 1.3.1 or earlier:** back up your library first. Once JoyRead 1.4.0 has opened a library, earlier versions can no longer open it.
 
 ## Made for your local books

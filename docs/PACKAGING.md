@@ -141,6 +141,12 @@ the rest -- and both numbers live together in `background.py`. It is rendered at
 1x and 2x; `dmgbuild` finds the `@2x` file beside the first and pairs them into
 a HiDPI TIFF itself, so a lone PNG never reaches a retina display.
 
+Below the icons the background says to quit JoyRead and choose **Replace** when
+updating. Dragging a new copy over an existing one always makes Finder ask Keep
+Both / Stop / Replace, and nothing in a disk image can suppress that. Keep Both
+leaves a second "JoyRead 2" that Open With can still pick. Only an in-app
+updater would avoid the prompt.
+
 Two conventions worth knowing before editing the layout. `window_rect`'s
 position runs **bottom-to-top**, unlike `create-dmg`'s `--window-pos`, which is
 why that number looks large. Icon positions do *not*: `icon_locations` uses the

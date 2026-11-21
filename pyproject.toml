@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "joyread"
-version = "1.4.0"
+version = "1.4.1"
 description = "Cross-platform desktop manga and light novel reader."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -74,3 +74,7 @@ joyread = [
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+# A test still running after 2 minutes is hung: the slowest CI runner finishes
+# the whole suite in about 2.5. Dump every thread's stack so the log shows where,
+# instead of CI's job timeout cancelling a run that names no test.
+faulthandler_timeout = 120

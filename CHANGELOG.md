@@ -3,6 +3,30 @@
 All notable changes to JoyRead are documented here. This project follows
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] — Unreleased
+
+[Release notes — English / 中文 / 日本語](docs/releases/v1.4.1.md)
+
+### Changed
+
+- The macOS disk image window, the README and the user manual say how to
+  update: quit JoyRead first, then choose Replace when Finder asks. Keep Both
+  leaves a second "JoyRead 2" that Open With can still pick.
+- Tests that run for more than 2 minutes print every thread's stack, so a hung
+  CI run names the test that hung.
+
+### Fixed
+
+- Small blank windows no longer flash on screen, most visibly on Windows,
+  while JoyRead rebuilds part of its interface: dialog buttons, the Filter
+  dialog, tag lists, the sidebar's collections, Settings pages, the Reader's
+  contents and bookmarks, and book thumbnails in the detail view.
+- On Windows, reading a 7z or RAR book no longer flashes a console window.
+- Hidden Space dialogs stay in place, greyed out under a busy title, while a
+  passphrase is checked or a change is applied, instead of switching to a
+  separate progress panel. The shelf refreshes in place after hiding or
+  unhiding instead of passing through its loading state.
+
 ## [1.4.0] — 2026-11-16
 
 [Release notes — English / 中文 / 日本語](docs/releases/v1.4.0.md)
@@ -77,6 +101,8 @@ All notable changes to JoyRead are documented here. This project follows
 
 - A log line no longer loses the fields after a path, and a file name with a
   comma no longer shows part of its name next to the hashed path.
+- A book read while hidden no longer reappears on the Recent shelf after it is
+  unhidden.
 
 ### Known limitations
 

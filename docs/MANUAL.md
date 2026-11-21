@@ -27,8 +27,10 @@ account to create and nothing is sent anywhere.
 Download the package for your system from the
 [Releases](https://github.com/CtfTnk/JoyRead/releases) page: a DMG for macOS
 Apple Silicon, an EXE installer for Windows x64, or a DEB for Ubuntu amd64/arm64.
-On macOS, open the DMG and drag JoyRead into Applications. On Windows, run the
-installer. On Ubuntu, install from the terminal only: open a terminal in the
+On macOS, open the DMG and drag JoyRead into Applications. To update, quit
+JoyRead first, drag the new copy in the same way, and choose **Replace** when
+Finder asks. **Keep Both** leaves a second copy named “JoyRead 2” that Open With
+can still pick. On Windows, run the installer. On Ubuntu, install from the terminal only: open a terminal in the
 download folder and run `sudo apt install ./package.deb`, replacing `package.deb`
 with the downloaded filename. The graphical installer gets stuck at
 **“Preparing”**; this issue has not been fixed.

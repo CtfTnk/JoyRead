@@ -29,6 +29,8 @@
 
 安装包与校验值见 [Release 页面](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0)。macOS 包未经 Apple 公证，Windows 包无受信任的代码签名，首次运行可能出现系统提示；首次启动说明见发布说明。暂不提供 Intel Mac 安装包。
 
+**macOS 升级：** 请先退出 JoyRead，再把新版本拖入「应用程序」，Finder 询问时选择**替换**。选择**保留两者**会留下名为「JoyRead 2」的第二份副本。
+
 **从 1.3.1 或更早版本升级：** 请先备份书库。欣阅 1.4.0 打开书库后，旧版本将无法再打开该书库。
 
 ## 从阅读到整理

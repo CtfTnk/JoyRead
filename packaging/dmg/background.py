@@ -74,6 +74,20 @@ def render(path: Path, scale: int = 1) -> Path:
         scale,
     )
 
+    # Finder asks Keep Both / Stop / Replace when an older JoyRead is already
+    # in Applications. Keep Both leaves a second "JoyRead 2" that Open With can
+    # still pick, and a running copy cannot be replaced at all. The DMG cannot
+    # suppress the prompt, so the window says which answer to give. It sits
+    # below the icon labels (128pt icons centred at y=205, labels under them).
+    _centred(
+        draw,
+        332,
+        "Updating? Quit JoyRead first, then choose Replace.",
+        _font(13 * scale),
+        TEXT_MUTED,
+        scale,
+    )
+
     # The arrow, stopping clear of both icon boxes (128pt icons, so 64pt each
     # side of centre) with a little air.
     y = APP_CENTRE[1] * scale

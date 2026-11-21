@@ -25,7 +25,9 @@
 
 从 [Releases 页面](https://github.com/CtfTnk/JoyRead/releases)下载适合系统的安装包：
 macOS Apple Silicon 使用 DMG，Windows x64 使用 EXE 安装程序，Ubuntu amd64/arm64 使用 DEB。
-在 macOS 上打开 DMG，将 JoyRead 拖入「应用程序」；在 Windows 上运行安装程序。
+在 macOS 上打开 DMG，将 JoyRead 拖入「应用程序」。升级时请先退出 JoyRead，再以同样方式拖入新版本，
+Finder 询问时选择**替换**；选择**保留两者**会留下名为「JoyRead 2」的第二份副本，「打开方式」仍可能选中它。
+在 Windows 上运行安装程序。
 Ubuntu 请使用终端安装：在下载目录执行 `sudo apt install ./package.deb`，
 将 `package.deb` 替换为实际文件名。图形安装器可能卡在**「正在准备」**，该问题尚未修复。
 签名和首次启动说明请参阅对应版本的发布说明。

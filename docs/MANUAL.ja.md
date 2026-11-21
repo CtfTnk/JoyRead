@@ -25,7 +25,9 @@
 
 [Releases ページ](https://github.com/CtfTnk/JoyRead/releases)から、使用するシステムに合うパッケージをダウンロードします。
 macOS Apple Silicon は DMG、Windows x64 は EXE インストーラー、Ubuntu amd64/arm64 は DEB を使用します。
-macOS では DMG を開いて JoyRead を「アプリケーション」へドラッグし、Windows ではインストーラーを実行します。
+macOS では DMG を開いて JoyRead を「アプリケーション」へドラッグします。更新するときは先にジョイヨミを終了し、同じように新しい版をドラッグして、
+Finder に尋ねられたら**置き換える**を選んでください。両方を残すと「JoyRead 2」という 2 つ目のコピーができ、「プログラムから開く」で選ばれることがあります。
+Windows ではインストーラーを実行します。
 Ubuntu ではダウンロード先でターミナルを開き、`sudo apt install ./package.deb` を実行してください。
 `package.deb` は実際のファイル名に置き換えます。GUI インストーラーが**「準備中」**で止まる問題は未解決です。
 署名と初回起動の手順は、各バージョンのリリースノートを参照してください。
