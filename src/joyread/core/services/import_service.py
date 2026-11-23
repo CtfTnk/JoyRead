@@ -1220,14 +1220,29 @@ class ImportService:
         )
 
     def _find_duplicate(self, source_hash: str) -> sqlite3.Row | None:
-        """Match on what the user handed over, never on what we stored.
+        """Return the library book this source already belongs to, if any.
 
-        These are the same string today. Once canonical import repackages an
-        archive they diverge, and matching on the stored artifact would let the
-        same source import twice -- a rebuilt CBZ does not hash like the CBR it
-        came from.
+        Match on what the user handed over, never on what we stored. These are
+        the same string today. Once canonical import repackages an archive they
+        diverge, and matching on the stored artifact would let the same source
+        import twice -- a rebuilt CBZ does not hash like the CBR it came from.
+
+        A ``book_files`` row that no book owns is not a duplicate. Nothing in
+        the library shows it, so answering "already exists" would leave the
+        user unable to import that file ever again. Import is the one place
+        that notices such a row, so it reclaims it here and imports the file
+        as new.
         """
 
+        row = self._match_source_hash(source_hash)
+        if row is None:
+            return None
+        if row["book_id"] is not None or row["private_book_id"] is not None:
+            return row
+        self._reclaim_ownerless_file(str(row["file_id"]))
+        return None
+
+    def _match_source_hash(self, source_hash: str) -> sqlite3.Row | None:
         return self._database.execute(
             lambda connection: connection.execute(
                 """
@@ -1244,6 +1259,36 @@ class ImportService:
             ).fetchone(),
             DatabasePriority.HIGH,
         )
+
+    def _reclaim_ownerless_file(self, file_id: str) -> None:
+        """Drop a ``book_files`` row no book owns, then the file it points at.
+
+        Only a legacy defect or a hand-edited database leaves such a row:
+        ordinary import writes ``book_files`` and ``books`` in one
+        transaction, and deleting a book removes both. The row goes first and
+        the file second, the same order ``delete_book`` uses, so a failed
+        unlink only leaves a file no row references -- exactly what the library
+        audit already reports and reclaims as an orphan file.
+        """
+
+        storage_path = self._database.execute(
+            lambda connection: _delete_ownerless_file_row(connection, file_id),
+            DatabasePriority.NORMAL,
+        )
+        if storage_path is None:
+            return
+        try:
+            path = self._paths.resolver.to_storage_absolute(storage_path)
+        except ValueError:
+            return
+        # Never follow a stale row outside the managed library: a legacy
+        # absolute or escaping path belongs to the user, not to JoyRead.
+        if not path.is_relative_to(self._paths.paths.books.resolve()) or not path.is_file():
+            return
+        try:
+            path.unlink()
+        except OSError as exc:
+            logger.warning("Could not remove the reclaimed file of file_id=%s: %s", file_id, exc)
 
     def _record_item(
         self,
@@ -1380,6 +1425,49 @@ def _insert_imported_book(
         raise
     else:
         connection.execute("COMMIT")
+
+
+def _delete_ownerless_file_row(connection: sqlite3.Connection, file_id: str) -> str | None:
+    """Delete ``file_id`` only if still no book owns it; return its file to unlink.
+
+    The ownership test is repeated inside the transaction instead of trusting
+    the earlier lookup. ``books.file_id`` cascades on delete, so removing a row
+    that a book had gained in between would silently delete that book too.
+    Returns ``None`` when nothing was deleted, or when another row still
+    references the same stored file.
+    """
+
+    connection.execute("BEGIN")
+    try:
+        row = connection.execute(
+            """
+            SELECT storage_path FROM book_files
+            WHERE file_id = ?
+              AND NOT EXISTS (SELECT 1 FROM books WHERE books.file_id = book_files.file_id)
+              AND NOT EXISTS (
+                  SELECT 1 FROM private_books WHERE private_books.file_id = book_files.file_id
+              )
+            """,
+            (file_id,),
+        ).fetchone()
+        storage_path: str | None = None
+        if row is not None:
+            storage_path = str(row["storage_path"])
+            connection.execute("DELETE FROM import_items WHERE file_id = ?", (file_id,))
+            connection.execute("DELETE FROM book_files WHERE file_id = ?", (file_id,))
+            logger.warning("Import reclaimed a book_files row no book owns file_id=%s", file_id)
+            shared = connection.execute(
+                "SELECT 1 FROM book_files WHERE storage_path = ? LIMIT 1",
+                (storage_path,),
+            ).fetchone()
+            if shared is not None:
+                storage_path = None
+    except Exception:
+        connection.execute("ROLLBACK")
+        raise
+    else:
+        connection.execute("COMMIT")
+    return storage_path
 
 
 def _resolve_source_path(source_path: str, manifest_dir: Path | None) -> Path:

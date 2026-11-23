@@ -26,6 +26,9 @@ All notable changes to JoyRead are documented here. This project follows
   passphrase is checked or a change is applied, instead of switching to a
   separate progress panel. The shelf refreshes in place after hiding or
   unhiding instead of passing through its loading state.
+- A file that import reported as already in JoyRead, although no book in the
+  Library showed it, now imports normally. The leftover record and its stored
+  file are removed first.
 
 ## [1.4.0] — 2026-11-16
 

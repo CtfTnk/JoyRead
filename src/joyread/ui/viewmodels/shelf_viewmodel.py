@@ -1499,8 +1499,8 @@ class ShelfViewModel(ShelfSorting):
         self.book_tags_failed.emit(str(error))
 
     def _sort_key(self, book: Book) -> tuple[object, str]:
-        if self.current_shelf == ShelfKey.RECENT:
-            return (book.last_read_at is None, book.last_read_at or book.added_at, book.title.lower())
+        # Recent never reaches this key: ``visible_books`` orders it by last
+        # read before the user's sort field is consulted.
         if self.sort_field == SortField.TITLE:
             return (book.title.lower(), book.uuid)
         if self.sort_field == SortField.AUTHOR:
