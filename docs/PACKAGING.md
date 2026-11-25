@@ -597,7 +597,8 @@ or deleted build directory.
 - Include the JoyRead license, third-party notices, font OFL, and 7-Zip license.
 - Run tests and smoke tests on every advertised platform.
 - Verify writable data is outside the installation directory.
-- Record known limitations in the release notes.
+- Keep build/test results, manual acceptance and known limitations in the
+  maintainer's internal release record, not in the public release notes.
 
 
 ## 1.0.2 localization release checks
@@ -807,7 +808,7 @@ run. Pass that run's numeric ID as `build_run_id`. It checks the build workflow,
 success and source repository, reads the version from the built commit, requires
 all four target manifests to match that commit/version, and verifies installer
 SHA-256 hashes. It publishes the complete three-language notes from the dispatch
-checkout, so finish the validation tables before dispatching.
+checkout, so finish the notes before dispatching.
 
 The workflow creates the release tag at the built commit, uploads all four
 installers plus aggregate checksums/provenance to a draft, compares GitHub's
