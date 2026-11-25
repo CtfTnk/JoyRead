@@ -23,6 +23,7 @@ from joyread.core.archive.formats.seven_zip_command import (
     background_thread_limit,
     extract_members_to_directory,
 )
+from joyread.core.archive.formats.zip_names import ZipMember, ZipMemberIndex
 from joyread.core.archive.limits import ArchiveOpenLimits, ArchiveOperationBudget
 from joyread.core.archive.records import ArchiveContainerProbe, ArchiveEntry, ArchiveListing, ArchiveSource
 from joyread.core.archive.scanner import ArchiveScanContext
@@ -80,17 +81,12 @@ class ZipArchiveBackend:
         bad_file_errors = self._bad_file_errors_getter()
         try:
             with zipper.AESZipFile(source.open_arg(), "r") as archive:
-                infos = archive.infolist()
+                files = ZipMemberIndex(archive.infolist()).files()
                 return ArchiveContainerProbe(
                     entries=tuple(
-                        ArchiveEntry(info.filename, getattr(info, "file_size", None), None)
-                        for info in infos
-                        if not info.is_dir()
+                        ArchiveEntry(member.name, member.file_size, None) for member in files
                     ),
-                    is_encrypted=any(
-                        not info.is_dir() and bool(info.flag_bits & 0x1)
-                        for info in infos
-                    ),
+                    is_encrypted=any(_is_encrypted(member) for member in files),
                 )
         except bad_file_errors as exc:
             raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc
@@ -105,8 +101,9 @@ class ZipArchiveBackend:
 
         try:
             with zipper.AESZipFile(source.open_arg(), "r") as archive:
-                infos = archive.infolist()
-                encrypted = [info for info in infos if not info.is_dir() and info.flag_bits & 0x1]
+                index = ZipMemberIndex(archive.infolist())
+                files = index.files()
+                encrypted = [member for member in files if _is_encrypted(member)]
                 password = None
                 if encrypted:
                     password = self._request_password(
@@ -116,19 +113,16 @@ class ZipArchiveBackend:
                     )
                     self._verify_password(
                         source,
-                        _password_probe_entry(encrypted).filename,
+                        _password_probe_entry(encrypted).name,
                         password,
                         limits=context.limits,
                         budget=context.budget,
                     )
                 return ArchiveListing(
-                    tuple(
-                        ArchiveEntry(info.filename, getattr(info, "file_size", None), password)
-                        for info in infos
-                        if not info.is_dir()
-                    ),
+                    tuple(ArchiveEntry(member.name, member.file_size, password) for member in files),
                     random_access_confirmed=True,
                     supports_concurrent_reads=self._reads_leave_the_gil(source, encrypted),
+                    extractor_addressable=index.extractor_addressable,
                 )
         except bad_file_errors as exc:
             raise ArchiveCorruptError(f"Corrupt ZIP archive: {source.display_name}") from exc
@@ -150,10 +144,16 @@ class ZipArchiveBackend:
         try:
             payloads: dict[str, bytes] = {}
             with zipper.AESZipFile(source.open_arg(), "r") as archive:
+                index = ZipMemberIndex(archive.infolist())
                 helper: str | None = None
                 helper_resolved = False
                 for name, password in entries:
-                    if password is not None and uses_zipcrypto(archive.getinfo(name)):
+                    member = index.member(name)
+                    if (
+                        password is not None
+                        and member.extractor_addressable
+                        and uses_zipcrypto(member.info)
+                    ):
                         if not helper_resolved:
                             helper = self._zipcrypto_helper(source)
                             helper_resolved = True
@@ -168,7 +168,7 @@ class ZipArchiveBackend:
                             )
                             continue
                     pwd = password.encode("utf-8") if password is not None else None
-                    with archive.open(name, "r", pwd=pwd) as stream:
+                    with archive.open(member.info, "r", pwd=pwd) as stream:
                         payloads[name] = read_stream_bounded(
                             stream,
                             name,
@@ -186,21 +186,25 @@ class ZipArchiveBackend:
         except (*bad_file_errors, KeyError) as exc:
             raise ArchiveReadError(f"Could not read ZIP entry: {entries[0][0]}") from exc
 
-    def _reads_leave_the_gil(self, source: ArchiveSource, encrypted: Sequence[object]) -> bool:
+    def _reads_leave_the_gil(self, source: ArchiveSource, encrypted: Sequence[ZipMember]) -> bool:
         """Whether two concurrent page reads of this source actually overlap.
 
         Plain entries inflate in zlib and AES entries decrypt in a C backend,
         both outside the GIL. ZipCrypto does too once the 7-Zip helper takes
         it, since each read is its own process. Only the in-process ZipCrypto
         fallback is a per-byte Python loop: a second reader there just halves
-        the speed of the first and starves the UI thread.
+        the speed of the first and starves the UI thread. That fallback also
+        serves every ZipCrypto entry whose name the helper cannot address.
 
         The helper is resolved only when a ZipCrypto entry exists, so an AES
         archive never looks one up.
         """
 
-        if not any(uses_zipcrypto(info) for info in encrypted):
+        zipcrypto = [member for member in encrypted if uses_zipcrypto(member.info)]
+        if not zipcrypto:
             return True
+        if not all(member.extractor_addressable for member in zipcrypto):
+            return False
         return self._zipcrypto_helper(source) is not None
 
     def _zipcrypto_helper(self, source: ArchiveSource) -> str | None:
@@ -296,7 +300,8 @@ class ZipArchiveBackend:
 
         Mirrors the 7Z backend: only the scanner's confirmed page members are
         requested, and the names travel in a listfile rather than argv so they
-        can never be read as switches.
+        can never be read as switches. A source whose names 7-Zip would not
+        recognise is never offered this (``ArchiveSource.extractor_addressable``).
         """
 
         if source.path is None:
@@ -333,6 +338,10 @@ class ZipArchiveBackend:
         payload = self.read_entries(source, ((name, password),), limits=limits, budget=budget).get(name)
         if payload is None:
             raise ArchiveReadError(f"ZIP entry was not extracted: {name}")
+
+
+def _is_encrypted(member: ZipMember) -> bool:
+    return bool(getattr(member.info, "flag_bits", 0) & _ENCRYPTED_FLAG)
 
 
 def _password_probe_entry(encrypted: Sequence[object]) -> object:

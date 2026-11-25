@@ -29,6 +29,12 @@ All notable changes to JoyRead are documented here. This project follows
 - A file that import reported as already in JoyRead, although no book in the
   Library showed it, now imports normally. The leftover record and its stored
   file are removed first.
+- Japanese and Chinese file and folder names inside ZIP/CBZ books no longer
+  show as garbled characters in the Contents. This covers Shift-JIS, GBK and
+  Big5, plus UTF-8 written without its marker. Pages also sort by the real
+  names. Books already in the Library show the corrected names the next time
+  they open. A book that was repackaged at import, or sealed in Hidden Space,
+  keeps its old names until it is imported again from the original file.
 
 ## [1.4.0] — 2026-11-16
 

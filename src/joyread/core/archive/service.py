@@ -1085,10 +1085,11 @@ class ArchiveImageService:
         several containers, or from a nested archive held in memory, refuses
         bulk conversion on its own; the capability is bound here to the backend
         that owns the file on disk. A confidential source never gets one: bulk
-        extraction writes every member into a directory.
+        extraction writes every member into a directory. Neither does a source
+        whose listing found member names the extractor would not recognise.
         """
 
-        if source.confidential:
+        if source.confidential or not source.extractor_addressable:
             return None
         backend = self._backends.get(source.suffix)
         supports_bulk = getattr(backend, "supports_bulk_extraction", None)

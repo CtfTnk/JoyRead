@@ -188,6 +188,13 @@ class ArchiveImageSession:
                 cache_lease.close()
                 cache_lease = None
             bulk_extract = None
+        # The extractor is offered for the source as it was before scanning;
+        # only the scan learns that it would look for these pages under names
+        # it does not use. Refusing here also keeps the encrypted warmup
+        # below off: without an out-of-process pass, it would decrypt in
+        # process and contend with the foreground reader.
+        if not all(record.source.extractor_addressable for record in self._pages):
+            bulk_extract = None
         self._bulk_extract = bulk_extract
         self._cache_lease = cache_lease
         self._cache_signature = cache_signature

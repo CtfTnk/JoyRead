@@ -38,6 +38,13 @@ class ArchiveSource:
     # and carried by every record scanned out of it. Opt-in like the flags
     # above: a backend nobody marked is treated as an ordinary archive.
     confidential: bool = False
+    # False when an external extractor would not find every member under the
+    # name the listing gave it. A ZIP name stored in a legacy code page is
+    # listed decoded, and 7-Zip names it differently. Bulk extraction selects
+    # members by name, so it is never offered for such a source. This flag
+    # withdraws a capability rather than granting one, so its default leaves
+    # every other backend as it was.
+    extractor_addressable: bool = True
     # A reader the backend opened while listing and needs for every later
     # read, such as the sealed backend's decrypting index. It belongs to the
     # session holding this source's pages, which closes it once reads have
@@ -84,6 +91,8 @@ class ArchiveListing:
     requires_sequential_warmup: bool = False
     random_access_confirmed: bool = False
     supports_concurrent_reads: bool = False
+    #: Copied to ``ArchiveSource.extractor_addressable``.
+    extractor_addressable: bool = True
     #: Attached to the listed source as ``ArchiveSource.handle``.
     handle: object | None = field(default=None, compare=False, repr=False)
 

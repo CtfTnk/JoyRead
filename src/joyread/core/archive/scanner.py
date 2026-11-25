@@ -164,6 +164,7 @@ class ArchiveScanner:
             requires_sequential_warmup=listing.requires_sequential_warmup,
             random_access_confirmed=listing.random_access_confirmed,
             supports_concurrent_reads=listing.supports_concurrent_reads,
+            extractor_addressable=listing.extractor_addressable,
             handle=listing.handle if listing.handle is not None else source.handle,
         )
         entries = listing.entries
