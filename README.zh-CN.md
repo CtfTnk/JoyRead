@@ -88,6 +88,8 @@
 
 ## 开源与开发
 
-JoyRead 采用 **[GNU GPL v3.0 only](LICENSE)**；第三方组件许可见 [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt)。示例截图中的书籍封面和页面版权归各自权利人所有，不随软件附赠，也不受 JoyRead 软件许可授权。
+JoyRead 采用 **[GNU GPL v3.0 only](LICENSE)**。第三方组件许可见 [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt)。
+
+截图中的漫画为《Give My Regards to Black Jack》，作者 **SHUHO SATO**。截图使用官方电子版，适用[出版方的二次使用条款](https://densho810.com/free/)。
 
 源码运行步骤见英文版的 [Development](README.md#development)，完整控件说明见[使用手册](docs/MANUAL.zh-CN.md)，构建步骤见[打包指南](docs/PACKAGING.md)。

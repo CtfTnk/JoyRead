@@ -88,6 +88,8 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 ## オープンソースと開発
 
-JoyRead は **[GNU GPL v3.0 only](LICENSE)** で公開しています。第三者コンポーネントのライセンスは [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt) を参照してください。スクリーンショット内の表紙・本文の権利は各権利者に帰属し、書籍はアプリに含まれず、JoyRead のソフトウェアライセンスの対象にもなりません。
+JoyRead は **[GNU GPL v3.0 only](LICENSE)** で公開しています。第三者コンポーネントのライセンスは [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt) を参照してください。
+
+スクリーンショットでは、佐藤秀峰『ブラックジャックによろしく』の公式電子版を[二次利用規約](https://densho810.com/free/)に基づいて使用しています。
 
 ソースからの起動は英語版の [Development](README.md#development)、操作の詳細は[マニュアル](docs/MANUAL.ja.md)、ビルド手順は[パッケージガイド](docs/PACKAGING.md)を参照してください。

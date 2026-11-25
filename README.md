@@ -131,4 +131,4 @@ The novel reader remains disabled and separate from the shipping app. Its option
 
 JoyRead is free and open-source software under **[GNU GPL v3.0 only](LICENSE)**. See [THIRD_PARTY_NOTICES.txt](packaging/THIRD_PARTY_NOTICES.txt) for bundled component licenses.
 
-Book covers and pages in the supplied screenshots belong to their respective rights holders. These books are not bundled with JoyRead and are not licensed under JoyRead's software license.
+Screenshots feature *Give My Regards to Black Jack* by **SHUHO SATO**, using the official digital edition under the [publisher’s secondary-use terms](https://densho810.com/free/).
