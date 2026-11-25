@@ -86,6 +86,10 @@ def test_a_record_reads_as_one_line() -> None:
         0, 1.5, True, None, "plain", "", "with space", 'quote " inside', "a=b", "dot · inside",
         "(paren)", "[bracket", "/Users/alice/Books/Spy x Family, Vol. 1.pdf", "line\nbreak",
         ["a b", "c"], ["-password", "<redacted>"], [], "日本語のタイトル",
+        # Strings that a bare reading would turn into numbers or booleans.
+        # Short operation ids are random hex, so "28552584" and "15278e29"
+        # turn up in real logs (and once failed a release build).
+        "28552584", "15278e29", "-12", "1_000", "nan", "inf", "Infinity", "true", "null",
     ],
 )
 def test_field_values_read_back_exactly(value: object) -> None:

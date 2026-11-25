@@ -13,7 +13,8 @@ Everything a launch shares -- run id, pid, version, start time -- is said
 once in the header, not on every line. Times are local; a ``# YYYY-MM-DD``
 line marks a change of day. A field value is written bare when that is
 unambiguous and as a JSON string or array otherwise, so it stays on one line
-and reads back exactly. Indented lines continue the record above: the rest of
+and reads back exactly. A string that would read back as a number or a
+boolean, such as an all-digit id, is quoted. Indented lines continue the record above: the rest of
 a multi-line message, then any traceback.
 
 :func:`read_log_records` reads a file back into dictionaries, for tests and
@@ -76,7 +77,12 @@ def format_value(value: object) -> str:
     """One field value, on one line, readable back by :func:`parse_value`."""
 
     if isinstance(value, str):
-        return value if _BARE_VALUE_RE.match(value) else json.dumps(value, ensure_ascii=False)
+        # Bare only when it reads back as this same string. An eight-digit
+        # operation id such as "28552584", or "15278e29", "nan" and "true",
+        # would otherwise come back as a number or a boolean.
+        if _BARE_VALUE_RE.match(value) and isinstance(parse_value(value), str):
+            return value
+        return json.dumps(value, ensure_ascii=False)
     if value is None or isinstance(value, (bool, int, float)):
         return json.dumps(value)
     if isinstance(value, (list, tuple)):
