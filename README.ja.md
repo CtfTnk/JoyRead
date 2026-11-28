@@ -4,13 +4,13 @@
 <h1 align="center">ジョイヨミ · JoyRead</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/release-1.4.1-39846a" alt="Release 1.4.1"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>ローカルの蔵書管理をもっと手軽に。読みたいときに、すぐ読める。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.ja.md">使い方</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">1.4.0 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">ダウンロード</a> · <a href="docs/MANUAL.ja.md">使い方</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1">1.4.1 の更新内容</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">不具合の報告</a></p>
 
 JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF リーダー兼ライブラリ管理アプリです。お気に入りの本をインポートして整理することも、ファイルをそのまま開いて読み始めることもできます。アカウントやクラウドサービスは必要ありません。
 
@@ -18,20 +18,22 @@ JoyRead は **macOS、Windows、Ubuntu/Linux** 向けのローカル漫画・PDF
 
 ## ダウンロードとインストール
 
-| OS | 1.4.0 パッケージ | インストール方法 |
+| OS | 1.4.1 パッケージ | インストール方法 |
 | --- | --- | --- |
-| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | ディスクイメージを開き、JoyRead を Applications にドラッグします。 |
-| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | インストーラーの案内に従います。 |
-| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb` を使います。 |
-| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb` を使います。 |
+| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-macos-arm64.dmg) | ディスクイメージを開き、JoyRead を Applications にドラッグします。 |
+| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-windows-x86_64-setup.exe) | インストーラーの案内に従います。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-amd64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.1-linux-amd64.deb` を使います。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-arm64.deb) | ターミナルで `sudo apt install ./JoyRead-1.4.1-linux-arm64.deb` を使います。 |
 
 **Ubuntu ではターミナルからインストールしてください。** GUI インストーラーは **「Preparing」** で停止するため使用できません。この問題は未修正です。ダウンロード先のフォルダーでターミナルを開き、上の表にあるパッケージに対応するコマンドを実行してください。
 
-パッケージとチェックサムは[リリースページ](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0)にあります。macOS 版は Apple の公証を受けておらず、Windows 版にも信頼されたコード署名はありません。初回起動時の案内はリリースノートをご確認ください。Intel Mac 用のパッケージはありません。
+パッケージとチェックサムは[リリースページ](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1)にあります。macOS 版は Apple の公証を受けておらず、Windows 版にも信頼されたコード署名はありません。初回起動時の案内はリリースノートをご確認ください。Intel Mac 用のパッケージはありません。
 
 **macOS での更新：** 先にジョイヨミを終了してから新しい版を Applications にドラッグし、Finder に尋ねられたら**置き換える**を選んでください。両方を残すと「JoyRead 2」という 2 つ目のコピーができます。
 
-**1.3.1 以前からの更新：** 先にライブラリをバックアップしてください。ジョイヨミ 1.4.0 で一度開いたライブラリは、以前のバージョンでは開けなくなります。
+JoyRead **1.4.0** のライブラリと設定は、1.4.1 でそのまま使えます。
+
+**1.3.1 以前**から更新する場合は、先にライブラリをバックアップしてください。更新するとライブラリはデータベーススキーマ 15 に移行します。1.3.1 以前に戻す場合は、バックアップを復元してください。
 
 ## 読むことも、整理することも
 

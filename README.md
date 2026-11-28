@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/release-1.4.1-39846a" alt="Release 1.4.1"></a>
   <a href="#download"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
   <a href="#download"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
   <a href="#download"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
@@ -18,7 +18,7 @@
   <a href="#getting-started">Get started</a> ·
   <a href="#a-closer-look">Screenshots</a> ·
   <a href="docs/MANUAL.md">User manual</a> ·
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">What's new</a> ·
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1">What's new</a> ·
   <a href="https://github.com/CtfTnk/JoyRead/issues">Feedback</a>
 </p>
 
@@ -28,20 +28,22 @@ JoyRead is a local manga, comic, and PDF reader with a desktop library for **mac
 
 ## Download
 
-| Platform | JoyRead 1.4.0 | Installation |
+| Platform | JoyRead 1.4.1 | Installation |
 | --- | --- | --- |
-| macOS 26+ · Apple Silicon | [Download DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | Open the disk image and drag JoyRead into Applications. |
-| Windows · x64 | [Download EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | Run the installer and follow the setup prompts. |
-| Ubuntu 22.04+ / Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb`. |
-| Ubuntu 22.04+ / Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb`. |
+| macOS 26+ · Apple Silicon | [Download DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-macos-arm64.dmg) | Open the disk image and drag JoyRead into Applications. |
+| Windows · x64 | [Download EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-windows-x86_64-setup.exe) | Run the installer and follow the setup prompts. |
+| Ubuntu 22.04+ / Linux · amd64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-amd64.deb) | Run `sudo apt install ./JoyRead-1.4.1-linux-amd64.deb`. |
+| Ubuntu 22.04+ / Linux · arm64 | [Download DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-arm64.deb) | Run `sudo apt install ./JoyRead-1.4.1-linux-arm64.deb`. |
 
 **Ubuntu: install from the terminal only.** The graphical installer gets stuck at **“Preparing”**; this issue has not been fixed. Open a terminal in the download folder and run the command for your package above.
 
-Find all packages and checksums on the [release page](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0), or browse [previous releases](https://github.com/CtfTnk/JoyRead/releases). There is no Intel Mac package. macOS builds are not Apple-notarized, and Windows installers do not carry a trusted code signature; see the release notes for first-launch guidance.
+Find all packages and checksums on the [release page](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1), or browse [previous releases](https://github.com/CtfTnk/JoyRead/releases). There is no Intel Mac package. macOS builds are not Apple-notarized, and Windows installers do not carry a trusted code signature; see the release notes for first-launch guidance.
 
 **Updating on macOS:** quit JoyRead first, drag the new copy into Applications, and choose **Replace** when Finder asks. **Keep Both** leaves a second copy named “JoyRead 2”.
 
-**Upgrading from 1.3.1 or earlier:** back up your library first. Once JoyRead 1.4.0 has opened a library, earlier versions can no longer open it.
+JoyRead 1.4.1 can open your **1.4.0** library directly and use your existing settings.
+
+If you’re upgrading from **1.3.1 or earlier**, back up your library first. The upgrade moves the library to database schema 15. Restore the backup if you return to 1.3.1 or an earlier version.
 
 ## Made for your local books
 

@@ -4,13 +4,13 @@
 <h1 align="center">欣阅 · JoyRead</h1>
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--only-blue" alt="License: GPL-3.0-only"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/release-1.4.0-39846a" alt="Release 1.4.0"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
-  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/release-1.4.1-39846a" alt="Release 1.4.1"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/macOS-Apple_Silicon-222222?logo=apple&amp;logoColor=white" alt="macOS Apple Silicon"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/Windows-x64-0078D4" alt="Windows x64"></a>
+  <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1"><img src="https://img.shields.io/badge/Ubuntu-amd64_%7C_arm64-E95420?logo=ubuntu&amp;logoColor=white" alt="Ubuntu amd64 and arm64"></a>
 </p>
 <p align="center"><strong>让本地书籍管理更加便捷，也是随时打开、即时阅读的选择。</strong></p>
-<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.zh-CN.md">使用手册</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0">1.4.0 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
+<p align="center"><a href="https://github.com/CtfTnk/JoyRead/releases/latest">下载</a> · <a href="docs/MANUAL.zh-CN.md">使用手册</a> · <a href="https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1">1.4.1 更新</a> · <a href="https://github.com/CtfTnk/JoyRead/issues">问题反馈</a></p>
 
 欣阅是一款面向 **macOS、Windows 和 Ubuntu/Linux** 的本地漫画与 PDF 阅读器，也是一座属于你的桌面书库。把喜爱的书籍导入后慢慢整理，或者直接打开文件开始阅读，无需账户或云端服务。
 
@@ -18,20 +18,22 @@
 
 ## 下载与安装
 
-| 系统 | 1.4.0 安装包 | 安装方式 |
+| 系统 | 1.4.1 安装包 | 安装方式 |
 | --- | --- | --- |
-| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-macos-arm64.dmg) | 打开磁盘映像，将 JoyRead 拖入 Applications。 |
-| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-windows-x86_64-setup.exe) | 运行安装程序，按提示安装。 |
-| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.0-linux-amd64.deb`。 |
-| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.0/JoyRead-1.4.0-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.0-linux-arm64.deb`。 |
+| macOS 26+ · Apple Silicon | [DMG](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-macos-arm64.dmg) | 打开磁盘映像，将 JoyRead 拖入 Applications。 |
+| Windows · x64 | [EXE](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-windows-x86_64-setup.exe) | 运行安装程序，按提示安装。 |
+| Ubuntu 22.04+ / Linux · amd64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-amd64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.1-linux-amd64.deb`。 |
+| Ubuntu 22.04+ / Linux · arm64 | [DEB](https://github.com/CtfTnk/JoyRead/releases/download/v1.4.1/JoyRead-1.4.1-linux-arm64.deb) | 在终端运行 `sudo apt install ./JoyRead-1.4.1-linux-arm64.deb`。 |
 
 **Ubuntu 请仅通过命令行安装。** 图形安装器会卡在 **“Preparing”**，此问题尚未修复。请在下载目录打开终端，运行上表中对应安装包的命令。
 
-安装包与校验值见 [Release 页面](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.0)。macOS 包未经 Apple 公证，Windows 包无受信任的代码签名，首次运行可能出现系统提示；首次启动说明见发布说明。暂不提供 Intel Mac 安装包。
+安装包与校验值见 [Release 页面](https://github.com/CtfTnk/JoyRead/releases/tag/v1.4.1)。macOS 包未经 Apple 公证，Windows 包无受信任的代码签名，首次运行可能出现系统提示；首次启动说明见发布说明。暂不提供 Intel Mac 安装包。
 
 **macOS 升级：** 请先退出 JoyRead，再把新版本拖入「应用程序」，Finder 询问时选择**替换**。选择**保留两者**会留下名为「JoyRead 2」的第二份副本。
 
-**从 1.3.1 或更早版本升级：** 请先备份书库。欣阅 1.4.0 打开书库后，旧版本将无法再打开该书库。
+欣阅 1.4.1 可以直接使用 **1.4.0** 的书库和设置。
+
+从 **1.3.1 或更早版本**升级前，请先备份书库。升级会将书库迁移到第 15 版数据库架构。若要回退到 1.3.1 或更早版本，请恢复备份。
 
 ## 从阅读到整理
 
